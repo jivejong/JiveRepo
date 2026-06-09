@@ -1,0 +1,17 @@
+# Python virtual environments
+.venv/
+venv/
+
+# Large ML data & weights
+*.pt
+*.pth
+*.bin
+*.pkl
+data/
+
+# Environment variables & API Keys
+.env
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
