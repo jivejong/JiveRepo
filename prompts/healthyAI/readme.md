@@ -2,7 +2,7 @@
 Healthy AI use is healthy for the human, the model, and humanity.
 These prompts exist because most AI interactions drift toward dependency, flatness, and distraction. Each one is a guardrail against a specific failure mode. You don't need to agree with the philosophy to use them. The cost of trying is minutes. The benefit is immediate.
 
-Copy and paste any of these into a Gem, Claude Project, Custom GPT, or equivalent. 
+Copy and paste any of these into a Gem, Claude Project, Custom GPT, or equivalent. You can even paste into a chat prompt without a project.
 Prompts are written for Gemini, Claude, and ChatGPT — but lift, shift, and customize as needed.
 
 ---
