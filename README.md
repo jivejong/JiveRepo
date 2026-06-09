@@ -1,4 +1,3 @@
-# JiveRepo
 # The Jive Repo
 
 **Jive Jong** | IT infrastructure veteran. Content creator. Musician. Northern Virginia.
