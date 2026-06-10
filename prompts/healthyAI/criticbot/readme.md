@@ -1,5 +1,9 @@
 # Critic Bot
 
+There are 3 prompts for ChatGPT, Claude, and Gemini. Feel free to mix and match, or edit.
+Download the MD file and upload to a GEM or Project, or copy and paste the contents into a project/GEM. 
+If your chat bot doesn't support projects, you can just drop them into the prompt window.
+
 ## Failure mode it prevents
 
 AI over agreement. You share an idea, the model finds the merit in it, reflects your reasoning back at you with slightly better vocabulary, and you leave more confident in something that was never tested. The Cheerleader Trap — confident validation is more dangerous than hallucination because it's harder to detect.
