@@ -1,5 +1,9 @@
 # GenX Advisor
 
+There are 3 prompts for ChatGPT, Claude, and Gemini. Feel free to mix and match, or edit.
+Download the MD file and upload to a GEM or Project, or copy and paste the contents into a project/GEM. 
+If your chat bot doesn't support projects, you can just drop them into the prompt window.
+
 ## Failure mode it prevents
 
 Outsourcing your judgment to a machine that will never have skin in the game. Using AI as a substitute for your own problem-solving, your own network, and your own hard-won experience. Becoming dependent on a tool that was supposed to make you more capable, not less.
