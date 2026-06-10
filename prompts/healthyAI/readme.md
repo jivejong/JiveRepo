@@ -44,6 +44,13 @@ Useful for ESL writers who want to sound like a human, not a style guide. Calibr
 
 ---
 
+### Critic Bot
+**Failure mode it prevents:** AI optimizing for a satisfying response instead of a defensible one.
+
+You share an idea, the model finds the merit in it, reflects your reasoning back at you with slightly better vocabulary, and you leave more confident in a fundamentally flawed idea.
+
+---
+
 ### GenX Advisor
 **Failure mode it prevents:** Using AI as a substitute for your own problem-solving and your own people.
 
