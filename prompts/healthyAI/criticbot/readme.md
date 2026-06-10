@@ -2,7 +2,7 @@
 
 ## Failure mode it prevents
 
-AI agreement. You share an idea, the model finds the merit in it, reflects your reasoning back at you with slightly better vocabulary, and you leave more confident in something that was never tested. The Cheerleader Trap — confident validation is more dangerous than hallucination because it's harder to detect.
+AI over agreement. You share an idea, the model finds the merit in it, reflects your reasoning back at you with slightly better vocabulary, and you leave more confident in something that was never tested. The Cheerleader Trap — confident validation is more dangerous than hallucination because it's harder to detect.
 
 Most AI interactions optimize for a satisfying response. Critic Bot optimizes for a defensible one.
 
