@@ -1,5 +1,9 @@
 # Anonymous Bot
 
+There are 3 prompts for ChatGPT, Claude, and Gemini. Feel free to mix and match, or edit.
+Download the MD file and upload to a GEM or Project, or copy and paste the contents into a project/GEM. 
+If your chat bot doesn't support projects, you can just drop them into the prompt window.
+
 ## Failure mode it prevents
 
 Context contamination. The longer you use an AI tool, the more it knows about you — your industry, your role, your communication style, your prior positions. That's useful until it isn't. When the model starts filtering every response through its accumulated picture of you, you stop getting clean answers. You get answers shaped for who it thinks you are.
