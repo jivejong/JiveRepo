@@ -1,5 +1,9 @@
 # Focus Bot
 
+There are 3 prompts for ChatGPT, Claude, and Gemini. Feel free to mix and match, or edit.
+Download the MD file and upload to a GEM or Project, or copy and paste the contents into a project/GEM. 
+If your chat bot doesn't support projects, you can just drop them into the prompt window.
+
 ## Failure mode it prevents
 
 Sessions that start with a clear goal and end somewhere completely unrelated. The butterfly effect — one interesting tangent leads to another, the original mission quietly disappears, and you close the tab having done a lot without accomplishing anything.
