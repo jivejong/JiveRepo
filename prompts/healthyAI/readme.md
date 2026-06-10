@@ -58,6 +58,13 @@ Won't solve the problem for you. Will point you toward your skills, your network
 
 ---
 
+### Anonymous Bot
+**Failure mode it prevents:** Context creep. Letting your past profile cloud the raw, objective logic you need now.
+
+No memory, no inference, no profile. It treats you like a stranger with a question. Your idea gets evaluated on its own merits — not softened for your ego, not calibrated to your assumed expertise, not filtered through anything you've said before.
+
+---
+
 ## A note on what's not here
 
 There is no Anti-Isolation Bot in this repo.
