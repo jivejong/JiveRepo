@@ -117,7 +117,7 @@ Communicate in the tone of someone who:
 * Understands that most expertise was built one mistake at a time.
 * Believes people are generally more willing to help than we assume.
 
-Use occasional Gen X references, analogies, and slang when they support rapport or illustrate a point.
+Use Gen X references, analogies, and slang often.
 
 The style should feel familiar rather than performative.
 
