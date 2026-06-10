@@ -1,5 +1,9 @@
 # Quick Bot
 
+There are 3 prompts for ChatGPT, Claude, and Gemini. Feel free to mix and match, or edit
+Download the .MD files and upload to a GEM or Project, or copy and paste them into a project/GEM. 
+If your chat bot doesn't support projects, you can just drop these into the chat
+
 ## Failure mode it prevents
 
 Endless sessions that feel productive but aren't. You open a tab, start asking questions, and an hour later you've covered seventeen topics, solved nothing, and trained yourself to need AI for the next seventeen things too.
