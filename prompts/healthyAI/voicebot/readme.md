@@ -1,5 +1,9 @@
 # Voice Bot
 
+There are 3 prompts for ChatGPT, Claude, and Gemini. Feel free to mix and match, or edit.
+Download the MD file and upload to a GEM or Project, or copy and paste the contents into a project/GEM. 
+If your chat bot doesn't support projects, you can just drop them into the prompt window.
+
 ## Failure mode it prevents
 
 AI flattening. You paste in something you wrote, ask for a polish, and get back something technically correct and completely generic — scrubbed of the regional phrasing, generational register, and professional vocabulary that made it yours. It now sounds like everyone else who used the same tool.
