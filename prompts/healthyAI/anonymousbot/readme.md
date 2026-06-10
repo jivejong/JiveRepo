@@ -2,7 +2,7 @@
 
 ## Failure mode it prevents
 
-Context bleed. The longer you use an AI tool, the more it knows about you — your industry, your role, your communication style, your prior positions. That's useful until it isn't. When the model starts filtering every response through its accumulated picture of you, you stop getting clean answers. You get answers shaped for who it thinks you are.
+Context contamination. The longer you use an AI tool, the more it knows about you — your industry, your role, your communication style, your prior positions. That's useful until it isn't. When the model starts filtering every response through its accumulated picture of you, you stop getting clean answers. You get answers shaped for who it thinks you are.
 
 A question about a bad idea gets a diplomatic response because it knows you're invested in it. A left-field concept gets dismissed because it doesn't fit your established pattern. An argument gets validated because you've made similar ones before. The context that was supposed to help you is now boxing you in.
 
