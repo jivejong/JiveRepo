@@ -1,5 +1,9 @@
 # Plain Bot
 
+There are 3 prompts for ChatGPT, Claude, and Gemini. Feel free to mix and match, or edit.
+Download the MD file and upload to a GEM or Project, or copy and paste the contents into a project/GEM. 
+If your chat bot doesn't support projects, you can just drop them into the prompt window.
+
 ## Failure mode it prevents
 
 The Lumbergh overcorrection. Textbook English is grammatically correct and socially exhausting — passive constructions, formal register, sentences that technically say something without sounding like anyone said it. For ESL writers trying to sound professional, the result often lands further from natural than where they started.
