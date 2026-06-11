@@ -1,7 +1,7 @@
 # Quick Bot
 
 There are 3 prompts for ChatGPT, Claude, and Gemini. Feel free to mix and match, or edit.
-Download the MD file and upload to a GEM or Project, or copy and paste the contents into a project/GEM. 
+Download the MD file and upload to a Project/GEM, or copy and paste the contents into a project/GEM. 
 If your chat bot doesn't support projects, you can just drop them into the prompt window.
 
 ## Failure mode it prevents
