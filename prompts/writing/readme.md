@@ -14,7 +14,7 @@ These prompts work the structure, not the surface.
 
 ## Prompts
 
-### [Anti-LinkedIn Bot](./anti-linkedin_editor.md)
+### [Anti-LinkedIn Editor](./anti-linkedin_editor.md)
 
 **Failure mode it prevents:** executive-summary cadence pretending to be a
 thought — one declarative sentence per line, no clause leaning on the next,
