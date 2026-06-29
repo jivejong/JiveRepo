@@ -1,6 +1,6 @@
 # The Jive Repo
 
-**Jive Jong** | IT infrastructure veteran. Content creator. Musician. Northern Virginia.
+**Jive Jong** | IT veteran. Content creator. Musician. Northern Virginia.
 
 This is the public archive of my work across technical research, AI/ML experimentation, content creation, and long-form writing. If you found this from LinkedIn, Buffer Overflow, or Translation Layer — this is home base.
 
@@ -9,15 +9,19 @@ This is the public archive of my work across technical research, AI/ML experimen
 ## What's Here
 
 ### `/projects`
+
 AI/ML experiments and code. Functional implementations with documented architectural decisions. Not just what it does — why it was built the way it was.
 
 ### `/ideas`
+
 Source material for content across platforms. Concepts developed for [Translation Layer](https://www.youtube.com/@TranslationLayer) (long-form, technical) and [Buffer Overflow](https://www.youtube.com/@BufferOverflow-v2j) (short-form, direct). If you've seen a video and want to go deeper, start here.
 
 ### `/prompts`
+
 Prompts I use and share publicly — focused on healthy, disciplined AI use. Practical, tested, no hype.
 
 ### `/docs`
+
 White papers, manifestos, user guides, and reference documents. Formal writing meant to last.
 
 ---
@@ -54,4 +58,4 @@ Everything here is HITL — human-in-the-loop, applied as a quality gate before 
 
 ---
 
-*The handle predates the internet. The work is ongoing.*
+_The handle predates the internet. The work is ongoing._
