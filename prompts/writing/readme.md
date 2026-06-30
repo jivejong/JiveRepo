@@ -17,7 +17,7 @@ drift, repeat themselves, and trail off before the ending.
 
 **Corrective** — fix what came out wrong
 
-- [Anti-LinkedIn Bot](./anti_linkedin_editor.md) — strips executive-summary cadence; makes claims survive a complication before concluding
+- [Anti-LinkedIn Editor](./anti_linkedin_editor.md) — strips executive-summary cadence; makes claims survive a complication before concluding
 - [Voice Finder Bot](./voicebot.md) — explores and refines voice instead of flattening it toward the generic professional default
 
 **Collaborative** — write alongside
