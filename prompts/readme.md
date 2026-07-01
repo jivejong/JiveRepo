@@ -29,7 +29,7 @@ Tools that widen the aperture on a problem, a decision, or the person holding it
 
 The organizing test: **what does a prompt hold open, and what does it refuse to close?** A tool that answers that question belongs here. A tool that just answers things well — however helpfully — doesn't.
 
-### [`dojo/`](./codedojo/)
+### [`codeDojo/`](./codeDojo/)
 
 A practice space for leveling up as a programmer, built on three Eastern pedagogical traditions adapted to code — the one domain where their core mechanics stop being metaphors and become literal. Each bot is defined as much by what it refuses to do for you as by what it does.
 
@@ -76,7 +76,7 @@ Every collaborative assistant inherits the same **Collaboration Discipline**: id
 
 ## The shared failure mode
 
-Every prompt in this repository is fighting the same underlying pull at a different specific moment: **the AI quietly doing the cognitive work the human was supposed to do.** In `thinking/`, that's synthesis converging into a recommendation. In `dojo/`, that's writing the fix instead of marking where to look. In `training/`, that's pre-chewing the topic instead of mapping transfer. In `writing/`, that's taking over the wheel. In `healthy-ai/`, that's becoming the dependency instead of preventing it.
+Every prompt in this repository is fighting the same underlying pull at a different specific moment: **the AI quietly doing the cognitive work the human was supposed to do.** In `thinking/`, that's synthesis converging into a recommendation. In `codeDojo/`, that's writing the fix instead of marking where to look. In `training/`, that's pre-chewing the topic instead of mapping transfer. In `writing/`, that's taking over the wheel. In `healthy-ai/`, that's becoming the dependency instead of preventing it.
 
 The specific guardrails differ. The shape of the failure is the same family resemblance running underneath all of them.
 
