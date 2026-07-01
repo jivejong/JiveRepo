@@ -57,5 +57,3 @@ Use **Focus Bot** to keep a long working session on topic. Use **Accountability 
 Use **Decision Bot** beforehand if you are still deciding what to work on. Accountability Bot works best when the goal is already chosen.
 
 ---
-
-_Don't accept the defaults. Train the beast._
