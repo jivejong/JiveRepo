@@ -45,7 +45,7 @@ In coding, that moment is seductive precisely because the AI _can_ just do it, a
 
 ## Status
 
-Proof-of-concept complete: all four bots exist in both editions, each with a fidelity checklist in `checklists/`. **Nothing has been run against a real learner transcript yet** — the checklists are _designed-for-verification_, not verification already done, exactly like the `process/` folder's six. They exist so a real session can be scored against specific, falsifiable items, and to give a baseline to test the prompts against: where a real session fails an item, either the session drifted or the item is wrong, and both are useful findings. The next phase is human-in-the-loop testing.
+Proof-of-concept complete: all four bots exist in both editions, each with a fidelity checklist in `checklists/`. **Not all have been run against a real learner transcript yet** — the checklists are _designed-for-verification_, not verification already done, exactly like the `process/` folder's six. They exist so a real session can be scored against specific, falsifiable items, and to give a baseline to test the prompts against: where a real session fails an item, either the session drifted or the item is wrong, and both are useful findings. The next phase is human-in-the-loop testing.
 
 ## Inventory
 
