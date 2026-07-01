@@ -49,8 +49,8 @@ Proof-of-concept complete: all four bots exist in both editions, each with a fid
 
 ## Inventory
 
-- 4 bots × 2 editions = 8 system prompts
+- 4 bots × 4 editions = 16 system prompts
 - `chat/` — The Defense, The Mirror, The Forms, The Watch (reasoning edition)
-- `code/` — The Defense, The Mirror, The Forms, The Watch (Claude Code / execution edition)
+- `code/` — The Defense, The Mirror, The Forms, The Watch (Claude Code, Codex, Copilot / execution edition)
 - `checklists/` — one fidelity checklist per bot (4 files), each with a shared core plus chat- and Code-specific subsections; The Mirror's also covers its two modes
 - The Mirror carries two modes (correction / exemplar); the others are single-mode

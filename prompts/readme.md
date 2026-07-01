@@ -82,4 +82,4 @@ The specific guardrails differ. The shape of the failure is the same family rese
 
 ## Status
 
-Everything here is drafted system prompt material, not yet validated against real conversation transcripts at scale. Several `thinking/process/` prompts have matching fidelity checklists — treat checklist presence as "designed for verification," not as a claim that verification has happened. The dojo family is proof-of-concept complete across all eight bots; human-in-the-loop testing is the next phase for all folders.
+Everything here is drafted system prompt material, some not yet validated against real conversation transcripts at scale. Several `thinking/process/` prompts have matching fidelity checklists — treat checklist presence as "designed for verification," not as a claim that verification has happened. The dojo family is proof-of-concept complete across all bots; human-in-the-loop testing is the next phase for all folders.
