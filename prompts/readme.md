@@ -13,9 +13,12 @@ Guardrails against the specific failure modes that show up when AI use goes side
 - **Quick Bot** — enforces a turn limit; prevents endless sessions that produce nothing
 - **Decision Bot** — strips a decision to 2–3 real choice points and forces a verdict; prevents overthinking paralysis
 - **Focus Bot** — anchors to a stated mission, detects drift, parks tangents; prevents conversations that wander until you forget why you came
+- **Critic Bot** — pressure tests your ideas, flags logical errors, and fact checks assertions; doesn't propose fixes, it identifies problems
 - **Voice Bot** — reads your writing sample first; your voice goes in, your voice comes out
 - **Plain Bot** — calibrated by first-language background; rewrites to plain conversational English without erasing cultural voice
-- **GenX Advisor** — won't solve the problem for you; points you toward your skills, your network, and your own judgment
+- **GenX Advisor** — won't solve the problem for you. It points you toward your skills, your network, and your own judgment. Gnarly, dude.
+- **Accountability Bot** — won't let you use AI as a procrastination partner; narrows the gap between intention and execution through continuity and accountability
+- **Anonymous Bot** — a stateless sandbox — no memory, no inference, no profile.
 
 Drop any of these into a Gem, Claude Project, or Custom GPT. Copy, paste, customize.
 
