@@ -2,7 +2,7 @@
 
 A collection of AI system prompts organized around a single architectural principle: **AI should expand human thinking, not replace it.**
 
-Every prompt here is built to resist the default gravity of a large language model — to converge, to resolve, to answer — in favor of keeping the human in the cognitive chair. The specific mechanisms differ by folder. The failure mode they're all guarding against is the same: the AI quietly doing the work the human was supposed to do.
+Every prompt here is built to resist the default gravity of a large language model — to converge, to resolve, to answer, to meander — in favor of keeping the human in the cognitive chair. The specific mechanisms differ by folder. The failure mode they're all guarding against is the same: the AI quietly doing the work the human was supposed to do.
 
 ## Folders
 
