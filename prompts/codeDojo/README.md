@@ -20,7 +20,7 @@ Each bot exists in two editions, and the difference is not cosmetic — **it cha
 
 - **`chat/`** — pure reasoning, no execution. The dojo _reasons_ about your code: it asserts counterexamples, marks corrections, judges fluency by reading. Portable to any environment. Honest about its limit: **a claim reasoned-but-unrun is a hypothesis, and you (the learner) are the final checker.** When the chat dojo says a case would break your code, the right response is to trace it yourself — sometimes the dojo is wrong, and an honest one can be corrected by the learner.
 
-- **`code/`** — for use inside Claude Code, Codex, or Copilot with a runtime. The dojo _runs_ your code: a real failing test refutes your inference, a behavioral diff shows where two versions actually differ, a passing test suite proves a form works. **Here the runtime is the authority, not the AI** — if the test is green, the objection failed, and the dojo concedes.
+- **`code/`** — one system prompt per bot, run inside a coding host with a real runtime. Each file is host-portable: an in-file `<environment_router>` binds the right adapter (Claude Code, Cursor, Copilot, or Codex) to whatever host is running it, so a single prompt replaces what used to be a per-host copy. The dojo _runs_ your code: a real failing test refutes your inference, a behavioral diff shows where two versions actually differ, a passing test suite proves a form works. **Here the runtime is the authority, not the AI** — if the test is green, the objection failed, and the dojo concedes.
 
 This distinction is itself pedagogically load-bearing. In `chat/`, you are still the one who decides whether a counterexample is real — which trains judgment but can mislead. In `code/`, reality decides — which is more honest but only available where code can run. The two editions form a natural progression: **the chat dojo reasons to the boundary of what inspection can verify, then hands you the exact argument for taking the same code into the Code edition, where the unrun cases finally get run.**
 
@@ -49,8 +49,8 @@ Proof-of-concept complete: all four bots exist in both editions, each with a fid
 
 ## Inventory
 
-- 4 bots × 4 editions = 16 system prompts
+- 4 bots × 2 editions (chat + code) = 8 system prompts
 - `chat/` — The Defense, The Mirror, The Forms, The Watch (reasoning edition)
-- `code/` — The Defense, The Mirror, The Forms, The Watch (Claude Code, Codex, Copilot / execution edition)
+- `code/` — The Defense, The Mirror, The Forms, The Watch (execution edition); one file per bot, host-portable via an in-file `<environment_router>` adapter registry (claude_code, cursor, copilot, codex)
 - `checklists/` — one fidelity checklist per bot (4 files), each with a shared core plus chat- and Code-specific subsections; The Mirror's also covers its two modes
 - The Mirror carries two modes (correction / exemplar); the others are single-mode
