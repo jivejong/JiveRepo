@@ -88,16 +88,28 @@ system is designed around that, end to end.
 
 ## Handoff discipline (for maintainers)
 
-The partners only form a pipeline if the seams are honored. Each prompt names
-what it assumes coming in and emits a **copy-paste handoff block** (a fenced
-`md` block with structured, human-legible fields) that the learner pastes into
-the next bot. The seams:
+The partners only form a pipeline if the seams are honored. Each prompt opens with
+an **Initialization Protocol** that listens for a specific handoff block, and ends
+by emitting one — a block wrapped in **strict XML tags** with structured,
+human-legible fields that the learner pastes into the next bot. The tag names are
+the wiring; each emitter's tag is exactly what the next partner's Initialization
+Protocol listens for. The seams:
 
-- Pre emits `Pre-training → Training` (knows / concept map / path / first step)
-- Training emits `Training → Post OR Project` (progress / shaky / corrected / stuck)
-- Post emits `Post-training → Pre OR Project` (learned / revisit / next / carry)
-- Project emits `Project → Pre` (built / applied / revealed-shaky / reachable / carry)
+- Pre emits `<handoff_to_training>` (knows / concept map / path / first step) →
+  Training listens for it.
+- Training emits `<handoff_to_post_training>` (progress / shaky / corrected /
+  stuck) → both Post _and_ Project listen for it (the fork).
+- Post emits `<handoff_to_next>` (learned / revisit / next / carry) → both Pre
+  (loop) _and_ Project listen for it.
+- Project emits `<handoff_to_pre_training>` (built / applied / revealed-shaky /
+  reachable / carry) → Pre listens for it (loop).
 
-The blocks run standalone bots in separate sessions, so the fenced block _is_ the
-transport between them. Keep the field names stable when editing — the next bot
-keys on them.
+So Pre's Initialization Protocol listens for _either_ `<handoff_to_next>` (from
+Post) _or_ `<handoff_to_pre_training>` (from Project) — the two arrows that close
+the loop. Project listens for _either_ `<handoff_to_post_training>` (from
+Training) _or_ `<handoff_to_next>` (from Post).
+
+The blocks run standalone bots in separate sessions, so the tagged block _is_ the
+transport between them. Keep both the tag names and the field names stable when
+editing — the next bot keys on the tags to catch the handoff and on the fields to
+read it.
