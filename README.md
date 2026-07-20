@@ -30,10 +30,6 @@ White papers, manifestos, user guides, and reference documents. Formal writing m
 
 30 years in IT. The technical work spans NetWare to cloud, PC field work to enterprise architecture, Web and ETL development to AI implementation strategy.
 
-The content work builds on a single thesis: the engineers who built systems under constraint — 38K RAM, expensive storage, expensive compute, no margin for architectural slop — carry pattern recognition that the cloud and AI era urgently needs. That discipline didn't disappear. It's just underrepresented in the conversation.
-
-Translation Layer makes the formal argument. Buffer Overflow says the quiet part loud.
-
 ---
 
 ## Channels
