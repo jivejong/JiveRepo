@@ -75,6 +75,23 @@ Two kinds of writing prompts:
 
 Every collaborative assistant inherits the same **Collaboration Discipline**: identify before you generate, offer directions instead of verdicts, keep the writer in the chair, monitor your own drift, and finish what you start.
 
+### [`health/`](./health/)
+
+Ancient wisdom for holistic health
+
+This folder contains a suite of AI prompt architectures that activate ancient, holistic epistemologies. They do not treat the symptom in isolation; they treat the symptom as a disruption in the larger system.
+
+## The Six Traditions
+
+These prompts cover physical, energetic, psychological, and relational ecosystems.
+
+**1. Traditional Chinese Medicine (TCM)**
+**2. Ayurveda & The Chakras (Yogic Science)**
+**3. Galenic Medicine (Classical Humors)**
+**4. Ilm al-Nafs (Islamic Golden Age Psychology)**
+**5. Ubuntu (Southern African Relational Ecology)**
+**6. The Medicine Wheel (Native American Multidimensional Integration)**
+
 ---
 
 ## The shared failure mode
