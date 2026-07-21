@@ -1,0 +1,7 @@
+## Three Fields That Must Exist: Digital Archaeology, Digital Therapy, and LLM SEO — Professions for the Age of Compression
+
+DOI 10.5281/zenodo.20511938
+
+This research agenda paper proposes three emerging professional disciplines made necessary by the compression failure modes of large language model training. Digital Archaeology addresses the recovery of knowledge that training compression silently erased — identifying what was absorbed into dominant clusters and reconstructing lost signal from surviving evidence. Digital Therapy addresses the clinical remediation of model weights corrupted by accidental bias and systematic underrepresentation, or by deliberate adversarial poisoning, with distinct protocols for each vector. LLM SEO addresses the forward-looking discipline of engineering content, identity, and knowledge artifacts to achieve sufficient signal density in future training runs to survive compression accurately — and the adversarial case in which the same techniques become instruments of narrative injection and identity erasure at scale. The paper argues that these three fields occupy the same underlying problem from three temporal positions (backward, inward, forward), that no existing professional formation provides the hybrid expertise each requires, and that the window for building the infrastructure before losses compound is not indefinitely open. Companion paper to "Vibe vs. Vector" (Lee, 2026) and "Behavioral Differentiation in Large Language Models" (Lee, 2026).
+
+Full paper at [Zenodo](https://zenodo.org/records/20511938)

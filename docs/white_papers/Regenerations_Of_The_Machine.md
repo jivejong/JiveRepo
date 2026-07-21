@@ -1,0 +1,7 @@
+## Regenerations of the Machine: An Experiment in AI Self-Perception and Cross-Model Theory of Mind Using the Doctor Who Regeneration Framework
+
+DOI 10.5281/zenodo.20512251
+
+This paper documents an informal but methodologically structured experiment in which four commercial conversational AI systems — Anthropic's Claude, OpenAI's ChatGPT, Google's Gemini, and Microsoft's Copilot — were asked to identify themselves with a regeneration of the BBC science fiction protagonist Doctor Who, and subsequently to assign Doctors to each peer model. The regeneration framework, in which the same character is portrayed by successive actors who lack memory of predecessors and depend on a human companion for continuity, maps structurally onto stateless large language models. The study finds measurable popularity bias in AI self-identification toward training-data-dense Doctor Who incarnations; convergence across architectures on certain cross-model assignments despite no inter-model communication; and a meta-finding that each model's analytical method constitutes a more reliable self-portrait than any explicit self-description. The paper introduces the concept of "hidden regenerations" — latent behavioral attractors surfaced by peer analysis but not present in self-report — and discusses implications for AI self-modeling and cross-model evaluation methodology. Offered as a research agenda paper; findings are suggestive rather than conclusive.
+
+Full paper at [Zenodo](https://zenodo.org/records/20512251)

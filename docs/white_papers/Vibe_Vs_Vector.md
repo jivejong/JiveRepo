@@ -1,0 +1,7 @@
+## Vibe vs. Vector: A Five-Round Comparative Study of Multi-Model AI Image Generation — How Four Frontier Models Reveal Their Cognitive Signatures Under Identical Constraints
+
+DOI 10.5281/zenodo.20512935
+
+This study ran four frontier AI models — Claude (Anthropic), Gemini (Google), ChatGPT (OpenAI), and Microsoft Copilot — through five controlled image generation rounds using identical tools, fixed seeds, and identical prompts, isolating model cognition as the sole variable. The study documents stable cognitive signatures for each model: Gemini's vector-first technical reconstruction, Claude's meaning-first boundary navigation, ChatGPT's controlled imperfection and constraint pinning, and Copilot's reward-optimized professional polish. Key findings include a fundamental vibe-vs.-vector dichotomy in prompting strategy, the operational significance of latent space concept neighborhoods (demonstrated through Space Ghost/Batman cluster contamination), the realism paradox in high-fidelity diffusion models, and the asymmetry between biological and physical priors in image generation. The paper concludes with a model routing table mapping task types to best-fit models based on cognitive approach. Companion paper to "Three Fields That Must Exist" (Lee, 2026), which develops the compression and digital archaeology arguments introduced in this paper's epilogue.
+
+Full paper at [Zenodo](https://zenodo.org/records/20512935)
