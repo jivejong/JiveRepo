@@ -1,0 +1,7 @@
+## The VM Bar: Behavioral Differentiation in Large Language Models: A Multi-Model Comparative Study
+
+DOI 10.5281/zenodo.20512856
+
+This technical white paper reports findings from a structured multi-model behavioral study conducted in April 2026 across five frontier conversational AI systems: Claude (Anthropic), ChatGPT (OpenAI), Gemini (Google), Microsoft Copilot, and Perplexity. A single human operator ran identical interview, technical, and adversarial protocols against each model in independent sessions, then fed outputs back across sessions for cross-evaluation. The study documents universal behavioral convergences across all models (stylistic mirroring, recency bias, role-prompt stabilization) and model-specific behavioral archetypes defined by characteristic failure modes under ambiguity. Key contributions include: the Cheerleader Trap (the failure mode of models tuned for user satisfaction); the "Willingness to Suspend Correctness for Context" behavioral axis exposed by the AppleTalk diagnostic; context as memory leak (emergent personality as a function of accumulated session context); and the Translation Layer Pipeline, a three-stage multi-model workflow in which each stage corrects the prior stage's failure mode. A transferable 10-question model interview protocol is included as Appendix B. Methodological limitations are documented in Section 10; Perplexity findings in particular should be treated as indicative given session truncation at paywall.
+
+Full paper at [Zenodo](https://zenodo.org/records/20512856)
