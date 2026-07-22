@@ -1,0 +1,9 @@
+streamlit
+groq
+edge-tts
+
+# ── Observability (OpenTelemetry) ─────────────────────────────────────────────
+opentelemetry-api
+opentelemetry-sdk
+# Only needed when exporting to an OTLP backend (OTEL_EXPORTER_OTLP_ENDPOINT set).
+opentelemetry-exporter-otlp-proto-http
