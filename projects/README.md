@@ -6,17 +6,6 @@ A collection of small, self-contained [Streamlit](https://streamlit.io/) apps, e
 
 ## The Projects
 
-| Project                                | One-liner                                                                                      | Agent Pattern                        |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------ | ------------- |
-| [📸 Agentic Poet](Agentic_Poet/)       | Take a photo → a chain of agents turns it into a narrated poem with mood-matched music         | Compound multimodal pipeline         |
-| [🍎 Agentic Snacks](Agentic_Snacks/)   | Three agents negotiate whether a kid gets a snack — with a rogue grandparent pushing junk food | Adversarial multi-agent + Vector RAG |
-| [🔥 NoCap](NoCap/)                     | Enter Gen Z slang → get a structured verdict on whether it's still cool                        | Single-agent classifier              |
-| [💍 Spouse Approval](Spouse_Approval/) | Speak a bad idea → it's scored and routed through an escalating spousal response pipeline      | Voice-driven state machine           | OpenTelemetry |
-
----
-
-## Project Details
-
 ### 📸 [Agentic Poet](Agentic_Poet/)
 
 A photo passes through six specialized agents — vision analysis (Gemini), poetry composition, quality moderation with closed-loop retry, mood detection, voice narration (gTTS), and music selection from a local library — producing a live audio-visual performance.
@@ -29,17 +18,17 @@ Three LLM agents negotiate in real time over a snack request, with a rogue Grand
 
 **Highlights:** adversarial agents working against each other · three-tier RAG (Chroma vector DB → web search → model knowledge) over ~7,400 embedded food items · LLM-as-classifier pre-screening.
 
-### 🔥 [NoCap](NoCap/)
-
-A single-agent app that evaluates a Gen Z slang term's current cultural relevance, returning a structured verdict (`bussin` / `mid` / `unc`), a relevance score, origin, example usage, and a cringe warning.
-
-**Highlights:** structured JSON output enforced purely through prompt engineering · prompt-persona design · direct REST integration via an OpenAI-compatible endpoint · fully custom CSS-themed Streamlit UI.
-
 ### 💍 [Spouse Approval](Spouse_Approval/)
 
 The user speaks a potentially bad idea; the app transcribes it (Whisper), scores its marital risk 1–10, and routes it through an escalating pipeline — calm warning → friend intervention → spousal rage → exile — with neural voice audio (edge-tts) at every stage.
 
 **Highlights:** explicit agentic state machine with guarded transitions · speech-to-text and multi-voice neural TTS · production-grade OpenTelemetry observability (GenAI semantic conventions) exportable to any OTLP backend.
+
+### 🔥 [NoCap](NoCap/)
+
+A single-agent app that evaluates a Gen Z slang term's current cultural relevance, returning a structured verdict (`bussin` / `mid` / `unc`), a relevance score, origin, example usage, and a cringe warning.
+
+**Highlights:** structured JSON output enforced purely through prompt engineering · prompt-persona design · direct REST integration via an OpenAI-compatible endpoint · fully custom CSS-themed Streamlit UI.
 
 ---
 
