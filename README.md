@@ -8,21 +8,17 @@ This is the public archive of my work across technical research, AI/ML experimen
 
 ## What's Here
 
-### `/projects`
+### [`/projects`](./projects)
 
-AI/ML experiments and code. Functional implementations with documented architectural decisions. Not just what it does — why it was built the way it was.
+AI/ML experiments and code. Functional implementations with documented architectural decisions — not just what it does, but why it was built the way it was. Currently four self-contained [Streamlit](https://streamlit.io/) agentic AI apps, each demonstrating a distinct pattern: a compound multimodal pipeline (Agentic Poet), an adversarial multi-agent negotiation with RAG (Agentic Snacks), a single-agent classifier (NoCap), and a voice-driven state machine with OpenTelemetry observability (Spouse Approval). See the [projects README](./projects/README.md).
 
-### `/ideas`
+### [`/prompts`](./prompts)
 
-Source material for content across platforms. Concepts developed for [Translation Layer](https://www.youtube.com/@TranslationLayer) (long-form, technical) and [Buffer Overflow](https://www.youtube.com/@BufferOverflow-v2j) (short-form, direct). If you've seen a video and want to go deeper, start here.
+AI system prompts organized around one principle: **AI should expand human thinking, not replace it.** Six families — `healthyAI/` (guardrails against dependency and drift), `thinking/` (inward, outward, and pedagogy-based perspective tools), `codeDojo/` (programming practice built on Eastern pedagogical traditions), `training/` (a learning pipeline modeled on the ML lifecycle), `writing/` (corrective and collaborative writing partners), and `health/` (six holistic-health epistemologies). Practical, tested, no hype. See the [prompts README](./prompts/readme.md).
 
-### `/prompts`
+### [`/docs`](./docs)
 
-Prompts I use and share publicly — focused on healthy, disciplined AI use. Practical, tested, no hype.
-
-### `/docs`
-
-White papers, manifestos, user guides, and reference documents. Formal writing meant to last.
+Long-form writing in three formats: `articles/` (pieces for LinkedIn and other platforms), `Translation_Layer/` (article-form adaptations of the YouTube channel), and `white_papers/` (abstracts and Zenodo links for the academic work). Formal writing meant to last. See the [docs README](./docs/README.md).
 
 ---
 
