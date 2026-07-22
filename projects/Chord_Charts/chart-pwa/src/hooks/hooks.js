@@ -1,5 +1,5 @@
 /**
- * hooks/index.js — custom React hooks
+ * hooks/hooks.js — custom React hooks
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
