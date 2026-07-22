@@ -23,14 +23,14 @@ The result is a live performance: poem narration and background music played sim
 
 ## Agent Architecture
 
-| Agent | Model | Role |
-|---|---|---|
-| 🔍 Visionary | Gemini 2.5 Flash | Image → structured scene data |
-| ✍️ Bard | Groq · Llama 3.3 70B | Scene data → poem |
-| ⚖️ Moderator | Groq · Llama 3.3 70B | Verify poem relevance; trigger retry if rejected |
-| 🎭 Sentiment | Groq · Llama 3.3 70B | Poem → mood category |
-| 🎙️ Narrator | gTTS (local) | Poem → voice audio |
-| 🎵 Maestro | Local audio files | Mood → background music |
+| Agent        | Model              | Role                                             |
+| ------------ | ------------------ | ------------------------------------------------ |
+| 🔍 Visionary | Gemini 2.5 Flash   | Image → structured scene data                    |
+| ✍️ Bard      | Groq · Qwen3.6-27b | Scene data → poem                                |
+| ⚖️ Moderator | Groq · Qwen3.6-27b | Verify poem relevance; trigger retry if rejected |
+| 🎭 Sentiment | Groq · Qwen3.6-27b | Poem → mood category                             |
+| 🎙️ Narrator  | gTTS (local)       | Poem → voice audio                               |
+| 🎵 Maestro   | Local audio files  | Mood → background music                          |
 
 **Model split:** Gemini handles vision (Groq is text-only). All text agents run on Groq.
 
@@ -64,12 +64,12 @@ The Moderator uses a two-stage verification approach to minimize API calls:
 
 The Sentiment Agent classifies the poem into one of four moods:
 
-| Mood | File Expected |
-|---|---|
+| Mood         | File Expected                  |
+| ------------ | ------------------------------ |
 | `MELANCHOLY` | `audio_library/melancholy.mp3` |
-| `WHIMSICAL` | `audio_library/whimsical.mp3` |
-| `EPIC` | `audio_library/epic.mp3` |
-| `EERIE` | `audio_library/eerie.mp3` |
+| `WHIMSICAL`  | `audio_library/whimsical.mp3`  |
+| `EPIC`       | `audio_library/epic.mp3`       |
+| `EERIE`      | `audio_library/eerie.mp3`      |
 
 If no matching file is found, the app plays voice narration only.
 
@@ -77,13 +77,13 @@ If no matching file is found, the app plays voice narration only.
 
 ## Tech Stack
 
-| Component | Technology |
-|---|---|
-| Vision LLM | Google Gemini 2.5 Flash (`google-generativeai`) |
-| Text LLM | Groq API · `llama-3.3-70b-versatile` |
-| Text-to-Speech | gTTS (Google Text-to-Speech, local) |
-| Image processing | Pillow |
-| UI | Streamlit |
+| Component        | Technology                                      |
+| ---------------- | ----------------------------------------------- |
+| Vision LLM       | Google Gemini 2.5 Flash (`google-generativeai`) |
+| Text LLM         | Groq API · `llama-3.3-70b-versatile`            |
+| Text-to-Speech   | gTTS (Google Text-to-Speech, local)             |
+| Image processing | Pillow                                          |
+| UI               | Streamlit                                       |
 
 ---
 
