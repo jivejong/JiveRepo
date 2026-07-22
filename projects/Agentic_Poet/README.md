@@ -80,7 +80,7 @@ If no matching file is found, the app plays voice narration only.
 | Component        | Technology                                      |
 | ---------------- | ----------------------------------------------- |
 | Vision LLM       | Google Gemini 2.5 Flash (`google-generativeai`) |
-| Text LLM         | Groq API · `llama-3.3-70b-versatile`            |
+| Text LLM         | Groq API · `qwen/qwen3.6-27b`                   |
 | Text-to-Speech   | gTTS (Google Text-to-Speech, local)             |
 | Image processing | Pillow                                          |
 | UI               | Streamlit                                       |
