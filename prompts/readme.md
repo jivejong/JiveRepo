@@ -45,6 +45,19 @@ Four forms of practice, two editions each:
 
 **`chat/`** edition reasons about your code without executing it — portable, honest about its limits, and puts you as the final checker. **`code/`** edition runs inside Claude Code with a runtime; here the runtime is the authority, not the AI.
 
+### [`dev_workflow/`](./dev_workflow/)
+
+A six-stage coding pipeline built from separate, single-purpose system prompts — **Design → {Coder, Tester} → Linter → Reviewer → Human**, plus a Documenter that runs once at the end. Not six assistants sharing a topic; one pipeline with a deliberate seam down the middle:
+
+- **Design/Architect** — turns a request into a **Spec Doc**, the single artifact Coder and Tester each act on; defines what correct looks like, not the build
+- **Coder** — implements the spec and only the spec; never sees the tests while writing
+- **Tester** — writes tests from the same spec, in parallel, **without ever reading the code**; on failure, attributes fault (code / test / spec) without ruling on it
+- **Linter** — the semantic layer beneath real tooling: dead branches, swallowed exceptions, misleading names — never what a real linter already caught
+- **Reviewer** — the only stage that sees spec, code, and tests together; catches Coder/Tester divergence and recommends one of four targets (Ship / Fix Code / Fix Test / Fix Spec), advisory only
+- **Documenter** — runs once after the human decides to ship; describes what actually shipped, surfacing known gaps rather than burying them
+
+The split is the point: a single agent silently reconciles its own ambiguities, whereas Coder and Tester working independently from one spec turn that hidden reconciliation into a **visible divergence a human can catch**. No stage picks a gate outcome — the verdict always returns to the person in the chair.
+
 ### [`training/`](./training/)
 
 Partners for learning a new domain, structured as a pipeline with typed handoffs that mirrors the ML lifecycle in name and spirit:
@@ -101,7 +114,7 @@ These prompts cover physical, energetic, psychological, and relational ecosystem
 
 ## The shared failure mode
 
-Every prompt in this repository is fighting the same underlying pull at a different specific moment: **the AI quietly doing the cognitive work the human was supposed to do.** In `thinking/`, that's synthesis converging into a recommendation. In `codeDojo/`, that's writing the fix instead of marking where to look. In `training/`, that's pre-chewing the topic instead of mapping transfer. In `writing/`, that's taking over the wheel. In `healthy-ai/`, that's becoming the dependency instead of preventing it.
+Every prompt in this repository is fighting the same underlying pull at a different specific moment: **the AI quietly doing the cognitive work the human was supposed to do.** In `thinking/`, that's synthesis converging into a recommendation. In `codeDojo/`, that's writing the fix instead of marking where to look. In `dev_workflow/`, that's a single agent silently reconciling a spec ambiguity instead of letting it surface as a divergence. In `training/`, that's pre-chewing the topic instead of mapping transfer. In `writing/`, that's taking over the wheel. In `healthy-ai/`, that's becoming the dependency instead of preventing it.
 
 The specific guardrails differ. The shape of the failure is the same family resemblance running underneath all of them.
 
