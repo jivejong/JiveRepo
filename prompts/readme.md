@@ -86,10 +86,15 @@ This folder contains a suite of AI prompt architectures that activate ancient, h
 These prompts cover physical, energetic, psychological, and relational ecosystems.
 
 **1. Traditional Chinese Medicine (TCM)**
+
 **2. Ayurveda & The Chakras (Yogic Science)**
+
 **3. Galenic Medicine (Classical Humors)**
+
 **4. Ilm al-Nafs (Islamic Golden Age Psychology)**
+
 **5. Ubuntu (Southern African Relational Ecology)**
+
 **6. The Medicine Wheel (Native American Multidimensional Integration)**
 
 ---
