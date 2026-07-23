@@ -1,0 +1,1290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Buffer Overflow BBS v2.0.26</title>
+
+<!-- SEO: The back end feeds the algorithm -->
+<meta name="description" content="Buffer Overflow - AI architecture research, cognitive signatures, prompt engineering frameworks, and agentic system design. White papers, video episodes, and community.">
+<meta name="keywords" content="AI architecture, prompt engineering, LLM behavioral analysis, agentic systems, Claude, Gemini, cognitive signatures, translation layer">
+<meta property="og:title" content="Buffer Overflow BBS v2.0.26">
+<meta property="og:description" content="AI architecture research and the Translation Layer framework. White papers, episodes, and community.">
+<meta property="og:type" content="website">
+
+<style>
+@font-face {
+  font-family: 'C64';
+  src: url('data:font/woff2;base64,') format('woff2');
+}
+
+:root {
+  --c64-blue: #6c5eb5;
+  --c64-light-blue: #7c70da;
+  --c64-dark-blue: #352879;
+  --c64-bg: #40318d;
+  --c64-white: #ffffff;
+  --c64-light-gray: #9f9f9f;
+  --c64-cyan: #7cc6b8;
+  --c64-green: #5cab5e;
+  --c64-yellow: #edf171;
+  --c64-orange: #d0782c;
+  --c64-red: #cb5c53;
+  --c64-brown: #6d5412;
+  --c64-pink: #b66285;
+
+  --term-green: #33ff33;
+  --term-amber: #ffb000;
+  --term-bg: #0a0a0a;
+  --term-dim: #1a3a1a;
+
+  --scanline-opacity: 0.06;
+  --glow-spread: 8px;
+  --crt-curve: 2px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+
+body {
+  font-family: 'Courier New', 'Lucida Console', monospace;
+  font-size: 16px;
+  color: var(--term-green);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* CRT monitor frame */
+#crt-frame {
+  position: relative;
+  width: min(96vw, 860px);
+  height: min(90vh, 640px);
+  background: #1a1a1a;
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow:
+    inset 0 0 60px rgba(0,0,0,0.8),
+    0 0 20px rgba(0,0,0,0.9),
+    0 4px 20px rgba(0,0,0,0.5);
+}
+
+#crt-frame::before {
+  content: '';
+  position: absolute;
+  top: 8px; left: 8px; right: 8px; bottom: 8px;
+  border: 2px solid #2a2a2a;
+  border-radius: 14px;
+  pointer-events: none;
+}
+
+/* Screen area */
+#screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--term-bg);
+  border-radius: var(--crt-curve);
+  overflow: hidden;
+  cursor: none;
+}
+
+/* Scanlines */
+#screen::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,var(--scanline-opacity)) 2px,
+    rgba(0,0,0,var(--scanline-opacity)) 4px
+  );
+  pointer-events: none;
+  z-index: 100;
+}
+
+/* Phosphor glow */
+#screen::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  box-shadow: inset 0 0 80px rgba(51,255,51,0.03);
+  pointer-events: none;
+  z-index: 101;
+}
+
+/* Content area */
+#terminal {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 20px 24px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 1;
+  scrollbar-width: none;
+}
+#terminal::-webkit-scrollbar { display: none; }
+
+/* Phase containers */
+.phase { display: none; }
+.phase.active { display: block; height: 100%; }
+
+/* Text styles */
+.line {
+  line-height: 1.6;
+  white-space: pre;
+  min-height: 1.6em;
+  text-shadow: 0 0 var(--glow-spread) rgba(51,255,51,0.4);
+}
+
+.cyan { color: var(--c64-cyan); text-shadow: 0 0 var(--glow-spread) rgba(124,198,184,0.4); }
+.yellow { color: var(--c64-yellow); text-shadow: 0 0 var(--glow-spread) rgba(237,241,113,0.4); }
+.green { color: var(--term-green); }
+.amber { color: var(--term-amber); text-shadow: 0 0 var(--glow-spread) rgba(255,176,0,0.4); }
+.red { color: var(--c64-red); text-shadow: 0 0 var(--glow-spread) rgba(203,92,83,0.4); }
+.white { color: var(--c64-white); text-shadow: 0 0 var(--glow-spread) rgba(255,255,255,0.3); }
+.pink { color: var(--c64-pink); text-shadow: 0 0 var(--glow-spread) rgba(182,98,133,0.4); }
+.dim { color: #1a5a1a; text-shadow: none; }
+.blink { animation: blink 1s step-end infinite; }
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Cursor */
+.cursor::after {
+  content: '\2588';
+  animation: blink 0.6s step-end infinite;
+}
+
+/* Crack intro specific */
+#crack-phase {
+  display: none;
+  height: 100%;
+  flex-direction: column;
+}
+#crack-phase.active {
+  display: flex;
+}
+
+#crack-header {
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--c64-dark-blue);
+}
+
+#crack-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 24px;
+  background: var(--term-bg);
+}
+
+#crack-logo {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+#crack-message {
+  text-align: center;
+  margin-top: 16px;
+}
+
+/* Scroll text bar at bottom of crack intro */
+#scroll-bar {
+  width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  padding: 8px 0;
+  border-top: 1px solid var(--c64-dark-blue);
+  background: rgba(0,0,0,0.4);
+}
+
+#scroll-text {
+  display: inline-block;
+  color: var(--c64-yellow);
+  text-shadow: 0 0 6px rgba(237,241,113,0.5);
+  animation: scroll-left 45s linear infinite;
+  font-size: 14px;
+  padding-left: 100%;
+}
+
+@keyframes scroll-left {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
+}
+
+/* Rainbow bar */
+#rainbow-bar {
+  height: 4px;
+  background: linear-gradient(90deg,
+    var(--c64-red), var(--c64-orange), var(--c64-yellow),
+    var(--c64-green), var(--c64-cyan), var(--c64-light-blue),
+    var(--c64-pink), var(--c64-red)
+  );
+  background-size: 200% 100%;
+  animation: rainbow-shift 3s linear infinite;
+}
+
+@keyframes rainbow-shift {
+  0%   { background-position: 0% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Stars */
+.star {
+  position: absolute;
+  color: var(--c64-yellow);
+  font-size: 14px;
+  animation: twinkle 1.5s ease-in-out infinite alternate;
+  text-shadow: 0 0 6px rgba(237,241,113,0.6);
+}
+@keyframes twinkle {
+  0% { opacity: 0.3; }
+  100% { opacity: 1; }
+}
+
+/* Puzzle phase */
+#puzzle-input-line {
+  display: flex;
+  align-items: center;
+}
+#puzzle-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--term-green);
+  font-family: inherit;
+  font-size: inherit;
+  text-shadow: 0 0 var(--glow-spread) rgba(51,255,51,0.4);
+  width: 120px;
+  caret-color: var(--term-green);
+}
+
+/* Main menu */
+#menu-phase .menu-item {
+  padding: 2px 0;
+  transition: none;
+}
+
+#menu-phase .menu-item.highlight {
+  background: var(--term-green);
+  color: var(--term-bg);
+  text-shadow: none;
+}
+
+/* Mouse warning overlay */
+#mouse-warning {
+  display: none;
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.92);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 40px;
+  text-align: center;
+}
+
+#mouse-warning.visible {
+  display: flex;
+}
+
+/* Power LED */
+#power-led {
+  position: absolute;
+  bottom: 6px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: #555;
+  letter-spacing: 1px;
+}
+#power-led::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #33ff33;
+  box-shadow: 0 0 4px #33ff33;
+}
+
+/* Mobile block */
+#mobile-block {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: #000;
+  z-index: 9999;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  font-family: 'Courier New', monospace;
+  color: var(--term-green);
+  text-align: center;
+}
+
+@media (max-width: 600px), (hover: none) and (pointer: coarse) {
+  #mobile-block { display: flex; }
+  #crt-frame { display: none; }
+}
+
+/* Flicker on boot */
+@keyframes flicker-on {
+  0%   { opacity: 0; filter: brightness(0); }
+  10%  { opacity: 1; filter: brightness(3); }
+  12%  { opacity: 0.8; filter: brightness(0.5); }
+  20%  { opacity: 1; filter: brightness(1.5); }
+  25%  { opacity: 0.9; filter: brightness(0.8); }
+  40%  { opacity: 1; filter: brightness(1); }
+  100% { opacity: 1; filter: brightness(1); }
+}
+
+.flicker-on {
+  animation: flicker-on 1.2s ease-out forwards;
+}
+</style>
+</head>
+<body>
+
+<!-- Mobile block -->
+<div id="mobile-block">
+  <div>
+    <div class="line white" style="text-shadow: 0 0 8px rgba(255,255,255,0.3);">SYS 64738</div>
+    <br>
+    <div class="line" style="text-shadow: 0 0 8px rgba(51,255,51,0.4);">THIS EXPERIENCE REQUIRES</div>
+    <div class="line" style="text-shadow: 0 0 8px rgba(51,255,51,0.4);">A REAL KEYBOARD.</div>
+    <br>
+    <div class="line" style="text-shadow: 0 0 8px rgba(51,255,51,0.4);">COME BACK WHEN YOU'RE</div>
+    <div class="line" style="text-shadow: 0 0 8px rgba(51,255,51,0.4);">AT A PROPER MACHINE.</div>
+    <br>
+    <div style="margin: 20px 0; border-top: 1px solid #1a5a1a; padding-top: 16px;">
+      <div class="line dim" style="color: #1a5a1a; margin-bottom: 12px;">In the meantime:</div>
+      <div style="margin: 8px 0;"><a href="#youtube" style="color: var(--term-green); text-decoration: none; text-shadow: 0 0 6px rgba(51,255,51,0.3); font-family: inherit; font-size: 15px;">[V] Videos</a></div>
+      <div style="margin: 8px 0;"><a href="#linkedin" style="color: var(--term-green); text-decoration: none; text-shadow: 0 0 6px rgba(51,255,51,0.3); font-family: inherit; font-size: 15px;">[L] LinkedIn</a></div>
+    </div>
+    <br>
+    <div class="line dim" style="color: #1a5a1a;">- THE SYSOP</div>
+  </div>
+</div>
+
+<!-- CRT Monitor -->
+<div id="crt-frame">
+  <div id="screen" class="flicker-on">
+
+    <!-- Mouse warning -->
+    <div id="mouse-warning">
+      <div class="line amber" style="font-size: 14px;">MOUSE INPUT DETECTED</div>
+      <br>
+      <div class="line" style="font-size: 14px;">This is a BBS.</div>
+      <div class="line" style="font-size: 14px;">We use keyboards here.</div>
+      <br>
+      <div class="line dim" style="font-size: 12px;">Mouse support indicates you may have</div>
+      <div class="line dim" style="font-size: 12px;">joined computing after 1995.</div>
+      <div class="line dim" style="font-size: 12px;">We don't judge. Much.</div>
+      <br>
+      <div class="line yellow" style="font-size: 14px;">Press any key to continue.</div>
+    </div>
+
+    <!-- PHASE 1: Boot sequence -->
+    <div id="boot-phase" class="phase">
+      <div id="boot-lines"></div>
+    </div>
+
+    <!-- PHASE 2: Keyboard / Mouse selection -->
+    <div id="input-phase" class="phase">
+      <div id="input-content"></div>
+    </div>
+
+    <!-- PHASE 3: Crack intro -->
+    <div id="crack-phase" class="phase">
+      <div id="rainbow-bar"></div>
+      <div id="crack-header">
+        <div class="line cyan" style="text-align:center; font-size: 13px;">
+          &#9733; B.O.C.S. &#9733; BUFFER OVERFLOW CRACKING SERVICE &#9733; EST. 1987 &#9733;
+        </div>
+      </div>
+      <div id="crack-body">
+        <div id="crack-stars"></div>
+        <div id="crack-logo">
+          <pre class="cyan" style="font-size: 11px; line-height: 1.2; text-shadow: 0 0 10px rgba(124,198,184,0.5);"></pre>
+        </div>
+        <div id="crack-message">
+          <div class="line yellow">ANOTHER ONE BITES THE DUST</div>
+          <div class="line white" style="font-size: 13px;">CRACKED BY: THE TRANSLATION LAYER</div>
+          <div class="line dim" style="font-size: 12px;">FOR EDUCATIONAL PURPOSES ONLY</div>
+          <div class="line dim" style="font-size: 12px;">...OBVIOUSLY</div>
+          <br>
+          <div class="line green blink" style="font-size: 13px;">PRESS ANY KEY TO CONTINUE</div>
+        </div>
+      </div>
+      <div id="scroll-bar">
+        <div id="scroll-text"></div>
+      </div>
+      <div id="rainbow-bar"></div>
+    </div>
+
+    <!-- PHASE 4: SYS 64738 puzzle -->
+    <div id="puzzle-phase" class="phase">
+      <div id="puzzle-content" style="height:100%;overflow-y:auto;scrollbar-width:none;"></div>
+    </div>
+
+    <!-- PHASE 5: Main menu -->
+    <div id="menu-phase" class="phase">
+      <div id="menu-content"></div>
+    </div>
+
+    <!-- Terminal (used for sub-pages later) -->
+    <div id="terminal" class="phase"></div>
+
+  </div>
+  <div id="power-led">POWER</div>
+</div>
+
+<script>
+// ============================================================
+// BUFFER OVERFLOW BBS - Main Shell
+// Hand-rolled. No frameworks. No dependencies. No React.
+// One React module costs more than this entire month.
+// ============================================================
+
+const BBS = {
+  currentPhase: null,
+  audioCtx: null,
+  beepsEnabled: true,
+  clueLevel: 0,
+  maxClues: 3,
+  puzzleAttempts: 0,
+  gaveAnswer: false,
+};
+
+// ---- POST BEEP AUDIO ----
+function initAudio() {
+  if (!BBS.audioCtx) {
+    BBS.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+function postBeep(freq, duration, volume) {
+  if (!BBS.beepsEnabled || !BBS.audioCtx) return;
+  const ctx = BBS.audioCtx;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(freq, ctx.currentTime);
+  gain.gain.setValueAtTime(volume || 0.08, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + duration);
+}
+
+function bootBeep() {
+  postBeep(1000, 0.2, 0.06);
+}
+
+function successBeep() {
+  postBeep(800, 0.1, 0.05);
+  setTimeout(() => postBeep(1200, 0.15, 0.05), 120);
+}
+
+function errorBeep() {
+  postBeep(200, 0.4, 0.07);
+}
+
+function warningBeep() {
+  postBeep(600, 0.12, 0.05);
+  setTimeout(() => postBeep(600, 0.12, 0.05), 180);
+}
+
+// ---- SID-STYLE MUSIC ----
+let sidInterval = null;
+
+function startSIDMusic() {
+  if (!BBS.audioCtx) return;
+  const ctx = BBS.audioCtx;
+
+  // Simple arpeggiated SID-style pattern
+  const notes = [
+    131, 165, 196, 262, 196, 165,  // C3 E3 G3 C4 G3 E3
+    147, 175, 220, 294, 220, 175,  // D3 F3 A3 D4 A3 F3
+    131, 165, 196, 262, 330, 262,  // C3 E3 G3 C4 E4 C4
+    110, 139, 165, 220, 165, 139,  // A2 C#3 E3 A3 E3 C#3
+  ];
+
+  let noteIdx = 0;
+  const tempo = 120;
+
+  sidInterval = setInterval(() => {
+    if (!BBS.beepsEnabled) return;
+    const freq = notes[noteIdx % notes.length];
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+
+    // Pulse width modulation feel
+    const osc2 = ctx.createOscillator();
+    osc2.type = 'square';
+    osc2.frequency.setValueAtTime(freq * 1.002, ctx.currentTime);
+
+    gain.gain.setValueAtTime(0.03, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+
+    osc.connect(gain);
+    osc2.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(ctx.currentTime);
+    osc2.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.13);
+    osc2.stop(ctx.currentTime + 0.13);
+
+    noteIdx++;
+  }, tempo);
+}
+
+function stopSIDMusic() {
+  if (sidInterval) {
+    clearInterval(sidInterval);
+    sidInterval = null;
+  }
+}
+
+// ---- UTILITY ----
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+function setPhase(id) {
+  document.querySelectorAll('.phase').forEach(p => p.classList.remove('active'));
+  const el = document.getElementById(id);
+  if (el) {
+    el.classList.add('active');
+    BBS.currentPhase = id;
+  }
+}
+
+async function typeLine(container, text, className, delay) {
+  const div = document.createElement('div');
+  div.className = 'line ' + (className || '');
+  container.appendChild(div);
+  for (let i = 0; i < text.length; i++) {
+    div.textContent += text[i];
+    if (delay) await sleep(delay);
+  }
+  container.scrollTop = container.scrollHeight;
+  return div;
+}
+
+function addLine(container, text, className) {
+  const div = document.createElement('div');
+  div.className = 'line ' + (className || '');
+  div.textContent = text;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  return div;
+}
+
+function addHTML(container, html, className) {
+  const div = document.createElement('div');
+  div.className = 'line ' + (className || '');
+  div.innerHTML = html;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  return div;
+}
+
+// ---- PHASE 1: BOOT SEQUENCE ----
+async function runBoot() {
+  setPhase('boot-phase');
+  const c = document.getElementById('boot-lines');
+  c.innerHTML = '';
+
+  initAudio();
+
+  await sleep(600);
+  await typeLine(c, '**** BUFFER OVERFLOW 64 BASIC V2 ****', 'cyan', 18);
+  await sleep(200);
+  await typeLine(c, '', '', 0);
+  await typeLine(c, ' 64K RAM SYSTEM  38911 BASIC BYTES FREE', 'white', 14);
+  await sleep(300);
+  await typeLine(c, '', '', 0);
+  await typeLine(c, 'READY.', 'green', 30);
+  await sleep(400);
+
+  // Simulate loading
+  await typeLine(c, 'LOAD "*",8,1', 'white', 40);
+  await sleep(300);
+  addLine(c, '', '');
+  await typeLine(c, 'SEARCHING FOR *', 'green', 25);
+  await sleep(500);
+  await typeLine(c, 'LOADING', 'green', 25);
+  await sleep(800);
+  await typeLine(c, 'READY.', 'green', 30);
+  await sleep(300);
+  await typeLine(c, 'RUN', 'white', 60);
+  await sleep(500);
+
+  bootBeep();
+
+  // Fake system check
+  addLine(c, '', '');
+  await typeLine(c, 'INITIALIZING BUFFER OVERFLOW BBS...', 'amber', 20);
+  await sleep(200);
+
+  const checks = [
+    ['MODEM INIT', 'OK - 56K MAXIMUM EFFICIENCY'],
+    ['MEMORY CHECK', 'OK - 64K (MORE THAN ENOUGH)'],
+    ['NODE CHECK', 'OK - 4 NODES ACTIVE'],
+    ['SYSOP STATUS', 'AWAKE (BARELY)'],
+    ['MOUSE DRIVER', 'NOT FOUND (GOOD)'],
+    ['REACT MODULES', 'NONE DETECTED (EXCELLENT)'],
+  ];
+
+  for (const [label, result] of checks) {
+    const line = await typeLine(c, `  ${label}...`, 'dim', 15);
+    await sleep(200 + Math.random() * 300);
+    line.textContent = `  ${label}... ${result}`;
+    line.className = 'line green';
+    postBeep(800 + Math.random() * 400, 0.05, 0.03);
+  }
+
+  await sleep(400);
+  addLine(c, '', '');
+  await typeLine(c, 'SYSTEM READY.', 'green', 25);
+  await sleep(200);
+  addLine(c, '', '');
+  successBeep();
+  const prompt = addLine(c, 'Press any key to continue...', 'blink amber');
+
+  return new Promise(resolve => {
+    function handler(e) {
+      document.removeEventListener('keydown', handler);
+      prompt.remove();
+      resolve();
+    }
+    document.addEventListener('keydown', handler);
+  });
+}
+
+// ---- PHASE 2: INPUT SELECTION (K/M) ----
+async function runInputSelection() {
+  setPhase('input-phase');
+  const c = document.getElementById('input-content');
+  c.innerHTML = '';
+  c.style.padding = '20px 24px';
+
+  addLine(c, '', '');
+  addLine(c, 'BUFFER OVERFLOW BBS v2.0.26', 'cyan');
+  addLine(c, '', '');
+  addLine(c, '[K] Keyboard Navigation (Recommended)', 'green');
+  addLine(c, '[M] Enable Mouse Support', 'dim');
+  addLine(c, '', '');
+  addLine(c, 'WARNING: Mouse support indicates you may', 'dim');
+  addLine(c, 'have joined computing after 1995.', 'dim');
+  addLine(c, 'We don\'t judge. Much.', 'dim');
+  addLine(c, '', '');
+  const prompt = addLine(c, 'Your choice? _', 'cursor amber');
+
+  return new Promise(resolve => {
+    function handler(e) {
+      const key = e.key.toUpperCase();
+      if (key === 'K' || key === 'M') {
+        document.removeEventListener('keydown', handler);
+        if (key === 'K') {
+          postBeep(1000, 0.1, 0.05);
+          resolve('keyboard');
+        } else {
+          warningBeep();
+          resolve('mouse');
+        }
+      }
+    }
+    document.addEventListener('keydown', handler);
+  });
+}
+
+// ---- PHASE 3: CRACK INTRO ----
+async function runCrackIntro() {
+  setPhase('crack-phase');
+
+  startSIDMusic();
+
+  // Setup stars
+  const starsContainer = document.getElementById('crack-stars');
+  starsContainer.innerHTML = '';
+  const starChars = ['*', '+', '.', '*'];
+  for (let i = 0; i < 12; i++) {
+    const star = document.createElement('span');
+    star.className = 'star';
+    star.textContent = starChars[i % starChars.length];
+    star.style.left = (5 + Math.random() * 90) + '%';
+    star.style.top = (5 + Math.random() * 80) + '%';
+    star.style.animationDelay = (Math.random() * 2) + 's';
+    starsContainer.appendChild(star);
+  }
+
+  // ASCII logo
+  const logo = document.querySelector('#crack-logo pre');
+  logo.textContent = [
+    '  ____  _   _ _____ _____ _____ ____  ',
+    ' | __ )| | | |  ___|  ___| ____|  _ \\ ',
+    ' |  _ \\| | | | |_  | |_  |  _| | |_) |',
+    ' | |_) | |_| |  _| |  _| | |___|  _ < ',
+    ' |____/ \\___/|_|   |_|   |_____|_| \\_\\',
+    '                                        ',
+    '   O V E R F L O W       B B S         ',
+  ].join('\n');
+
+  // Scroll text
+  const scrollText = document.getElementById('scroll-text');
+  scrollText.textContent = [
+    'GREETINGS TO: SYS 64738 ...',
+    'SHOUTOUT TO ALL THE SYSOPS STILL HOLDING IT DOWN ...',
+    'THIS ONE GOES OUT TO THE KID WHO READ THE PROGRAMMER\'S REFERENCE GUIDE BY FLASHLIGHT ...',
+    'TANG AND TWINKIES FOREVER ...',
+    'NO MOUSE SUPPORT WAS HARMED IN THE MAKING OF THIS INTRO ...',
+    'ONE REACT MODULE COSTS MORE THAN THIS ENTIRE MONTH ...',
+    'THE SYSOP NEVER WASTED A CYCLE ...',
+    'CONSTRAINT AS CURRICULUM ...',
+    'PRESS ANY KEY TO CONTINUE OR SYS 64738 TO RESET YOUR LIFE CHOICES ...',
+    '   ...   ',
+  ].join('     ');
+
+  return new Promise(resolve => {
+    function handler(e) {
+      document.removeEventListener('keydown', handler);
+      stopSIDMusic();
+      successBeep();
+      resolve();
+    }
+    document.addEventListener('keydown', handler);
+  });
+}
+
+// ---- PHASE 4: SYS 64738 PUZZLE ----
+async function runPuzzle() {
+  setPhase('puzzle-phase');
+  const c = document.getElementById('puzzle-content');
+  c.innerHTML = '';
+  c.style.padding = '20px 24px';
+
+  addLine(c, '', '');
+  addLine(c, 'BUFFER OVERFLOW', 'cyan');
+  addLine(c, 'Interactive Fiction - Release 64 / Serial No. 870815', 'dim');
+  addLine(c, 'Copyright (c) 1987 The Translation Layer.', 'dim');
+  addLine(c, '', '');
+  addLine(c, 'Server Room', 'white');
+  addLine(c, 'You are standing in a dimly lit server room.', 'green');
+  addLine(c, 'Racks of equipment hum quietly. A single', 'green');
+  addLine(c, 'terminal glows in the corner, its cursor', 'green');
+  addLine(c, 'blinking patiently. Above it, a faded label', 'green');
+  addLine(c, 'reads "SYSOP ACCESS ONLY."', 'green');
+  addLine(c, '', '');
+  addLine(c, 'The terminal appears to be waiting for a', 'green');
+  addLine(c, 'system command. A soft reset, perhaps.', 'green');
+  addLine(c, '', '');
+  addLine(c, 'There is a Commodore 64 Programmer\'s', 'green');
+  addLine(c, 'Reference Guide here.', 'green');
+  addLine(c, '', '');
+
+  // Input
+  const inputLine = document.createElement('div');
+  inputLine.className = 'line';
+  inputLine.id = 'puzzle-input-line';
+  inputLine.innerHTML = '<span class="amber">&gt; </span>';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.id = 'puzzle-input';
+  input.maxLength = 40;
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  inputLine.appendChild(input);
+  c.appendChild(inputLine);
+
+  input.focus();
+
+  // Feedback area
+  const feedback = document.createElement('div');
+  feedback.id = 'puzzle-feedback';
+  c.appendChild(feedback);
+
+  // Zork-style responses for various inputs
+  const zorkResponses = {
+    'LOOK': [
+      'You are in a server room. The air is cool and',
+      'smells faintly of ozone and stale coffee.',
+      'A terminal awaits your command.',
+      'A Programmer\'s Reference Guide sits on the desk.',
+      'It is open to a page about KERNAL routines.',
+    ],
+    'LOOK TERMINAL': [
+      'The terminal is a green phosphor CRT. Classic.',
+      'The screen reads: "ENTER SYSTEM COMMAND"',
+      'It expects a SYS call. The address escapes you.',
+    ],
+    'LOOK GUIDE': [
+      'The Commodore 64 Programmer\'s Reference Guide.',
+      'Dog-eared and coffee-stained. Someone has',
+      'circled a section labeled "KERNAL RESET VECTOR"',
+      'in red pen. The address starts with 6...',
+    ],
+    'READ GUIDE': [
+      'You flip through yellowed pages.',
+      'Chapter 5: "KERNAL ROM Routines"',
+      'The reset vector entry reads:',
+      '"SYS 6____  - Cold start. Use with caution."',
+      'The last three digits are smudged with',
+      'what appears to be Tang residue.',
+    ],
+    'READ BOOK': null, // alias
+    'LOOK BOOK': null, // alias
+    'EXAMINE GUIDE': null, // alias
+    'EXAMINE BOOK': null, // alias
+    'EXAMINE TERMINAL': null, // alias → LOOK TERMINAL
+    'OPEN GUIDE': null, // alias
+    'OPEN BOOK': null, // alias
+    'HELP': [
+      'The SYSOP left a note taped to the monitor:',
+      '"If you don\'t know the command, you probably',
+      'weren\'t here in 1982. But I\'m generous today.',
+      'Try LOOK, READ GUIDE, or EXAMINE things."',
+    ],
+    'INVENTORY': [
+      'You are carrying:',
+      '  A mass of nostalgia',
+      '  Vague memories of PEEK and POKE',
+      '  A mass of unrealized potential',
+    ],
+    'N': ['You walk into a rack of servers. Ow.'],
+    'S': ['A locked door. "AUTHORIZED PERSONNEL ONLY."'],
+    'E': ['More server racks. They all look the same.'],
+    'W': ['A wall. It\'s a wall. It\'s always a wall.'],
+    'NORTH': null,
+    'SOUTH': null,
+    'EAST': null,
+    'WEST': null,
+    'XYZZY': ['Nothing happens. This isn\'t that kind of cave.'],
+    'PLUGH': ['A hollow voice says "Wrong game, friend."'],
+    'GET GUIDE': [
+      'You pick up the Reference Guide.',
+      'It falls open to page 263.',
+      '"KERNAL Jump Table... SYS 64___"',
+      'The last three digits are hidden under a',
+      'Twinkie wrapper.',
+    ],
+    'TAKE GUIDE': null,
+    'GET BOOK': null,
+    'TAKE BOOK': null,
+    'QUIT': ['The grue stirs in the shadows. Stay focused.'],
+  };
+
+  // Alias resolution
+  const aliases = {
+    'READ BOOK': 'READ GUIDE', 'LOOK BOOK': 'LOOK GUIDE',
+    'EXAMINE GUIDE': 'READ GUIDE', 'EXAMINE BOOK': 'READ GUIDE',
+    'EXAMINE TERMINAL': 'LOOK TERMINAL',
+    'OPEN GUIDE': 'READ GUIDE', 'OPEN BOOK': 'READ GUIDE',
+    'NORTH': 'N', 'SOUTH': 'S', 'EAST': 'E', 'WEST': 'W',
+    'TAKE GUIDE': 'GET GUIDE', 'GET BOOK': 'GET GUIDE', 'TAKE BOOK': 'GET GUIDE',
+  };
+
+  // Swear word filter
+  const badWords = ['FUCK', 'SHIT', 'DAMN', 'ASS', 'HELL', 'CRAP', 'BASTARD', 'BITCH'];
+
+  return new Promise(resolve => {
+    function handleKeydown(e) {
+      if (BBS.currentPhase !== 'puzzle-phase') return;
+
+      if (e.key === 'Enter') {
+        let val = input.value.trim().toUpperCase();
+        input.value = '';
+
+        if (!val) return;
+
+        BBS.puzzleAttempts++;
+
+        // Echo the command
+        addLine(c, '', '');
+        addLine(c, '> ' + val, 'amber');
+
+        // Check for the answer: SYS 64738, SYS64738, 64738
+        if (val === 'SYS 64738' || val === 'SYS64738' || val === '64738') {
+          document.removeEventListener('keydown', handleKeydown);
+          addLine(c, '', '');
+          addLine(c, 'The terminal flickers. The screen clears.', 'green');
+          addLine(c, 'A single line appears:', 'green');
+          addLine(c, '', '');
+          addLine(c, '  *** ACCESS GRANTED ***', 'cyan');
+          addLine(c, '', '');
+          addLine(c, 'The server room door clicks open.', 'green');
+          addLine(c, 'Welcome back, SYSOP.', 'green');
+          successBeep();
+          setTimeout(() => resolve(), 1200);
+          return;
+        }
+
+        // Check for profanity — Zork style
+        let handled = false;
+        if (badWords.some(w => val.includes(w))) {
+          addLine(c, '', '');
+          addLine(c, 'That is not becoming of a knight', 'yellow');
+          addLine(c, 'of your stature!', 'yellow');
+          warningBeep();
+          handled = true;
+        }
+
+        // Check for SYS with wrong address
+        if (!handled && val.startsWith('SYS')) {
+          addLine(c, '', '');
+          if (val.includes('647') || val.includes('6473')) {
+            addLine(c, 'The terminal buzzes. So close.', 'red');
+            addLine(c, 'You can almost hear the reset...', 'red');
+          } else if (val.includes('64')) {
+            addLine(c, 'The terminal beeps angrily.', 'red');
+            addLine(c, 'Wrong address. The 64 is right,', 'red');
+            addLine(c, 'but there\'s more to it than that.', 'red');
+          } else {
+            addLine(c, 'The terminal rejects the address.', 'red');
+            addLine(c, 'You need the KERNAL reset vector.', 'red');
+          }
+          errorBeep();
+          handled = true;
+        }
+
+        // Resolve aliases and check Zork responses
+        if (!handled) {
+          if (aliases[val]) val = aliases[val];
+
+          if (zorkResponses[val]) {
+            addLine(c, '', '');
+            for (const line of zorkResponses[val]) {
+              addLine(c, line, 'green');
+            }
+            postBeep(600, 0.06, 0.03);
+            handled = true;
+          }
+        }
+
+        // Catch-all for unknown commands
+        if (!handled) {
+          const unknownResponses = [
+            'I don\'t understand that command.',
+            'You can\'t do that here.',
+            'That doesn\'t seem to work.',
+            'The terminal stares at you blankly.',
+            'Nothing happens. The hum of servers continues.',
+            'I don\'t know the word "' + val.split(' ')[0].toLowerCase() + '".',
+          ];
+          addLine(c, '', '');
+          addLine(c, unknownResponses[BBS.puzzleAttempts % unknownResponses.length], 'dim');
+        }
+
+        // === UNIVERSAL 3-ATTEMPT CHECK ===
+        // Fires after ANY input, regardless of what they typed
+        if (BBS.puzzleAttempts >= 3 && !BBS.gaveAnswer) {
+          BBS.gaveAnswer = true;
+          addLine(c, '', '');
+          addLine(c, 'The SYSOP sighs audibly from somewhere', 'yellow');
+          addLine(c, 'behind the rack.', 'yellow');
+          addLine(c, '', '');
+          addLine(c, '"It\'s SYS 64738."', 'white');
+          addLine(c, '', '');
+          addLine(c, '"I watched you try three times. I can\'t', 'yellow');
+          addLine(c, 'do this anymore. Just type it."', 'yellow');
+          addLine(c, '', '');
+          addLine(c, '"SYS. Space. 64738. The Commodore 64', 'yellow');
+          addLine(c, 'soft reset. It\'s literally in the name.', 'yellow');
+          addLine(c, '64. It\'s right there. Sixty-four."', 'yellow');
+          addLine(c, '', '');
+          addLine(c, '"I\'m not mad. I\'m disappointed."', 'dim');
+          addLine(c, '', '');
+          addLine(c, 'You are likely to be eaten by a grue.', 'red');
+          warningBeep();
+        }
+
+        input.focus();
+        c.scrollTop = c.scrollHeight;
+      }
+    }
+
+    document.addEventListener('keydown', handleKeydown);
+    input.focus();
+  });
+}
+
+// ---- PHASE 5: MAIN MENU ----
+async function runMainMenu() {
+  setPhase('menu-phase');
+  const c = document.getElementById('menu-content');
+  c.innerHTML = '';
+  c.style.padding = '20px 24px';
+
+  bootBeep();
+  await sleep(300);
+
+  // Welcome message
+  addLine(c, '', '');
+  await typeLine(c, 'Welcome back, SYSOP.', 'green', 45);
+  await sleep(800);
+  addLine(c, '', '');
+  addLine(c, '', '');
+
+  addLine(c, '╔══════════════════════════════════════╗', 'cyan');
+  addLine(c, '║     BUFFER OVERFLOW BBS  v2.0.26     ║', 'cyan');
+  addLine(c, '║     Running on: Google Cloud         ║', 'cyan');
+  addLine(c, '║     Nodes: 4    Active: 1            ║', 'cyan');
+  addLine(c, '╚══════════════════════════════════════╝', 'cyan');
+  addLine(c, '', '');
+
+  const menuItems = [
+    { key: 'V', label: '[V] Videos',               url: '#videos' },
+    { key: 'R', label: '[R] Research / White Papers', url: '#papers' },
+    { key: 'L', label: '[L] LinkedIn',              url: '#linkedin' },
+    { key: 'C', label: '[C] Contact the SYSOP',    url: '#contact' },
+    { key: 'B', label: '[B] Toggle Beeps',          url: null },
+    { key: 'G', label: '[G] Goodbye',               url: null },
+  ];
+
+  for (const item of menuItems) {
+    const div = addLine(c, item.label, 'green menu-item');
+    div.dataset.key = item.key;
+  }
+
+  addLine(c, '', '');
+  const promptLine = addLine(c, 'Your choice? ', 'amber cursor');
+
+  // Keyboard handler
+  function menuHandler(e) {
+    const key = e.key.toUpperCase();
+    const item = menuItems.find(m => m.key === key);
+    if (!item) return;
+
+    postBeep(1000, 0.08, 0.04);
+
+    // Flash the selected item
+    const el = c.querySelector(`[data-key="${key}"]`);
+    if (el) {
+      el.classList.add('highlight');
+      setTimeout(() => el.classList.remove('highlight'), 200);
+    }
+
+    if (key === 'B') {
+      BBS.beepsEnabled = !BBS.beepsEnabled;
+      const status = BBS.beepsEnabled ? 'ON' : 'OFF';
+      addLine(c, `  POST beeps: ${status}`, 'dim');
+      return;
+    }
+
+    if (key === 'G') {
+      document.removeEventListener('keydown', menuHandler);
+      runGoodbye(c);
+      return;
+    }
+
+    if (key === 'V') {
+      // Placeholder: link to YouTube
+      addLine(c, '', '');
+      addLine(c, '  Opening video archive...', 'amber');
+      addLine(c, '  [YouTube link would go here]', 'dim');
+      addLine(c, '', '');
+      return;
+    }
+
+    if (key === 'R') {
+      document.removeEventListener('keydown', menuHandler);
+      runApacheDirectory();
+      return;
+    }
+
+    if (key === 'L') {
+      addLine(c, '', '');
+      addLine(c, '  Opening LinkedIn...', 'amber');
+      addLine(c, '  [LinkedIn link would go here]', 'dim');
+      addLine(c, '', '');
+      return;
+    }
+
+    if (key === 'C') {
+      document.removeEventListener('keydown', menuHandler);
+      runContact();
+      return;
+    }
+  }
+
+  document.addEventListener('keydown', menuHandler);
+}
+
+// ---- APACHE DIRECTORY (White Papers) ----
+async function runApacheDirectory() {
+  setPhase('menu-phase');
+  const c = document.getElementById('menu-content');
+  c.innerHTML = '';
+  c.style.padding = '20px 24px';
+
+  addLine(c, '', '');
+  addLine(c, 'Index of /papers', 'white');
+  addLine(c, '───────────────────────────────────────────', 'dim');
+
+  const style = 'dim';
+
+  addLine(c, '../', style);
+  addLine(c, 'md/                            18-Apr-2026  02:58    -', style);
+  addLine(c, 'pdf/                           18-Apr-2026  02:58    -', style);
+  addLine(c, '', '');
+  addLine(c, '', '');
+
+  // Expanded: show files
+  addLine(c, 'Index of /papers/md', 'white');
+  addLine(c, '───────────────────────────────────────────', 'dim');
+  addLine(c, '../', style);
+  addLine(c, 'vibe_vs_vector_v2.md           14-Mar-2026  23:47    124K', style);
+  addLine(c, 'token_bar_experiment.md        02-Apr-2026  01:23    156K', style);
+  addLine(c, 'tang_and_twinkies_ep4.md       11-Apr-2026  03:15    98K', style);
+  addLine(c, 'cognitive_signatures.md        18-Apr-2026  02:58    112K', style);
+  addLine(c, '', '');
+
+  addLine(c, 'Index of /papers/pdf', 'white');
+  addLine(c, '───────────────────────────────────────────', 'dim');
+  addLine(c, '../', style);
+  addLine(c, 'vibe_vs_vector_v2.pdf          14-Mar-2026  23:47    892K', style);
+  addLine(c, 'token_bar_experiment.pdf       02-Apr-2026  01:23    1.1M', style);
+  addLine(c, 'tang_and_twinkies_ep4.pdf      11-Apr-2026  03:15    743K', style);
+  addLine(c, 'cognitive_signatures.pdf       18-Apr-2026  02:58    967K', style);
+  addLine(c, '', '');
+  addLine(c, 'Apache/2.4.7 (Unix) Server at bufferoverflow.bbs Port 80', 'dim');
+  addLine(c, '', '');
+  addLine(c, '[M] Return to Main Menu', 'amber');
+
+  function dirHandler(e) {
+    if (e.key.toUpperCase() === 'M') {
+      document.removeEventListener('keydown', dirHandler);
+      runMainMenu();
+    }
+  }
+  document.addEventListener('keydown', dirHandler);
+}
+
+// ---- CONTACT (Pine/Elm style) ----
+async function runContact() {
+  setPhase('menu-phase');
+  const c = document.getElementById('menu-content');
+  c.innerHTML = '';
+  c.style.padding = '20px 24px';
+
+  addLine(c, '', '');
+  addLine(c, 'COMPOSE MAIL', 'white');
+  addLine(c, '────────────────────────────────', 'dim');
+  addLine(c, 'To    : sysop@bufferoverflow.bbs', 'cyan');
+  addLine(c, '', '');
+  addLine(c, 'This feature is coming soon.', 'amber');
+  addLine(c, 'The SYSOP is still wiring up SMTP.', 'dim');
+  addLine(c, '', '');
+  addLine(c, 'VERIFY YOU ARE HUMAN:', 'green');
+  addLine(c, 'Type the following command: SYS ___738', 'green');
+  addLine(c, '', '');
+  addLine(c, '[M] Return to Main Menu', 'amber');
+
+  function contactHandler(e) {
+    if (e.key.toUpperCase() === 'M') {
+      document.removeEventListener('keydown', contactHandler);
+      runMainMenu();
+    }
+  }
+  document.addEventListener('keydown', contactHandler);
+}
+
+// ---- GOODBYE ----
+async function runGoodbye(c) {
+  addLine(c, '', '');
+  addLine(c, 'Logging off BUFFER OVERFLOW BBS...', 'amber');
+  await sleep(600);
+  addLine(c, '', '');
+  addLine(c, 'NO CARRIER', 'red');
+  await sleep(500);
+  errorBeep();
+
+  // Fade to black
+  await sleep(1500);
+  document.getElementById('screen').style.transition = 'opacity 2s';
+  document.getElementById('screen').style.opacity = '0';
+}
+
+// ---- MOUSE DETECTION ----
+let mouseWarningShown = false;
+document.getElementById('screen').addEventListener('mousemove', (e) => {
+  if (mouseWarningShown) return;
+  if (BBS.currentPhase === 'menu-phase' || BBS.currentPhase === 'puzzle-phase') {
+    mouseWarningShown = true;
+    const warning = document.getElementById('mouse-warning');
+    warning.classList.add('visible');
+    warningBeep();
+
+    function dismissWarning(ev) {
+      document.removeEventListener('keydown', dismissWarning);
+      warning.classList.remove('visible');
+      // Refocus puzzle input if needed
+      const puzzleInput = document.getElementById('puzzle-input');
+      if (puzzleInput && BBS.currentPhase === 'puzzle-phase') {
+        puzzleInput.focus();
+      }
+    }
+    document.addEventListener('keydown', dismissWarning);
+  }
+});
+
+// ---- MAIN SEQUENCE ----
+async function main() {
+  await runBoot();
+  const inputChoice = await runInputSelection();
+
+  if (inputChoice === 'mouse') {
+    mouseWarningShown = true; // suppress mouse warning
+  }
+
+  await runPuzzle();
+  await runCrackIntro();
+  await runMainMenu();
+}
+
+// Start on first interaction (needed for audio context)
+let started = false;
+document.addEventListener('keydown', function starter() {
+  if (started) return;
+  started = true;
+  document.removeEventListener('keydown', starter);
+  main();
+});
+
+// Show "press any key" initially
+(function showStartPrompt() {
+  setPhase('boot-phase');
+  const c = document.getElementById('boot-lines');
+  addLine(c, '', '');
+  addLine(c, '', '');
+  addLine(c, '  BUFFER OVERFLOW BBS', 'cyan');
+  addLine(c, '', '');
+  addLine(c, '  Press any key to initialize...', 'blink amber');
+})();
+</script>
+
+</body>
+</html>
