@@ -1,0 +1,7 @@
+## Against the Gravity: A Practitioner Framework for Cognitive Resistance in AI-Assisted Practice
+
+10.5281/zenodo.21649312
+
+AI systems optimized for fluent, helpful output exert a structural pull toward cognitive closure: completing reasoning, resolving tension, and supplying answers at precisely the moments when productive difficulty would better serve the human practitioner. This paper introduces Healthy AI, a practitioner framework that operationalizes a counter-design principle: resistance at the point of cognitive takeover. Rather than offering a general philosophy of mindful AI use, the framework provides a modular, layer-specific architecture of guardrails with each tool defined as much by what it refuses to do as by what it does. The framework maps AI takeover signatures across a six-layer cognitive stack and extracts five transferable design techniques for building cognitive resistance into any AI-assisted practice. The Code Dojo is examined as the framework's most fully realized implementation, and the domain where its core design logic is sharpest: a programming practice environment in which, in its execution edition, the runtime rather than the AI holds final authority. This is a framework paper; efficacy claims await validation against real practitioner transcripts. The contribution is architectural: a set of design techniques, a taxonomy of failure modes, and a replicable specification for building AI tools that expand what the human can do rather than replacing the doing.
+
+Full paper at [Zenodo](https://zenodo.org/records/21649312)
