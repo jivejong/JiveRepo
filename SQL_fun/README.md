@@ -14,12 +14,12 @@ and stored procedures/functions.
 These are one-shot `SELECT` statements — run the whole file and read the
 result set as a picture, one row of the grid per output row.
 
-| File | Engine | What it draws |
-|---|---|---|
-| [circle_pg.sql](circle_pg.sql) | PostgreSQL | A filled circle, using the circle equation `x^2 + y^2 = r^2` over a recursive CTE grid. |
-| [mandelbrot._pgsql](mandelbrot._pgsql) | PostgreSQL | The Mandelbrot set, iterating `Z = Z^2 + C` per pixel via a recursive CTE and shading by escape speed. Note the non-standard `._pgsql` file extension — the contents are plain PostgreSQL. |
-| [sine_wave_pg.sql](sine_wave_pg.sql) | PostgreSQL | An animated-looking sine wave rendered with block characters (`█ ▒ ░`). |
-| [fireworks_pg.sql](fireworks_pg.sql) | PostgreSQL | Three overlapping firework bursts, each a ring carved into radiating spikes via `ATAN2` + `SIN`/`COS`, plus background sparkle. |
+| File                                   | Engine     | What it draws                                                                                                                                                                              |
+| -------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [circle_pg.sql](circle_pg.sql)         | PostgreSQL | A filled circle, using the circle equation `x^2 + y^2 = r^2` over a recursive CTE grid.                                                                                                    |
+| [mandelbrot_pg.sql](mandelbrot_pg.sql) | PostgreSQL | The Mandelbrot set, iterating `Z = Z^2 + C` per pixel via a recursive CTE and shading by escape speed. Note the non-standard `._pgsql` file extension — the contents are plain PostgreSQL. |
+| [sine_wave_pg.sql](sine_wave_pg.sql)   | PostgreSQL | An animated-looking sine wave rendered with block characters (`█ ▒ ░`).                                                                                                                    |
+| [fireworks_pg.sql](fireworks_pg.sql)   | PostgreSQL | Three overlapping firework bursts, each a ring carved into radiating spikes via `ATAN2` + `SIN`/`COS`, plus background sparkle.                                                            |
 
 ## Games (stateful, multi-statement)
 
@@ -27,10 +27,10 @@ These create tables/views/procedures first, then you drive the game by
 calling a procedure repeatedly. Each pair below is the same game implemented
 twice — once per SQL dialect.
 
-| Game | PostgreSQL | SQL Server |
-|---|---|---|
+| Game                                           | PostgreSQL                               | SQL Server                               |
+| ---------------------------------------------- | ---------------------------------------- | ---------------------------------------- |
 | Minesweeper (9x9, 10 mines, flood-fill reveal) | [minesweeper_pg.sql](minesweeper_pg.sql) | [minesweeper_ms.sql](minesweeper_ms.sql) |
-| Battleship (10x10 board, Carrier + Submarine) | [battleship_pg.sql](battleship_pg.sql) | [battleship_ms.sql](battleship_ms.sql) |
+| Battleship (10x10 board, Carrier + Submarine)  | [battleship_pg.sql](battleship_pg.sql)   | [battleship_ms.sql](battleship_ms.sql)   |
 
 ### Minesweeper
 
