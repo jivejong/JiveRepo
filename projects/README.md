@@ -69,7 +69,3 @@ The white papers section renders as an Apache `Index of /papers` directory listi
 **Documented where it's non-obvious.** [`Chord_Charts/`](./Chord_Charts/README.md) carries a full setup README because assembling it is genuinely multi-step; `BBS_Website/` does not, because opening the file is the whole procedure.
 
 **Secrets stay out.** The chart tagger reads `ANTHROPIC_API_KEY` from the environment at invocation — never committed, never in a config file.
-
----
-
-> **Note:** the [root README](../README.md) still describes this folder as "four self-contained Streamlit agentic AI apps." That's now [`/agentic_AI`](../agentic_AI/); the pointer needs updating.
