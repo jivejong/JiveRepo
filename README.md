@@ -10,7 +10,19 @@ This is the public archive of my work across technical research, AI/ML experimen
 
 ### [`/projects`](./projects)
 
-AI/ML experiments and code. Functional implementations with documented architectural decisions — not just what it does, but why it was built the way it was. Currently four self-contained [Streamlit](https://streamlit.io/) agentic AI apps, each demonstrating a distinct pattern: a compound multimodal pipeline (Agentic Poet), an adversarial multi-agent negotiation with RAG (Agentic Snacks), a single-agent classifier (NoCap), and a voice-driven state machine with OpenTelemetry observability (Spouse Approval). See the [projects README](./projects/README.md).
+Experiments and code. Mostly stuff in work. Functional implementations with documented architectural decisions — not just what it does, but why it was built the way it was.
+
+### [`/agentic_AI`](./agentic_AI)
+
+Four self-contained [Streamlit](https://streamlit.io/) apps, each demonstrating a distinct agentic AI pattern: a compound multimodal pipeline (Agentic Poet), an adversarial multi-agent negotiation with RAG (Agentic Snacks), a single-agent classifier (NoCap), and a voice-driven state machine with OpenTelemetry observability (Spouse Approval). See the [agentic_AI README](./agentic_AI/README.md).
+
+### [`/SQL_fun`](./SQL_fun)
+
+ASCII art and small games written entirely in SQL — recursive CTEs rendering a circle, a Mandelbrot set, a sine wave, and fireworks, plus stateful Minesweeper and Battleship played through stored procedures, each implemented in both PostgreSQL and T-SQL. See the [SQL_fun README](./SQL_fun/README.md).
+
+### [`/shell_scripts`](./shell_scripts)
+
+Standalone operations scripts: Bash tooling for database CRUD across three engines, rolling backups, and prompt-injection scanning; PowerShell tooling for Windows duplicate-file/folder cleanup. See the [shell_scripts README](./shell_scripts/README.md).
 
 ### [`/prompts`](./prompts)
 
