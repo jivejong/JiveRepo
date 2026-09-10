@@ -40,7 +40,7 @@ Long-form writing in three formats: `articles/` (pieces for LinkedIn and other p
 
 ## Background
 
-30 years in IT. The technical work spans NetWare to cloud, PC field work to enterprise architecture, Web and ETL development to AI implementation strategy.
+30+ years in professional IT, and tamer of computers for even longer. Old enough to remember the sound of a modem's handshake, young enough to still ship fast, and wise enough to avoid breaking things. The technical work spans NetWare to cloud, PC field work to enterprise architecture, Web and ETL development to AI implementation strategy. I have the coffee and aspirin bills to prove it.
 
 ---
 
