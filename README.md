@@ -2,11 +2,15 @@
 
 **Jive Jong** | IT veteran. Content creator. Musician. Northern Virginia.
 
-This is the public archive of my work across technical research, AI/ML experimentation, content creation, and long-form writing. If you found this from LinkedIn, Buffer Overflow, or Translation Layer — this is home base.
+This is the public archive of my work across software engineering, technical research, AI/ML experimentation, content creation, and long-form writing. If you found this from LinkedIn, Buffer Overflow, or Translation Layer — this is home base.
 
 ---
 
 ## What's Here
+
+### [`/SpringfieldTalentPipeline`](./SpringfieldTalentPipeline)
+
+A Spring Boot REST API modeling a full recruiting pipeline (ATS) — sourcing, ranked matching, stage tracking, AI candidate scoring, structured mock interviews, and salary offers — backed by Simpsons character data instead of real candidate PII. Java 21, Postgres full-text search, a Spring Statemachine that actually enforces its transition table, LLM output parsed against a JSON schema rather than scraped from prose, and offer accept/decline decided arithmetically against BLS national wage data. A React front end demonstrates the whole flow end to end, verified by driving a real browser rather than assuming a build implies a working page. Built in phases against real infrastructure — the live source API, real Postgres, real model calls — with the places those systems contradicted the design written up alongside the code they explain. See the [project README](./SpringfieldTalentPipeline/README.md).
 
 ### [`/projects`](./projects)
 

@@ -10,3 +10,10 @@
 CREATE INDEX IF NOT EXISTS idx_candidate_occupation_fts
     ON candidate
     USING GIN (to_tsvector('english', coalesce(occupation, '')));
+
+-- Full-text index backing occupation matching for offers, mirroring the candidate index above.
+-- The expression must stay identical to the one in OccupationWageRepository or Postgres will not
+-- use it.
+CREATE INDEX IF NOT EXISTS idx_occupation_wage_title_fts
+    ON occupation_wage
+    USING GIN (to_tsvector('english', occ_title));

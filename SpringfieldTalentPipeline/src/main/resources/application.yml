@@ -32,6 +32,9 @@ spring:
     init:
       # Defaults to "embedded", which would skip data.sql entirely against Postgres.
       mode: always
+      # Naming these explicitly replaces the default classpath:data.sql, so data.sql must be listed
+      # too. The wage seed is separate because it is 831 rows of reference data rather than schema.
+      data-locations: classpath:data.sql, classpath:db/occupation_wage_seed.sql
 
 management:
   endpoints:

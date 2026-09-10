@@ -12,6 +12,9 @@ import com.jivejong.springfieldtalentpipeline.pipeline.PipelineStage;
 import com.jivejong.springfieldtalentpipeline.pipeline.RecruiterFeedback;
 import com.jivejong.springfieldtalentpipeline.pipeline.RecruiterFeedbackService;
 import com.jivejong.springfieldtalentpipeline.pipeline.StageTransition;
+import com.jivejong.springfieldtalentpipeline.offer.OfferDecision;
+import com.jivejong.springfieldtalentpipeline.offer.OfferOutcome;
+import com.jivejong.springfieldtalentpipeline.offer.OfferService;
 import java.time.Instant;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -35,16 +38,19 @@ public class JobApplicationController {
     private final AiCandidateProfileService aiProfiles;
     private final MockInterviewService interviews;
     private final RecruiterFeedbackService recruiterFeedback;
+    private final OfferService offers;
 
     public JobApplicationController(
             PipelineService pipeline,
             AiCandidateProfileService aiProfiles,
             MockInterviewService interviews,
-            RecruiterFeedbackService recruiterFeedback) {
+            RecruiterFeedbackService recruiterFeedback,
+            OfferService offers) {
         this.pipeline = pipeline;
         this.aiProfiles = aiProfiles;
         this.interviews = interviews;
         this.recruiterFeedback = recruiterFeedback;
+        this.offers = offers;
     }
 
     public record CreateApplicationRequest(UUID candidateId, UUID requisitionId) {}
@@ -287,5 +293,78 @@ public class JobApplicationController {
                 pipeline.allowedNextStages(application.getId()),
                 application.getCreatedAt(),
                 application.getUpdatedAt());
+    }
+
+    public record OfferRequest(Integer offerAmount) {}
+
+    /**
+     * The offer and what the candidate did with it. {@code fellBackToAggregate} is surfaced so the
+     * UI can be honest about whether the range came from the candidate's actual occupation or from
+     * the all-occupations aggregate.
+     */
+    public record OfferResponse(
+            UUID applicationId,
+            Integer offerAmount,
+            String matchedSocCode,
+            String matchedOccupationTitle,
+            Integer wageRangeLow,
+            Integer wageRangeHigh,
+            OfferOutcome decision,
+            String decisionRationale,
+            Instant decidedAt,
+            boolean fellBackToAggregate,
+            PipelineStage currentStage,
+            Set<PipelineStage> allowedNextStages) {
+
+        static OfferResponse of(OfferDecision decision, JobApplication application, boolean fellBack,
+                Set<PipelineStage> allowed) {
+            return new OfferResponse(
+                    decision.getApplicationId(),
+                    decision.getOfferAmount(),
+                    decision.getMatchedSocCode(),
+                    decision.getMatchedOccupationTitle(),
+                    decision.getWageRangeLow(),
+                    decision.getWageRangeHigh(),
+                    decision.getDecision(),
+                    decision.getDecisionRationale(),
+                    decision.getDecidedAt(),
+                    fellBack,
+                    application.getCurrentStage(),
+                    allowed);
+        }
+    }
+
+    /**
+     * Extends a salary offer to an application sitting at OFFER.
+     *
+     * <p>Accept/decline is decided against reference wage data, not by a model. Accepting moves the
+     * application to HIRED; declining moves it to WITHDRAWN - the candidate walked away rather than
+     * being turned down. Both are terminal, so this is one-shot.
+     *
+     * <p>Returns 409 if the application is not at OFFER, from the same state machine that governs
+     * /transition.
+     */
+    @PostMapping("/{id}/offer")
+    public ResponseEntity<OfferResponse> offer(
+            @PathVariable UUID id, @RequestBody OfferRequest request) {
+        OfferService.OfferResult result = offers.extendOffer(id, request.offerAmount());
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(OfferResponse.of(
+                        result.decision(),
+                        result.application(),
+                        result.fellBack(),
+                        pipeline.allowedNextStages(id)));
+    }
+
+    /** The offer decision for this application, if one has been made. */
+    @GetMapping("/{id}/offer")
+    public OfferResponse offer(@PathVariable UUID id) {
+        OfferDecision decision = offers
+                .findForApplication(id)
+                .orElseThrow(() -> new NoSuchElementException("No offer made for application " + id));
+        return OfferResponse.of(decision, pipeline.get(id), 
+                com.jivejong.springfieldtalentpipeline.offer.OccupationWage.AGGREGATE_SOC_CODE
+                        .equals(decision.getMatchedSocCode()),
+                pipeline.allowedNextStages(id));
     }
 }
