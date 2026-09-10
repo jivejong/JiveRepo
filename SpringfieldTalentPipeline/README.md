@@ -18,7 +18,7 @@ code they explain.
 [Syncing](#syncing-the-candidate-pool) · [Finding candidates](#finding-candidates) ·
 [Requisitions & matching](#requisitions-matching-and-the-pipeline) ·
 [AI profile](#ai-candidate-profile) · [Mock interviews](#mock-interviews-and-recruiter-feedback) ·
-[Tests](#tests) · [Attribution](#attribution-and-licensing)
+[Offer stage](#offer-stage) · [Demo frontend](#demo-frontend) · [Tests](#tests) · [Attribution](#attribution-and-licensing)
 
 ## Quick start
 
@@ -40,6 +40,9 @@ curl "http://localhost:8080/api/candidates?q=szyslak"
 - Spring Statemachine 4.0.2 for the pipeline stage transitions (this is what pins Boot to the
   3.5 line — see the note at the top of `build.gradle`)
 - Groq API for both AI features
+- BLS OEWS national wage data, seeded locally, for the offer decision — reference data, not a
+  runtime dependency
+- React 19 + Vite 8 demo front end in `frontend/`, verified in real Chromium with Playwright
 
 ## Prerequisites
 
@@ -148,6 +151,13 @@ failure — which is the point of exposing details in local development.
 | `GET` | `/api/applications/{id}/mock-interviews` | Every attempt for this application, newest first |
 | `GET` | `/api/mock-interviews/{sessionId}` | One full transcript |
 
+### Offer
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/applications/{id}/offer` | Extend a salary offer. Legal only at `OFFER`; accepting lands on `HIRED`, declining on `WITHDRAWN` |
+| `GET` | `/api/applications/{id}/offer` | The offer decision for this application, if one was made |
+
 ### Recruiter feedback
 
 | Method | Path | Purpose |
@@ -161,7 +171,7 @@ There is no `GET /api/requisitions` list endpoint — requisitions are read by i
 
 | Code | When |
 |---|---|
-| `409` | An invalid stage transition (the body carries the reachable stages), or a second *active* application for the same candidate/requisition pair |
+| `409` | An invalid stage transition (the body carries the reachable stages), an offer on an application that is not at `OFFER`, or a second *active* application for the same candidate/requisition pair |
 | `502` | The Simpsons API or Groq is unreachable — the fault is upstream, not the caller's |
 | `400` | Missing `targetKeywords` or `toStage`, or a feedback rating outside 1–5 |
 | `404` | Unknown id, or a cached AI profile that has never been generated |
@@ -199,6 +209,12 @@ property of a candidate alone. Overwritten in place on regeneration.
 Q&A turns. Unlike the profile, regenerating **adds** a session so attempts can be compared. A failed
 generation is recorded with status `FAILED` rather than discarded, so a run of failures is visible.
 
+**`OccupationWage`** / **`OfferDecision`** — national wage reference data keyed by SOC code, and the
+record of one salary offer. The decision stores the matched occupation and the wage band *as they
+were at the time*, so a past decision can still explain itself after the reference data is
+re-imported. Its rationale is templated rather than generated, because it describes arithmetic that
+already happened.
+
 **`RecruiterFeedback`** — the human's verdict. Lives in the `pipeline` package rather than `ai`,
 which is the point: it is the one judgement in the system that no model produced.
 
@@ -220,6 +236,9 @@ Sourced → Screening → Interviewing → Offer → Hired
 
 `HIRED` is reachable only from `OFFER`. There is no backward path — a mis-transition is corrected by
 an admin action, not by allowing moves that would make the audit trail meaningless.
+
+The last hop is not a button. At `OFFER` the pipeline waits for a salary, and the candidate's
+response decides between `HIRED` and `WITHDRAWN` — see [Offer stage](#offer-stage).
 
 ## Syncing the candidate pool
 
@@ -439,6 +458,68 @@ Two instructions are load-bearing for character voice:
    unqualified.
 2. **Catchphrases are temperament, not answers** - one or two per interview, inside a sentence.
    Drop this and transcripts become lists of quotes.
+
+## Offer stage
+
+Reaching `OFFER` pauses the pipeline for a real decision. The recruiter enters an annual salary and
+acceptance is decided **arithmetically against national wage data** — no model involved, so the same
+number always gives the same answer and the stored rationale is a statement of fact.
+
+```bash
+curl -X POST http://localhost:8080/api/applications/{id}/offer \
+  -H 'Content-Type: application/json' -d '{"offerAmount":45000}'
+```
+
+Inside the occupation's 10th–90th percentile band → **`ACCEPTED`** → `HIRED`. Outside it →
+**`DECLINED`** → `WITHDRAWN`, because the candidate walked away rather than being turned down.
+Both are terminal, so an offer is one-shot; a second attempt gets the same 409 as any other illegal
+transition. This endpoint wraps the transition service rather than bypassing it — the state machine
+stays the only thing deciding legality.
+
+That also gives `WITHDRAWN` its first real trigger. The demo now has three genuinely distinct
+outcomes: `HIRED` (offer accepted), `REJECTED` (recruiter declined), `WITHDRAWN` (candidate declined).
+
+### Wage reference data
+
+U.S. Bureau of Labor Statistics, Occupational Employment and Wage Statistics (OEWS), national
+cross-industry estimates, **May 2025** (`national_M2025_dl.xlsx`, kept in `resources/`). BLS blocks
+automated download — every path returns an "Access Denied" page — so the workbook is fetched by hand
+and converted to `src/main/resources/db/occupation_wage_seed.sql`, which seeds idempotently at
+startup.
+
+Only the `total` (`00-0000`, All Occupations) and `detailed` rows are imported — **831 of 1,401**.
+The major/minor/broad aggregates are excluded deliberately: "Management Occupations" is not a job
+anyone holds, and including those rows would let matching resolve a candidate to an umbrella
+category. Annual percentiles are used because offers are annual salaries, and BLS's `'*'`
+suppression marker imports as NULL rather than becoming an invented bound.
+
+Occupations are matched to SOC codes with the same `ts_rank` technique as requisition matching,
+above a **0.0070** confidence threshold — just under a solid single-term hit, so "Bartender" is
+trusted but an incidental shared word is not. Below it, matching falls back to the aggregate row
+rather than blocking the offer. Moe Szyslak resolves to `35-3011 Bartenders` ($20,110–$73,770);
+Marge Simpson's "Unemployed" falls back to All Occupations ($31,200–$128,560). This inherits the
+documented `ts_rank` limitation — no cross-document IDF — which is exactly why the threshold and
+fallback exist.
+
+## Demo frontend
+
+A React front end in [`frontend/`](frontend/) walks the whole story on one screen: open a
+requisition, rank the pool against it, apply a candidate, score them, interview them, extend an
+offer, and watch the state machine refuse a second decision.
+
+```bash
+cd frontend
+npm install
+npm run dev            # http://localhost:5173 - needs the API running on 8080
+```
+
+Vite proxies `/api` to `localhost:8080`, so the browser only ever makes same-origin requests and
+neither side needs CORS configuration.
+
+It is verified by driving real Chromium with Playwright rather than by trusting that a build
+succeeded — `npm run verify`, `verify:flow` and `verify:offer` assert against the live DOM and the
+actual network calls made, against real Groq generations. See [`frontend/README.md`](frontend/README.md).
+
 
 ## Tests
 

@@ -12,6 +12,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,14 +28,14 @@ public class AiCandidateProfileService {
 
     private static final Logger log = LoggerFactory.getLogger(AiCandidateProfileService.class);
 
-    private final AiCandidateProfileRepository profiles;
+    private final AiCandidateProfileStore profiles;
     private final JobApplicationRepository applications;
     private final CandidateRepository candidates;
     private final RequisitionRepository requisitions;
     private final CandidateProfileGenerator generator;
 
     public AiCandidateProfileService(
-            AiCandidateProfileRepository profiles,
+            AiCandidateProfileStore profiles,
             JobApplicationRepository applications,
             CandidateRepository candidates,
             RequisitionRepository requisitions,
@@ -62,7 +63,19 @@ public class AiCandidateProfileService {
         }
     }
 
-    @Transactional
+    /**
+     * Cache-aside, and safe to call twice for the same application.
+     *
+     * <p>Deliberately not {@code @Transactional}: the Groq call in the middle takes seconds, and
+     * wrapping the whole method would pin a database connection for its duration. Reads and the
+     * write each get their own short transaction instead.
+     *
+     * <p>Concurrent callers are expected rather than exceptional - React StrictMode double-invokes
+     * effects in development, so the UI genuinely does fire this twice for one application. Two
+     * layers handle it: {@link AiCandidateProfileStore#persist} re-reads inside its own transaction
+     * so a late arrival updates instead of inserting, and a constraint violation that still gets
+     * through is recovered below by returning whatever the winner stored.
+     */
     public ProfileResult generateOrGet(UUID applicationId, boolean refresh) {
         JobApplication application = applications
                 .findById(applicationId)
@@ -72,7 +85,7 @@ public class AiCandidateProfileService {
                 .orElseThrow(() -> new NoSuchElementException(
                         "No requisition " + application.getRequisitionId()));
 
-        Optional<AiCandidateProfile> existing = profiles.findByApplicationId(applicationId);
+        Optional<AiCandidateProfile> existing = profiles.find(applicationId);
 
         if (existing.isPresent() && !refresh) {
             AiCandidateProfile cached = existing.get();
@@ -91,8 +104,11 @@ public class AiCandidateProfileService {
             origin = Origin.REGENERATED_KEYWORDS_CHANGED;
         }
 
+        // Fetches the phrase collection in the same query. The prompt reads it, and with no
+        // transaction open around the Groq call there is no session left to load it lazily - the
+        // same reason MockInterviewService uses this method rather than findById.
         Candidate candidate = candidates
-                .findById(application.getCandidateId())
+                .findWithPhrasesById(application.getCandidateId())
                 .orElseThrow(() -> new NoSuchElementException(
                         "No candidate " + application.getCandidateId()));
 
@@ -109,19 +125,35 @@ public class AiCandidateProfileService {
             throw new GroqException("Groq returned a profile with no fitScore");
         }
 
-        AiCandidateProfile profile = existing.orElseGet(() -> new AiCandidateProfile(applicationId));
-        profile.apply(
-                generated.bio(),
-                clampToScoreRange(generated.fitScore()),
-                generated.fitRationale(),
-                result.modelUsed(),
-                Instant.now());
-        return new ProfileResult(profiles.save(profile), origin, result.usage());
+        try {
+            AiCandidateProfile saved = profiles.persist(
+                    applicationId,
+                    generated.bio(),
+                    clampToScoreRange(generated.fitScore()),
+                    generated.fitRationale(),
+                    result.modelUsed(),
+                    Instant.now());
+            return new ProfileResult(saved, origin, result.usage());
+        } catch (DataIntegrityViolationException e) {
+            // Another request won the race and inserted first. Its profile is just as valid as the
+            // one this call generated, so return it rather than surfacing a constraint violation as
+            // a 500. The tokens this call spent are already gone either way.
+            return profiles
+                    .find(applicationId)
+                    .map(winner -> {
+                        log.info(
+                                "Concurrent AI profile generation for application {}; returning the "
+                                        + "profile that was stored first",
+                                applicationId);
+                        return new ProfileResult(winner, Origin.CACHED, null);
+                    })
+                    .orElseThrow(() -> e);
+        }
     }
 
     @Transactional(readOnly = true)
     public Optional<AiCandidateProfile> find(UUID applicationId) {
-        return profiles.findByApplicationId(applicationId);
+        return profiles.find(applicationId);
     }
 
     /**

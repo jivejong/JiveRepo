@@ -1,7 +1,10 @@
 package com.jivejong.springfieldtalentpipeline.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -21,6 +24,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataIntegrityViolationException;
 
 /** Cache-aside behaviour - the part the Phase 3 checkpoint scrutinises. No network involved. */
 class AiCandidateProfileServiceTest {
@@ -29,14 +33,14 @@ class AiCandidateProfileServiceTest {
     private static final UUID CANDIDATE_ID = UUID.randomUUID();
     private static final UUID REQUISITION_ID = UUID.randomUUID();
 
-    private AiCandidateProfileRepository profiles;
+    private AiCandidateProfileStore profiles;
     private CandidateProfileGenerator generator;
     private AiCandidateProfileService service;
     private Requisition requisition;
 
     @BeforeEach
     void setUp() {
-        profiles = mock(AiCandidateProfileRepository.class);
+        profiles = mock(AiCandidateProfileStore.class);
         generator = mock(CandidateProfileGenerator.class);
         JobApplicationRepository applications = mock(JobApplicationRepository.class);
         CandidateRepository candidates = mock(CandidateRepository.class);
@@ -47,7 +51,8 @@ class AiCandidateProfileServiceTest {
 
         Candidate candidate = new Candidate(16, "Moe Szyslak");
         candidate.setOccupation("Bartender and Owner of Moe's Tavern");
-        when(candidates.findById(CANDIDATE_ID)).thenReturn(Optional.of(candidate));
+        // The service fetches phrases eagerly, since the Groq call runs outside a transaction.
+        when(candidates.findWithPhrasesById(CANDIDATE_ID)).thenReturn(Optional.of(candidate));
 
         requisition = new Requisition(
                 "Bartender",
@@ -58,7 +63,16 @@ class AiCandidateProfileServiceTest {
                 Instant.now().minus(1, ChronoUnit.HOURS));
         when(requisitions.findById(REQUISITION_ID)).thenReturn(Optional.of(requisition));
 
-        when(profiles.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(profiles.persist(any(), any(), anyInt(), any(), any(), any())).thenAnswer(invocation -> {
+            AiCandidateProfile stored = new AiCandidateProfile(invocation.getArgument(0));
+            stored.apply(
+                    invocation.getArgument(1),
+                    invocation.getArgument(2),
+                    invocation.getArgument(3),
+                    invocation.getArgument(4),
+                    invocation.getArgument(5));
+            return stored;
+        });
         when(generator.generate(any(), any()))
                 .thenReturn(new GroqClient.StructuredResult<>(
                         new CandidateProfileGenerator.ProfileGeneration(
@@ -78,7 +92,7 @@ class AiCandidateProfileServiceTest {
 
     @Test
     void generatesWhenNoProfileExists() {
-        when(profiles.findByApplicationId(APPLICATION_ID)).thenReturn(Optional.empty());
+        when(profiles.find(APPLICATION_ID)).thenReturn(Optional.empty());
 
         AiCandidateProfileService.ProfileResult result = service.generateOrGet(APPLICATION_ID, false);
 
@@ -92,7 +106,7 @@ class AiCandidateProfileServiceTest {
     @Test
     void secondCallWithoutKeywordChangeDoesNotHitTheModel() {
         // The cache half of the Phase 3 checkpoint.
-        when(profiles.findByApplicationId(APPLICATION_ID))
+        when(profiles.find(APPLICATION_ID))
                 .thenReturn(Optional.of(cachedProfile(Instant.now())));
 
         AiCandidateProfileService.ProfileResult result = service.generateOrGet(APPLICATION_ID, false);
@@ -106,7 +120,7 @@ class AiCandidateProfileServiceTest {
     @Test
     void regeneratesWhenTargetKeywordsChangedAfterTheProfileWasGenerated() {
         AiCandidateProfile stale = cachedProfile(Instant.now().minus(2, ChronoUnit.HOURS));
-        when(profiles.findByApplicationId(APPLICATION_ID)).thenReturn(Optional.of(stale));
+        when(profiles.find(APPLICATION_ID)).thenReturn(Optional.of(stale));
         requisition.updateTargetKeywords("mixologist cocktails", Instant.now());
 
         AiCandidateProfileService.ProfileResult result = service.generateOrGet(APPLICATION_ID, false);
@@ -122,7 +136,7 @@ class AiCandidateProfileServiceTest {
         // updateTargetKeywords only moves the clock when the text actually differs, so a no-op
         // edit must not cost a regeneration.
         AiCandidateProfile cached = cachedProfile(Instant.now());
-        when(profiles.findByApplicationId(APPLICATION_ID)).thenReturn(Optional.of(cached));
+        when(profiles.find(APPLICATION_ID)).thenReturn(Optional.of(cached));
         requisition.updateTargetKeywords("bartender tavern bar drinks", Instant.now());
 
         AiCandidateProfileService.ProfileResult result = service.generateOrGet(APPLICATION_ID, false);
@@ -133,7 +147,7 @@ class AiCandidateProfileServiceTest {
 
     @Test
     void refreshRegeneratesEvenWhenTheCacheIsFresh() {
-        when(profiles.findByApplicationId(APPLICATION_ID))
+        when(profiles.find(APPLICATION_ID))
                 .thenReturn(Optional.of(cachedProfile(Instant.now())));
 
         AiCandidateProfileService.ProfileResult result = service.generateOrGet(APPLICATION_ID, true);
@@ -145,20 +159,51 @@ class AiCandidateProfileServiceTest {
     }
 
     @Test
-    void refreshOverwritesInPlaceRatherThanAccumulatingProfiles() {
-        // One profile per application: a refresh must reuse the row, not insert a second one.
-        AiCandidateProfile existing = cachedProfile(Instant.now());
-        when(profiles.findByApplicationId(APPLICATION_ID)).thenReturn(Optional.of(existing));
+    void refreshWritesThroughTheSameApplicationRatherThanAccumulatingProfiles() {
+        // One profile per application. The store owns find-or-create, so what matters here is that
+        // a refresh persists against the same applicationId rather than creating a second record.
+        when(profiles.find(APPLICATION_ID)).thenReturn(Optional.of(cachedProfile(Instant.now())));
 
         AiCandidateProfileService.ProfileResult result = service.generateOrGet(APPLICATION_ID, true);
 
-        assertThat(result.profile()).isSameAs(existing);
-        assertThat(existing.getFitScore()).isEqualTo(88);
+        verify(profiles, times(1))
+                .persist(eq(APPLICATION_ID), any(), anyInt(), any(), any(), any());
+        assertThat(result.profile().getApplicationId()).isEqualTo(APPLICATION_ID);
+        assertThat(result.profile().getFitScore()).isEqualTo(88);
+    }
+
+    @Test
+    void aConcurrentGenerationLosingTheInsertRaceReturnsTheWinnersProfile() {
+        // React StrictMode makes the UI fire this twice for one application. The loser's insert
+        // violates uk_ai_profile_application; surfacing that as a 500 was the reported bug.
+        AiCandidateProfile winner = cachedProfile(Instant.now());
+        when(profiles.find(APPLICATION_ID))
+                .thenReturn(Optional.empty()) // the pre-generation read: nothing there yet
+                .thenReturn(Optional.of(winner)); // the recovery read: the other request won
+        when(profiles.persist(any(), any(), anyInt(), any(), any(), any()))
+                .thenThrow(new DataIntegrityViolationException("uk_ai_profile_application"));
+
+        AiCandidateProfileService.ProfileResult result = service.generateOrGet(APPLICATION_ID, false);
+
+        assertThat(result.profile()).isSameAs(winner);
+        assertThat(result.origin()).isEqualTo(AiCandidateProfileService.Origin.CACHED);
+        assertThat(result.wasCached()).isTrue();
+    }
+
+    @Test
+    void aConstraintViolationWithNothingToRecoverStillPropagates() {
+        // Only swallow the violation when a profile genuinely turns up; otherwise it is a real fault.
+        when(profiles.find(APPLICATION_ID)).thenReturn(Optional.empty());
+        when(profiles.persist(any(), any(), anyInt(), any(), any(), any()))
+                .thenThrow(new DataIntegrityViolationException("something else entirely"));
+
+        assertThatThrownBy(() -> service.generateOrGet(APPLICATION_ID, false))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
     void aScoreOutsideTheDocumentedRangeIsClamped() {
-        when(profiles.findByApplicationId(APPLICATION_ID)).thenReturn(Optional.empty());
+        when(profiles.find(APPLICATION_ID)).thenReturn(Optional.empty());
         when(generator.generate(any(), any()))
                 .thenReturn(new GroqClient.StructuredResult<>(
                         new CandidateProfileGenerator.ProfileGeneration("Bio.", 140, "Rationale."),
