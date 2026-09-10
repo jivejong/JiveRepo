@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+# The Gradle wrapper script must keep LF endings or it will not run under sh;
+# the .bat must keep CRLF for cmd.exe.
+gradlew         text eol=lf
+gradlew.bat     text eol=crlf
+*.jar           binary

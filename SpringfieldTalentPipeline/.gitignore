@@ -1,0 +1,39 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Secrets and local environment overrides — the Groq API key lives here, never in a committed file
+.env
+.env.local
+*.env
+config/local.yml
+config/application.yml
+src/main/resources/application-local.yml
+src/main/resources/application-local.properties
+
+# Build output
+bin/
+out/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.log
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Docs
+docs/

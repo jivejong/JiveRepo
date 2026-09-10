@@ -1,0 +1,12 @@
+# Copy to config/local.yml and fill in. config/local.yml is gitignored and must stay that way —
+# it is the one place in this project where real secrets live.
+#
+# Anything here overrides src/main/resources/application.yml. Environment variables still win
+# over both, so CI can override without touching a file.
+
+spring:
+  datasource:
+    password: your-postgres-password
+
+groq:
+  api-key: gsk_your_key_here
