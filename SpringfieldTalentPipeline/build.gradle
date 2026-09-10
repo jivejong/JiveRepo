@@ -1,0 +1,60 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.16'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.jivejong'
+version = '0.0.1-SNAPSHOT'
+description = 'Springfield Talent Pipeline - a recruiting pipeline (ATS) API backed by Simpsons character data'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+// Boot version note: 3.5.16 (2026-06-25) is the last OSS release of the 3.5 line, whose free
+// support ended 2026-06-30. Staying here is deliberate, not neglect: Spring Statemachine's newest
+// release (4.0.2, 2026-06-11) is built against Spring Framework 6.2 / Boot 3.5, and no Boot 4 /
+// Framework 7 compatible Statemachine exists yet. Since docs/PIPELINE_STATE_MACHINE.md makes
+// Statemachine a requirement, Boot 3.5.16 is the newest version that can satisfy it.
+// Revisit when Statemachine ships a Framework 7 build.
+ext {
+    springStatemachineVersion = '4.0.2'
+}
+
+dependencyManagement {
+    imports {
+        mavenBom "org.springframework.statemachine:spring-statemachine-bom:${springStatemachineVersion}"
+    }
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    // Actuator supplies the /actuator/health endpoint the Phase 0 checkpoint verifies,
+    // including the Postgres connectivity check via its DataSource health indicator.
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.springframework.statemachine:spring-statemachine-starter'
+
+    runtimeOnly 'org.postgresql:postgresql'
+
+    annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    // javac otherwise defaults to the platform encoding, which is not UTF-8 on Windows.
+    options.encoding = 'UTF-8'
+}

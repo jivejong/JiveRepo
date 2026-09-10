@@ -1,0 +1,81 @@
+spring:
+  application:
+    name: springfield-talent-pipeline
+
+  config:
+    # Local developer overrides (DB password, Groq key) live in a gitignored file so nothing
+    # secret is committed. "optional:" means the app starts normally when it is absent, so CI
+    # and a fresh clone work with environment variables alone.
+    # Copy config/local.yml.example to config/local.yml to use it.
+    import: optional:file:./config/local.yml
+
+  datasource:
+    # Every value here is env-overridable so nothing environment-specific is committed.
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/springfield}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      # Hibernate manages the schema until/unless
+      # Flyway migrations are added under src/main/resources/db/migration —
+      # see docs/IMPLEMENTATION_PLAN.md, where schema versioning is optional for v1.
+      ddl-auto: update
+    open-in-view: false
+    show-sql: false
+    # Lets data.sql run after Hibernate has created the tables, so the full-text index in it has
+    # a candidate table to attach to.
+    defer-datasource-initialization: true
+
+  sql:
+    init:
+      # Defaults to "embedded", which would skip data.sql entirely against Postgres.
+      mode: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Phase 0 checkpoint: GET /actuator/health must respond, and its db indicator
+        # reports whether the local Postgres connection is actually live.
+        include: health
+  endpoint:
+    health:
+      show-details: always
+
+# The Simpsons API - no auth of any kind. See docs/SIMPSONS_API.md.
+simpsons:
+  base-url: https://thesimpsonsapi.com/api
+  # Confirmed against the live CDN (the spec said not to guess): widths 200, 500 and 1280 serve
+  # {cdn-base-url}/character/{id}.webp
+  cdn-base-url: https://cdn.thesimpsonsapi.com/500
+  # ~60 pages x this delay is the floor on a full sync. Deliberate politeness, not a bug.
+  page-delay: 200ms
+  connect-timeout: 10s
+  read-timeout: 30s
+
+# Groq API — key comes from the GROQ_API_KEY environment variable, never from this file.
+# See docs/AI_FEATURES.md for the model choices and the Aug 2026 migration notes.
+groq:
+  api-key: ${GROQ_API_KEY:}
+  base-url: https://api.groq.com/openai/v1
+  models:
+    profile: openai/gpt-oss-20b
+    interview: openai/gpt-oss-120b
+  # GPT-OSS models emit internal reasoning tokens separate from the visible reply; left at the
+  # default of "medium" that blows past the token estimates in docs/AI_FEATURES.md for reasoning
+  # neither feature surfaces. A switch to qwen would need "none"/"default" here instead.
+  reasoning-effort: low
+  temperature:
+    # Measured: at 0.4 the same candidate/role scored anywhere from 20 to 70 across repeated runs.
+    # A cached fit score should not depend on when it was generated.
+    profile: 0.1
+    interview: 0.8
+  max-completion-tokens: 3000
+  connect-timeout: 10s
+  read-timeout: 120s
+
+logging:
+  level:
+    com.jivejong.springfieldtalentpipeline: INFO
