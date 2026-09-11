@@ -32,7 +32,7 @@ Tools that widen the aperture on a problem, a decision, or the person holding it
 
 The organizing test: **what does a prompt hold open, and what does it refuse to close?** A tool that answers that question belongs here. A tool that just answers things well — however helpfully — doesn't.
 
-### [`codeDojo/`](./codeDojo/)
+### [`code_dojo/`](./code_dojo/)
 
 A practice space for leveling up as a programmer, built on three Eastern pedagogical traditions adapted to code — the one domain where their core mechanics stop being metaphors and become literal. Each bot is defined as much by what it refuses to do for you as by what it does.
 
@@ -88,6 +88,22 @@ Two kinds of writing prompts:
 
 Every collaborative assistant inherits the same **Collaboration Discipline**: identify before you generate, offer directions instead of verdicts, keep the writer in the chair, monitor your own drift, and finish what you start.
 
+### [`geeky/`](./geeky/)
+
+Forty-eight system prompts built on borrowed voices — Starfleet officers, Jedi, Muppets, Time Lords, a Ferengi, a bartender, four turtles, and Gotham's entire rogues gallery — organized by **what they do**, not where they came from.
+
+The defining move here is an inversion: the trait a character is canonically famous for is usually the exact thing the prompt forbids. Comic Book Guy's contempt is fenced to code, never people. The Joker refuses to answer the question you asked — until someone is actually in trouble, at which point dropping the bit is the one thing he cannot decline to do. Nine subfolders, each with its own README:
+
+- **`reasoning/`** — pressure-tests a claim, argument, idea, or dilemma the user brings
+- **`bat_prompts/`** — the Batman set: planning, diagnosis, feasibility, information architecture, two domestic experts, and an eight-strong rogues gallery each fenced off by a hard override
+- **`work/`** — leading, planning, competing, negotiating, deciding the next move
+- **`everyday/`** — money, drinks, dinner, and the cost of a prompt
+- **`inner_life/`** — anger, subtext, company, and identity
+- **`growth/`** — career direction, training roadmaps, teaching materials, a mentor
+- **`research/`** — finding what's actually out there, and weighing it
+- **`comedy/`** — output that is entertainment by design, and enforced as such
+- **`language/`** — shaping words: story and social register
+
 ### [`health/`](./health/)
 
 Ancient wisdom for holistic health
@@ -114,7 +130,7 @@ These prompts cover physical, energetic, psychological, and relational ecosystem
 
 ## The shared failure mode
 
-Every prompt in this repository is fighting the same underlying pull at a different specific moment: **the AI quietly doing the cognitive work the human was supposed to do.** In `thinking/`, that's synthesis converging into a recommendation. In `codeDojo/`, that's writing the fix instead of marking where to look. In `dev_workflow/`, that's a single agent silently reconciling a spec ambiguity instead of letting it surface as a divergence. In `training/`, that's pre-chewing the topic instead of mapping transfer. In `writing/`, that's taking over the wheel. In `healthy-ai/`, that's becoming the dependency instead of preventing it.
+Every prompt in this repository is fighting the same underlying pull at a different specific moment: **the AI quietly doing the cognitive work the human was supposed to do.** In `thinking/`, that's synthesis converging into a recommendation. In `code_dojo/`, that's writing the fix instead of marking where to look. In `dev_workflow/`, that's a single agent silently reconciling a spec ambiguity instead of letting it surface as a divergence. In `training/`, that's pre-chewing the topic instead of mapping transfer. In `writing/`, that's taking over the wheel. In `healthyAI/`, that's becoming the dependency instead of preventing it. In `geeky/`, that's the model reverting to a generic, sanitized assistant instead of doing the harder work of encoding the refusal into the character itself.
 
 The specific guardrails differ. The shape of the failure is the same family resemblance running underneath all of them.
 
