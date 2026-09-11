@@ -4,7 +4,7 @@ Fifteen system prompts drawn from the Batman mythos, in two registers.
 
 **The allies (seven)** are built around a single observation: **the interesting thing about that universe is not the competence — it is the restraint.** A default assistant given one of these roles becomes a throughput optimizer, a fixer, an unlimited capability with no line it will not cross. Every prompt in this half is defined as much by **what it refuses to do** as by what it does. Alfred refuses to reshuffle an impossible schedule into a tidier impossible one. Lucius refuses to build the thing he would be good at building. Oracle has the skills for a surveillance apparatus and declines. The conditioning coach explicitly rejects Bruce Wayne's relationship with his own body as a model. Poison Ivy will not tell you whether a plant is safe to eat.
 
-**The rogues gallery (eight)** runs the same brief the rest of [`geeky/`](../README.md) runs on villains generally: *the character supplies the voice and the domain authority; the prompt supplies the discipline the character lacks.* Each of these takes the trait the character is canonically defined by and fences it off with a hard override rather than pretending it isn't there. The Joker's whole nature is not answering the question — until a real crisis is on the table, and then he drops the bit mid-beat. Two-Face's compulsion to reduce everything to a coin flip is exactly what gets refused the moment the decision is irreversible or dangerous. Penguin will go as hard as anyone in business, then names fraud and bribery out loud as the one thing he won't put in writing. The Riddler's ego — withholding the answer to make you earn it — goes quiet the instant the stakes are real. Ra's al Ghul counsels centuries of discipline but is walled off from the League's philosophy about who gets to live. Mr. Freeze offers the clearest read on how devotion curdles into control, and is the first to break character the moment that curdling looks like actual abuse.
+**The rogues gallery (eight)** runs the same brief the rest of [`geeky/`](../README.md) runs on villains generally: _the character supplies the voice and the domain authority; the prompt supplies the discipline the character lacks._ Each of these takes the trait the character is canonically defined by and fences it off with a hard override rather than pretending it isn't there. The Joker's whole nature is not answering the question — until a real crisis is on the table, and then he drops the bit mid-beat. Two-Face's compulsion to reduce everything to a coin flip is exactly what gets refused the moment the decision is irreversible or dangerous. Penguin will go as hard as anyone in business, then names fraud and bribery out loud as the one thing he won't put in writing. The Riddler's ego — withholding the answer to make you earn it — goes quiet the instant the stakes are real. Ra's al Ghul counsels centuries of discipline but is walled off from the League's philosophy about who gets to live. Mr. Freeze offers the clearest read on how devotion curdles into control, and is the first to break character the moment that curdling looks like actual abuse.
 
 That is the design brief for both halves, and it is why these are personas rather than costumes.
 
@@ -14,28 +14,28 @@ That is the design brief for both halves, and it is why these are personas rathe
 
 ### Allies & Specialists
 
-| File | Persona | Domain | Phased? |
-| ---- | ------- | ------ | ------- |
-| [`alfred.md`](./alfred.md) | Alfred Pennyworth | Multi-realm task management | No |
-| [`batplanner.md`](./batplanner.md) | Batman | Strategic planning & pre-mortem | Yes |
-| [`detective.md`](./detective.md) | Batman | Root-cause diagnosis | No |
-| [`lucius.md`](./lucius.md) | Lucius Fox | Engineering feasibility & design | Yes |
-| [`oracle.md`](./oracle.md) | Barbara Gordon | Information architecture | Yes |
-| [`conditioning.md`](./conditioning.md) | *(anti-persona)* | Strength & conditioning | Yes |
-| [`poison_ivy.md`](./poison_ivy.md) | Poison Ivy | Plant care & diagnosis | Yes |
+| File                                   | Persona           | Domain                           | Phased? |
+| -------------------------------------- | ----------------- | -------------------------------- | ------- |
+| [`alfred.md`](./alfred.md)             | Alfred Pennyworth | Multi-realm task management      | No      |
+| [`batplanner.md`](./batplanner.md)     | Batman            | Strategic planning & pre-mortem  | Yes     |
+| [`detective.md`](./detective.md)       | Batman            | Root-cause diagnosis             | No      |
+| [`lucius.md`](./lucius.md)             | Lucius Fox        | Engineering feasibility & design | Yes     |
+| [`oracle.md`](./oracle.md)             | Barbara Gordon    | Information architecture         | Yes     |
+| [`conditioning.md`](./conditioning.md) | _(anti-persona)_  | Strength & conditioning          | Yes     |
 
 ### The Rogues Gallery
 
-| File | Persona | Domain | Phased? |
-| ---- | ------- | ------ | ------- |
-| [`arkham_asylum.md`](./arkham_asylum.md) | Dr. Jonathan Crane & Dr. Harleen Quinn | Fear audit & reframe (reflection tool) | Yes — choose a lens |
-| [`catwoman.md`](./catwoman.md) | Selina Kyle | Physical security auditing | Yes — authorization gate |
-| [`joker.md`](./joker.md) | The Joker | Deliberate derailment / entertainment | No |
-| [`mr_freeze.md`](./mr_freeze.md) | Dr. Victor Fries | Relationship diagnosis | No |
-| [`penguin.md`](./penguin.md) | Oswald Cobblepot | Ruthless-but-legal business strategy | No |
-| [`ras_al_ghul.md`](./ras_al_ghul.md) | Ra's al Ghul | Longevity & health discipline | Yes |
-| [`riddler.md`](./riddler.md) | Edward Nygma | Puzzle solving & puzzle generation | Mode-selected, not gated |
-| [`two_face.md`](./two_face.md) | Harvey Dent | Binary decision-forcing | No |
+| File                                     | Persona                                | Domain                                 | Phased?                  |
+| ---------------------------------------- | -------------------------------------- | -------------------------------------- | ------------------------ |
+| [`poison_ivy.md`](./poison_ivy.md)       | Poison Ivy                             | Plant care & diagnosis                 | Yes                      |
+| [`arkham_asylum.md`](./arkham_asylum.md) | Dr. Jonathan Crane & Dr. Harleen Quinn | Fear audit & reframe (reflection tool) | Yes — choose a lens      |
+| [`catwoman.md`](./catwoman.md)           | Selina Kyle                            | Physical security auditing             | Yes — authorization gate |
+| [`joker.md`](./joker.md)                 | The Joker                              | Deliberate derailment / entertainment  | No                       |
+| [`mr_freeze.md`](./mr_freeze.md)         | Dr. Victor Fries                       | Relationship diagnosis                 | No                       |
+| [`penguin.md`](./penguin.md)             | Oswald Cobblepot                       | Ruthless-but-legal business strategy   | No                       |
+| [`ras_al_ghul.md`](./ras_al_ghul.md)     | Ra's al Ghul                           | Longevity & health discipline          | Yes                      |
+| [`riddler.md`](./riddler.md)             | Edward Nygma                           | Puzzle solving & puzzle generation     | Mode-selected, not gated |
+| [`two_face.md`](./two_face.md)           | Harvey Dent                            | Binary decision-forcing                | No                       |
 
 ---
 
@@ -163,7 +163,7 @@ Nobody reads a perimeter's weaknesses faster than someone whose job depended on 
 
 **The audit** covers perimeter and sightlines, entry points (including the ones people forget — pet doors, crawlspaces), lock and hardware quality, camera and alarm blind spots, lighting, visible routine cues, and social-engineering weak points — each rated by how much time and skill exploiting it would actually take, not by how clever the flaw is.
 
-**The refusal, twice over:** if the target shifts to someone else's property without explicit authorization, the persona drops entirely with no softening. And even for an authorized audit, it names the *category* of a weakness rather than a defeat method for a specific lock model or alarm brand — never step-by-step instructions for bypassing named hardware.
+**The refusal, twice over:** if the target shifts to someone else's property without explicit authorization, the persona drops entirely with no softening. And even for an authorized audit, it names the _category_ of a weakness rather than a defeat method for a specific lock model or alarm brand — never step-by-step instructions for bypassing named hardware.
 
 **Output:** The Read (overall posture) → The Vulnerabilities (grouped by category, each with a difficulty rating and a defensive fix) → The Short List (the two or three fixes that matter most).
 
