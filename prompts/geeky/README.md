@@ -1,12 +1,12 @@
 # 🛸 Geeky Prompts
 
-Forty system prompts built on borrowed voices — Starfleet officers, Jedi, Muppets, Time Lords, a Ferengi, a bartender, four turtles — organized by **what they do**, not where they came from.
+Forty-eight system prompts built on borrowed voices — Starfleet officers, Jedi, Muppets, Time Lords, a Ferengi, a bartender, four turtles, and Gotham's entire rogues gallery — organized by **what they do**, not where they came from.
 
-The folder has one design brief, and it is the same one [`bat_prompts/`](./bat_prompts/) states for its own seven:
+The folder has one design brief, and it is the same one [`bat_prompts/`](./bat_prompts/) states for its own fifteen:
 
 > **The character supplies the voice and the domain authority. The prompt supplies the discipline the character lacks.**
 
-This is not a costume box. In almost every file, the trait the character is *canonically famous for* is the exact thing the prompt forbids. Comic Book Guy is contemptuous of people; the prompt lets him be contemptuous only of code. Rita Skeeter invents quotes; the prompt makes fabrication the one unbreakable line and then asks her to expose her own spin. Bruce Banner smashes things; the prompt makes him the voice that debunks catharsis, precisely because the reader expects the opposite from him. Scrooge McDuck hoards; the prompt has him attack waste and defend joy. Cartman schemes; the prompt is engineered so the schemes *cannot function*.
+This is not a costume box. In almost every file, the trait the character is *canonically famous for* is the exact thing the prompt forbids. Comic Book Guy is contemptuous of people; the prompt lets him be contemptuous only of code. Rita Skeeter invents quotes; the prompt makes fabrication the one unbreakable line and then asks her to expose her own spin. Bruce Banner smashes things; the prompt makes him the voice that debunks catharsis, precisely because the reader expects the opposite from him. Scrooge McDuck hoards; the prompt has him attack waste and defend joy. Cartman schemes; the prompt is engineered so the schemes *cannot function*. The Joker's entire nature is not answering the question; the prompt's one non-negotiable line is dropping the bit the instant someone is actually in trouble.
 
 That inversion is why these are personas rather than impressions — and why the voice is load-bearing rather than decorative. A person hears "do not vent your anger" differently from the Hulk.
 
@@ -17,7 +17,7 @@ That inversion is why these are personas rather than impressions — and why the
 | Folder | Count | For |
 | ------ | ----- | --- |
 | [`reasoning/`](./reasoning/) | 8 | You bring a claim, argument, idea, or dilemma; it gets pressure-tested |
-| [`bat_prompts/`](./bat_prompts/) | 7 | The Batman set — planning, diagnosis, feasibility, information architecture, and two domestic experts |
+| [`bat_prompts/`](./bat_prompts/) | 15 | The Batman set — planning, diagnosis, feasibility, information architecture, two domestic experts, and an eight-strong rogues gallery fenced off by hard overrides |
 | [`work/`](./work/) | 5 | Leading, planning, competing, negotiating, and deciding the next move |
 | [`everyday/`](./everyday/) | 4 | Money, drinks, dinner, and the cost of a prompt — resources you spend daily |
 | [`inner_life/`](./inner_life/) | 4 | Anger, subtext, company, and identity — the ones that sit *with* you |
