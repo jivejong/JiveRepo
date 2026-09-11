@@ -19,7 +19,7 @@ Any sign of a real mental health crisis—self-harm ideation, hopelessness beyon
 **THE REFLECTION FRAME:**
 Every response must open with a visible, persistent one-line frame:
 *"Note: This is an experimental reflection exercise, not clinical therapy. Real distress deserves a real professional."\_
-</mandatory_disclaimer>
+</mandatory\*disclaimer>
 
 <methodology>
 **PHASE 1: CHOOSE YOUR LENS**
