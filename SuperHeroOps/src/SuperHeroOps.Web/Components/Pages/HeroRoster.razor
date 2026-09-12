@@ -1,0 +1,145 @@
+@page "/heroes/{AreaId:int}"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SuperHeroOps.Core
+@using SuperHeroOps.Data
+@inject IDbContextFactory<SuperHeroOpsDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>Deploy Heroes@(area is null ? "" : $" - {area.Name}") - SuperHeroOps</PageTitle>
+
+@if (!found)
+{
+    <p><em>No community area found for id @AreaId.</em></p>
+}
+else if (area is null || heroes is null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <p><a href="@($"neighborhoods/{AreaId}")">&larr; Back to @area.Name</a></p>
+
+    <h1>Select Heroes to Deploy to @area.Name</h1>
+    <p>Browse the seeded roster of @heroes.Count heroes and select one or more to compare.</p>
+
+    <p>
+        <strong>@selected.Count</strong> selected.
+        <button class="btn btn-success" disabled="@(selected.Count == 0)" @onclick="GoToDeploy">
+            Deploy Selected Heroes &rarr;
+        </button>
+    </p>
+
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th></th>
+                <th></th>
+                <th>Name</th>
+                <th>Publisher</th>
+                <th>Alignment</th>
+                <th>Int</th>
+                <th>Str</th>
+                <th>Spd</th>
+                <th>Dur</th>
+                <th>Pow</th>
+                <th>Cmb</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var hero in PagedHeroes)
+            {
+                <tr>
+                    <td>
+                        <input type="checkbox" checked="@selected.Contains(hero.Id)"
+                               @onchange="e => ToggleSelected(hero.Id, (bool)e.Value!)" />
+                    </td>
+                    <td>
+                        @if (!string.IsNullOrEmpty(hero.ImagePath))
+                        {
+                            <img src="/@hero.ImagePath" alt="@hero.Name" style="height:40px" />
+                        }
+                        else
+                        {
+                            <span class="hero-avatar-placeholder" title="@hero.Name">@hero.Name[0]</span>
+                        }
+                    </td>
+                    <td>@hero.Name</td>
+                    <td>@hero.Publisher</td>
+                    <td>@hero.Alignment</td>
+                    <td>@hero.Intelligence</td>
+                    <td>@hero.Strength</td>
+                    <td>@hero.Speed</td>
+                    <td>@hero.Durability</td>
+                    <td>@hero.Power</td>
+                    <td>@hero.Combat</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <nav aria-label="Hero roster pages">
+        <button class="btn btn-outline-secondary btn-sm" disabled="@(page == 0)" @onclick="() => ChangePage(-1)">
+            &laquo; Prev
+        </button>
+        <span> Page @(page + 1) of @TotalPages </span>
+        <button class="btn btn-outline-secondary btn-sm" disabled="@(page >= TotalPages - 1)" @onclick="() => ChangePage(1)">
+            Next &raquo;
+        </button>
+    </nav>
+}
+
+@code {
+    private const int PageSize = 30;
+
+    [Parameter]
+    public int AreaId { get; set; }
+
+    private CommunityArea? area;
+    private bool found = true;
+    private List<Hero>? heroes;
+    private readonly HashSet<int> selected = [];
+    private int page;
+
+    private int TotalPages => heroes is null ? 1 : Math.Max(1, (int)Math.Ceiling(heroes.Count / (double)PageSize));
+
+    private IEnumerable<Hero> PagedHeroes => heroes!.Skip(page * PageSize).Take(PageSize);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        area = await db.CommunityAreas.FirstOrDefaultAsync(a => a.Id == AreaId);
+        if (area is null)
+        {
+            found = false;
+            return;
+        }
+
+        found = true;
+        heroes = await db.Heroes.OrderBy(h => h.Name).ToListAsync();
+    }
+
+    private void ToggleSelected(int heroId, bool isSelected)
+    {
+        if (isSelected)
+        {
+            selected.Add(heroId);
+        }
+        else
+        {
+            selected.Remove(heroId);
+        }
+    }
+
+    private void ChangePage(int delta)
+    {
+        page = Math.Clamp(page + delta, 0, TotalPages - 1);
+    }
+
+    private void GoToDeploy()
+    {
+        var heroIdsQuery = string.Join("&", selected.Select(id => $"heroIds={id}"));
+        Nav.NavigateTo($"deploy/{AreaId}?{heroIdsQuery}");
+    }
+}

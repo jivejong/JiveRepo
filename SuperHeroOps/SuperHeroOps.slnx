@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SuperHeroOps.Core.Tests/SuperHeroOps.Core.Tests.csproj" />
+    <Project Path="src/SuperHeroOps.Core/SuperHeroOps.Core.csproj" />
+    <Project Path="src/SuperHeroOps.Data/SuperHeroOps.Data.csproj" />
+    <Project Path="src/SuperHeroOps.Ingestion.Crime/SuperHeroOps.Ingestion.Crime.csproj" />
+    <Project Path="src/SuperHeroOps.Ingestion.Heroes/SuperHeroOps.Ingestion.Heroes.csproj" />
+    <Project Path="src/SuperHeroOps.Web/SuperHeroOps.Web.csproj" />
+  </Folder>
+</Solution>

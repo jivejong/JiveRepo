@@ -1,0 +1,18 @@
+# Secrets - never commit
+apikey.md
+apikeys.md
+.env
+*.env
+
+# Build artifacts
+bin/
+obj/
+
+# IDE
+.vs/
+.vscode/
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
