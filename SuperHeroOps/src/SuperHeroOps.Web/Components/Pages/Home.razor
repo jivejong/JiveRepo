@@ -1,0 +1,104 @@
+@page "/"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SuperHeroOps.Data
+@inject IDbContextFactory<SuperHeroOpsDbContext> DbFactory
+
+<PageTitle>Neighborhoods - SuperHeroOps</PageTitle>
+
+<h1>Chicago Neighborhoods</h1>
+<p>
+    Real Chicago Police Department crime data, trailing 90 days, by community area.
+    Click a column heading to sort; click a neighborhood name for its crime-type breakdown.
+</p>
+
+@if (neighborhoods is null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <table class="table table-striped table-hover">
+        <thead>
+            <tr>
+                <th role="button" @onclick='() => SortBy("name")'>Community Area @SortIndicator("name")</th>
+                <th role="button" @onclick='() => SortBy("total")'>Total Incidents @SortIndicator("total")</th>
+                <th role="button" @onclick='() => SortBy("arrests")'>Arrests @SortIndicator("arrests")</th>
+                <th role="button" @onclick='() => SortBy("rate")'>Arrest Rate @SortIndicator("rate")</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var n in SortedNeighborhoods)
+            {
+                <tr>
+                    <td><a href="@($"neighborhoods/{n.Id}")">@n.Name</a></td>
+                    <td>@n.TotalIncidents</td>
+                    <td>@n.Arrests</td>
+                    <td>@n.ArrestRate.ToString("0.0")%</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<NeighborhoodSummary>? neighborhoods;
+    private string sortColumn = "total";
+    private bool sortDescending = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var counts = await db.CrimeIncidents
+            .GroupBy(c => c.CommunityAreaId)
+            .Select(g => new { AreaId = g.Key, Total = g.Count(), Arrests = g.Count(c => c.Arrest) })
+            .ToDictionaryAsync(g => g.AreaId);
+
+        var areas = await db.CommunityAreas.ToListAsync();
+
+        neighborhoods = areas
+            .Select(a =>
+            {
+                counts.TryGetValue(a.Id, out var c);
+                return new NeighborhoodSummary(a.Id, a.Name, c?.Total ?? 0, c?.Arrests ?? 0);
+            })
+            .ToList();
+    }
+
+    private IEnumerable<NeighborhoodSummary> SortedNeighborhoods => sortColumn switch
+    {
+        "name" => sortDescending
+            ? neighborhoods!.OrderByDescending(n => n.Name)
+            : neighborhoods!.OrderBy(n => n.Name),
+        "arrests" => sortDescending
+            ? neighborhoods!.OrderByDescending(n => n.Arrests)
+            : neighborhoods!.OrderBy(n => n.Arrests),
+        "rate" => sortDescending
+            ? neighborhoods!.OrderByDescending(n => n.ArrestRate)
+            : neighborhoods!.OrderBy(n => n.ArrestRate),
+        _ => sortDescending
+            ? neighborhoods!.OrderByDescending(n => n.TotalIncidents)
+            : neighborhoods!.OrderBy(n => n.TotalIncidents),
+    };
+
+    private void SortBy(string column)
+    {
+        if (sortColumn == column)
+        {
+            sortDescending = !sortDescending;
+        }
+        else
+        {
+            sortColumn = column;
+            sortDescending = true;
+        }
+    }
+
+    private string SortIndicator(string column) => sortColumn == column ? (sortDescending ? "▼" : "▲") : "";
+
+    private sealed record NeighborhoodSummary(int Id, string Name, int TotalIncidents, int Arrests)
+    {
+        public double ArrestRate => TotalIncidents == 0 ? 0 : 100.0 * Arrests / TotalIncidents;
+    }
+}

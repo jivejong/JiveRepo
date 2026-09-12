@@ -1,0 +1,111 @@
+@page "/neighborhoods/{Id:int}"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SuperHeroOps.Core
+@using SuperHeroOps.Data
+@inject IDbContextFactory<SuperHeroOpsDbContext> DbFactory
+
+<PageTitle>@(area?.Name ?? "Neighborhood") - SuperHeroOps</PageTitle>
+
+<p><a href="/">&larr; Back to neighborhoods</a></p>
+
+@if (!found)
+{
+    <p><em>No community area found for id @Id.</em></p>
+}
+else if (area is null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <h1>@area.Name</h1>
+    <p>
+        Real Chicago Police Department crime data, trailing 90 days.
+        <strong>@totalIncidents</strong> incidents, <strong>@totalArrests</strong> arrests
+        (@ArrestRate.ToString("0.0")% arrest rate).
+    </p>
+
+    <p>
+        <a class="btn btn-primary" href="@($"heroes/{Id}")">Deploy Heroes Here &rarr;</a>
+    </p>
+
+    @if (breakdown.Count == 0)
+    {
+        <p><em>No incidents recorded for this community area in the trailing 90 days.</em></p>
+    }
+    else
+    {
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>Primary Crime Type</th>
+                    <th>Count</th>
+                    <th>% of Area Total</th>
+                    <th>Arrests</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in breakdown)
+                {
+                    <tr>
+                        <td>@row.PrimaryType</td>
+                        <td>@row.Count</td>
+                        <td>@row.PercentOfTotal.ToString("0.0")%</td>
+                        <td>@row.Arrests</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    [Parameter]
+    public int Id { get; set; }
+
+    private CommunityArea? area;
+    private bool found = true;
+    private int totalIncidents;
+    private int totalArrests;
+    private List<CrimeTypeBreakdownRow> breakdown = [];
+
+    private double ArrestRate => totalIncidents == 0 ? 0 : 100.0 * totalArrests / totalIncidents;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        area = null;
+        breakdown = [];
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        area = await db.CommunityAreas.FirstOrDefaultAsync(a => a.Id == Id);
+        if (area is null)
+        {
+            found = false;
+            return;
+        }
+
+        found = true;
+
+        var grouped = await db.CrimeIncidents
+            .Where(c => c.CommunityAreaId == Id)
+            .GroupBy(c => c.PrimaryType)
+            .Select(g => new { PrimaryType = g.Key, Count = g.Count(), Arrests = g.Count(c => c.Arrest) })
+            .OrderByDescending(g => g.Count)
+            .ToListAsync();
+
+        totalIncidents = grouped.Sum(g => g.Count);
+        totalArrests = grouped.Sum(g => g.Arrests);
+
+        breakdown = grouped
+            .Select(g => new CrimeTypeBreakdownRow(
+                g.PrimaryType,
+                g.Count,
+                g.Arrests,
+                totalIncidents == 0 ? 0 : 100.0 * g.Count / totalIncidents))
+            .ToList();
+    }
+
+    private sealed record CrimeTypeBreakdownRow(string PrimaryType, int Count, int Arrests, double PercentOfTotal);
+}
