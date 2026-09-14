@@ -1,18 +1,12 @@
 # SQL_fun
 
-A collection of "just SQL" experiments — no application code, no ORM, just
-`SELECT`/`CALL` statements that render ASCII art or play small games directly
-in the query console. Everything here is meant to be pasted straight into a
-client (`psql`, `sqlcmd`, Azure Data Studio, pgAdmin, etc.) and run.
+A collection of "just SQL" experiments — no application code, no ORM, just `SELECT`/`CALL` statements that render ASCII art or play small games directly in the query console. Everything here is meant to be pasted straight into a client (`psql`, `sqlcmd`, Azure Data Studio, pgAdmin, etc.) and run.
 
-Files are suffixed `_pg` for PostgreSQL and `_ms` for SQL Server (T-SQL), since
-the two dialects diverge quite a bit for recursive CTEs, string aggregation,
-and stored procedures/functions.
+Files are suffixed `_pg` for PostgreSQL and `_ms` for SQL Server (T-SQL), since the two dialects diverge quite a bit for recursive CTEs, string aggregation, and stored procedures/functions.
 
 ## ASCII art (single-statement, no state)
 
-These are one-shot `SELECT` statements — run the whole file and read the
-result set as a picture, one row of the grid per output row.
+These are one-shot `SELECT` statements — run the whole file and read the result set as a picture, one row of the grid per output row.
 
 | File                                   | Engine     | What it draws                                                                                                                                                                              |
 | -------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -24,8 +18,7 @@ result set as a picture, one row of the grid per output row.
 ## Games (stateful, multi-statement)
 
 These create tables/views/procedures first, then you drive the game by
-calling a procedure repeatedly. Each pair below is the same game implemented
-twice — once per SQL dialect.
+calling a procedure repeatedly. Each pair below is the same game implemented twice — once per SQL dialect.
 
 | Game                                           | PostgreSQL                               | SQL Server                               |
 | ---------------------------------------------- | ---------------------------------------- | ---------------------------------------- |
