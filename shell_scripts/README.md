@@ -17,24 +17,24 @@ A single CRUD front-end for three database engines — Teradata (BTEQ), Oracle (
 ./db_orchestrator.sh -e <engine> -a <action> [options]
 ```
 
-| Flag             | Purpose                                                        |
-| ---------------- | -------------------------------------------------------------- |
-| `-e <engine>`    | `teradata`, `oracle`, or `sqlserver` (required)                 |
-| `-a <action>`    | `create`, `read`, `update`, or `delete` (required)              |
-| `-i <id>`        | Record ID — required for update/delete, optional filter on read |
-| `-u <username>`  | Username — required for create                                  |
-| `-m <email>`     | Email — required for create                                     |
-| `--config <path>`| Credentials env file (default `~/.db_credentials.env`)          |
-| `-h, --help`     | Usage text                                                      |
+| Flag              | Purpose                                                         |
+| ----------------- | --------------------------------------------------------------- |
+| `-e <engine>`     | `teradata`, `oracle`, or `sqlserver` (required)                 |
+| `-a <action>`     | `create`, `read`, `update`, or `delete` (required)              |
+| `-i <id>`         | Record ID — required for update/delete, optional filter on read |
+| `-u <username>`   | Username — required for create                                  |
+| `-m <email>`      | Email — required for create                                     |
+| `--config <path>` | Credentials env file (default `~/.db_credentials.env`)          |
+| `-h, --help`      | Usage text                                                      |
 
 All actions target a fixed table, `app_users (id, username, email)`.
 
 **How credentials stay out of `ps`:**
 
-| Engine     | Technique                                                                       |
-| ---------- | ------------------------------------------------------------------------------- |
-| Oracle     | Invoked as `sqlplus -s -S /nolog`; the `CONNECT user/pass@tns` is fed via stdin  |
-| Teradata   | `bteq` is invoked with zero flags; `.LOGON` arrives via a stdin heredoc          |
+| Engine     | Technique                                                                          |
+| ---------- | ---------------------------------------------------------------------------------- |
+| Oracle     | Invoked as `sqlplus -s -S /nolog`; the `CONNECT user/pass@tns` is fed via stdin    |
+| Teradata   | `bteq` is invoked with zero flags; `.LOGON` arrives via a stdin heredoc            |
 | SQL Server | `SQLCMDPASSWORD` is exported and `-P` is omitted, so the password is never in argv |
 
 **Config file.** The script refuses to run unless the config file exists and its permissions are exactly `600` or `400`. It is sourced as shell, so use plain `KEY=value` lines:
@@ -76,9 +76,9 @@ Creates a timestamped `.tar.gz` of a directory, verifies it with `gzip -t`, then
 ./rolling_backup.sh /opt/database /backups/db 7       # 7-day retention
 ```
 
-| Exit | Meaning                                              |
-| ---- | ---------------------------------------------------- |
-| `0`  | Backup created and pruning completed                 |
+| Exit | Meaning                                               |
+| ---- | ----------------------------------------------------- |
+| `0`  | Backup created and pruning completed                  |
 | `1`  | Bad/missing arguments, or archive verification failed |
 
 ---
@@ -110,13 +110,13 @@ Exit `2` is the useful one for CI: fail the ingestion job when anything is quara
 
 Four duplicate-finders and one empty-folder cleaner. They differ in **what they compare** and **which copy survives** — the table below is the fast way to pick one.
 
-| Script                        | Compares                         | Hash    | Keeps                                     | Duplicates go to        |
-| ----------------------------- | -------------------------------- | ------- | ----------------------------------------- | ----------------------- |
-| `DeDupeArchive.ps1`           | All files under one path         | MD5     | **Deepest** copy                          | Flat isolation folder   |
-| `Move-DuplicateFiles.ps1`     | All files under one path         | SHA-256 | **Deepest** copy                          | Quarantine, tree kept   |
-| `Remove-DuplicateFiles_all.ps1` | All files under one path       | SHA-256 | **Shallowest** copy                       | Quarantine, tree kept   |
-| `Remove-DuplicateFiles.ps1`   | Folder A against Folder B        | SHA-256 | Everything in **Folder B**                | Quarantine, tree kept   |
-| `Remove-DuplicateFolders.ps1` | Whole folders (name + contents)  | SHA-256 | Shortest path, ties alphabetical          | Quarantine              |
+| Script                          | Compares                        | Hash    | Keeps                            | Duplicates go to      |
+| ------------------------------- | ------------------------------- | ------- | -------------------------------- | --------------------- |
+| `DeDupeArchive.ps1`             | All files under one path        | MD5     | **Deepest** copy                 | Flat isolation folder |
+| `Move-DuplicateFiles.ps1`       | All files under one path        | SHA-256 | **Deepest** copy                 | Quarantine, tree kept |
+| `Remove-DuplicateFiles_all.ps1` | All files under one path        | SHA-256 | **Shallowest** copy              | Quarantine, tree kept |
+| `Remove-DuplicateFiles.ps1`     | Folder A against Folder B       | SHA-256 | Everything in **Folder B**       | Quarantine, tree kept |
+| `Remove-DuplicateFolders.ps1`   | Whole folders (name + contents) | SHA-256 | Shortest path, ties alphabetical | Quarantine            |
 
 Nothing here permanently deletes files — every duplicate is **moved**, so you review the quarantine folder and delete it yourself when satisfied. `Remove-EmptyFolders.ps1` is the one exception; it deletes.
 
@@ -124,7 +124,7 @@ Nothing here permanently deletes files — every duplicate is **moved**, so you 
 
 ### 🗃️ `DeDupeArchive.ps1`
 
-The lightest of the set: hashes every file under `-AnalyzePath` with MD5, and for each duplicate cluster keeps the copy **deepest** in the tree, relocating the shallower copies into a single flat folder. Name collisions in that folder get a `_Duplicate_N` suffix. Reports total files processed and space recovered in GB.
+The lightest of the set. It hashes every file under `-AnalyzePath` with MD5, and for each duplicate cluster keeps the copy **deepest** in the tree, relocating the shallower copies into a single flat folder. Name collisions in that folder get a `_Duplicate_N` suffix. Reports total files processed and space recovered in GB.
 
 ```powershell
 .\DeDupeArchive.ps1 -AnalyzePath 'D:\Archive' -DuplicatesPath 'D:\Dupes' -WhatIf
@@ -153,12 +153,12 @@ Same single-tree, size-then-SHA-256 approach as `Move-DuplicateFiles.ps1`, with 
 .\Remove-DuplicateFiles_all.ps1 -TargetPath 'D:\Media' -QuarantinePath 'D:\Quarantine' -WhatIf
 ```
 
-| Parameter        | Default                                          |
-| ---------------- | ------------------------------------------------ |
-| `-TargetPath`    | required                                         |
-| `-QuarantinePath`| required                                         |
-| `-LogFile`       | `.\RemoveDuplicateFiles_<timestamp>.log`         |
-| `-MinSizeBytes`  | `0` — raise it to skip small files entirely      |
+| Parameter         | Default                                     |
+| ----------------- | ------------------------------------------- |
+| `-TargetPath`     | required                                    |
+| `-QuarantinePath` | required                                    |
+| `-LogFile`        | `.\RemoveDuplicateFiles_<timestamp>.log`    |
+| `-MinSizeBytes`   | `0` — raise it to skip small files entirely |
 
 ### 🔀 `Remove-DuplicateFiles.ps1`
 

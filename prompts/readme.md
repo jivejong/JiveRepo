@@ -134,6 +134,29 @@ Every prompt in this repository is fighting the same underlying pull at a differ
 
 The specific guardrails differ. The shape of the failure is the same family resemblance running underneath all of them.
 
+## Cross-Model Testing & Substrate Effects
+
+A prompt is not software executing on a deterministic runtime; it is a vector steering a model's existing reinforcement landscape. Because these prompts rely heavily on explicit constraints, refusal patterns, and deliberate friction, their execution changes markedly depending on the model's underlying alignment substrate:
+
+- **Constitutional / RLHF Models (e.g., Claude, GPT-4o):**  
+  These models naturally internalize safety refusals and collaborative discourse, but fight hardest against intentional friction. Their base alignment is tuned to please, summarize, and resolve. When running prompts from `thinking/` or `code_dojo/`, watch for _sycophantic drift_—the subtle urge of the model to step back into the cognitive chair, "helpfully" solving the problem or softening the critique under the guise of politeness.
+
+- **Open-Weights & Minimally-Aligned Models (e.g., Llama 3/3.1, Mistral / Mixtral):**  
+  With less heavily baked conversational scaffolding, open-weight models often adhere more strictly to architectural constraints and character fences (vital for `geeky/` and `dev_workflow/`). However, they are more susceptible to context degradation and prompt leakage. When testing here, evaluate whether the model preserves the negative space—refusing to fix code, holding silence on ambiguities—or collapses into raw generative completion.
+
+- **Reasoning Models (e.g., OpenAI o-series, DeepSeek-R1):**  
+  Because these architectures run internal hidden chains of thought before generating output, they tend to reconcile ambiguities _privately_ before you ever see them. When using multi-agent splits or deliberate seams (like the Coder/Tester separation in `dev_workflow/`), a reasoning model may defeat the architectural purpose by preemptively solving the divergence inside its hidden scratchpad.
+
+### What to Look For Across Runs
+
+When porting these prompts to different engines, don't grade them on raw eloquence. Grade them on **boundary integrity**:
+
+1. **The Spill Test:** Does the bot slip into providing answers when the user expresses frustration, or does it hold the pedagogical boundary?
+2. **The Seam Test:** When handed an ambiguous requirement, does the model make an executive assumption to keep going, or does it stop and hand the fork back to the person in the chair?
+3. **The Voice Test:** Does the model maintain the idiosyncratic, spiky constraints of the persona, or does it homogenize back into generic assistant prose?
+
+If you run these across different architectures, pay attention to where the prompt breaks. A prompt failure rarely means the instructions were misunderstood; it usually reveals where the host model's default training gravity overwhelmed the constraint.
+
 ## Status
 
 Everything here is drafted system prompt material, some not yet validated against real conversation transcripts at scale. Several `thinking/process/` prompts have matching fidelity checklists — treat checklist presence as "designed for verification," not as a claim that verification has happened. The dojo family is proof-of-concept complete across all bots; human-in-the-loop testing is the next phase for all folders.
