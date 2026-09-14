@@ -1,0 +1,193 @@
+@page "/deploy/{AreaId:int}/compare"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SuperHeroOps.Core
+@using SuperHeroOps.Core.Scoring
+@using SuperHeroOps.Data
+@inject IDbContextFactory<SuperHeroOpsDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>Compare Impact@(area is null ? "" : $" - {area.Name}") - SuperHeroOps</PageTitle>
+
+@if (!found)
+{
+    <p><em>No community area found for id @AreaId.</em></p>
+}
+else if (area is null || selectedHeroes is null)
+{
+    <p><em>Loading...</em></p>
+}
+else if (selectedHeroes.Count == 0)
+{
+    <p><em>No heroes selected. Go back and select at least one hero.</em></p>
+    <p><a href="@($"heroes/{AreaId}")">&larr; Back to hero selection</a></p>
+}
+else
+{
+    <p><a href="@($"deploy/{AreaId}/details?{HeroIdsQueryString}")">&larr; Back to hero details</a></p>
+
+    <h1>Deploy to @area.Name</h1>
+    <p><em>Step 2 of 3: Impact Comparison</em></p>
+
+    <div class="synthetic-banner">
+        &#9889; Simulated Intervention Model
+        <span class="subtitle">
+            Everything below this line is a fictional modeling exercise using fictional
+            characters &mdash; not a policy forecast.
+        </span>
+    </div>
+
+    @if (categoriesPresent.Count == 0)
+    {
+        <p><em>
+            No scoreable crime categories in @area.Name's real 90-day data window
+            (its incidents fall only into categories this model doesn't project a
+            hero effect for).
+        </em></p>
+    }
+    else
+    {
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>Hero</th>
+                    @foreach (var cp in categoriesPresent)
+                    {
+                        <th>@cp.Category.ToLabel() (@cp.IncidentCount incidents)</th>
+                    }
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var hero in selectedHeroes)
+                {
+                    <tr>
+                        <td>@hero.Name</td>
+                        @foreach (var cp in categoriesPresent)
+                        {
+                            var effect = effectByHeroAndCategory[(hero.Id, cp.Category)];
+                            <td>@effect.ToString("0.0")% projected effect</td>
+                        }
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <p><em>
+            Projected effect is an illustrative, capped figure (max @InterventionScoring.MaxEffectCeilingPercent.ToString("0")%)
+            derived from each hero's powerstats relative to the seeded roster &mdash; not a forecast.
+        </em></p>
+    }
+
+    <p style="margin-top:1.5rem">
+        <button class="btn btn-success" @onclick="GoNext">Next: Generate Reports &rarr;</button>
+    </p>
+}
+
+@code {
+    [Parameter]
+    public int AreaId { get; set; }
+
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "heroIds")]
+    public int[]? HeroIds { get; set; }
+
+    private CommunityArea? area;
+    private bool found = true;
+    private List<Hero>? selectedHeroes;
+    private List<(CrimeCategory Category, int IncidentCount)> categoriesPresent = [];
+    private Dictionary<(int HeroId, CrimeCategory Category), double> effectByHeroAndCategory = [];
+
+    private string HeroIdsQueryString => string.Join("&", (HeroIds ?? []).Select(id => $"heroIds={id}"));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        area = await db.CommunityAreas.FirstOrDefaultAsync(a => a.Id == AreaId);
+        if (area is null)
+        {
+            found = false;
+            return;
+        }
+
+        found = true;
+
+        var ids = HeroIds ?? [];
+        selectedHeroes = await db.Heroes.Where(h => ids.Contains(h.Id)).OrderBy(h => h.Name).ToListAsync();
+
+        if (selectedHeroes.Count == 0)
+        {
+            return;
+        }
+
+        await ComputeAndPersistScoresAsync(db);
+    }
+
+    // Visiting this page is the deploy confirmation - scores are computed and
+    // (re)persisted every time it's loaded, matching InterventionScoring's roster-wide
+    // normalization against whatever the roster looks like right now.
+    private async Task ComputeAndPersistScoresAsync(SuperHeroOpsDbContext db)
+    {
+        var rawTypeCounts = await db.CrimeIncidents
+            .Where(c => c.CommunityAreaId == AreaId)
+            .GroupBy(c => c.PrimaryType)
+            .Select(g => new { PrimaryType = g.Key, Count = g.Count() })
+            .ToListAsync();
+
+        categoriesPresent = rawTypeCounts
+            .Select(t => (Category: CrimeTypeCategorizer.Categorize(t.PrimaryType), t.Count))
+            .Where(t => t.Category is not null)
+            .GroupBy(t => t.Category!.Value)
+            .Select(g => (Category: g.Key, IncidentCount: g.Sum(x => x.Count)))
+            .OrderByDescending(cp => cp.IncidentCount)
+            .ToList();
+
+        // Normalization is relative to the whole seeded roster, not just the
+        // selected heroes - see InterventionScoring.NormalizeRoster.
+        var fullRoster = await db.Heroes.ToListAsync();
+
+        var now = DateTime.UtcNow;
+        effectByHeroAndCategory = [];
+
+        foreach (var (category, _) in categoriesPresent)
+        {
+            var normalized = InterventionScoring.NormalizeRoster(fullRoster, category);
+            var label = category.ToLabel();
+
+            foreach (var hero in selectedHeroes!)
+            {
+                var score = normalized.GetValueOrDefault(hero.Id);
+                var effect = InterventionScoring.ProjectedEffectPercent(score);
+                effectByHeroAndCategory[(hero.Id, category)] = effect;
+
+                var existing = await db.InterventionScores.FirstOrDefaultAsync(s =>
+                    s.CommunityAreaId == AreaId && s.HeroId == hero.Id && s.CrimeCategory == label);
+
+                if (existing is null)
+                {
+                    db.InterventionScores.Add(new InterventionScore
+                    {
+                        CommunityAreaId = AreaId,
+                        HeroId = hero.Id,
+                        CrimeCategory = label,
+                        NormalizedScore = score,
+                        ProjectedEffectPercent = effect,
+                        ComputedAt = now,
+                    });
+                }
+                else
+                {
+                    existing.NormalizedScore = score;
+                    existing.ProjectedEffectPercent = effect;
+                    existing.ComputedAt = now;
+                }
+            }
+        }
+
+        await db.SaveChangesAsync();
+    }
+
+    private void GoNext()
+    {
+        Nav.NavigateTo($"deploy/{AreaId}/reports?{HeroIdsQueryString}");
+    }
+}

@@ -1,0 +1,109 @@
+@page "/deploy/{AreaId:int}/details"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SuperHeroOps.Core
+@using SuperHeroOps.Data
+@inject IDbContextFactory<SuperHeroOpsDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>Hero Details@(area is null ? "" : $" - {area.Name}") - SuperHeroOps</PageTitle>
+
+@if (!found)
+{
+    <p><em>No community area found for id @AreaId.</em></p>
+}
+else if (area is null || selectedHeroes is null)
+{
+    <p><em>Loading...</em></p>
+}
+else if (selectedHeroes.Count == 0)
+{
+    <p><em>No heroes selected. Go back and select at least one hero.</em></p>
+    <p><a href="@($"heroes/{AreaId}")">&larr; Back to hero selection</a></p>
+}
+else
+{
+    <p><a href="@($"heroes/{AreaId}")">&larr; Back to hero selection</a></p>
+
+    <h1>Deploy to @area.Name</h1>
+    <p><em>Step 1 of 3: Hero Details</em></p>
+    <p>Real structured biographical data from SuperheroAPI &mdash; not a powers/abilities description.</p>
+
+    <div style="display:flex; flex-wrap:wrap; gap:1rem;">
+        @foreach (var hero in selectedHeroes)
+        {
+            <div class="card" style="min-width:280px; max-width:360px;">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        @if (!string.IsNullOrEmpty(hero.ImagePath))
+                        {
+                            <img src="/@hero.ImagePath" alt="@hero.Name" style="height:32px; vertical-align:middle;" />
+                        }
+                        else
+                        {
+                            <span class="hero-avatar-placeholder" title="@hero.Name">@hero.Name[0]</span>
+                        }
+                        @hero.Name
+                    </h5>
+                    <dl class="row mb-0">
+                        <dt class="col-6">Full Name</dt><dd class="col-6">@Display(hero.FullName)</dd>
+                        <dt class="col-6">Aliases</dt><dd class="col-6">@Display(hero.Aliases)</dd>
+                        <dt class="col-6">Publisher</dt><dd class="col-6">@Display(hero.Publisher)</dd>
+                        <dt class="col-6">Alignment</dt><dd class="col-6">@Display(hero.Alignment)</dd>
+                        <dt class="col-6">Place of Birth</dt><dd class="col-6">@Display(hero.PlaceOfBirth)</dd>
+                        <dt class="col-6">First Appearance</dt><dd class="col-6">@Display(hero.FirstAppearance)</dd>
+                        <dt class="col-6">Height</dt><dd class="col-6">@Display(hero.Height)</dd>
+                        <dt class="col-6">Weight</dt><dd class="col-6">@Display(hero.Weight)</dd>
+                        <dt class="col-6">Eye Color</dt><dd class="col-6">@Display(hero.EyeColor)</dd>
+                        <dt class="col-6">Hair Color</dt><dd class="col-6">@Display(hero.HairColor)</dd>
+                        <dt class="col-6">Occupation</dt><dd class="col-6">@Display(hero.Occupation)</dd>
+                        <dt class="col-6">Base</dt><dd class="col-6">@Display(hero.Base)</dd>
+                        <dt class="col-6">Group Affiliation</dt><dd class="col-6">@Display(hero.GroupAffiliation)</dd>
+                    </dl>
+                </div>
+            </div>
+        }
+    </div>
+
+    <p style="margin-top:1.5rem">
+        <button class="btn btn-success" @onclick="GoNext">Next: Compare Impact &rarr;</button>
+    </p>
+}
+
+@code {
+    [Parameter]
+    public int AreaId { get; set; }
+
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "heroIds")]
+    public int[]? HeroIds { get; set; }
+
+    private CommunityArea? area;
+    private bool found = true;
+    private List<Hero>? selectedHeroes;
+
+    private static string Display(string? value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        area = await db.CommunityAreas.FirstOrDefaultAsync(a => a.Id == AreaId);
+        if (area is null)
+        {
+            found = false;
+            return;
+        }
+
+        found = true;
+
+        var ids = HeroIds ?? [];
+        selectedHeroes = await db.Heroes.Where(h => ids.Contains(h.Id)).OrderBy(h => h.Name).ToListAsync();
+    }
+
+    private void GoNext()
+    {
+        var heroIdsQuery = string.Join("&", (HeroIds ?? []).Select(id => $"heroIds={id}"));
+        Nav.NavigateTo($"deploy/{AreaId}/compare?{heroIdsQuery}");
+    }
+}
