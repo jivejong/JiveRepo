@@ -1,0 +1,189 @@
+@page "/deploy/{AreaId:int}/reports"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SuperHeroOps.Core
+@using SuperHeroOps.Data
+@using SuperHeroOps.Web.Services
+@inject IDbContextFactory<SuperHeroOpsDbContext> DbFactory
+@inject GroqHeroReportService ReportService
+
+<PageTitle>Hero Reports@(area is null ? "" : $" - {area.Name}") - SuperHeroOps</PageTitle>
+
+@if (!found)
+{
+    <p><em>No community area found for id @AreaId.</em></p>
+}
+else if (area is null || selectedHeroes is null)
+{
+    <p><em>Loading...</em></p>
+}
+else if (selectedHeroes.Count == 0)
+{
+    <p><em>No heroes selected. Go back and select at least one hero.</em></p>
+    <p><a href="@($"heroes/{AreaId}")">&larr; Back to hero selection</a></p>
+}
+else
+{
+    <p><a href="@($"deploy/{AreaId}/compare?{HeroIdsQueryString}")">&larr; Back to impact comparison</a></p>
+
+    <h1>Deploy to @area.Name</h1>
+    <p><em>Step 3 of 3: AI-Generated Reports</em></p>
+
+    @if (groqKeyMissing)
+    {
+        <p class="text-danger"><em>GROQ_API_KEY is not set in the environment - cannot generate hero reports.</em></p>
+    }
+    else if (!reportsRequested)
+    {
+        <button class="btn btn-primary" @onclick="GenerateReports" disabled="@generatingReports">
+            @(generatingReports ? "Generating reports..." : "Generate Hero Reports")
+        </button>
+    }
+    else
+    {
+        <div style="display:flex; flex-wrap:wrap; gap:1rem;">
+            @foreach (var hero in selectedHeroes)
+            {
+                <div class="card" style="min-width:280px; max-width:420px;">
+                    <div class="card-body">
+                        <h5 class="card-title">@hero.Name</h5>
+                        @if (reportResults.TryGetValue(hero.Id, out var result))
+                        {
+                            @if (result is not null)
+                            {
+                                <p><strong>Risk Assessment</strong><br />@result.RiskAssessment</p>
+                                <p><strong>Predicted Impact</strong><br />@result.PredictedImpactNarrative</p>
+                                <p><strong>Recommendation</strong><br />@result.Recommendation</p>
+                            }
+                            else
+                            {
+                                <p class="text-danger"><em>Report generation failed for this hero.</em></p>
+                            }
+                        }
+                        else if (generatingReports)
+                        {
+                            <p><em>Generating...</em></p>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    }
+}
+
+@code {
+    [Parameter]
+    public int AreaId { get; set; }
+
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "heroIds")]
+    public int[]? HeroIds { get; set; }
+
+    private CommunityArea? area;
+    private bool found = true;
+    private List<Hero>? selectedHeroes;
+
+    private bool groqKeyMissing;
+    private bool reportsRequested;
+    private bool generatingReports;
+    private Dictionary<int, HeroReportContent?> reportResults = [];
+
+    private string HeroIdsQueryString => string.Join("&", (HeroIds ?? []).Select(id => $"heroIds={id}"));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        reportsRequested = false;
+        generatingReports = false;
+        groqKeyMissing = false;
+        reportResults = [];
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        area = await db.CommunityAreas.FirstOrDefaultAsync(a => a.Id == AreaId);
+        if (area is null)
+        {
+            found = false;
+            return;
+        }
+
+        found = true;
+
+        var ids = HeroIds ?? [];
+        selectedHeroes = await db.Heroes.Where(h => ids.Contains(h.Id)).OrderBy(h => h.Name).ToListAsync();
+    }
+
+    private async Task GenerateReports()
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GROQ_API_KEY")))
+        {
+            groqKeyMissing = true;
+            return;
+        }
+
+        reportsRequested = true;
+        generatingReports = true;
+        reportResults = [];
+        StateHasChanged();
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var crimeSummary = await BuildCrimeSummaryAsync(db);
+
+        foreach (var hero in selectedHeroes!)
+        {
+            var scores = await db.InterventionScores
+                .Where(s => s.CommunityAreaId == AreaId && s.HeroId == hero.Id)
+                .ToListAsync();
+
+            var content = await ReportService.GenerateAsync(hero, crimeSummary, scores);
+
+            if (content is not null)
+            {
+                var existing = await db.HeroReports.FirstOrDefaultAsync(r =>
+                    r.CommunityAreaId == AreaId && r.HeroId == hero.Id);
+
+                if (existing is null)
+                {
+                    db.HeroReports.Add(new HeroReport
+                    {
+                        CommunityAreaId = AreaId,
+                        HeroId = hero.Id,
+                        RiskAssessment = content.RiskAssessment,
+                        PredictedImpactNarrative = content.PredictedImpactNarrative,
+                        Recommendation = content.Recommendation,
+                        GeneratedAt = DateTime.UtcNow,
+                    });
+                }
+                else
+                {
+                    existing.RiskAssessment = content.RiskAssessment;
+                    existing.PredictedImpactNarrative = content.PredictedImpactNarrative;
+                    existing.Recommendation = content.Recommendation;
+                    existing.GeneratedAt = DateTime.UtcNow;
+                }
+
+                await db.SaveChangesAsync();
+            }
+
+            reportResults[hero.Id] = content;
+            StateHasChanged();
+        }
+
+        generatingReports = false;
+    }
+
+    private async Task<CrimeSummary> BuildCrimeSummaryAsync(SuperHeroOpsDbContext db)
+    {
+        var grouped = await db.CrimeIncidents
+            .Where(c => c.CommunityAreaId == AreaId)
+            .GroupBy(c => c.PrimaryType)
+            .Select(g => new { PrimaryType = g.Key, Count = g.Count(), Arrests = g.Count(c => c.Arrest) })
+            .OrderByDescending(g => g.Count)
+            .ToListAsync();
+
+        var total = grouped.Sum(g => g.Count);
+        var arrests = grouped.Sum(g => g.Arrests);
+        var top = grouped.Take(5).Select(g => (g.PrimaryType, g.Count)).ToList();
+
+        return new CrimeSummary(area!.Name, total, arrests, top);
+    }
+}

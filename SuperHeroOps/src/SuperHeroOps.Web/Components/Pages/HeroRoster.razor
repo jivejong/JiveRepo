@@ -140,6 +140,6 @@ else
     private void GoToDeploy()
     {
         var heroIdsQuery = string.Join("&", selected.Select(id => $"heroIds={id}"));
-        Nav.NavigateTo($"deploy/{AreaId}?{heroIdsQuery}");
+        Nav.NavigateTo($"deploy/{AreaId}/details?{heroIdsQuery}");
     }
 }
