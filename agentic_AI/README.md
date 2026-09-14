@@ -1,6 +1,6 @@
 # 🤖 Agentic AI Projects
 
-A collection of small, self-contained [Streamlit](https://streamlit.io/) apps, each demonstrating a different pattern in agentic AI — from single-agent classifiers to multi-agent negotiations, compound multimodal pipelines, and voice-driven state machines. Every project is playful on the surface but built to showcase a specific, reusable technique underneath.
+A collection of small, self-contained [Streamlit](https://streamlit.io/) apps, each demonstrating a different pattern in agentic AI — from single-agent classifiers to multi-agent negotiations, compound multimodal pipelines, and voice-driven state machines. Every project is playful on the surface but built to showcase a specific, reusable technique underneath. Various layers of the AI stack are represented here.
 
 ---
 
