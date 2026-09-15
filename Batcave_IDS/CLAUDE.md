@@ -8,20 +8,31 @@ Context for Claude Code working in this repository.
 
 ```
 TRACK:  A  (headless core pipeline)
-PHASE:  0  (scaffolding) — LOCALLY COMPLETE, CI unverified (not yet pushed)
-NEXT:   Phase 1 — Honeypot and event envelope (planning)
+PHASE:  1  (honeypot and event envelope) — LOCALLY COMPLETE, CI unverified (not yet pushed)
+NEXT:   Phase 2 — Technique catalog and stage machine (planning)
 IN SCOPE:    docs/01, 02, 03, 04, 05, 06, 07
 OUT OF SCOPE: docs/08  — no console, no bat bot, no finale, no dashboard
 ```
 
-Phase 0 checkpoint (docs/06) has four parts: `make dev-up` works, `rpk topic list` shows
-`attack.events` at 3 partitions, console reachable on `:8080`, **and CI green.** The first three are
-verified against real, repeated local output: fresh `make dev-up` (redpanda + redpanda-console;
-honeypot/consumer arrive in Phase 1/4 — see docs/05), 3 partitions confirmed via `rpk topic
-describe`, console returns HTTP 200, `uv run pytest`/`ruff check`/`ruff format --check` all green,
-`make dev-down` tears down clean. **The fourth item — CI green — cannot be confirmed until this is
-pushed.** Nothing has been pushed to the public remote yet (deliberately, per instruction: local
-first). Do not treat Phase 0 as fully closed until CI is observed green after that push.
+Phase 0 and Phase 1 are both locally complete and verified against real output; neither has been
+pushed, so **CI green is unconfirmed for both** — nothing has gone to the public remote yet
+(deliberately, per instruction: local first). Do not treat either phase as fully closed until CI is
+observed green after that push.
+
+Phase 1 checkpoint (docs/06): curl every route, read messages back with `rpk topic consume`,
+inspect the JSON by hand against docs/02. Done for real — every field in the shared envelope and
+`attack_events` tables matched real emitted output exactly (no field-level doc correction needed).
+Two mechanisms the spec left open got decided and documented as part of this phase's own commits,
+not deferred:
+
+- **Session derivation is gap-based, not a fixed time bucket** — docs/06 said "time bucket";
+  corrected. `(source_ip, user_agent)` sessions close after `SESSION_GAP_SECONDS` (default 120s) of
+  inactivity, verified against real Kafka output with a real 2s/6s timing split against a 5s gap.
+  Full writeup, including the Phase 3 recalibration note (Mister Freeze's real session length isn't
+  known until `BehaviorProfile` exists): docs/02, "Session derivation".
+- **Three request headers with wire formats the spec never specified**: `X-Client-Ts`,
+  `X-Sim-Delay-Ms`, `X-Forwarded-For` (gated off by default via `HONEYPOT_TRUST_FORWARDED_FOR`).
+  Documented in docs/01, right after the honeypot's producer config.
 
 `k8s-data-platform/` has been moved out to be a sibling of `Batcave_IDS` at the JiveRepo root,
 matching its own HANDOFF.md. Resolved.
