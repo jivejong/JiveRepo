@@ -67,6 +67,38 @@ distinct events with distinct `event_id`s and must not be removed by deduplicati
 collapses identical `event_id`s. Worth an explicit test: a Two-Face session should retain its
 duplicate path pairs after staging.
 
+### What `pivot_ratio` and `retry_ratio` actually measure (Phase 3 finding)
+
+`pivot_ratio` and `retry_ratio` are only defined for villains that *fail often enough to face the
+choice* — a villain who clears every stage on the first attempt makes no retry-or-pivot decisions at
+all. So they discriminate *within the frequently-failing population*, not across the whole roster,
+and a villain's rank on them is shaped as much by how often it fails as by its policy. Measured over
+10 runs each (`make separability`):
+
+- **`retry_ratio` leader: Killer Croc.** He grinds because gating leaves him nothing to pivot to —
+  the high retry rate is a *consequence of his gating*, not just a policy choice.
+- **`pivot_ratio` leader: Joker.** Chaotic, no coherent objective, constant reconsideration — he
+  pivots more than the methodical villains, who either succeed (no decision) or grind.
+
+An earlier draft claimed Ra's al Ghul had the highest `pivot_ratio`. That contradicts his own combat
+100 / intelligence 100 profile: a villain who clears stages immediately doesn't accumulate pivot
+decisions. Corrected — his discriminator is his low wasted-request behavior and his reaching tier 4
+in very few requests, not pivot volume. See docs/06 and docs/07.
+
+### Low-durability villains are identifiable by signature, not by outcome (Phase 3 finding)
+
+Riddler and Two-Face (durability 14) stop on the first hard error, so a couple of early rolls decide
+how far the session gets — their outcome features (`max_path_tier`, `duration_s`) are high-variance
+run to run *by design*, not from a mapping defect. Their separability therefore has to rest on their
+**signature** features, which are present regardless of how far the run gets. The harness confirms
+this directly: over 10 runs each, Riddler vs Two-Face show large per-feature effect sizes on the
+signature features (`riddle_param_count` d≈3.3, `exact_duplicate_path_pairs` d≈2.2) but near-zero on
+the outcome features (`max_path_tier` d≈0.08, `duration_s` d≈0.37).
+
+This is a real, testable property: **a low-durability villain is recognizable by *how* it attacks,
+not by *how far* it gets** — a prediction Phase 6 can check against the LLM's per-session
+attribution.
+
 ---
 
 ## Verification (Phase 2 checkpoint)

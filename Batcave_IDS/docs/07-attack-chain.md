@@ -219,8 +219,13 @@ before any repetition has happened. Neither was pinned down precisely enough to 
 doc alone; both decided in Phase 2 (`services/simulator/probability.py`).
 
 `retry_penalty` (default 0.68–0.95 per technique) creates the interesting decision. Repeating gets
-worse; pivoting needs alternatives. Killer Croc grinds because he has nothing else, producing the
-highest `retry_ratio`. Ra's al Ghul pivots immediately, producing the highest `pivot_ratio`.
+worse; pivoting needs alternatives. Killer Croc grinds because gating leaves him nothing to pivot
+to, producing the highest `retry_ratio` (confirmed against real runs, Phase 3). The highest
+`pivot_ratio` is **Joker's**, not Ra's al Ghul's — an earlier draft had that backwards. A villain who
+pivots on every failure still only accumulates pivot decisions if it *fails often*; Ra's al Ghul's
+combat 100 clears stages fast, so he makes few decisions of either kind. His actual discriminator is
+reaching tier 4 in very few requests with near-zero waste, not pivot volume. `pivot_ratio` /
+`retry_ratio` only discriminate within the frequently-failing population — see docs/03.
 
 Record `computed_probability`, `roll`, and `outcome` on every attempt so
 `assert_probability_calibration` can verify observed success rates converge on computed

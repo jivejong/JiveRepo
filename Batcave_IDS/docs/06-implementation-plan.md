@@ -98,7 +98,17 @@ gate. Confirm attempts and their generated HTTP requests share an `attempt_id`.
 *Separability:* run all twelve for 120 seconds. Confirm Riddler and Two-Face separate on
 `riddle_param_count` and `exact_duplicate_path_pairs`; Scarecrow and Penguin on `error_ratio` and
 `distinct_source_ips`; Joker and Harley Quinn on burst structure. Confirm Killer Croc shows the
-highest `retry_ratio` and Ra's al Ghul the highest `pivot_ratio`. This will loop — budget for it.
+highest `retry_ratio`, and that Catwoman and Ra's al Ghul both reach tier 4 in under 25 requests
+(Ra's al Ghul's discriminator — near-zero wasted requests, not pivot volume; the earlier
+"highest `pivot_ratio`" claim was wrong, since a villain who clears stages immediately makes few
+pivot decisions — see docs/03). This will loop — budget for it.
+
+**Measure separability as effect size** (centroid distance ÷ pooled within-villain spread), not raw
+centroid distance: Phase 6 classifies a single session, not a villain average, so two distant-but-
+overlapping distributions are not actually separable. The harness (`make separability`) reports
+both, effect size as the headline. Cross-check note for Phase 5: the harness computes these features
+in SQL precisely so Phase 5's dbt feature models can lift the same expressions — a divergence
+between the two on the same event corpus is a bug in one of them, not an acceptable difference.
 
 *Pathologies:* run with all enabled and verify each actually appears in the data. A pathology
 configured but not present means the injection is broken and Phase 5's handling will be untested.
