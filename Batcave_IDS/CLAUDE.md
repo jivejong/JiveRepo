@@ -8,10 +8,22 @@ Context for Claude Code working in this repository.
 
 ```
 TRACK:  A  (headless core pipeline)
-PHASE:  0  (scaffolding)
+PHASE:  0  (scaffolding) — COMPLETE, checkpoint verified, not yet pushed
+NEXT:   Phase 1 — Honeypot and event envelope
 IN SCOPE:    docs/01, 02, 03, 04, 05, 06, 07
 OUT OF SCOPE: docs/08  — no console, no bat bot, no finale, no dashboard
 ```
+
+Phase 0 checkpoint (docs/06) verified against real output: `make dev-up` brings up a genuinely
+fresh environment (redpanda + redpanda-console; honeypot/consumer arrive in Phase 1/4 — see
+docs/05), `attack.events` created with 3 partitions, console returns HTTP 200 on `:8080`,
+`uv run pytest`/`ruff check`/`ruff format --check` all green, `make dev-down` tears down clean.
+Local only so far — **not yet pushed**, CI has not run.
+
+`k8s-data-platform/` is still nested inside `Batcave_IDS/` rather than sibling to it at the
+JiveRepo root, despite its own HANDOFF.md describing it as a separate companion project. Excluded
+from this project's `.gitignore` and CI path filter pending a decision to move it — not otherwise
+addressed.
 
 **Do not build anything from `docs/08-interactive-experience.md` while Track A is in progress**,
 even if it would be quick, even if the spec is right there. Track A must run end to end headlessly
