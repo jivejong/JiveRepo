@@ -182,10 +182,63 @@ def run_scripted_session(
             raise RuntimeError("honeypot did not set the batcave_sid session cookie")
 
         attempts: list[AttemptEvent] = []
-        attempt_seq = 0
-        max_stage_reached = 0
+        state = {"attempt_seq": 0, "max_stage_reached": 0}
+
+        # Request budget: speed x durability, the docs/03 volume model. A fast
+        # or persistent villain generates more traffic over its session; a
+        # low-durability one that stops on first error never gets near it. This
+        # is what gives request volume its stat-driven spread — the stage
+        # progression alone only ever produced ~4-9 attempts regardless of
+        # speed, because it terminated on stage resolution, not on a duration.
+        request_budget = int(profile.requests_per_min * profile.session_duration_s / 60)
+
+        def emit(technique, stage_num, stage, decision, technique_attempt_seq):
+            state["attempt_seq"] += 1
+            attempt_at = datetime.now(UTC)
+            attempt_id = str(uuid.uuid4())
+            resolution = resolve_attempt(
+                technique, villain, stage, technique_attempt_seq, evasion=profile.evasion, rng=rng
+            )
+            if technique.produces_traffic:
+                growth = 1.0 + profile.body_growth * (state["attempt_seq"] / 20.0)
+                size = int(profile.mean_body_bytes * profile.body_repetition * growth)
+                body = (b"x" * size) if size > 0 else None
+                specs = signature.transform(request_specs_for(technique.technique_id), rng)
+                send_requests(
+                    http_client, specs, attempt_id, extra_headers=identity.headers(), body=body
+                )
+            event = AttemptEvent(
+                session_id=session_id,
+                received_at=attempt_at,
+                attempt_id=attempt_id,
+                stage=stage_num,
+                technique_id=technique.technique_id,
+                attack_id=technique.attack_id,
+                attempt_seq=state["attempt_seq"],
+                technique_attempt_seq=technique_attempt_seq,
+                decision=decision,
+                computed_probability=resolution.computed_probability,
+                roll=resolution.roll,
+                outcome=resolution.outcome,
+                noise_generated=resolution.noise_generated,
+                stage_entered_at=stage_entered_at,
+                attempt_at=attempt_at,
+            )
+            attempts.append(event)
+            kafka_producer.produce(
+                KAFKA_TOPIC,
+                key=session_id.encode("utf-8"),
+                value=event.model_dump_json().encode("utf-8"),
+                callback=_delivery_report,
+            )
+            kafka_producer.poll(0)
+            sleep_fn(_inter_request_delay(profile, signature.burstiness, rng))
+            return resolution.outcome
+
         stalled = False
         failures_so_far = 0  # session-wide; durability sets the tolerance
+        last_technique = None
+        last_stage = last_stage_num = None
 
         for stage_num in range(1, 5):
             stage = stages[stage_num]
@@ -202,82 +255,17 @@ def run_scripted_session(
 
             while True:
                 technique_attempt_seq = tried.get(current_technique.technique_id, 0) + 1
-                attempt_seq += 1
-                attempt_at = datetime.now(UTC)
-                attempt_id = str(uuid.uuid4())
-
-                resolution = resolve_attempt(
-                    current_technique,
-                    villain,
-                    stage,
-                    technique_attempt_seq,
-                    evasion=profile.evasion,
-                    rng=rng,
-                )
-
-                if current_technique.produces_traffic:
-                    # Body size grows over the session for high-power villains
-                    # (Poison Ivy's monotonic body_bytes_trend); strength sets
-                    # the base size and repetition.
-                    growth = 1.0 + profile.body_growth * (attempt_seq / 20.0)
-                    size = int(profile.mean_body_bytes * profile.body_repetition * growth)
-                    body = (b"x" * size) if size > 0 else None
-                    # Layer 2: the villain's signature reshapes the request
-                    # stream (Riddler's riddle params, Two-Face's duplicates,
-                    # Joker's absurd methods, Scarecrow's error probes).
-                    specs = signature.transform(
-                        request_specs_for(current_technique.technique_id), rng
-                    )
-                    send_requests(
-                        http_client,
-                        specs,
-                        attempt_id,
-                        extra_headers=identity.headers(),
-                        body=body,
-                    )
-
-                event = AttemptEvent(
-                    session_id=session_id,
-                    received_at=attempt_at,
-                    attempt_id=attempt_id,
-                    stage=stage_num,
-                    technique_id=current_technique.technique_id,
-                    attack_id=current_technique.attack_id,
-                    attempt_seq=attempt_seq,
-                    technique_attempt_seq=technique_attempt_seq,
-                    decision=decision,
-                    computed_probability=resolution.computed_probability,
-                    roll=resolution.roll,
-                    outcome=resolution.outcome,
-                    noise_generated=resolution.noise_generated,
-                    stage_entered_at=stage_entered_at,
-                    attempt_at=attempt_at,
-                )
-                attempts.append(event)
-                kafka_producer.produce(
-                    KAFKA_TOPIC,
-                    key=session_id.encode("utf-8"),
-                    value=event.model_dump_json().encode("utf-8"),
-                    callback=_delivery_report,
-                )
-                kafka_producer.poll(0)
-
+                last_technique, last_stage, last_stage_num = current_technique, stage, stage_num
+                outcome = emit(current_technique, stage_num, stage, decision, technique_attempt_seq)
                 tried[current_technique.technique_id] = technique_attempt_seq
 
-                # Pace the next request in real time (Layer 1 timing). A
-                # detected attempt still consumed a request; failures count
-                # toward the durability tolerance.
-                sleep_fn(_inter_request_delay(profile, signature.burstiness, rng))
-
-                if resolution.outcome == "success":
-                    max_stage_reached = stage_num
+                if outcome == "success":
+                    state["max_stage_reached"] = stage_num
                     advanced = True
                     break
-
-                if resolution.outcome == "failure":
+                if outcome == "failure":
                     failures_so_far += 1
-
-                if attempt_seq >= MAX_ATTEMPTS:
+                if state["attempt_seq"] >= MAX_ATTEMPTS:
                     stalled = True
                     break
 
@@ -286,11 +274,8 @@ def run_scripted_session(
                 )
                 if action == "retry":
                     decision = "retry"
-                    continue
                 elif action == "pivot":
-                    current_technique = next_technique
-                    decision = "pivot"
-                    continue
+                    current_technique, decision = next_technique, "pivot"
                 else:
                     stalled = True
                     break
@@ -298,10 +283,22 @@ def run_scripted_session(
             if stalled or not advanced:
                 break
 
+        # Continuation: a villain that hasn't spent its request budget and
+        # isn't a clean operator keeps generating traffic from where it ended —
+        # Croc grinds his stall point, Mister Freeze holds at the objective.
+        # Clean operators (Ra's al Ghul, Catwoman — a signature property, not a
+        # stat) exit as soon as the stage machine resolves, below budget: low
+        # request_count, direct.
+        if last_technique is not None and not signature.clean_operator:
+            grind_seq = tried.get(last_technique.technique_id, 1)
+            while state["attempt_seq"] < request_budget and state["attempt_seq"] < MAX_ATTEMPTS:
+                grind_seq += 1
+                emit(last_technique, last_stage_num, last_stage, "retry", grind_seq)
+
         return SessionResult(
             session_id=session_id,
             villain_slug=villain_slug,
-            max_stage_reached=max_stage_reached,
+            max_stage_reached=state["max_stage_reached"],
             stalled=stalled,
             attempts=attempts,
         )

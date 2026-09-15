@@ -49,6 +49,15 @@ def test_harley_is_bursty():
     assert signature_for("370-joker").burstiness == 0
 
 
+def test_clean_operators_exit_early():
+    # Ra's al Ghul and Catwoman stop when the stage machine resolves rather
+    # than grinding to budget (docs/03: "then exits", "clean exit").
+    assert signature_for("538-ras-al-ghul").clean_operator is True
+    assert signature_for("165-catwoman").clean_operator is True
+    # A grinder does not.
+    assert signature_for("386-killer-croc").clean_operator is False
+
+
 def test_unknown_slug_gets_noop_signature():
     sig = signature_for("999-nobody")
     specs = [("GET", "/")]

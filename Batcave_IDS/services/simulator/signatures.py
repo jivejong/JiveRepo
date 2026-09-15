@@ -45,6 +45,13 @@ def _with_query(path: str, key: str, value: str) -> str:
 class Signature:
     rotate_ip: bool = False  # Penguin: henchmen -> distinct_source_ips
     burstiness: float = 0.0  # Harley: extra timing variance on top of jitter
+    # Clean operator: stops as soon as the stage machine resolves (win or
+    # stall) rather than grinding to its request budget. This is a signature
+    # property, not derivable from stats — Ra's al Ghul "then exits", Catwoman
+    # is "minimal footprint... clean exit" (docs/03). Everyone else fills their
+    # durability/speed-derived budget (Croc grinds, Freeze holds, Joker and
+    # Harley persist chaotically through their high durability).
+    clean_operator: bool = False
 
     def transform(self, specs: list[Spec], rng: random.Random) -> list[Spec]:
         """Default: pass the specs through unchanged."""
@@ -105,4 +112,8 @@ def signature_for(slug: str) -> Signature:
         return Signature(rotate_ip=True)
     if slug == "309-harley-quinn":
         return Signature(burstiness=0.8)
+    if slug == "538-ras-al-ghul":
+        return Signature(clean_operator=True)  # straight to tier 4, then exits
+    if slug == "165-catwoman":
+        return Signature(clean_operator=True)  # minimal footprint, clean exit
     return Signature()
