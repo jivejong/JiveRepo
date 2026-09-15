@@ -1,0 +1,27 @@
+# Installed against the JiveRepo git root (pre-commit resolves relative to
+# the repo root, not this file's directory):
+#   pre-commit install -c Batcave_IDS/.pre-commit-config.yaml
+# Every hook is filtered to this project so siblings (SQL_fun,
+# SuperHeroOps, ...) are never touched.
+#
+# No sqlfluff hook yet — there are no dbt model .sql files to lint until
+# Phase 5, and the hook would fail on every commit until then. Add it in
+# Phase 5 alongside the models, likely switching sqlfluff's templater to
+# sqlfluff-templater-dbt at the same time (see .sqlfluff).
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.7
+    hooks:
+      - id: ruff-format
+        files: ^Batcave_IDS/
+      - id: ruff-check
+        args: [--fix]
+        files: ^Batcave_IDS/
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        files: ^Batcave_IDS/
+      - id: end-of-file-fixer
+        files: ^Batcave_IDS/
