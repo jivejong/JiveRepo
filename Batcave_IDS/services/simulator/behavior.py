@@ -68,9 +68,12 @@ class BehaviorProfile:
             jitter=intel,
             # Durability 14 (Riddler/Two-Face) -> short; 90 (Croc) -> long.
             session_duration_s=20.0 + _unit(v.durability) * 100.0,
-            # Failures tolerated before giving up: durability 14 -> ~1,
-            # durability 90 -> ~9. Riddler/Two-Face stop on first error.
-            failure_tolerance=1 + int(_unit(v.durability) * 9),
+            # Failures tolerated before giving up. Quadratic in durability so
+            # the very persistent pull far ahead: durability 14 -> ~1
+            # (Riddler/Two-Face stop on first error), durability 90 -> ~25
+            # (Croc "never stops", producing the highest request count -
+            # docs/03). Derived from the stat, not a per-villain override.
+            failure_tolerance=1 + int(_unit(v.durability) ** 2 * 30),
             # Strength drives body size + repetition on brute-force.
             mean_body_bytes=64 + int(_unit(v.strength) * 4000),
             body_repetition=1 + int(_unit(v.strength) * 5),
