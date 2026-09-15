@@ -1,8 +1,26 @@
 # The Jive Repo
 
-**Jive Jong** | IT veteran. Content creator. Musician. Northern Virginia.
+**Jong Lee ("Jive Jong")** — Solutions Architect / AI Engineer / Data Engineer / Software Engineer | 30+ years in IT | Northern Virginia
 
-This is the public archive of my work across software engineering, technical research, AI/ML experimentation, content creation, and long-form writing. If you found this from LinkedIn, Buffer Overflow, or Translation Layer — this is home base.
+This is the public, working portfolio behind my resume: production-style software engineering, applied AI/LLM engineering, Data Engineering, MLOps, and technical architecture, with the reasoning behind each decision written up alongside the code. If you found this from LinkedIn, Buffer Overflow, or Translation Layer — this is home base. **Recruiters and hiring tools:** see [Skills & Keywords](#skills--keywords) below for a structured breakdown, and [Contact](#contact) to reach me directly.
+
+---
+
+## Skills & Keywords
+
+**Languages:** Java · C# · JavaScript · SQL (T-SQL, PL/pgSQL, PLSQL) · Bash · PowerShell · Python
+
+**AI / ML / LLM Engineering:** Agentic AI · Multi-agent orchestration · RAG (Retrieval-Augmented Generation) · Prompt engineering · LLM-as-classifier · Structured JSON output / schema-constrained generation · Vector databases (Chroma) · Embeddings · Cross-model orchestration (Groq, Google Gemini, OpenAI-compatible endpoints) · Speech-to-text (Whisper) · Text-to-speech (gTTS, edge-tts) · Prompt-injection detection · MLOps · Observability for GenAI (OpenTelemetry, GenAI semantic conventions)
+
+**Backend / Frameworks:** Spring Boot · Spring Statemachine · .NET 10 · Blazor Server · Entity Framework Core · REST API design · Streamlit
+
+**Frontend:** React · Blazor · HTML/CSS
+
+**Data & Databases:** PostgreSQL (full-text search) · SQL Server · Oracle · Teradata · Database CRUD tooling · ETL · Databricks · Snowflake · Big Query
+
+**Cloud / Infrastructure:** Cloud architecture (NetWare to cloud migration experience) · CI/CD-oriented tooling · Socrata Open Data API integration · GCP · AWS · Azure
+
+**Practices:** Test-driven verification (real infrastructure, not mocks) · State machine design · Statistical/arithmetic decisioning against real datasets (BLS wage data) · Security-conscious scripting (credential handling, prompt-injection scanning) · Technical writing / architecture documentation
 
 ---
 
@@ -44,15 +62,19 @@ Long-form writing in three formats: `articles/` (pieces for LinkedIn and other p
 
 ## Background
 
-30+ years in professional IT, and tamer of computers for even longer. Old enough to remember the sound of a modem's handshake, young enough to still ship fast, and wise enough to avoid breaking things. The technical work spans NetWare to cloud, PC field work to enterprise architecture, Web and ETL development to AI implementation strategy. I have the coffee and aspirin bills to prove it.
+30+ years in professional IT, and tamer of computers for even longer. Old enough to remember the sound of a modem's handshake, young enough to still ship fast, and wise enough to avoid breaking things. The technical work spans PC field work to enterprise architecture, systems administration to full-stack web and ETL development, and — most recently — hands-on AI/LLM engineering and AI implementation strategy. Roles and responsibilities across that span include software engineer, solutions architect, systems administrator, and technical lead. I have the coffee and aspirin bills to prove it.
 
 ---
+
+## Contact
+
+- **LinkedIn** — [Jong Lee](https://www.linkedin.com/in/jong-lee-874aa49/) (best way to reach me — open to full-time, contract, and consulting conversations)
+- **Location** — Northern Virginia, USA (open to remote / hybrid)
 
 ## Channels
 
 - **Translation Layer** — [YouTube](https://www.youtube.com/@TranslationLayer)
 - **Buffer Overflow** — [YouTube](https://www.youtube.com/@BufferOverflow-v2j)
-- **LinkedIn** — [Jong Lee](https://www.linkedin.com/in/jong-lee-874aa49/)
 
 ---
 
