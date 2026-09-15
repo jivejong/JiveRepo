@@ -31,30 +31,44 @@ Consumer adds: `kafka_partition`, `kafka_offset`, `landed_at`.
 
 ### Session derivation
 
-`session_id` is derived by the honeypot (`services/honeypot/session.py`), keyed on
-`(source_ip, user_agent)`: a session continues while the gap since that key's last request is
-under `SESSION_GAP_SECONDS` (default **120s**, env-configurable); once the gap is met or exceeded,
-the next request starts a new session (a fresh UUID). Gaps are measured against `received_at`
-only, never `client_ts`.
+`session_id` is derived by the honeypot (`services/honeypot/session.py`) from an **opaque session
+cookie** (`batcave_sid`), gap-enforced. On first contact the honeypot mints a random token, sets it
+as the cookie, and uses it as the `session_id`. A request presenting a known cookie continues that
+session — **whatever its source IP or user agent** — while the gap rule still applies on top: a
+cookie whose last request is older than `SESSION_GAP_SECONDS` (default **120s**, env-configurable)
+starts a fresh session rather than resuming. Gaps are measured against `received_at` only, never
+`client_ts`. A request with no cookie, or an unknown/expired one, mints a fresh session, so curl and
+manual tests need no cookie handling.
 
-This is a change from `docs/06`'s original phrasing ("source IP + UA + **time bucket**"), which
-implied a fixed tumbling window (`floor(received_at / width)`). That was rejected during Phase 1
-planning: a fixed window fragments any session that straddles a bucket boundary regardless of the
-bucket's width, and Phase 3's separability checkpoint measures per-session features that
-fragmentation would directly distort. Gap-based derivation only fragments a session if the
-*villain itself* goes quiet for `SESSION_GAP_SECONDS`, which is a property of its behavior
-(durability, signature) rather than an accident of alignment against a fixed grid.
+**This is the second change to session derivation, and it exists because rotation breaks a key-based
+scheme.** Phase 1 keyed on `(source_ip, user_agent)` with the same gap rule (itself a correction of
+docs/06's original "time bucket," which would have fragmented any session straddling a fixed
+window). But Phase 3's villains *rotate* those identifiers: Penguin rotates his source IP within a
+run ("he sends henchmen"), high-intelligence villains rotate their user agent as evasion. Under an
+`(ip, ua)` key, each rotation would start a new session — which is exactly backwards, since
+`distinct_source_ips` and `distinct_user_agents` (below) are meant to *detect* the rotation within
+one session. Keeping the key would have meant deleting two features and two villain signatures. The
+cookie carries identity through rotation; the rotation still shows up in the counts.
 
-State is a small in-memory `dict` in the honeypot process, with periodic eviction of stale keys. A
-real (non-portfolio) deployment running more than one honeypot replica, or wanting sessions to
-survive a restart, would externalize this — Redis or similar.
+State is a small in-memory `dict` in the honeypot process, keyed on the token, with periodic
+eviction of stale sessions. A real (non-portfolio) deployment running more than one honeypot
+replica, or wanting sessions to survive a restart, would externalize this — Redis or similar.
 
-**120s is a Phase 3 recalibration point.** It's set against the spec's own reference run length
+**Known simplification, stated plainly.** A session cookie hands the defender continuity that a real
+rotating-attacker scenario would not give them: an attacker deliberately rotating IPs and user
+agents to evade correlation is unlikely to also carry a cookie that re-links their requests. Real
+sessionization under adversarial identifier rotation is probabilistic and genuinely hard
+(behavioral fingerprinting, timing correlation, TLS fingerprints). This project uses a cookie as a
+deliberate simplification so the rotation *features* can exist and be evaluated, not because cookie
+continuity is realistic under evasion. Said here rather than left implied. (docs/03 notes a possible
+later enhancement: intelligence-driven cookie-dropping, where the most capable villains fragment
+themselves on purpose — a better model, out of scope for Phase 3.)
+
+**120s is a Phase 3 recalibration point.** It was set against the spec's own reference run length
 (Phase 3 checkpoint: "run all twelve for 120 seconds"), not against any villain's actual measured
-inter-request gaps, which don't exist until `BehaviorProfile` (docs/03) is built. Mister Freeze in
-particular — documented as having the longest session duration of any villain — should have his
-real `int_session_events` output checked against this default once it exists, not assumed correct
-because the number happens to match the reference run length.
+inter-request gaps. Now that the cookie carries identity through rotation, the gap only matters for a
+villain that genuinely goes quiet mid-run — so it's re-confirmed against real per-villain run
+durations in Phase 3, especially Mister Freeze (longest session) and Poison Ivy (slow drip).
 
 ---
 

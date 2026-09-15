@@ -103,6 +103,17 @@ team would actually produce.
 Both tasks are also run by a rule-based baseline. If the LLM does not beat a regex on
 high-observability techniques, the README says so.
 
+### One deliberate simplification, stated up front
+
+Requests are grouped into sessions by an opaque cookie the honeypot sets, gap-enforced. That lets a
+villain who rotates source IPs and user agents (Penguin's henchmen, high-intelligence evasion) stay
+one session while the rotation still registers in the `distinct_source_ips` / `distinct_user_agents`
+features. It also hands the defender continuity a real rotating attacker wouldn't give up — someone
+rotating identifiers to evade correlation is unlikely to also carry a cookie that re-links their
+requests. Real sessionization under adversarial rotation is probabilistic and hard; the cookie is a
+deliberate simplification so the rotation features can exist and be measured, not a claim that
+cookie continuity survives evasion. Called out here rather than left implied (details: `docs/02`).
+
 ---
 
 ## Architecture
