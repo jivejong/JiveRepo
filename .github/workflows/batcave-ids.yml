@@ -1,0 +1,46 @@
+name: batcave-ids CI
+
+on:
+  push:
+    paths: ["Batcave_IDS/**"]
+  pull_request:
+    paths: ["Batcave_IDS/**"]
+
+defaults:
+  run:
+    working-directory: Batcave_IDS
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # sqlfluff lint arrives in Phase 5 — no dbt model .sql files exist yet.
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync
+      - run: uv run pytest
+
+  dbt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync
+      - name: dbt deps
+        working-directory: Batcave_IDS/transform
+        run: uv run --project .. dbt deps
+      - name: dbt compile
+        working-directory: Batcave_IDS/transform
+        run: uv run --project .. dbt compile --profiles-dir .
+      # dbt test and the named assert_no_ground_truth_leakage step
+      # (docs/02, docs/05) arrive in Phase 5 with the models the leakage
+      # test walks the manifest for. Faking a skip here would be theatre.
