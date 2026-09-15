@@ -9,12 +9,16 @@ gating, probability) is what Phase 3 keeps; only `_decide_next_action`
 gets replaced.
 
 Session bootstrap: `attack_attempts` and `attack_events` join on
-session_id (docs/02), but the honeypot derives session_id itself from
-(source_ip, user_agent, gap) — the simulator can't predict it. A warm-up
-call before the stage machine starts reads it off the honeypot's
-`X-Session-Id` response header, so every attempt event this run produces
-carries the same session_id as the request events its own driven traffic
-lands in.
+session_id (docs/02), but the honeypot mints it (cookie, gap-enforced) —
+the simulator can't predict it. A warm-up call before the stage machine
+starts lets the honeypot set the `batcave_sid` cookie in this run's
+httpx client jar; the simulator reads it back as its session_id. Every
+attempt event this run produces carries that session_id, matching the
+request events its own driven traffic lands in — even as the run rotates
+source IP or user agent (the cookie survives rotation).
+
+One `httpx.Client` per run: its cookie jar keeps rotation inside a single
+session, and a fresh client per run keeps back-to-back runs separate.
 """
 
 from __future__ import annotations
@@ -30,7 +34,9 @@ import httpx
 from confluent_kafka import Producer
 
 from services.common.envelope import EventEnvelope
+from services.honeypot.session import COOKIE_NAME
 from services.simulator.catalog import Technique, gated_techniques, load_stages, load_villains
+from services.simulator.identity import RunIdentity
 from services.simulator.probability import compute_probability, resolve_attempt
 from services.simulator.traffic import drive_honeypot
 
@@ -117,9 +123,15 @@ def run_scripted_session(
         {"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "acks": "all", "enable.idempotence": False}
     )
 
+    identity = RunIdentity(rng)
+
     try:
-        warmup = http_client.get("/", headers={"X-Attempt-Id": "session-bootstrap"})
-        session_id = warmup.headers["X-Session-Id"]
+        # Warm-up: let the honeypot mint a session and set batcave_sid in this
+        # client's cookie jar, then read it back as our session_id.
+        http_client.get("/", headers={"X-Attempt-Id": "session-bootstrap", **identity.headers()})
+        session_id = http_client.cookies.get(COOKIE_NAME)
+        if session_id is None:
+            raise RuntimeError("honeypot did not set the batcave_sid session cookie")
 
         attempts: list[AttemptEvent] = []
         attempt_seq = 0
@@ -150,7 +162,12 @@ def run_scripted_session(
                 )
 
                 if current_technique.produces_traffic:
-                    drive_honeypot(http_client, current_technique.technique_id, attempt_id)
+                    drive_honeypot(
+                        http_client,
+                        current_technique.technique_id,
+                        attempt_id,
+                        extra_headers=identity.headers(),
+                    )
 
                 event = AttemptEvent(
                     session_id=session_id,

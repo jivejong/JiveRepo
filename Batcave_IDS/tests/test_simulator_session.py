@@ -9,6 +9,7 @@ import random
 
 import httpx
 
+from services.honeypot.session import COOKIE_NAME
 from services.simulator.catalog import load_techniques, load_villains
 from services.simulator.session import run_scripted_session
 
@@ -29,7 +30,12 @@ class _FakeProducer:
 
 def _fake_http_client(session_id: str = "fake-session-1") -> httpx.Client:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"X-Session-Id": session_id}, json={"ok": True})
+        # Mimic the honeypot: set the session cookie only when the client
+        # isn't already carrying it, so httpx's jar holds it after warm-up.
+        headers = {}
+        if f"{COOKIE_NAME}={session_id}" not in request.headers.get("cookie", ""):
+            headers["Set-Cookie"] = f"{COOKIE_NAME}={session_id}; Path=/"
+        return httpx.Response(200, headers=headers, json={"ok": True})
 
     return httpx.Client(transport=httpx.MockTransport(handler), base_url="http://testhoneypot")
 
