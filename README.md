@@ -6,7 +6,7 @@ This is the public, working portfolio behind my resume: production-style softwar
 
 ---
 
-## Skills & Keywords
+## Skills
 
 **Languages:** Java · C# · JavaScript · SQL (T-SQL, PL/pgSQL, PLSQL) · Bash · PowerShell · Python
 
