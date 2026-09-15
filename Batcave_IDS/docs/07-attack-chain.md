@@ -47,10 +47,14 @@ Seed committed at `transform/seeds/techniques.csv`. 23 techniques across four st
 | `retry_penalty` | Success multiplier per repeat |
 | `observability` | `high` / `partial` / `low` |
 | `detection_signature` | What the honeypot logs when this runs |
+| `produces_traffic` | Boolean, added Phase 2 — see "Does a failed attempt still hit the honeypot?" below |
 
-**Verify every `attack_id` against attack.mitre.org during Phase 2.** The Impact-tactic IDs were
-checked; the rest were not. A wrong ID is worse than no ID, since the whole point is that the
-mapping is real.
+**Verified against attack.mitre.org, Phase 2.** All 23 IDs, names, and tactic assignments are
+correct — none wrong, none deprecated. Three are genuinely multi-tactic techniques where this
+catalog's `attack_tactic_id` is one defensible choice among several, not the only one: `valid_accounts`
+(T1078 — also Persistence, Privilege Escalation, Stealth), `external_remote_svc` (T1133 — also
+Persistence), `input_capture` (T1056 — also Credential Access). Not silently changed to a different
+valid tactic; the catalog's picks stand as reasonable choices.
 
 ### Observability — the column that makes this interesting
 
@@ -136,14 +140,30 @@ gates. Gating is derived from the seeds, never hardcoded per villain.
 
 The story this produces:
 
-- **Killer Croc** (intelligence 19) reaches `port_sweep`, `brute_force`, and `data_local_system`.
-  Three blunt options, all high or partial observability. He is loud and easy to reconstruct.
-- **Ra's al Ghul** (intelligence 100) reaches everything, including the quiet techniques.
+- **Killer Croc** (intelligence 19) reaches `port_sweep` (stage 1) and `brute_force` (stage 2).
+  Two blunt options, partial and high observability. He is loud and easy to reconstruct — and he
+  stalls there: no stage-3 technique's `min_intelligence` is low enough for him (the lowest,
+  `account_discovery`, is 45), so he never clears stage 3 and never reaches `data_local_system`.
+  Verified by computing `gated_techniques` for all twelve villains, not asserted from the catalog by
+  eye — an earlier draft of this section claimed he reached `data_local_system`, which the actual
+  thresholds don't support. Corrected here rather than loosening a threshold to fit the sentence;
+  see docs/06's Phase 3 section for the open question of whether that's the intended story.
+- **Ra's al Ghul** (intelligence 100) clears every `min_intelligence` gate in the catalog — but not
+  the full catalog outright: `privesc_exploit`'s secondary gate, `min_power=40`, excludes him (his
+  power is 27). One cerebral, combat-100 villain who still can't force his way past a
+  strength-flavored gate is arguably a better story than "reaches literally everything," and it's
+  what the seed data actually produces.
 - **Two-Face** (intelligence 88) reaches nearly everything, but durability 14 means he stops after
   the first failure.
 
-**The most capable villain is the hardest to detect.** That falls out of the stat gating rather than
-being arranged, and it is worth pointing at in the README.
+**The most capable villain is the hardest to detect** — with one exception it's still cheap to
+build. That falls out of the stat gating rather than being arranged, and it is worth pointing at in
+the README.
+
+**A note on TA0005:** MITRE has renamed this tactic from "Defense Evasion" to "Stealth" (and split
+off a new "Defense Impairment," TA0112) since this catalog was drafted. `indicator_removal` (T1070)
+is still correctly tagged `TA0005` — the ID didn't move, only the tactic's display name. Mentioned
+here in case a reader familiar with the classic ATT&CK tactic names does a double-take.
 
 ---
 
