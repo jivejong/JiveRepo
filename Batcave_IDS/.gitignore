@@ -53,11 +53,3 @@ transform/.user.yml
 
 # ── Secrets ────────────────────────────────────────────────────────────
 .env
-
-# ── Misplaced companion project ───────────────────────────────────────
-# k8s-data-platform is a separate companion repository per its own
-# HANDOFF.md, currently nested here by mistake instead of sibling to
-# Batcave_IDS at the JiveRepo root. Left in place, but excluded from this
-# project's tracking and CI so it isn't swept in by accident. Not moved
-# without an explicit decision to do so.
-/k8s-data-platform/
