@@ -43,9 +43,26 @@ services:
     ports:
       - "8080:8080"
 
-  # honeypot and consumer are added in Phase 1 and Phase 4 respectively.
-  # Including them here now would block `make dev-up` on services that
-  # don't exist yet, breaking Phase 0's own checkpoint (docs/06).
+  honeypot:
+    build:
+      context: .
+      dockerfile: services/honeypot/Dockerfile
+    container_name: batcave-honeypot
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:29092
+      KAFKA_TOPIC: attack.events
+      SESSION_GAP_SECONDS: ${SESSION_GAP_SECONDS:-120}
+      # Trusted only on the compose-internal network, where the simulator is
+      # the only thing that can reach this service (docs/02, Phase 1 plan).
+      HONEYPOT_TRUST_FORWARDED_FOR: "true"
+    ports:
+      - "8000:8000"
+
+  # consumer arrives in Phase 4. Including it now would block `make dev-up`
+  # on a service that doesn't exist yet, breaking Phase 0's own checkpoint.
 
 volumes:
   redpanda-data:
