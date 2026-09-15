@@ -69,12 +69,20 @@ dbt-duckdb
 dagster
 dagster-dbt
 dagster-duckdb
-httpx
+fastapi              # honeypot's HTTP server (added Phase 1, not in the original list — see below)
+uvicorn[standard]    # ASGI server for fastapi
+httpx                # HTTP client, used by the simulator to drive the honeypot — not the server
 pydantic             # event schema validation at the producer boundary
 groq
 ```
 
 Dev: `ruff`, `pytest`, `sqlfluff` with the DuckDB dialect, `pre-commit`.
+
+**`fastapi`/`uvicorn`** weren't in the original dependency list — the honeypot needs an HTTP server
+and none was specified. Added Phase 1: Pydantic is already required for event validation, and
+FastAPI is built on it, so request validation and event validation share one schema layer.
+`http.server` was rejected because it's synchronous and the burst pathology (docs/03) fires a 10x
+rate spike that would end up measuring the server's throughput rather than the villain's.
 
 ---
 

@@ -69,6 +69,13 @@ credentials, no service that can expire. This project must still run unchanged i
 - **dbt-core + dbt-duckdb** — transformations, single target
 - **Dagster** (`dagster`, `dagster-dbt`, `dagster-duckdb`) — orchestration
 - **Groq** — LLM inference. `GROQ_API_KEY` optional; without it the rule-based baseline runs.
+- **FastAPI + uvicorn** — the honeypot's HTTP server (Phase 1). Not in the original spec; added
+  because Pydantic (already a dependency) is what FastAPI is built on, so request validation and
+  event validation share one schema layer, and because `http.server`'s synchronous model would
+  measure the server rather than the villain during the burst pathology's 10x rate spike
+  (docs/03).
+- **httpx** — HTTP *client* library, used by the simulator (Phase 2+) to drive the honeypot. Not
+  to be confused with the server framework above.
 - Dev tools: `ruff`, `pytest`, `sqlfluff` (DuckDB dialect), `pre-commit`.
 
 ## Repository layout
