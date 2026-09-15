@@ -1,0 +1,51 @@
+services:
+  redpanda:
+    image: redpandadata/redpanda:v26.2.2
+    container_name: batcave-redpanda
+    command:
+      - redpanda
+      - start
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --kafka-addr
+      - internal://0.0.0.0:29092,external://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - internal://redpanda:29092,external://localhost:9092
+      - --schema-registry-addr
+      - internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr
+      - redpanda:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
+    ports:
+      - "9092:9092" # Kafka API (host-facing), per docs/05-local-environment.md
+      - "18081:18081" # Schema Registry
+      - "9644:9644" # Admin API, used by console and healthcheck
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  redpanda-console:
+    image: redpandadata/console:v3.11.0
+    container_name: batcave-redpanda-console
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: redpanda:29092
+    ports:
+      - "8080:8080"
+
+  # honeypot and consumer are added in Phase 1 and Phase 4 respectively.
+  # Including them here now would block `make dev-up` on services that
+  # don't exist yet, breaking Phase 0's own checkpoint (docs/06).
+
+volumes:
+  redpanda-data:
