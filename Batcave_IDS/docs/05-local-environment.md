@@ -19,7 +19,15 @@ works.
 | `honeypot` | built from `services/honeypot/` | 8000 | Fake Batcave endpoints, Kafka producer |
 | `consumer` | built from `services/consumer/` | — | Kafka consumer, writes Parquet |
 
-Pin image tags rather than using `latest`. A 2028 clone should get the same versions.
+**Phased, not all at once.** `honeypot` and `consumer` don't exist as code until Phase 1 and Phase 4
+respectively — listing them in `docker-compose.yml` before then would make `make dev-up` depend on
+services that can't build, breaking the Phase 0 checkpoint itself. Phase 0's compose file has only
+`redpanda` and `redpanda-console`; the other two are added to the file in their own phases, each
+verified against real `docker compose up` output at the time.
+
+Pin image tags rather than using `latest`. A 2028 clone should get the same versions. Verify the tag
+actually exists — pull it, don't just write down a version number from memory — before committing
+the compose file (Phase 0 did this against the Docker Hub tag API plus an actual `docker pull`).
 
 Mount `./data` into the consumer so landed Parquet appears on the host where DuckDB and dbt can
 read it without a copy step.
@@ -66,7 +74,7 @@ pydantic             # event schema validation at the producer boundary
 groq
 ```
 
-Dev: `ruff`, `pytest`, `sqlfluff` with the DuckDB dialect.
+Dev: `ruff`, `pytest`, `sqlfluff` with the DuckDB dialect, `pre-commit`.
 
 ---
 
@@ -85,6 +93,21 @@ data/
 
 **Commit one sample partition** — a few hundred rows of real landed Parquet. A reader can then
 inspect actual output, and `dbt run` works immediately after clone without generating traffic.
+
+**A note for anyone cloning this into a different parent directory.** This project lives inside the
+`JiveRepo` monorepo, whose root `.gitignore` has an unanchored `data/` rule — git applies it at
+every directory level, so it silently swallows this project's `data/` entirely, including the
+committed sample partition and vendored villain roster, with no error on `git add`. `Batcave_IDS/
+.gitignore` overrides this, un-ignoring each directory level explicitly (git will not descend into
+an excluded directory to evaluate rules inside it — a bare `!data/` is not sufficient). If this
+project is ever extracted to its own repository, or cloned somewhere with a similarly broad `data/`
+rule above it, re-verify with `git check-ignore -v` against a real path in each category (vendored,
+sample, generated) rather than assuming the override still applies.
+
+The sample-partition negation is written as a filename convention (`sample-*`) rather than a
+directory, deliberately: a `sample/` subdirectory would sit outside the real `dt=`/`hour=` Hive
+partition path and break DuckDB's partition-column inference, failing `dbt run` at exactly the thing
+the sample exists to enable.
 This is a small thing that meaningfully improves the first-visit experience.
 
 ---
@@ -113,9 +136,9 @@ hit it unexplained.
 ```make
 dev-up          docker compose up -d, wait for health, create topic
 dev-down        docker compose down (preserve ./data)
-dev-reset       docker compose down -v, rm -rf data/raw data/warehouse.duckdb
+dev-reset       docker compose down -v, wipe data/raw except the committed sample-*, rm warehouse.duckdb
 attack          run the simulator: VILLAIN=<slug> DURATION=<seconds>
-attack-all      run all six reference villains sequentially
+attack-all      run all twelve villains sequentially
 transform       dbt deps && dbt run && dbt test
 triage          score sessions, call LLM (or baseline), write orders + evaluations
 eval            print the triage accuracy report

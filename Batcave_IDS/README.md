@@ -8,9 +8,15 @@ Runs entirely locally. Kafka, DuckDB, Docker. No cloud account, no trial period,
 
 ---
 
-## Repository metadata (set these before first push)
+## Repository metadata
 
-**Description field:**
+This project lives inside `JiveRepo`, a portfolio monorepo with several unrelated projects — not a
+standalone repository. The description and topics below describe *this project*, not the whole
+repo, so they are not set as JiveRepo's GitHub-level description/topics (that would misrepresent
+the other projects sharing the repo). They're recorded here for reference, and would apply directly
+if this project is ever split into its own repository.
+
+**Description:**
 > Streaming data pipeline: Kafka ingestion, Parquet lakehouse, dbt transformations on DuckDB,
 > Dagster orchestration, and evaluated LLM threat triage against MITRE ATT&CK ground truth.
 
@@ -20,7 +26,16 @@ Runs entirely locally. Kafka, DuckDB, Docker. No cloud account, no trial period,
 
 Reasoning: GitHub Linguist reports this repository as Python and SQL. Tool names like dbt, Kafka,
 and Dagster never appear in the language bar. Topics and the description field are the only
-structured places they surface.
+structured places they surface — moot while nested in a monorepo, relevant again if split out.
+
+---
+
+## Prerequisites
+
+Docker, Python 3.11+, and **`make`**. The Makefile is the entire documented interface (`make
+dev-up`, `make attack`, ...) — on Linux and macOS `make` is preinstalled or ubiquitous; on Windows
+it is not and must be installed separately (e.g. `winget install ezwinports.make`). `uv` manages
+the Python 3.11 interpreter itself, so no separate Python install is required beyond `uv`.
 
 ---
 
@@ -134,7 +149,7 @@ make reconcile                             # data quality reconciliation
 make dev-down
 ```
 
-Requires Docker and Python 3.11+. `GROQ_API_KEY` is optional — without it, triage runs the
+See [Prerequisites](#prerequisites) above. `GROQ_API_KEY` is optional — without it, triage runs the
 rule-based baseline and every metric still reports.
 
 ---

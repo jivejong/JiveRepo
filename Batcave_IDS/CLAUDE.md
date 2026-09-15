@@ -56,6 +56,7 @@ credentials, no service that can expire. This project must still run unchanged i
 - **dbt-core + dbt-duckdb** — transformations, single target
 - **Dagster** (`dagster`, `dagster-dbt`, `dagster-duckdb`) — orchestration
 - **Groq** — LLM inference. `GROQ_API_KEY` optional; without it the rule-based baseline runs.
+- Dev tools: `ruff`, `pytest`, `sqlfluff` (DuckDB dialect), `pre-commit`.
 
 ## Repository layout
 
@@ -115,7 +116,7 @@ Makefile
 ```bash
 make dev-up          # docker compose up: redpanda, console UI, honeypot, consumer
 make dev-down        # tear down, preserve data/
-make dev-reset       # tear down and wipe data/raw + warehouse
+make dev-reset       # tear down and wipe generated data/raw + warehouse (spares the committed sample)
 make attack VILLAIN=<slug> DURATION=<seconds>
 make attack-all      # all twelve villains sequentially
 make transform       # dbt deps && dbt run && dbt test
