@@ -143,13 +143,22 @@ _NORMALIZED_FEATURES = [
 ]
 
 
-def run_corpus(time_scale: float, seed: int = 0) -> dict[str, str]:
-    """Run every villain once; return {session_id: villain_slug}."""
+def run_corpus(time_scale: float, runs_per_villain: int, seed: int = 0) -> dict[str, str]:
+    """Run every villain `runs_per_villain` times; return {session_id: slug}.
+
+    Multiple runs per villain because a single run is noisy for stop-on-first-
+    error villains (Riddler, Two-Face) — durability 14 means a couple of early
+    rolls decide the whole session. That variance is correct behavior, not
+    noise to damp; averaging over runs just lets the steady-state separability
+    be read through it. Each run's seed is derived from `seed` so a batch is
+    reproducible (the seed is printed) without being locked to one value."""
     scaled_sleep = lambda s: time.sleep(s * time_scale)  # noqa: E731
     mapping: dict[str, str] = {}
-    for i, slug in enumerate(load_villains()):
-        result = run_scripted_session(slug, rng=random.Random(seed + i), sleep_fn=scaled_sleep)
-        mapping[result.session_id] = slug
+    for vi, slug in enumerate(load_villains()):
+        for r in range(runs_per_villain):
+            run_seed = seed + vi * 1000 + r
+            result = run_scripted_session(slug, rng=random.Random(run_seed), sleep_fn=scaled_sleep)
+            mapping[result.session_id] = slug
     return mapping
 
 
@@ -228,15 +237,63 @@ def compute_features(events: list[dict], session_to_villain: dict[str, str]) -> 
     return rows
 
 
-def _normalize(rows: list[dict]) -> dict[str, dict[str, float]]:
-    z: dict[str, dict[str, float]] = {r["villain"]: {} for r in rows}
+def _mean(xs: list[float]) -> float:
+    return sum(xs) / len(xs)
+
+
+def _std(xs: list[float]) -> float:
+    m = _mean(xs)
+    return (sum((x - m) ** 2 for x in xs) / len(xs)) ** 0.5
+
+
+# requests_per_min explodes for near-instant sessions (a 3-request session
+# spanning milliseconds implies tens of thousands/min), which would dominate
+# the normalization. Cap it — nothing realistic exceeds a few hundred/min.
+_REQ_PER_MIN_CAP = 600.0
+
+
+def _normalize_rows(rows: list[dict]) -> list[dict]:
+    """Z-score every feature by its GLOBAL spread across all runs of all
+    villains, so features are comparable and within-villain spread and
+    between-villain distance are measured in the same units."""
+    for r in rows:
+        r["requests_per_min"] = min(float(r["requests_per_min"]), _REQ_PER_MIN_CAP)
+    stats = {}
     for f in _NORMALIZED_FEATURES:
         vals = [float(r[f]) for r in rows]
-        mean = sum(vals) / len(vals)
-        std = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
-        for r in rows:
-            z[r["villain"]][f] = (float(r[f]) - mean) / std if std > 1e-9 else 0.0
-    return z
+        stats[f] = (_mean(vals), _std(vals))
+    out = []
+    for r in rows:
+        z = {"villain": r["villain"]}
+        for f in _NORMALIZED_FEATURES:
+            m, s = stats[f]
+            z[f] = (float(r[f]) - m) / s if s > 1e-9 else 0.0
+        out.append(z)
+    return out
+
+
+def _centroids(zrows: list[dict]) -> dict[str, dict[str, float]]:
+    by_villain: dict[str, list[dict]] = {}
+    for z in zrows:
+        by_villain.setdefault(z["villain"], []).append(z)
+    return {
+        v: {f: _mean([z[f] for z in runs]) for f in _NORMALIZED_FEATURES}
+        for v, runs in by_villain.items()
+    }
+
+
+def _within_spread(zrows: list[dict], centroids: dict[str, dict[str, float]]) -> dict[str, float]:
+    """RMS distance of a villain's runs from its own centroid — the radius of
+    its cloud in normalized space."""
+    by_villain: dict[str, list[dict]] = {}
+    for z in zrows:
+        by_villain.setdefault(z["villain"], []).append(z)
+    spread = {}
+    for v, runs in by_villain.items():
+        c = centroids[v]
+        sq = [sum((z[f] - c[f]) ** 2 for f in _NORMALIZED_FEATURES) for z in runs]
+        spread[v] = math.sqrt(_mean(sq)) if sq else 0.0
+    return spread
 
 
 def _distance(a: dict[str, float], b: dict[str, float]) -> float:
@@ -253,39 +310,95 @@ _REPORT_COLS = [
     "retry_ratio",
     "pivot_ratio",
     "distinct_source_ips",
-    "distinct_user_agents",
     "riddle_param_count",
     "exact_duplicate_path_pairs",
-    "body_bytes_trend",
+    "wasted_request_ratio",
 ]
 
 
+def _leaders(rows: list[dict]) -> None:
+    """Who actually leads the checkpoint's single-feature claims, from real
+    per-villain means — reported because several of those claims came from
+    prose, not measurement (Croc request_count, Freeze duration, and which
+    villain leads retry_ratio / pivot_ratio / wasted_request_ratio)."""
+    by_villain: dict[str, list[dict]] = {}
+    for r in rows:
+        by_villain.setdefault(r["villain"], []).append(r)
+    means = {
+        v: {c: _mean([float(x[c]) for x in rs]) for c in _REPORT_COLS + ["wasted_request_ratio"]}
+        for v, rs in by_villain.items()
+    }
+    print("\n=== who leads each claimed feature (per-villain means) ===")
+    for feat in [
+        "request_count",
+        "duration_s",
+        "retry_ratio",
+        "pivot_ratio",
+        "wasted_request_ratio",
+    ]:
+        ranked = sorted(means.items(), key=lambda kv: kv[1][feat], reverse=True)
+        top = ", ".join(f"{v.split('-', 1)[1]}={m[feat]:.2f}" for v, m in ranked[:3])
+        print(f"  {feat:24} {top}")
+
+
 def report(rows: list[dict]) -> None:
-    # Early-stallers (reached only tier 1 or less -> few requests) are reported
-    # separately: their sessions look alike regardless of mapping quality
-    # (docs/06), a gating consequence not a mapping failure.
-    early = {r["villain"] for r in rows if r["max_path_tier"] <= 1}
+    by_villain: dict[str, list[dict]] = {}
+    for r in rows:
+        by_villain.setdefault(r["villain"], []).append(r)
 
-    print("\n=== per-villain features ===")
+    print("\n=== per-villain feature means ===")
     print("villain".ljust(16) + "".join(c[:9].rjust(11) for c in _REPORT_COLS))
-    for r in sorted(rows, key=lambda r: r["villain"]):
-        line = r["villain"].ljust(16) + "".join(f"{float(r[c]):11.2f}" for c in _REPORT_COLS)
-        print(line + ("  (early)" if r["villain"] in early else ""))
+    for v in sorted(by_villain):
+        rs = by_villain[v]
+        line = v.ljust(16) + "".join(
+            f"{_mean([float(x[c]) for x in rs]):11.2f}" for c in _REPORT_COLS
+        )
+        print(line)
 
-    z = _normalize(rows)
-    names = list(z)
-    pairs = sorted(
-        (_distance(z[a], z[b]), a, b) for i, a in enumerate(names) for b in names[i + 1 :]
-    )
-    print("\n=== closest pairs in normalized feature space (excluding early-stallers) ===")
-    full = [(d, a, b) for d, a, b in pairs if a not in early and b not in early]
-    for d, a, b in full[:8]:
-        print(f"  {d:6.2f}  {a} / {b}")
-    if early:
-        print(f"\nearly-stallers reported separately: {sorted(early)}")
-        for d, a, b in pairs:
-            if (a in early or b in early) and not (a in early and b in early):
-                print(f"  {d:6.2f}  {a} / {b}")
+    _leaders(rows)
+
+    zrows = _normalize_rows(rows)
+    centroids = _centroids(zrows)
+    spread = _within_spread(zrows, centroids)
+    names = list(centroids)
+
+    # Effect size = centroid distance / pooled within-villain spread. This is
+    # the metric that predicts single-session classifiability (Phase 6): two
+    # villains with distant centroids but overlapping clouds are NOT separable
+    # for one session. Raw centroid distance kept alongside for comparison to
+    # the stat-space analysis.
+    pairs = []
+    for i, a in enumerate(names):
+        for b in names[i + 1 :]:
+            cdist = _distance(centroids[a], centroids[b])
+            pooled = math.sqrt((spread[a] ** 2 + spread[b] ** 2) / 2) or 1e-9
+            pairs.append((cdist / pooled, cdist, a, b))
+    pairs.sort()
+
+    print("\n=== closest pairs by EFFECT SIZE (centroid dist / within-villain spread) ===")
+    print("  effect  centroid  pair")
+    for eff, cdist, a, b in pairs[:10]:
+        print(f"  {eff:6.2f}  {cdist:8.2f}  {a} / {b}")
+
+
+def signature_feature_check(rows: list[dict], villains: list[str], features: list[str]) -> None:
+    """Verify a low-durability pair separates on SIGNATURE features even if
+    tier/duration are high-variance (per the plan). Reports per-feature effect
+    size (standardized mean difference) between the two villains."""
+    by_villain: dict[str, list[dict]] = {}
+    for r in rows:
+        by_villain.setdefault(r["villain"], []).append(r)
+    a, b = villains
+    print(f"\n=== per-feature effect size, {a} vs {b} ===")
+    for f in features:
+        av = [float(x[f]) for x in by_villain.get(a, [])]
+        bv = [float(x[f]) for x in by_villain.get(b, [])]
+        if not av or not bv:
+            continue
+        pooled = math.sqrt((_std(av) ** 2 + _std(bv) ** 2) / 2) or 1e-9
+        d = abs(_mean(av) - _mean(bv)) / pooled
+        an, bn = a.split("-", 1)[1], b.split("-", 1)[1]
+        print(f"  {f:28} d={d:6.2f}   ({an}={_mean(av):.2f}, {bn}={_mean(bv):.2f})")
 
 
 def main() -> None:
@@ -296,16 +409,27 @@ def main() -> None:
         default=0.02,
         help="multiply real pacing sleeps (normalized distances are scale-invariant)",
     )
+    ap.add_argument("--runs", type=int, default=10, help="runs per villain (averaged)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
-    print(f"running all twelve villains (time-scale={args.time_scale}) ...")
-    mapping = run_corpus(args.time_scale, args.seed)
+    print(
+        f"running 12 villains x {args.runs} runs (time-scale={args.time_scale}, seed={args.seed})"
+    )
+    mapping = run_corpus(args.time_scale, args.runs, args.seed)
     time.sleep(2.0)  # let the last produces flush through
     events = consume_events()
-    print(f"consumed {len(events)} events across {len(mapping)} sessions")
     rows = compute_features(events, mapping)
+    print(f"consumed {len(events)} events across {len(rows)} sessions")
     report(rows)
+    # Riddler and Two-Face (durability 14) are outcome-noisy by design; verify
+    # their separation rests on the signature features, which are present
+    # regardless of how far the run gets (plan / user directive).
+    signature_feature_check(
+        rows,
+        ["558-riddler", "678-two-face"],
+        ["riddle_param_count", "exact_duplicate_path_pairs", "max_path_tier", "duration_s"],
+    )
 
 
 if __name__ == "__main__":
