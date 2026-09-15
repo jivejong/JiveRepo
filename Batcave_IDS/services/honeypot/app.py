@@ -137,11 +137,10 @@ async def healthz() -> dict:
     return {"status": "ok"}
 
 
-@app.api_route(
-    "/{full_path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
-)
-async def catch_all(full_path: str, request: Request) -> JSONResponse:
+async def _handle_request(request: Request) -> JSONResponse:
+    """Log the request and return its canned response. The single code path
+    for every request the honeypot logs, reached both from the catch-all
+    route and from the 405 handler below."""
     start = time.monotonic()
 
     body_bytes = await request.body()
@@ -151,7 +150,7 @@ async def catch_all(full_path: str, request: Request) -> JSONResponse:
     if delay_ms:
         await asyncio.sleep(delay_ms / 1000)
 
-    path = "/" + full_path
+    path = request.url.path
     route = match_route(path)
 
     received_at = datetime.now(UTC)
@@ -198,3 +197,24 @@ async def catch_all(full_path: str, request: Request) -> JSONResponse:
     if cookie_token != session_id:
         response.set_cookie(COOKIE_NAME, session_id, httponly=True, samesite="strict")
     return response
+
+
+@app.api_route(
+    "/{full_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+)
+async def catch_all(full_path: str, request: Request) -> JSONResponse:
+    return await _handle_request(request)
+
+
+@app.exception_handler(405)
+async def method_not_allowed(request: Request, exc) -> JSONResponse:
+    """A honeypot logs whatever arrives, including absurd HTTP methods —
+    Joker's signature (docs/03) is "occasional absurd HTTP methods." The
+    catch-all route only lists the standard verbs, so anything else (BREW,
+    PROPFIND, ...) would otherwise get a bare 405 with no event published,
+    making that signature silently invisible. Re-dispatch through the same
+    logging path instead. (A non-GET /healthz lands here too and is logged
+    as ordinary traffic — an attacker probing /healthz is attack traffic;
+    only the infra healthcheck's GET is exempt.)"""
+    return await _handle_request(request)

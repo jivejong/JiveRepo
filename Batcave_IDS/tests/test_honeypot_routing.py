@@ -96,6 +96,15 @@ def test_cookie_carries_session_across_rotated_identity(client):
         assert c.cookies.get("batcave_sid") == token
 
 
+@pytest.mark.parametrize("method", ["BREW", "PROPFIND", "WHACK", "MEOW"])
+def test_absurd_http_methods_are_answered_not_405(client, method):
+    # Joker's signature is "occasional absurd HTTP methods" — the honeypot
+    # must log and answer them, not bare-405 them (which would publish no
+    # event and make the signature invisible).
+    response = client.request(method, "/admin")
+    assert response.status_code != 405
+
+
 def test_healthz_does_not_set_a_session_cookie(client):
     # /healthz is infrastructure, not attacker-facing traffic — it never
     # touches the session tracker or the producer, unlike every other route.
