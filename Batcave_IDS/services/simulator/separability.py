@@ -53,33 +53,54 @@ ordered as (
         body_bytes,
         row_number() over (partition by session_id order by received_at) as rn,
         epoch(received_at) - lag(epoch(received_at))
-            over (partition by session_id order by received_at) as gap_s
+            over (partition by session_id order by received_at) as gap_s,
+        -- tier_reached_so_far BEFORE this request (running max of prior rows).
+        coalesce(
+            max(path_tier) over (
+                partition by session_id order by received_at
+                rows between unbounded preceding and 1 preceding
+            ), -1
+        ) as tier_before
     from req
+),
+peak as (
+    select
+        session_id,
+        max(path_tier) as peak_tier,
+        min(case when path_tier = mt then rn end) as first_peak_rn
+    from (
+        select o.*, max(path_tier) over (partition by session_id) as mt from ordered o
+    )
+    group by session_id
 ),
 req_features as (
     select
-        session_id,
+        o.session_id,
         count(*) as request_count,
-        greatest(epoch(max(received_at)) - epoch(min(received_at)), 0.001) as duration_s,
-        count(*) / (greatest(epoch(max(received_at)) - epoch(min(received_at)), 0.001) / 60.0)
+        greatest(epoch(max(o.received_at)) - epoch(min(o.received_at)), 0.001) as duration_s,
+        count(*) / (greatest(epoch(max(o.received_at)) - epoch(min(o.received_at)), 0.001) / 60.0)
             as requests_per_min,
-        max(path_tier) as max_path_tier,
-        avg(case when status_returned >= 400 then 1.0 else 0.0 end) as error_ratio,
-        count(distinct source_ip) as distinct_source_ips,
-        count(distinct user_agent) as distinct_user_agents,
-        stddev_samp(gap_s) * 1000.0 as inter_request_stddev_ms,
-        sum(case when query_string like '%riddle=%' then 1 else 0 end) as riddle_param_count,
-        -- corr(body_bytes, request order): +1 monotonic growth (Poison Ivy).
-        -- Guard the degenerate case: constant body_bytes (all-GET techniques)
-        -- makes corr undefined (NaN, which coalesce won't catch) — return 0.
+        max(o.path_tier) as max_path_tier,
+        avg(case when o.status_returned >= 400 then 1.0 else 0.0 end) as error_ratio,
+        count(distinct o.source_ip) as distinct_source_ips,
+        count(distinct o.user_agent) as distinct_user_agents,
+        stddev_samp(o.gap_s) * 1000.0 as inter_request_stddev_ms,
+        sum(case when o.query_string like '%riddle=%' then 1 else 0 end) as riddle_param_count,
         case
-            when count(*) > 1 and stddev_pop(body_bytes) > 0 then corr(body_bytes, rn)
+            when count(*) > 1 and stddev_pop(o.body_bytes) > 0 then corr(o.body_bytes, o.rn)
             else 0.0
         end as body_bytes_trend,
-        -- wasted: fraction of requests that hit nothing useful (403/404)
-        avg(case when status_returned in (403, 404) then 1.0 else 0.0 end) as wasted_request_ratio
-    from ordered
-    group by session_id
+        -- wasted_request_ratio (docs/02): fraction of requests that did NOT
+        -- increase tier_reached_so_far, counted only up to first reaching the
+        -- session's peak tier. Requests after peak aren't waste — there's
+        -- nothing left to advance toward (Bane's post-escalation hammering is
+        -- the objective, not waste). A request advances iff its tier exceeds
+        -- the running max before it.
+        sum(case when o.rn <= p.first_peak_rn and o.path_tier <= o.tier_before then 1 else 0 end)
+            * 1.0 / greatest(min(p.first_peak_rn), 1) as wasted_request_ratio
+    from ordered o
+    join peak p on o.session_id = p.session_id
+    group by o.session_id
 ),
 path_counts as (
     select session_id, path, count(*) as c
@@ -99,6 +120,10 @@ att_features as (
     select
         session_id,
         count(*) as attempt_count,
+        -- Croc's real discriminator (docs/03): he concentrates a similar
+        -- attempt count into far fewer stages than a villain who reaches the
+        -- objective. durability 90 + a hard gating ceiling at stage 2.
+        count(*) * 1.0 / greatest(max(stage), 1) as attempts_per_stage_reached,
         avg(case when decision = 'retry' then 1.0 else 0.0 end) as retry_ratio,
         avg(case when decision = 'pivot' then 1.0 else 0.0 end) as pivot_ratio
     from att
@@ -120,7 +145,8 @@ select
     coalesce(e.path_entropy, 0.0) as path_entropy,
     coalesce(e.exact_duplicate_path_pairs, 0) as exact_duplicate_path_pairs,
     coalesce(a.retry_ratio, 0.0) as retry_ratio,
-    coalesce(a.pivot_ratio, 0.0) as pivot_ratio
+    coalesce(a.pivot_ratio, 0.0) as pivot_ratio,
+    coalesce(a.attempts_per_stage_reached, 0.0) as attempts_per_stage_reached
 from req_features r
 left join entropy e on r.session_id = e.session_id
 left join att_features a on r.session_id = a.session_id
@@ -140,6 +166,7 @@ _NORMALIZED_FEATURES = [
     "distinct_source_ips",
     "body_bytes_trend",
     "wasted_request_ratio",
+    "attempts_per_stage_reached",
 ]
 
 
@@ -203,10 +230,10 @@ def compute_features(events: list[dict], session_to_villain: dict[str, str]) -> 
     con.execute(
         "create table events (event_kind varchar, session_id varchar, received_at timestamp, "
         "path varchar, status_returned int, path_tier int, source_ip varchar, user_agent varchar, "
-        "query_string varchar, body_bytes int, decision varchar)"
+        "query_string varchar, body_bytes int, decision varchar, stage int)"
     )
     con.executemany(
-        "insert into events values (?,?,?,?,?,?,?,?,?,?,?)",
+        "insert into events values (?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             [
                 e.get("event_kind"),
@@ -220,6 +247,7 @@ def compute_features(events: list[dict], session_to_villain: dict[str, str]) -> 
                 e.get("query_string"),
                 e.get("body_bytes"),
                 e.get("decision"),
+                e.get("stage"),
             ]
             for e in events
         ],
@@ -381,6 +409,57 @@ def report(rows: list[dict]) -> None:
         print(f"  {eff:6.2f}  {cdist:8.2f}  {a} / {b}")
 
 
+def diagnostics(rows: list[dict]) -> None:
+    """The specific numbers the tuning-loop review asked for: the full
+    request_count distribution (mean +/- spread) across all twelve, so we can
+    see whether it discriminates or everything lands around ten; and whether
+    the redefined wasted_request_ratio correlates with error_ratio (if it
+    does, one of the two isn't earning its place)."""
+    by_villain: dict[str, list[dict]] = {}
+    for r in rows:
+        by_villain.setdefault(r["villain"], []).append(r)
+
+    print("\n=== request_count distribution (mean +/- within-villain spread) ===")
+    rc = []
+
+    def _rc_mean(v):
+        return _mean([float(x["request_count"]) for x in by_villain[v]])
+
+    for v in sorted(by_villain, key=lambda v: -_rc_mean(v)):
+        vals = [float(x["request_count"]) for x in by_villain[v]]
+        rc.append((v, _mean(vals), _std(vals)))
+        rng_s = f"(min {min(vals):.0f}, max {max(vals):.0f})"
+        print(f"  {v:18} {_mean(vals):6.1f} +/- {_std(vals):5.1f}   {rng_s}")
+    lo = min(m for _, m, _ in rc)
+    hi = max(m for _, m, _ in rc)
+    print(f"  range of per-villain means: {lo:.1f} .. {hi:.1f}  (ratio {hi / max(lo, 0.01):.1f}x)")
+
+    print("\n=== attempts_per_stage_reached (Croc's discriminator) ===")
+    for v in sorted(
+        by_villain,
+        key=lambda v: -_mean([float(x["attempts_per_stage_reached"]) for x in by_villain[v]]),
+    ):
+        vals = [float(x["attempts_per_stage_reached"]) for x in by_villain[v]]
+        print(f"  {v:18} {_mean(vals):5.2f} +/- {_std(vals):4.2f}")
+
+    print("\n=== wasted_request_ratio (redefined, progress-based) ===")
+    for v in sorted(
+        by_villain, key=lambda v: _mean([float(x["wasted_request_ratio"]) for x in by_villain[v]])
+    ):
+        vals = [float(x["wasted_request_ratio"]) for x in by_villain[v]]
+        print(f"  {v:18} {_mean(vals):.3f}")
+
+    # Correlation of per-villain-mean wasted vs error across the twelve.
+    wv = [_mean([float(x["wasted_request_ratio"]) for x in by_villain[v]]) for v in by_villain]
+    ev = [_mean([float(x["error_ratio"]) for x in by_villain[v]]) for v in by_villain]
+    mw, me = _mean(wv), _mean(ev)
+    cov = _mean([(w - mw) * (e - me) for w, e in zip(wv, ev, strict=True)])
+    denom = _std(wv) * _std(ev)
+    r = cov / denom if denom > 1e-9 else 0.0
+    print(f"\nwasted_request_ratio vs error_ratio correlation across the twelve: r = {r:.2f}")
+    print("(strong correlation would mean the two features measure the same thing)")
+
+
 def signature_feature_check(rows: list[dict], villains: list[str], features: list[str]) -> None:
     """Verify a low-durability pair separates on SIGNATURE features even if
     tier/duration are high-variance (per the plan). Reports per-feature effect
@@ -422,6 +501,7 @@ def main() -> None:
     rows = compute_features(events, mapping)
     print(f"consumed {len(events)} events across {len(rows)} sessions")
     report(rows)
+    diagnostics(rows)
     # Riddler and Two-Face (durability 14) are outcome-noisy by design; verify
     # their separation rests on the signature features, which are present
     # regardless of how far the run gets (plan / user directive).
