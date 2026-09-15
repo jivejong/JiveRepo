@@ -1,0 +1,62 @@
+# ── data/ ──────────────────────────────────────────────────────────────
+# The JiveRepo root .gitignore has an unanchored `data/` pattern, which git
+# applies at every directory level — it never descends into this directory
+# at all as a result. Every level below must be explicitly re-included
+# before a deeper pattern can take effect: git will not walk into an
+# excluded directory to evaluate rules inside it, so a bare `!data/` alone
+# is not sufficient. See docs/05-local-environment.md for the full note
+# (relevant if this project is ever cloned into, or moved to, a different
+# parent directory without this override).
+#
+# Directory levels are re-included explicitly, one at a time, rather than
+# with a recursive `!data/raw/**` — a recursive negation placed before a
+# recursive `data/raw/**` exclusion gets silently re-excluded by it, since
+# `**` matches directories as well as files. Explicit per-level patterns
+# avoid that trap entirely and stay easy to verify with `git check-ignore`.
+
+!data/
+!data/villains/
+!data/villains/**
+
+!data/raw/
+!data/raw/*/
+!data/raw/*/dt=*/
+!data/raw/*/dt=*/hour=*/
+
+# Generated landed Parquet: ignored by default...
+data/raw/*/dt=*/hour=*/*
+# ...except the committed sample partition (docs/05). Filename convention,
+# not a `sample/` subdirectory — the sample must sit at a real dt=/hour=
+# Hive path or DuckDB can't infer the partition columns, which would break
+# `dbt run` on the very thing the sample exists to enable. `.md` placeholder
+# in Phase 0, real `.parquet` in Phase 5. Phase 5 dbt sources must glob
+# `*.parquet` explicitly so they never pick up this placeholder.
+!data/raw/*/dt=*/hour=*/sample-*
+
+data/quarantine/
+*.duckdb
+*.duckdb.wal
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# ── dbt ────────────────────────────────────────────────────────────────
+transform/target/
+transform/dbt_packages/
+transform/logs/
+
+# ── Secrets ────────────────────────────────────────────────────────────
+.env
+
+# ── Misplaced companion project ───────────────────────────────────────
+# k8s-data-platform is a separate companion repository per its own
+# HANDOFF.md, currently nested here by mistake instead of sibling to
+# Batcave_IDS at the JiveRepo root. Left in place, but excluded from this
+# project's tracking and CI so it isn't swept in by accident. Not moved
+# without an explicit decision to do so.
+/k8s-data-platform/
