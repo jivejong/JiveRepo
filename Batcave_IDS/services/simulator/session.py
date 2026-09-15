@@ -204,9 +204,13 @@ def run_scripted_session(
                 size = int(profile.mean_body_bytes * profile.body_repetition * growth)
                 body = (b"x" * size) if size > 0 else None
                 specs = signature.transform(request_specs_for(technique.technique_id), rng)
-                send_requests(
-                    http_client, specs, attempt_id, extra_headers=identity.headers(), body=body
-                )
+                headers = identity.headers()
+                if signature.response_delay_ms > 0:
+                    # Mister Freeze holds connections open — the honeypot honors
+                    # X-Sim-Delay-Ms as a real server-side response delay,
+                    # lifting response_time_ms and duration.
+                    headers["X-Sim-Delay-Ms"] = str(signature.response_delay_ms)
+                send_requests(http_client, specs, attempt_id, extra_headers=headers, body=body)
             event = AttemptEvent(
                 session_id=session_id,
                 received_at=attempt_at,

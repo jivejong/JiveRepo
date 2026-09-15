@@ -45,6 +45,11 @@ def _with_query(path: str, key: str, value: str) -> str:
 class Signature:
     rotate_ip: bool = False  # Penguin: henchmen -> distinct_source_ips
     burstiness: float = 0.0  # Harley: extra timing variance on top of jitter
+    # Mister Freeze holds connections open (docs/03): a server-side response
+    # delay, delivered via X-Sim-Delay-Ms, so his response_time_ms is high and
+    # his sessions run long because each request is slow to return — his
+    # duration comes from holding, not from grinding volume like Croc.
+    response_delay_ms: float = 0.0
     # Clean operator: stops as soon as the stage machine resolves (win or
     # stall) rather than grinding to its request budget. This is a signature
     # property, not derivable from stats — Ra's al Ghul "then exits", Catwoman
@@ -99,6 +104,20 @@ class _Scarecrow(Signature):
         return out
 
 
+class _Bane(Signature):
+    def transform(self, specs: list[Spec], rng: random.Random) -> list[Spec]:
+        # Hammers one endpoint (docs/03: "hammers that single endpoint with
+        # large repeated bodies"). Collapse every request to the deepest path
+        # in the specs — same request count, but a very low path_entropy
+        # fingerprint nothing else produces. (Large bodies come from Layer 1
+        # strength; volume from durability. The signature is the concentration,
+        # so it doesn't need to also inflate count past Croc's grind.)
+        if not specs:
+            return specs
+        method, path = specs[-1]
+        return [(method, path) for _ in specs]
+
+
 def signature_for(slug: str) -> Signature:
     if slug == "558-riddler":
         return _Riddler()
@@ -108,10 +127,14 @@ def signature_for(slug: str) -> Signature:
         return _Joker()
     if slug == "576-scarecrow":
         return _Scarecrow()
+    if slug == "60-bane":
+        return _Bane()
     if slug == "514-penguin":
         return Signature(rotate_ip=True)
     if slug == "309-harley-quinn":
         return Signature(burstiness=0.8)
+    if slug == "457-mister-freeze":
+        return Signature(response_delay_ms=250.0)  # holds connections open
     if slug == "538-ras-al-ghul":
         return Signature(clean_operator=True)  # straight to tier 4, then exits
     if slug == "165-catwoman":

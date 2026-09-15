@@ -51,6 +51,7 @@ ordered as (
         user_agent,
         query_string,
         body_bytes,
+        response_time_ms,
         row_number() over (partition by session_id order by received_at) as rn,
         epoch(received_at) - lag(epoch(received_at))
             over (partition by session_id order by received_at) as gap_s,
@@ -85,6 +86,7 @@ req_features as (
         count(distinct o.source_ip) as distinct_source_ips,
         count(distinct o.user_agent) as distinct_user_agents,
         stddev_samp(o.gap_s) * 1000.0 as inter_request_stddev_ms,
+        avg(o.response_time_ms) as mean_response_time_ms,
         sum(case when o.query_string like '%riddle=%' then 1 else 0 end) as riddle_param_count,
         case
             when count(*) > 1 and stddev_pop(o.body_bytes) > 0 then corr(o.body_bytes, o.rn)
@@ -139,6 +141,7 @@ select
     r.distinct_source_ips,
     r.distinct_user_agents,
     coalesce(r.inter_request_stddev_ms, 0.0) as inter_request_stddev_ms,
+    coalesce(r.mean_response_time_ms, 0.0) as mean_response_time_ms,
     r.riddle_param_count,
     r.body_bytes_trend,
     r.wasted_request_ratio,
@@ -165,6 +168,29 @@ _NORMALIZED_FEATURES = [
     "exact_duplicate_path_pairs",
     "distinct_source_ips",
     "body_bytes_trend",
+    "wasted_request_ratio",
+    "attempts_per_stage_reached",
+    "mean_response_time_ms",
+]
+
+# The mid-stat cluster (Bane, Harley, Poison Ivy, Freeze) overlaps on
+# stat-derived behavior — expected, since a derived mapping produces similar
+# behavior from similar stats. What must still separate them is their Layer 2
+# fingerprint. Split the features so the two can be measured apart.
+_CLUSTER = ["60-bane", "309-harley-quinn", "522-poison-ivy", "457-mister-freeze"]
+_SIGNATURE_FEATURES = [
+    "body_bytes_trend",  # Poison Ivy: monotonic growth
+    "inter_request_stddev_ms",  # Harley: bursts then pauses
+    "mean_response_time_ms",  # Freeze: holds connections open
+    "path_entropy",  # Bane: hammers one endpoint -> low entropy
+]
+_STAT_FEATURES = [
+    "requests_per_min",
+    "duration_s",
+    "max_path_tier",
+    "error_ratio",
+    "retry_ratio",
+    "pivot_ratio",
     "wasted_request_ratio",
     "attempts_per_stage_reached",
 ]
@@ -230,10 +256,11 @@ def compute_features(events: list[dict], session_to_villain: dict[str, str]) -> 
     con.execute(
         "create table events (event_kind varchar, session_id varchar, received_at timestamp, "
         "path varchar, status_returned int, path_tier int, source_ip varchar, user_agent varchar, "
-        "query_string varchar, body_bytes int, decision varchar, stage int)"
+        "query_string varchar, body_bytes int, decision varchar, stage int, "
+        "response_time_ms double)"
     )
     con.executemany(
-        "insert into events values (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "insert into events values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             [
                 e.get("event_kind"),
@@ -248,6 +275,7 @@ def compute_features(events: list[dict], session_to_villain: dict[str, str]) -> 
                 e.get("body_bytes"),
                 e.get("decision"),
                 e.get("stage"),
+                e.get("response_time_ms"),
             ]
             for e in events
         ],
@@ -460,6 +488,50 @@ def diagnostics(rows: list[dict]) -> None:
     print("(strong correlation would mean the two features measure the same thing)")
 
 
+def _subset_effect_size(rows: list[dict], a: str, b: str, features: list[str]) -> float:
+    """Effect size (centroid distance / pooled within-villain spread) between
+    two villains over a feature subset, z-scored across all villains so the
+    features are comparable within the subset."""
+    stats = {}
+    for f in features:
+        vals = [float(r[f]) for r in rows]
+        stats[f] = (_mean(vals), _std(vals))
+
+    def zvec(r: dict) -> dict[str, float]:
+        return {
+            f: (float(r[f]) - stats[f][0]) / stats[f][1] if stats[f][1] > 1e-9 else 0.0
+            for f in features
+        }
+
+    za = [zvec(r) for r in rows if r["villain"] == a]
+    zb = [zvec(r) for r in rows if r["villain"] == b]
+    ca = {f: _mean([z[f] for z in za]) for f in features}
+    cb = {f: _mean([z[f] for z in zb]) for f in features}
+    centroid = math.sqrt(sum((ca[f] - cb[f]) ** 2 for f in features))
+    sa = math.sqrt(_mean([sum((z[f] - ca[f]) ** 2 for f in features) for z in za]))
+    sb = math.sqrt(_mean([sum((z[f] - cb[f]) ** 2 for f in features) for z in zb]))
+    pooled = math.sqrt((sa**2 + sb**2) / 2) or 1e-9
+    return centroid / pooled
+
+
+def cluster_analysis(rows: list[dict]) -> None:
+    """The mid-stat cluster: report each pair's effect size on SIGNATURE
+    features alone vs STAT features alone. If they overlap on stat features
+    (expected — similar stats, derived mapping) but separate on signature
+    features, the two-layer model is working: overlap on behavior shape,
+    separate on fingerprint. If a pair fails to separate on signature features
+    too, a signature isn't producing a measurable trace and needs fixing."""
+    print("\n=== mid-stat cluster: signature vs stat effect size ===")
+    print("  pair                              sig_only   stat_only")
+    for i, a in enumerate(_CLUSTER):
+        for b in _CLUSTER[i + 1 :]:
+            sig = _subset_effect_size(rows, a, b, _SIGNATURE_FEATURES)
+            stat = _subset_effect_size(rows, a, b, _STAT_FEATURES)
+            an, bn = a.split("-", 1)[1], b.split("-", 1)[1]
+            flag = "  <- weak sig" if sig < 1.0 else ""
+            print(f"  {an + ' / ' + bn:32} {sig:8.2f}   {stat:8.2f}{flag}")
+
+
 def signature_feature_check(rows: list[dict], villains: list[str], features: list[str]) -> None:
     """Verify a low-durability pair separates on SIGNATURE features even if
     tier/duration are high-variance (per the plan). Reports per-feature effect
@@ -502,6 +574,7 @@ def main() -> None:
     print(f"consumed {len(events)} events across {len(rows)} sessions")
     report(rows)
     diagnostics(rows)
+    cluster_analysis(rows)
     # Riddler and Two-Face (durability 14) are outcome-noisy by design; verify
     # their separation rests on the signature features, which are present
     # regardless of how far the run gets (plan / user directive).

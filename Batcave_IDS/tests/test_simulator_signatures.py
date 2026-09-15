@@ -49,6 +49,12 @@ def test_harley_is_bursty():
     assert signature_for("370-joker").burstiness == 0
 
 
+def test_mister_freeze_holds_connections():
+    # Long response delay -> high response_time_ms, long duration (docs/03).
+    assert signature_for("457-mister-freeze").response_delay_ms > 0
+    assert signature_for("386-killer-croc").response_delay_ms == 0
+
+
 def test_clean_operators_exit_early():
     # Ra's al Ghul and Catwoman stop when the stage machine resolves rather
     # than grinding to budget (docs/03: "then exits", "clean exit").
