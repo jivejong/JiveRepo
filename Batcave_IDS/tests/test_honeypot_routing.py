@@ -82,3 +82,11 @@ def test_parse_attempt_id_absent_is_none():
 def test_response_echoes_session_id(client):
     response = client.get("/")
     assert response.headers.get("x-session-id"), "every response must carry X-Session-Id"
+
+
+def test_healthz_does_not_carry_a_session_id(client):
+    # /healthz is infrastructure, not attacker-facing traffic — it never
+    # touches the session tracker or the producer, unlike every other route.
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert "x-session-id" not in response.headers

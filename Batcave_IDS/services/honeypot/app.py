@@ -123,6 +123,18 @@ def _parse_attempt_id(request: Request) -> str | None:
     return request.headers.get("x-attempt-id") or None
 
 
+@app.get("/healthz")
+async def healthz() -> dict:
+    # Registered before the catch-all so it takes precedence (Starlette
+    # matches routes in registration order). Deliberately does not publish
+    # a request event: an infrastructure probe (Docker's own healthcheck,
+    # every 5s per docker-compose.yml) is not attacker-facing traffic, and
+    # logging it would silently mix synthetic noise into attack.events
+    # indistinguishable from a real session — found the hard way when the
+    # Phase 2 checkpoint's session/request counts didn't match expectations.
+    return {"status": "ok"}
+
+
 @app.api_route(
     "/{full_path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
