@@ -1,0 +1,6 @@
+stage,name,attack_tactic_id,attack_tactic_name,difficulty_multiplier
+0,Reconnaissance,TA0043,Reconnaissance,1.0
+1,Network Intrusion,TA0043,Reconnaissance,1.0
+2,Initial Exploit,TA0001,Initial Access,0.95
+3,Lateral Movement,TA0008,Lateral Movement,0.85
+4,Action on Objectives,TA0009,Collection,0.75
