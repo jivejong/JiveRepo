@@ -41,7 +41,8 @@ from services.simulator.behavior import BehaviorProfile
 from services.simulator.catalog import Technique, gated_techniques, load_stages, load_villains
 from services.simulator.identity import RunIdentity
 from services.simulator.probability import compute_probability, resolve_attempt
-from services.simulator.traffic import drive_honeypot
+from services.simulator.signatures import signature_for
+from services.simulator.traffic import request_specs_for, send_requests
 
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "attack.events")
@@ -129,14 +130,17 @@ def _decide_next_action(
     return "stall", None
 
 
-def _inter_request_delay(profile: BehaviorProfile, rng: random.Random) -> float:
+def _inter_request_delay(profile: BehaviorProfile, burstiness: float, rng: random.Random) -> float:
     """Seconds to wait before the next request. Base interval from speed
-    (requests_per_min); variance from intelligence (jitter), which is what
-    drives inter_request_stddev_ms — high-INT villains space irregularly, a
-    low-INT enumerator is metronomic."""
+    (requests_per_min); variance from intelligence (jitter) plus a villain's
+    signature burstiness. This is what drives inter_request_stddev_ms — a
+    high-INT or bursty villain spaces irregularly, a low-INT enumerator is
+    metronomic. Harley's burstiness is what separates her from Joker, who has
+    the same high intelligence but steadier spacing."""
     base = 60.0 / max(profile.requests_per_min, 1.0)
-    # jitter 0 -> exact base; jitter 1 -> up to +/-90% swing.
-    swing = 1.0 + profile.jitter * (rng.random() * 2.0 - 1.0) * 0.9
+    variance = min(1.0, profile.jitter + burstiness)
+    # variance 0 -> exact base; 1 -> up to +/-90% swing.
+    swing = 1.0 + variance * (rng.random() * 2.0 - 1.0) * 0.9
     return max(0.0, base * swing)
 
 
@@ -162,7 +166,12 @@ def run_scripted_session(
     )
 
     profile = BehaviorProfile.from_villain(villain)
-    identity = RunIdentity(rng, rotate_user_agent=profile.rotates_user_agent)
+    signature = signature_for(villain_slug)
+    identity = RunIdentity(
+        rng,
+        rotate_ip=signature.rotate_ip,
+        rotate_user_agent=profile.rotates_user_agent,
+    )
 
     try:
         # Warm-up: let the honeypot mint a session and set batcave_sid in this
@@ -213,9 +222,15 @@ def run_scripted_session(
                     growth = 1.0 + profile.body_growth * (attempt_seq / 20.0)
                     size = int(profile.mean_body_bytes * profile.body_repetition * growth)
                     body = (b"x" * size) if size > 0 else None
-                    drive_honeypot(
+                    # Layer 2: the villain's signature reshapes the request
+                    # stream (Riddler's riddle params, Two-Face's duplicates,
+                    # Joker's absurd methods, Scarecrow's error probes).
+                    specs = signature.transform(
+                        request_specs_for(current_technique.technique_id), rng
+                    )
+                    send_requests(
                         http_client,
-                        current_technique.technique_id,
+                        specs,
                         attempt_id,
                         extra_headers=identity.headers(),
                         body=body,
@@ -252,7 +267,7 @@ def run_scripted_session(
                 # Pace the next request in real time (Layer 1 timing). A
                 # detected attempt still consumed a request; failures count
                 # toward the durability tolerance.
-                sleep_fn(_inter_request_delay(profile, rng))
+                sleep_fn(_inter_request_delay(profile, signature.burstiness, rng))
 
                 if resolution.outcome == "success":
                     max_stage_reached = stage_num

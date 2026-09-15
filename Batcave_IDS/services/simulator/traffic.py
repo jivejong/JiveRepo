@@ -52,6 +52,27 @@ def request_specs_for(technique_id: str) -> list[tuple[str, str]]:
     return _REQUEST_SPECS.get(technique_id, [])
 
 
+def send_requests(
+    client: httpx.Client,
+    specs: list[tuple[str, str]],
+    attempt_id: str,
+    extra_headers: dict[str, str] | None = None,
+    body: bytes | None = None,
+) -> list[httpx.Response]:
+    """Send an explicit list of (method, path) specs, all tagged with the same
+    attempt_id. The session layer builds `specs` — starting from
+    request_specs_for(technique) and then applying the villain's Layer 2
+    signature (services/simulator/signatures.py) — so signature-shaped traffic
+    (Two-Face's duplicates, Riddler's riddle params, Joker's absurd methods)
+    flows through this one path. `body` attaches to write methods only."""
+    headers = {"X-Attempt-Id": attempt_id, **(extra_headers or {})}
+    responses = []
+    for method, path in specs:
+        content = body if (body and method in ("POST", "PUT", "PATCH")) else None
+        responses.append(client.request(method, path, headers=headers, content=content))
+    return responses
+
+
 def drive_honeypot(
     client: httpx.Client,
     technique_id: str,
@@ -59,14 +80,6 @@ def drive_honeypot(
     extra_headers: dict[str, str] | None = None,
     body: bytes | None = None,
 ) -> list[httpx.Response]:
-    """Sends every request spec for this technique, all tagged with the same
-    attempt_id. `body` (Layer 1: strength/power-derived size) is attached to
-    write methods only — a GET carrying a body is unusual enough to distort
-    the request shape. Returns the responses so a caller can inspect them;
-    the honeypot's own event publishing is what matters downstream."""
-    headers = {"X-Attempt-Id": attempt_id, **(extra_headers or {})}
-    responses = []
-    for method, path in request_specs_for(technique_id):
-        content = body if (body and method in ("POST", "PUT", "PATCH")) else None
-        responses.append(client.request(method, path, headers=headers, content=content))
-    return responses
+    """Convenience: send a technique's own request specs unmodified. Used by
+    tests and any caller that doesn't apply a signature."""
+    return send_requests(client, request_specs_for(technique_id), attempt_id, extra_headers, body)
