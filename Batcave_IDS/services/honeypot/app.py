@@ -9,6 +9,12 @@ this service owns per-request response delay (`X-Sim-Delay-Ms`, feeding
 `response_time_ms` — Mister Freeze's signature). It does NOT own inter-request
 pacing/jitter (`inter_request_stddev_ms`) — that's the simulator's own
 client-side call spacing in Phase 2+ and never touches this service.
+
+Every response carries `X-Session-Id` (Phase 2), echoing the session_id this
+request landed in. `attack_attempts` and `attack_events` join on session_id
+(docs/02), and the simulator doesn't control it — the honeypot derives it
+from (source_ip, user_agent, gap) — so it needs a way to learn what session
+its own driven traffic landed in before it can stamp attempt events to match.
 """
 
 from __future__ import annotations
@@ -170,6 +176,5 @@ async def catch_all(full_path: str, request: Request) -> JSONResponse:
     )
     producer.poll(0)
 
-    return JSONResponse(
-        status_code=route.status_code, content=route.body, headers=route.extra_headers
-    )
+    response_headers = {"X-Session-Id": session_id, **route.extra_headers}
+    return JSONResponse(status_code=route.status_code, content=route.body, headers=response_headers)

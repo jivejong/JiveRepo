@@ -77,3 +77,8 @@ def test_parse_attempt_id_present():
 def test_parse_attempt_id_absent_is_none():
     request = _FakeRequest({})
     assert _parse_attempt_id(request) is None
+
+
+def test_response_echoes_session_id(client):
+    response = client.get("/")
+    assert response.headers.get("x-session-id"), "every response must carry X-Session-Id"
