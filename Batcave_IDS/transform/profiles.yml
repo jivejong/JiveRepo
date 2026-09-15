@@ -1,0 +1,10 @@
+# Kept inside the dbt project (not ~/.dbt/profiles.yml) so the project is
+# portable: run dbt with --profiles-dir . (or DBT_PROFILES_DIR set to this
+# directory) from a fresh clone with no machine-level setup.
+batcave_ids:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ../data/warehouse.duckdb
+      threads: 4

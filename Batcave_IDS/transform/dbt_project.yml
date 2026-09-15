@@ -1,0 +1,22 @@
+name: "batcave_ids"
+version: "1.0.0"
+config-version: 2
+
+profile: "batcave_ids"
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# No directory-level +tags. staging/ holds both triage_input and
+# ground_truth models (docs/02-data-model.md) — a directory default would
+# encode exactly the leakage the project exists to prevent. Every model
+# gets its own tag in its own config block, starting Phase 5.
+models:
+  batcave_ids: {}
