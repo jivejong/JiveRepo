@@ -8,6 +8,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY services/honeypot/ services/honeypot/
+COPY services/common/ services/common/
 RUN touch services/__init__.py
 
 ENV PATH="/app/.venv/bin:$PATH"

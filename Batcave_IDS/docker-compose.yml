@@ -58,6 +58,22 @@ services:
       # Trusted only on the compose-internal network, where the simulator is
       # the only thing that can reach this service (docs/02, Phase 1 plan).
       HONEYPOT_TRUST_FORWARDED_FOR: "true"
+    healthcheck:
+      # No curl in python:3.11-slim; urllib avoids adding a dependency just
+      # for this. Found the hard way in Phase 2: without a real healthcheck
+      # here, `docker compose up --wait` reported this service healthy while
+      # it was actually crash-looping on a missing module.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
     ports:
       - "8000:8000"
 

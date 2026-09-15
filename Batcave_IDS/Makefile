@@ -6,7 +6,7 @@ TOPIC := attack.events
 # ── Real (Phase 0) ───────────────────────────────────────────────────────
 
 dev-up:
-	docker compose up -d --wait
+	docker compose up -d --wait --build
 	docker compose exec redpanda rpk topic create $(TOPIC) --partitions 3 --replicas 1 2>/dev/null || true
 	docker compose exec redpanda rpk topic alter-config $(TOPIC) --set retention.ms=86400000
 	@echo "Redpanda up: broker on localhost:9092, console on http://localhost:8080"
