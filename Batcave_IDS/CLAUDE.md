@@ -8,31 +8,53 @@ Context for Claude Code working in this repository.
 
 ```
 TRACK:  A  (headless core pipeline)
-PHASE:  1  (honeypot and event envelope) — LOCALLY COMPLETE, CI unverified (not yet pushed)
-NEXT:   Phase 2 — Technique catalog and stage machine (planning)
+PHASE:  2  (technique catalog and stage machine) — LOCALLY COMPLETE, CI unverified (not yet pushed)
+NEXT:   Phase 3 — Villain behavior and pathologies (planning)
 IN SCOPE:    docs/01, 02, 03, 04, 05, 06, 07
 OUT OF SCOPE: docs/08  — no console, no bat bot, no finale, no dashboard
 ```
 
-Phase 0 and Phase 1 are both locally complete and verified against real output; neither has been
-pushed, so **CI green is unconfirmed for both** — nothing has gone to the public remote yet
-(deliberately, per instruction: local first). Do not treat either phase as fully closed until CI is
+Phases 0, 1, and 2 are all locally complete and verified against real output; none has been pushed,
+so **CI green is unconfirmed for all three** — nothing has gone to the public remote yet
+(deliberately, per instruction: local first). Do not treat any of them as fully closed until CI is
 observed green after that push.
 
-Phase 1 checkpoint (docs/06): curl every route, read messages back with `rpk topic consume`,
-inspect the JSON by hand against docs/02. Done for real — every field in the shared envelope and
-`attack_events` tables matched real emitted output exactly (no field-level doc correction needed).
-Two mechanisms the spec left open got decided and documented as part of this phase's own commits,
-not deferred:
+**Phase 1 summary** (full detail: docs/02 "Session derivation", docs/01 header table): gap-based
+session derivation (not a fixed time bucket — docs/06 corrected), three invented request headers
+(`X-Client-Ts`, `X-Sim-Delay-Ms`, `X-Forwarded-For`).
 
-- **Session derivation is gap-based, not a fixed time bucket** — docs/06 said "time bucket";
-  corrected. `(source_ip, user_agent)` sessions close after `SESSION_GAP_SECONDS` (default 120s) of
-  inactivity, verified against real Kafka output with a real 2s/6s timing split against a 5s gap.
-  Full writeup, including the Phase 3 recalibration note (Mister Freeze's real session length isn't
-  known until `BehaviorProfile` exists): docs/02, "Session derivation".
-- **Three request headers with wire formats the spec never specified**: `X-Client-Ts`,
-  `X-Sim-Delay-Ms`, `X-Forwarded-For` (gated off by default via `HONEYPOT_TRUST_FORWARDED_FOR`).
-  Documented in docs/01, right after the honeypot's producer config.
+**Phase 2 checkpoint** (docs/06): run a scripted session, confirm Croc gets exactly the low-gate
+techniques and Ra's al Ghul the full catalog, confirm no gate violations, confirm attempts and
+their HTTP traffic share an `attempt_id`. Done for real against the live stack (`rpk topic
+consume`, cross-checked by hand and programmatically against `gated_techniques`), not asserted from
+the code:
+
+- **All 23 ATT&CK IDs verified against live attack.mitre.org** — none wrong. Full table and the
+  TA0005 (Defense Evasion → Stealth) rename note: docs/07's commit history.
+- **Docs/07's narrative was wrong on both named villains, found by computing gates, not reading
+  prose.** Killer Croc stalls at stage 2 (no stage-3 technique's `min_intelligence` is low enough
+  for him — 19 vs. a floor of 45) and never reaches `data_local_system`. Ra's al Ghul clears every
+  `min_intelligence` gate but fails `privesc_exploit`'s `min_power=40` (his power is 27), so he
+  doesn't reach "the full catalog." **Fixed the narrative, not the seed thresholds** — full
+  twelve-villain gated-technique table now in docs/07.
+- **`produces_traffic` column added** (`techniques.csv`) — whether a technique touches the honeypot
+  is fixed per-technique, independent of outcome. Splits `low` observability into two real
+  detection postures (8 no-evidence, 1 camouflaged) — carried into docs/07, docs/04, and the README.
+- **`detected` outcome defined** — named in the schema, never specified anywhere. Orthogonal to
+  success/failure, driven by `noise_generated` (docs/07).
+- **`X-Attempt-Id` (request) / `X-Session-Id` (response)** wire formats added to the honeypot —
+  the actual attempt-to-request correlation mechanism, verified by hand against real consumed
+  Kafka messages (one `attempt` event, its exact matching `request` event(s), same `attempt_id`
+  *and* `session_id`).
+- **Two Docker bugs found and fixed while bringing the stack up for the checkpoint**: the honeypot
+  image was missing `services/common/` (crash-looping, but reported "healthy" because it had no
+  real healthcheck — both fixed); Docker's own healthcheck was polluting `attack.events` with
+  synthetic traffic once a real healthcheck existed (`/healthz` added, verified 0 messages over 4
+  healthcheck cycles).
+- **Two open questions handed to Phase 3 with real data attached, not decided here**: whether
+  Killer Croc's stage-3 wall is the intended story (full twelve-villain distribution in docs/07);
+  per-run `source_ip` variation, needed before `attack-all`'s sequential runs will separate into
+  distinct sessions (confirmed empirically — two villains run back-to-back landed in one session).
 
 `k8s-data-platform/` has been moved out to be a sibling of `Batcave_IDS` at the JiveRepo root,
 matching its own HANDOFF.md. Resolved.
