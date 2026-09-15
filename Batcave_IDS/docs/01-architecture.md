@@ -37,6 +37,14 @@ The honeypot **logs and responds**. It never evaluates, forwards, or executes re
 Producer: `acks=all`, `enable.idempotence=false` (deliberately — duplicates are wanted), key =
 `session_id`, value = JSON.
 
+**Request headers the honeypot reads — wire formats left open by the spec, decided in Phase 1:**
+
+| Header | Purpose | Behavior |
+|---|---|---|
+| `X-Client-Ts` | Populates `client_ts` | Parsed leniently as ISO-8601. Absent or unparseable → `null`. This is the attacker-supplied, deliberately unreliable timestamp docs/02 describes — Phase 1 just needed *a* wire format for it to exist; Phase 3's pathologies are what make it lie. |
+| `X-Sim-Delay-Ms` | Server-side response delay | `await`ed before the response is built; `response_time_ms` honestly reflects it. Feeds Mister Freeze's long-response signature (docs/03) — read fresh per request, so the simulator can vary it request by request, not just per session. Does **not** produce `inter_request_stddev_ms` — that's the simulator's own client-side call pacing and never touches the honeypot. |
+| `X-Forwarded-For` | Overrides `source_ip` | Only honored when `HONEYPOT_TRUST_FORWARDED_FOR=true` (default off; set `true` only in `docker-compose.yml`'s honeypot service, reachable only from the compose-internal network). Unconditional trust of a client header in a service called a honeypot would be a bad look in a public repo, even with nothing real behind it. Exists so Penguin's per-session IP rotation (Phase 3) has a real mechanism without new honeypot code then. |
+
 ### Kafka (Redpanda) — Track A
 Single container, Kafka API, no ZooKeeper.
 

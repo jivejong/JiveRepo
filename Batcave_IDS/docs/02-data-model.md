@@ -29,6 +29,33 @@ Consumer adds: `kafka_partition`, `kafka_offset`, `landed_at`.
 
 **Never in any of these:** the villain identity. It lives only in `attack_runs`.
 
+### Session derivation
+
+`session_id` is derived by the honeypot (`services/honeypot/session.py`), keyed on
+`(source_ip, user_agent)`: a session continues while the gap since that key's last request is
+under `SESSION_GAP_SECONDS` (default **120s**, env-configurable); once the gap is met or exceeded,
+the next request starts a new session (a fresh UUID). Gaps are measured against `received_at`
+only, never `client_ts`.
+
+This is a change from `docs/06`'s original phrasing ("source IP + UA + **time bucket**"), which
+implied a fixed tumbling window (`floor(received_at / width)`). That was rejected during Phase 1
+planning: a fixed window fragments any session that straddles a bucket boundary regardless of the
+bucket's width, and Phase 3's separability checkpoint measures per-session features that
+fragmentation would directly distort. Gap-based derivation only fragments a session if the
+*villain itself* goes quiet for `SESSION_GAP_SECONDS`, which is a property of its behavior
+(durability, signature) rather than an accident of alignment against a fixed grid.
+
+State is a small in-memory `dict` in the honeypot process, with periodic eviction of stale keys. A
+real (non-portfolio) deployment running more than one honeypot replica, or wanting sessions to
+survive a restart, would externalize this — Redis or similar.
+
+**120s is a Phase 3 recalibration point.** It's set against the spec's own reference run length
+(Phase 3 checkpoint: "run all twelve for 120 seconds"), not against any villain's actual measured
+inter-request gaps, which don't exist until `BehaviorProfile` (docs/03) is built. Mister Freeze in
+particular — documented as having the longest session duration of any villain — should have his
+real `int_session_events` output checked against this default once it exists, not assumed correct
+because the number happens to match the reference run length.
+
 ---
 
 ## The observed / truth boundary

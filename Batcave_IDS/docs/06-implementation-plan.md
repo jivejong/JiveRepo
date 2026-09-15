@@ -38,7 +38,8 @@ partitions, console reachable on `:8080`, CI green.
 
 - Route table with sensitivity tiers
 - Pydantic models for the shared envelope and the `request` kind
-- Session ID derivation from source IP + UA + time bucket
+- Session ID derivation from source IP + UA + **gap since last request** (not a fixed time bucket
+  — see docs/02's "Session derivation" section for why, and for the Phase 3 recalibration note)
 - Kafka producer keyed by `session_id`, `acks=all`, idempotence off
 - Unit tests for routing and session assignment
 
