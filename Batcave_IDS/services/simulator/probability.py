@@ -49,11 +49,29 @@ def compute_probability(
 
 def compute_noise_generated(technique: Technique, technique_attempt_seq: int) -> int:
     """Escalates with repetition on the same technique — brute_force's own
-    signature is literally "repeated" POST /login. Deliberately simple and a
-    Phase 3 recalibration point (docs/06): uses only the catalog's static
-    noise_level, not villain intelligence, which docs/03 says reduces noise
-    via evasion — that belongs to BehaviorProfile, not this phase."""
+    signature is literally "repeated" POST /login."""
     return technique.noise_level * technique_attempt_seq
+
+
+# Detection calibration (Phase 3). The Phase 2 formula (noise_generated / 10)
+# detected ~48% of all attempts — so loud that noise and the evasion features
+# were nearly meaningless (everyone's caught). This version makes detection
+# intelligence-aware, which is what makes "the most capable villain is the
+# hardest to detect" true in the data rather than only in the narrative:
+#   base ~5% per unit of noise, suppressed by up to EVASION_STRENGTH by a
+#   high-intelligence villain's evasion, capped so nothing is ever certain.
+# Tuned against the Monte Carlo in the git log for this file.
+_DETECTION_PER_NOISE = 0.05
+_EVASION_STRENGTH = 0.7
+_DETECTION_CAP = 0.85
+
+
+def compute_detection_probability(noise_generated: int, evasion: float) -> float:
+    """`evasion` in [0, 1] (BehaviorProfile.evasion, from intelligence): 0 =
+    loud, 1 = quiet. A careful high-INT villain moves quietly; a loud low-INT
+    one grinding a noisy technique gets caught."""
+    raw = _DETECTION_PER_NOISE * noise_generated
+    return max(0.0, min(_DETECTION_CAP, raw * (1.0 - _EVASION_STRENGTH * evasion)))
 
 
 @dataclass(frozen=True)
@@ -69,16 +87,20 @@ def resolve_attempt(
     villain: Villain,
     stage: Stage,
     technique_attempt_seq: int,
+    evasion: float = 0.0,
     rng: random.Random | None = None,
 ) -> AttemptResolution:
     """`detected` is orthogonal to success/failure, not a subtype of either
     — a loud attempt can succeed and still be flagged detected, matching how
-    a real security team catches loud failures and loud successes alike."""
+    a real security team catches loud failures and loud successes alike.
+
+    `evasion` (BehaviorProfile.evasion, from intelligence) suppresses
+    detection; defaults to 0 (no evasion) for callers that don't supply it."""
     rng = rng or random.Random()
 
     computed_probability = compute_probability(technique, villain, stage, technique_attempt_seq)
     noise_generated = compute_noise_generated(technique, technique_attempt_seq)
-    detection_probability = max(0.0, min(0.9, noise_generated / 10))
+    detection_probability = compute_detection_probability(noise_generated, evasion)
 
     detection_roll = rng.random()
     roll = rng.random()

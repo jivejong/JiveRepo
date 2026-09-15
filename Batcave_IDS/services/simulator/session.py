@@ -35,6 +35,7 @@ from confluent_kafka import Producer
 
 from services.common.envelope import EventEnvelope
 from services.honeypot.session import COOKIE_NAME
+from services.simulator.behavior import BehaviorProfile
 from services.simulator.catalog import Technique, gated_techniques, load_stages, load_villains
 from services.simulator.identity import RunIdentity
 from services.simulator.probability import compute_probability, resolve_attempt
@@ -123,7 +124,8 @@ def run_scripted_session(
         {"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "acks": "all", "enable.idempotence": False}
     )
 
-    identity = RunIdentity(rng)
+    profile = BehaviorProfile.from_villain(villain)
+    identity = RunIdentity(rng, rotate_user_agent=profile.rotates_user_agent)
 
     try:
         # Warm-up: let the honeypot mint a session and set batcave_sid in this
@@ -158,7 +160,12 @@ def run_scripted_session(
                 attempt_id = str(uuid.uuid4())
 
                 resolution = resolve_attempt(
-                    current_technique, villain, stage, technique_attempt_seq, rng=rng
+                    current_technique,
+                    villain,
+                    stage,
+                    technique_attempt_seq,
+                    evasion=profile.evasion,
+                    rng=rng,
                 )
 
                 if current_technique.produces_traffic:

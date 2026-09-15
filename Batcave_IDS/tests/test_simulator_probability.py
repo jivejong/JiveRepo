@@ -6,6 +6,7 @@ import pytest
 
 from services.simulator.catalog import Stage, Technique, Villain, load_stages, load_techniques
 from services.simulator.probability import (
+    compute_detection_probability,
     compute_noise_generated,
     compute_probability,
     resolve_attempt,
@@ -78,6 +79,35 @@ def test_failure_when_not_detected_and_roll_loses(brute_force, stage2, bane):
     rng = _ScriptedRandom([0.99, 0.99])
     result = resolve_attempt(brute_force, bane, stage2, technique_attempt_seq=1, rng=rng)
     assert result.outcome == "failure"
+
+
+def test_evasion_suppresses_detection():
+    # Same noise, more evasion -> lower detection probability.
+    loud = compute_detection_probability(noise_generated=5, evasion=0.0)
+    quiet = compute_detection_probability(noise_generated=5, evasion=1.0)
+    assert quiet < loud
+    assert quiet >= 0.0
+
+
+def test_detection_rises_with_noise():
+    low = compute_detection_probability(noise_generated=1, evasion=0.5)
+    high = compute_detection_probability(noise_generated=10, evasion=0.5)
+    assert high > low
+
+
+def test_low_noise_single_attempt_is_quiet_baseline():
+    # A single low-noise (noise_level=1) attempt by an average villain should
+    # be a low baseline, not a coin flip — otherwise everyone is loud.
+    p = compute_detection_probability(noise_generated=1, evasion=0.5)
+    assert p < 0.10
+
+
+def test_high_intelligence_villain_stays_quiet_even_on_loud_technique():
+    # noise_generated=5 (a loud technique), full evasion: still well under the
+    # loud/dumb villain's rate. This is "most capable is hardest to detect."
+    quiet = compute_detection_probability(noise_generated=5, evasion=1.0)
+    loud = compute_detection_probability(noise_generated=5, evasion=0.19)  # Croc-ish
+    assert quiet < loud
 
 
 def test_resolution_carries_computed_probability_and_noise():
