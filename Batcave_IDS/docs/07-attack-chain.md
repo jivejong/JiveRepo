@@ -75,6 +75,16 @@ T1078 Valid Accounts sits at `low` for exactly the reason it is one of the most 
 initial-access techniques: a successful login with legitimate credentials looks like a successful
 login. Worth calling out in the README as a genuine parallel rather than a simulation artifact.
 
+**`low` is two different detection postures, not one bucket — split in Phase 2, once the
+honeypot-traffic question below made the distinction concrete rather than theoretical.** Eight
+techniques (`net_info_gather`, `identity_gather`, `open_source_search`, `phishing`,
+`screen_capture`, `audio_capture`, `video_capture`, `input_capture`) never generate an HTTP request
+at all — recall there is a hard ceiling, not a model failure, because no evidence exists to recover
+from. One (`valid_accounts`, T1078, the case above) does land a real request; it just doesn't stand
+out. Recall on that one is theoretically possible from session-level context; recall on the other
+eight isn't possible from the event log at all, full stop. Carried into docs/04's detection coverage
+framing and the README, not just here.
+
 ### Catalog summary
 
 | Stage | technique_id | attack_id | ATT&CK name | min_int | observability |
@@ -160,6 +170,30 @@ The story this produces:
 build. That falls out of the stat gating rather than being arranged, and it is worth pointing at in
 the README.
 
+**Gated technique counts per villain per stage**, computed via `gated_techniques` for all twelve —
+the real distribution the "who can ever reach stage 4" question in docs/06's Phase 3 section refers
+to:
+
+```
+villain           stage1  stage2  stage3  stage4
+Joker                 5      4      6      7
+Riddler               5      4      5      7
+Bane                  5      5      6      7
+Catwoman              5      3      2      6
+Poison Ivy            5      4      5      7
+Scarecrow             5      4      5      7
+Penguin               5      4      3      7
+Harley Quinn          5      4      6      7
+Mister Freeze         5      5      3      7
+Killer Croc           1      1      0      0
+Ra's Al Ghul          5      5      5      7
+Two-Face              5      4      5      7
+```
+
+Killer Croc is the only villain with an empty stage-3 set — everyone else, including the lowest
+non-Croc count (Catwoman, 2), has *some* path forward. This isn't a marginal case worth hand-waving
+past; it's a structural, one-villain outlier that Phase 3 needs to look at directly.
+
 **A note on TA0005:** MITRE has renamed this tactic from "Defense Evasion" to "Stealth" (and split
 off a new "Defense Impairment," TA0112) since this catalog was drafted. `indicator_removal` (T1070)
 is still correctly tagged `TA0005` — the ID didn't move, only the tactic's display name. Mentioned
@@ -178,6 +212,12 @@ p = base_success_rate
 
 Clamp to [0.02, 0.95]. Nothing certain, nothing impossible.
 
+The weighted stat sum's raw range is `[0, 1]` (weights sum to exactly 1.0, each stat/100 is
+`[0, 1]`), stretched linearly to `[0.5, 1.5]` as `0.5 + raw`. `attempts_on_this_technique` in the
+retry-penalty exponent is `technique_attempt_seq - 1` — 0 on the first attempt, so no penalty
+before any repetition has happened. Neither was pinned down precisely enough to implement from this
+doc alone; both decided in Phase 2 (`services/simulator/probability.py`).
+
 `retry_penalty` (default 0.68–0.95 per technique) creates the interesting decision. Repeating gets
 worse; pivoting needs alternatives. Killer Croc grinds because he has nothing else, producing the
 highest `retry_ratio`. Ra's al Ghul pivots immediately, producing the highest `pivot_ratio`.
@@ -186,6 +226,47 @@ Record `computed_probability`, `roll`, and `outcome` on every attempt so
 `assert_probability_calibration` can verify observed success rates converge on computed
 probabilities over 30+ attempts. **That test validates the simulation itself**, which is an unusual
 thing to have and worth mentioning.
+
+### What makes an attempt `detected`?
+
+Named in the `outcome` enum below, never defined in this doc until now. Decided in Phase 2:
+`detected` is **orthogonal to success/failure**, not a subtype of either — a loud attempt can
+succeed and still be flagged detected, matching how a real security team catches loud failures and
+loud successes alike.
+
+```
+noise_generated = noise_level × technique_attempt_seq
+detection_probability = clamp(noise_generated / 10, 0, 0.9)
+outcome = 'detected' if detection_roll < detection_probability
+          else ('success' if roll < computed_probability else 'failure')
+```
+
+Two independent rolls internally (detection and success) — but only `roll` (the success roll) is
+persisted on the attempt event, matching the schema below, which has exactly one `roll` field, not
+two. Detection evidence is instead carried by `noise_generated`, which is already in the schema.
+
+**Deliberately simple, and a Phase 3 recalibration point** (docs/06): uses only the catalog's static
+`noise_level`, not villain intelligence — Layer 1 above says high intelligence "adds timing jitter"
+and reduces noise, which belongs to `BehaviorProfile`, not this phase's pure stage-machine
+mechanics.
+
+### Does a failed attempt still generate HTTP traffic?
+
+Decided in Phase 2 via a new `produces_traffic` column on the catalog (`transform/seeds/
+techniques.csv`): whether a technique touches the honeypot at all is a fixed property of the
+technique, independent of the attempt's outcome. All `high` and `partial` techniques require an
+HTTP-visible pattern by definition → always `true`; outcome only changes what the honeypot returns,
+never whether a request happens. `low` splits — see "Observability" above — 8 are genuinely
+off-platform → always `false`; `valid_accounts` is on-platform but camouflaged → `true`.
+
+### Wire formats this phase invented
+
+The spec left these open; decided and built in Phase 2, both on `services/honeypot/app.py`:
+
+| Header | Purpose |
+|---|---|
+| `X-Attempt-Id` (request) | The simulator tags every driven HTTP request with the attempt that generated it, threaded into the emitted `request` event's `attempt_id` — the actual correlation mechanism `mart_detection_correlation` depends on. |
+| `X-Session-Id` (response) | The honeypot echoes back the session_id it derived for this request. The simulator reads it off a bootstrap call before starting the stage machine, since it doesn't control session_id itself (docs/02: gap-based, keyed on source_ip/user_agent) but `attack_attempts` and `attack_events` join on it. |
 
 ---
 
@@ -201,7 +282,7 @@ Beyond the shared envelope in `docs/02-data-model.md`:
 | `attempt_seq` | sequence within the session |
 | `technique_attempt_seq` | sequence within this technique |
 | `decision` | `initial` / `retry` / `pivot` |
-| `parameters` | JSON of whatever was tuned |
+| `parameters` | JSON of whatever was tuned. Always `{}` in Phase 2 — there's nothing to tune yet without per-villain behavioral richness; Phase 3 populates it. |
 | `computed_probability`, `roll` | float |
 | `outcome` | `success` / `failure` / `detected` |
 | `noise_generated` | int |

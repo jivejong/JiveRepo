@@ -157,14 +157,16 @@ actual yes/no, outcome class, joined to `observability`.
 
 ### `mart_detection_coverage` — the headline result
 
-Technique recall grouped by observability tier:
+Technique recall grouped by observability tier. `low` is split further — see below —
+because it is not one detection posture:
 
 ```
-tier      techniques  attempts  recalled  recall
-high               7       412       —      —
-partial            6       288       —      —
-low               10       351       —      —
-overall           23      1051       —      —
+tier              techniques  attempts  recalled  recall
+high                       7       412       —      —
+partial                    7       288       —      —
+low (no evidence)          8       —        —      —
+low (camouflaged)          1       —        —      —
+overall                   23       —        —      —
 ```
 
 The expected shape: strong on `high`, mixed on `partial`, near-zero on `low`. Write that up as a
@@ -175,10 +177,23 @@ that gap requires endpoint or identity telemetry the honeypot does not have.
 That is a substantive result. It is also a much better README section than a single accuracy number,
 and it is the kind of thing that reads as domain understanding rather than a demo.
 
-Note the design consequence worth calling out: Killer Croc's gating leaves him only
-high-observability techniques, so he is loud and easy to reconstruct. Ra's al Ghul can reach the
-quiet ones. **The most capable villain is the hardest to detect**, which falls out of the stat
-gating rather than being arranged.
+**`low` is two different detection postures, not one** (docs/07, Phase 2): eight techniques where
+the honeypot never sees an HTTP request at all (`net_info_gather`, `identity_gather`,
+`open_source_search`, `phishing`, `screen_capture`, `audio_capture`, `video_capture`,
+`input_capture`) — recall there is a hard ceiling, not a model failure, since no evidence exists to
+recover from. One (`valid_accounts`) is on-platform but camouflaged — a real login request lands in
+the logs, it just looks like legitimate use — so recall is theoretically possible from session-level
+context even though it's impossible from the event alone. Reporting these as one bucket would hide
+that distinction; reporting them separately is what makes the eventual real number legible rather
+than mysterious.
+
+Note the design consequence worth calling out: Killer Croc's gating leaves him `port_sweep`
+(`partial`) and `brute_force` (`high`) — no low-observability options at all — so he is loud and
+easy to reconstruct, and he stalls there (docs/07: no stage-3 technique's `min_intelligence` is low
+enough for him). Ra's al Ghul clears every intelligence gate and reaches nearly the full catalog,
+including the quiet techniques — with one exception, `privesc_exploit`, which gates on power rather
+than intelligence. **The most capable villain is the hardest to detect** — with one gap that's still
+cheap to build — which falls out of the stat gating rather than being arranged.
 
 ---
 

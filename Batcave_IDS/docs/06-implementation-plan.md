@@ -68,10 +68,30 @@ gate. Confirm attempts and their generated HTTP requests share an `attempt_id`.
 - Vendor the akabab subset; `transform/seeds/villains.csv` committed
 - `BehaviorProfile` derived from all six stats (Layer 1, `docs/03-attack-simulation.md`)
 - Twelve signatures (Layer 2)
-- Retry-versus-pivot decision driven by durability and available alternatives
+- Retry-versus-pivot decision driven by durability and available alternatives — replaces Phase 2's
+  placeholder policy (`services/simulator/session.py`'s `_decide_next_action`: fixed retry cap,
+  pivot to next untried technique). Only that function changes; the surrounding plumbing (attempt
+  sequencing, event publishing, gating, probability) stays as built.
 - `services/simulator/pathologies.yml` with all ten pathologies
 - `make attack VILLAIN=<slug>` and `make attack-all`
 - `attack_runs` rows written
+- **Recalibration items carried from Phase 2, with no empirical basis yet:** the `detected`-outcome
+  noise formula (`services/simulator/probability.py`, static `noise_level` only — docs/03's
+  intelligence-driven evasion isn't in it) and `dim_stages.difficulty_multiplier`'s values
+  (`transform/seeds/stages.csv`, a guessed step). Check both against real attempt outcomes once
+  `BehaviorProfile` exists, alongside the powerstat mapping itself.
+- **Per-run `source_ip` variation.** Confirmed empirically in Phase 2: two different villains run
+  back-to-back from the same process land in the *same* session_id, since gap-based sessionization
+  keys on `(source_ip, user_agent)` and the simulator doesn't vary either yet. `make attack-all`
+  running twelve villains sequentially needs distinct `source_ip` per run (or enough of a gap
+  between runs) or their sessions will merge in the ground truth — this needs a decision before the
+  separability checkpoint below can be trusted.
+- **Killer Croc never reaches stage 4.** Confirmed for all twelve in Phase 2 (`services/simulator/
+  catalog.py`'s `gated_techniques`): he's the only villain with an empty stage-3 set (lowest
+  stage-3 `min_intelligence` is 45; he's 19), so he stalls at stage 2 and never attempts
+  `deploy_batbot`. Either a coherent story (loud, caught early, contributes two techniques' worth
+  of evidence) or a sign stage-3 thresholds need loosening — decide with the real stage-3/4
+  distribution in hand (docs/07), not from one villain's case.
 
 **Checkpoint, two parts.**
 

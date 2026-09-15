@@ -89,10 +89,13 @@ Random baselines are 8.3%, 25%, and ~20%.
 F1, plus tactic-level recall and hallucination rate.
 
 Technique recall is reported **by observability tier**, because an HTTP sensor cannot see everything.
-Of 23 techniques in the catalog, 7 leave a distinctive trace in web logs, 7 leave ambiguous signal,
-and 9 leave essentially nothing. T1078 Valid Accounts sits in the last group for the same reason it
-is one of the most common real initial-access techniques: a successful login with legitimate
-credentials looks like a successful login.
+Of 23 techniques in the catalog, 7 leave a distinctive trace in web logs and 7 leave ambiguous
+signal. The remaining 9 aren't one bucket: 8 never reach the honeypot at all — no HTTP request
+happens, so recall there is a hard ceiling, not a model failure — and 1, T1078 Valid Accounts, does
+land a real request that just looks like legitimate use, for the same reason it's one of the most
+common real initial-access techniques: a successful login with legitimate credentials looks like a
+successful login. Recall on that one is theoretically possible from session context; recall on the
+other 8 isn't possible from the event log at all, because there is no event.
 
 That turns a bare accuracy number into a detection coverage gap analysis, which is what a security
 team would actually produce.
