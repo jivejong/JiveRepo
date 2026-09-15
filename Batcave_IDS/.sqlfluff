@@ -1,0 +1,11 @@
+[sqlfluff]
+dialect = duckdb
+templater = jinja
+# Plain jinja templater for now, not sqlfluff-templater-dbt: that needs a
+# compiled dbt project and there are no models yet (Phase 5). Revisit then
+# — expect to switch, since the jinja templater throws noisy false
+# positives on ref() and source() once real dbt models exist.
+max_line_length = 100
+
+[sqlfluff:indentation]
+tab_space_size = 4
