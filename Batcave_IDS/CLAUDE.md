@@ -8,11 +8,36 @@ Context for Claude Code working in this repository.
 
 ```
 TRACK:  A  (headless core pipeline)
-PHASE:  2  (technique catalog and stage machine) — LOCALLY COMPLETE, CI unverified (not yet pushed)
-NEXT:   Phase 3 — Villain behavior and pathologies (planning)
+PHASE:  3  (villain behavior and pathologies) — IN PROGRESS, paused for branch review
+NEXT:   finish separability Part 1, then pathologies (Part 2)
 IN SCOPE:    docs/01, 02, 03, 04, 05, 06, 07
 OUT OF SCOPE: docs/08  — no console, no bat bot, no finale, no dashboard
 ```
+
+**Phase 3 status (paused mid-separability-loop, nothing pushed).** Built and committed: cookie
+session derivation (replaced the Phase 1 IP+UA key — rotation broke it; see docs/02), per-run/
+per-request identity (RFC 5737 IPs), absurd-method logging, Layer 1 `BehaviorProfile` +
+intelligence-aware detection (calibration gap 0.006 over non-detected attempts, INT↔detection
+r=-0.957), Layer 1 traffic shaping, Layer 2 signatures, the separability harness (`make
+separability`: N-run averaging, effect-size metric, SQL features for Phase 5 to lift), and the
+request-budget volume fix (volume now 5-46 attempts, ~6-9x; Croc highest, matching docs/03).
+
+Corrected against real data (docs/03/06/07): pivot_ratio leader is Joker not Ra's, retry leader is
+Croc; low-durability villains identifiable by signature not outcome; Ra's discriminator is low
+wasted_request_ratio + max_path_tier 4 (a pairing, not one feature). `wasted_request_ratio` redefined
+progress-based (r=-0.05 vs error_ratio).
+
+**Separability Part 1 NOT yet passing — remaining before it can be called done:**
+- Wire Mister Freeze's response-delay signature (`X-Sim-Delay-Ms`) so his duration story holds — the
+  volume fix made Croc longest-duration, which is a stat-mapping artifact (decided: fix via signature).
+- Build the ablation into the harness (effect sizes with `wasted_request_ratio` / `error_ratio`
+  removed; report load-bearing pairs).
+- docs/02 feature-definition ambiguity pass (2-3 prose-vs-computation mismatches already found;
+  likely more) + the wasted+max_path_tier pairing doc edits.
+- The generic mid-stat cluster (Bane/Harley/Poison Ivy/Freeze) still overlaps in effect size (<1) —
+  open question whether that's acceptable or needs more signature work.
+- Then Part 2: pathologies (`pathologies.yml` + injection + verification), `attack_runs`, real
+  `make attack`/`attack-all`.
 
 Phases 0, 1, and 2 are all locally complete and verified against real output; none has been pushed,
 so **CI green is unconfirmed for all three** — nothing has gone to the public remote yet
