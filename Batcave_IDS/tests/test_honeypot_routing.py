@@ -11,7 +11,7 @@ os.environ["HONEYPOT_DISABLE_KAFKA"] = "true"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from services.honeypot.app import app  # noqa: E402
+from services.honeypot.app import _parse_attempt_id, app  # noqa: E402
 
 
 @pytest.fixture
@@ -62,3 +62,18 @@ def test_wildcard_404_still_logged_not_an_error(client):
     response = client.get("/this/does/not/exist")
     assert response.status_code == 404
     assert response.json() == {"error": "not_found"}
+
+
+class _FakeRequest:
+    def __init__(self, headers: dict[str, str]) -> None:
+        self.headers = headers
+
+
+def test_parse_attempt_id_present():
+    request = _FakeRequest({"x-attempt-id": "b2f1c1e0-0000-0000-0000-000000000000"})
+    assert _parse_attempt_id(request) == "b2f1c1e0-0000-0000-0000-000000000000"
+
+
+def test_parse_attempt_id_absent_is_none():
+    request = _FakeRequest({})
+    assert _parse_attempt_id(request) is None

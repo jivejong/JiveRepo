@@ -110,6 +110,13 @@ def _parse_sim_delay_ms(request: Request) -> float:
     return max(delay, 0.0)
 
 
+def _parse_attempt_id(request: Request) -> str | None:
+    # Set by the simulator (Phase 2) so its attempt events correlate with
+    # the HTTP traffic they generate. Absent on a plain curl / manual test,
+    # same as X-Client-Ts and X-Sim-Delay-Ms before it.
+    return request.headers.get("x-attempt-id") or None
+
+
 @app.api_route(
     "/{full_path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
@@ -151,6 +158,7 @@ async def catch_all(full_path: str, request: Request) -> JSONResponse:
         status_returned=route.status_code,
         response_time_ms=response_time_ms,
         headers=json.dumps(dict(request.headers)),
+        attempt_id=_parse_attempt_id(request),
     )
 
     producer = request.app.state.producer
