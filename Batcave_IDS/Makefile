@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down dev-reset attack attack-all transform triage eval \
+.PHONY: dev-up dev-down dev-reset attack attack-all separability transform triage eval \
         reconcile coverage dagster docs fmt test
 
 TOPIC := attack.events
@@ -29,6 +29,13 @@ attack:
 attack-all:
 	@echo "make attack-all: arrives in Phase 3 (runs all twelve villains sequentially)." >&2
 	@exit 1
+
+# Runs all twelve villains, consumes the events back, and reports villain
+# separability in normalized feature space (Phase 3 checkpoint, Part 1).
+# TIME_SCALE shrinks the real pacing sleeps for fast iteration; normalized
+# distances are scale-invariant. Requires `make dev-up` first.
+separability:
+	uv run python -m services.simulator.separability --time-scale $(or $(TIME_SCALE),0.02)
 
 transform:
 	@echo "make transform: arrives in Phase 5 (dbt transformation layer)." >&2
