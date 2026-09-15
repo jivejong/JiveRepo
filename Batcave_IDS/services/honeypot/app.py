@@ -10,11 +10,13 @@ this service owns per-request response delay (`X-Sim-Delay-Ms`, feeding
 pacing/jitter (`inter_request_stddev_ms`) — that's the simulator's own
 client-side call spacing in Phase 2+ and never touches this service.
 
-Every response carries `X-Session-Id` (Phase 2), echoing the session_id this
-request landed in. `attack_attempts` and `attack_events` join on session_id
-(docs/02), and the simulator doesn't control it — the honeypot derives it
-from (source_ip, user_agent, gap) — so it needs a way to learn what session
-its own driven traffic landed in before it can stamp attempt events to match.
+Session identity travels by cookie (`batcave_sid`, Phase 3), gap-enforced —
+see services/honeypot/session.py. `attack_attempts` and `attack_events` join
+on session_id (docs/02); the honeypot mints it and the simulator learns it by
+carrying the cookie like any client, so its driven traffic and its attempt
+events share a session_id. This replaced the Phase 2 `X-Session-Id` response
+header, which couldn't survive the IP/UA rotation Penguin and the high-INT
+villains need.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from fastapi.responses import JSONResponse
 
 from services.honeypot.models import RequestEvent
 from services.honeypot.routes import match_route
-from services.honeypot.session import SessionTracker
+from services.honeypot.session import COOKIE_NAME, SessionTracker
 
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "attack.events")
@@ -155,9 +157,8 @@ async def catch_all(full_path: str, request: Request) -> JSONResponse:
     received_at = datetime.now(UTC)
     source_ip = _resolve_source_ip(request)
     user_agent = request.headers.get("user-agent")
-    session_id = request.app.state.sessions.session_id_for(
-        source_ip, user_agent, received_at.timestamp()
-    )
+    cookie_token = request.cookies.get(COOKIE_NAME)
+    session_id = request.app.state.sessions.session_id_for(cookie_token, received_at.timestamp())
 
     response_time_ms = (time.monotonic() - start) * 1000
 
@@ -188,5 +189,12 @@ async def catch_all(full_path: str, request: Request) -> JSONResponse:
     )
     producer.poll(0)
 
-    response_headers = {"X-Session-Id": session_id, **route.extra_headers}
-    return JSONResponse(status_code=route.status_code, content=route.body, headers=response_headers)
+    response = JSONResponse(
+        status_code=route.status_code, content=route.body, headers=dict(route.extra_headers)
+    )
+    # Carry session identity via cookie so a rotating attacker (Penguin's IP
+    # rotation, high-INT UA rotation) stays one session while the rotation
+    # still shows up in distinct_source_ips / distinct_user_agents.
+    if cookie_token != session_id:
+        response.set_cookie(COOKIE_NAME, session_id, httponly=True, samesite="strict")
+    return response

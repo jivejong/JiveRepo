@@ -79,14 +79,27 @@ def test_parse_attempt_id_absent_is_none():
     assert _parse_attempt_id(request) is None
 
 
-def test_response_echoes_session_id(client):
-    response = client.get("/")
-    assert response.headers.get("x-session-id"), "every response must carry X-Session-Id"
+def test_first_response_sets_session_cookie(client):
+    # A fresh client (no cookie) gets a session minted and set.
+    with TestClient(app) as fresh:
+        response = fresh.get("/")
+        assert "batcave_sid" in response.cookies
 
 
-def test_healthz_does_not_carry_a_session_id(client):
+def test_cookie_carries_session_across_rotated_identity(client):
+    # Same client (carries the cookie) hitting the honeypot with different
+    # source IPs stays one session — the cookie, not (ip, ua), is the key.
+    with TestClient(app) as c:
+        c.get("/", headers={"X-Forwarded-For": "192.0.2.10"})
+        token = c.cookies.get("batcave_sid")
+        c.get("/api/v1/status", headers={"X-Forwarded-For": "192.0.2.99"})
+        assert c.cookies.get("batcave_sid") == token
+
+
+def test_healthz_does_not_set_a_session_cookie(client):
     # /healthz is infrastructure, not attacker-facing traffic — it never
     # touches the session tracker or the producer, unlike every other route.
-    response = client.get("/healthz")
-    assert response.status_code == 200
-    assert "x-session-id" not in response.headers
+    with TestClient(app) as fresh:
+        response = fresh.get("/healthz")
+        assert response.status_code == 200
+        assert "batcave_sid" not in response.cookies
