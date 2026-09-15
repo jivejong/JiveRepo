@@ -57,12 +57,16 @@ def drive_honeypot(
     technique_id: str,
     attempt_id: str,
     extra_headers: dict[str, str] | None = None,
+    body: bytes | None = None,
 ) -> list[httpx.Response]:
     """Sends every request spec for this technique, all tagged with the same
-    attempt_id. Returns the responses so a caller can log or inspect them;
-    the honeypot's own event publishing is what actually matters downstream."""
+    attempt_id. `body` (Layer 1: strength/power-derived size) is attached to
+    write methods only — a GET carrying a body is unusual enough to distort
+    the request shape. Returns the responses so a caller can inspect them;
+    the honeypot's own event publishing is what matters downstream."""
     headers = {"X-Attempt-Id": attempt_id, **(extra_headers or {})}
     responses = []
     for method, path in request_specs_for(technique_id):
-        responses.append(client.request(method, path, headers=headers))
+        content = body if (body and method in ("POST", "PUT", "PATCH")) else None
+        responses.append(client.request(method, path, headers=headers, content=content))
     return responses

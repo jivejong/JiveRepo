@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import os
 import random
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
@@ -45,10 +47,11 @@ KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9
 KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "attack.events")
 HONEYPOT_BASE_URL = os.environ.get("HONEYPOT_BASE_URL", "http://localhost:8000")
 
-# Phase 2 placeholders (docs/06 Phase 3 recalibration list) — replaced by
-# durability/signature-driven decisions once BehaviorProfile exists.
-RETRY_CAP = 3
 MIN_PROBABILITY_TO_RETRY = 0.05
+# Safety cap so a persistent grinder can't loop unbounded; the real driver of
+# attempt count is failure_tolerance (durability), the real driver of duration
+# is the paced inter-request interval (speed).
+MAX_ATTEMPTS = 400
 
 
 def _delivery_report(err, msg) -> None:
@@ -93,18 +96,48 @@ def _decide_next_action(
     tried: dict[str, int],
     villain,
     stage,
+    profile: BehaviorProfile,
+    failures_so_far: int,
 ) -> tuple[Literal["retry", "pivot", "stall"], Technique | None]:
-    """Phase 2 placeholder policy — see module docstring."""
+    """Layer 1 retry-vs-pivot, durability-driven (docs/03, docs/06):
+
+    - A villain gives up once it has burned through `failure_tolerance`
+      failures — durability 14 (Riddler, Two-Face) stops after one, durability
+      90 (Croc) grinds on. This is what makes retry_ratio and duration diverge.
+    - Retry the same technique while its next-attempt probability is still
+      worthwhile *and* the villain has alternatives-appetite below its
+      targeting precision; otherwise pivot to the next untried gated technique.
+      High-precision (high-INT) villains pivot sooner rather than grinding,
+      producing the high pivot_ratio Ra's al Ghul is meant to show; low-INT
+      Croc has nothing to pivot to and grinds, producing the high retry_ratio.
+    """
+    if failures_so_far >= profile.failure_tolerance:
+        return "stall", None
+
     attempt_count = tried[current.technique_id]
     next_probability = compute_probability(current, villain, stage, attempt_count + 1)
-    if attempt_count < RETRY_CAP and next_probability >= MIN_PROBABILITY_TO_RETRY:
-        return "retry", current
-
     untried = [t for t in candidates if t.technique_id not in tried]
+
+    # Prefer pivoting when precise and an alternative exists; otherwise retry
+    # while the odds hold up.
+    if untried and profile.targeting_precision >= 0.5:
+        return "pivot", untried[0]
+    if next_probability >= MIN_PROBABILITY_TO_RETRY:
+        return "retry", current
     if untried:
         return "pivot", untried[0]
-
     return "stall", None
+
+
+def _inter_request_delay(profile: BehaviorProfile, rng: random.Random) -> float:
+    """Seconds to wait before the next request. Base interval from speed
+    (requests_per_min); variance from intelligence (jitter), which is what
+    drives inter_request_stddev_ms — high-INT villains space irregularly, a
+    low-INT enumerator is metronomic."""
+    base = 60.0 / max(profile.requests_per_min, 1.0)
+    # jitter 0 -> exact base; jitter 1 -> up to +/-90% swing.
+    swing = 1.0 + profile.jitter * (rng.random() * 2.0 - 1.0) * 0.9
+    return max(0.0, base * swing)
 
 
 def run_scripted_session(
@@ -112,7 +145,11 @@ def run_scripted_session(
     rng: random.Random | None = None,
     kafka_producer=None,
     http_client: httpx.Client | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
 ) -> SessionResult:
+    """Run one villain's session, pacing requests in real time so the timing
+    features (requests_per_min, duration_s, inter_request_stddev_ms) reflect
+    Layer 1. `sleep_fn` is injectable so tests pass a no-op and don't wait."""
     rng = rng or random.Random()
     villain = load_villains()[villain_slug]
     stages = load_stages()
@@ -139,6 +176,7 @@ def run_scripted_session(
         attempt_seq = 0
         max_stage_reached = 0
         stalled = False
+        failures_so_far = 0  # session-wide; durability sets the tolerance
 
         for stage_num in range(1, 5):
             stage = stages[stage_num]
@@ -169,11 +207,18 @@ def run_scripted_session(
                 )
 
                 if current_technique.produces_traffic:
+                    # Body size grows over the session for high-power villains
+                    # (Poison Ivy's monotonic body_bytes_trend); strength sets
+                    # the base size and repetition.
+                    growth = 1.0 + profile.body_growth * (attempt_seq / 20.0)
+                    size = int(profile.mean_body_bytes * profile.body_repetition * growth)
+                    body = (b"x" * size) if size > 0 else None
                     drive_honeypot(
                         http_client,
                         current_technique.technique_id,
                         attempt_id,
                         extra_headers=identity.headers(),
+                        body=body,
                     )
 
                 event = AttemptEvent(
@@ -204,13 +249,25 @@ def run_scripted_session(
 
                 tried[current_technique.technique_id] = technique_attempt_seq
 
+                # Pace the next request in real time (Layer 1 timing). A
+                # detected attempt still consumed a request; failures count
+                # toward the durability tolerance.
+                sleep_fn(_inter_request_delay(profile, rng))
+
                 if resolution.outcome == "success":
                     max_stage_reached = stage_num
                     advanced = True
                     break
 
+                if resolution.outcome == "failure":
+                    failures_so_far += 1
+
+                if attempt_seq >= MAX_ATTEMPTS:
+                    stalled = True
+                    break
+
                 action, next_technique = _decide_next_action(
-                    current_technique, candidates, tried, villain, stage
+                    current_technique, candidates, tried, villain, stage, profile, failures_so_far
                 )
                 if action == "retry":
                     decision = "retry"

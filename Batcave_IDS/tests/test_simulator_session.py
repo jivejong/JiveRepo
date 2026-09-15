@@ -44,7 +44,11 @@ def test_session_produces_at_least_one_attempt_and_stamps_session_id():
     producer = _FakeProducer()
     client = _fake_http_client("fake-session-1")
     result = run_scripted_session(
-        "538-ras-al-ghul", rng=random.Random(0), kafka_producer=producer, http_client=client
+        "538-ras-al-ghul",
+        rng=random.Random(0),
+        kafka_producer=producer,
+        http_client=client,
+        sleep_fn=lambda _: None,
     )
     assert result.session_id == "fake-session-1"
     assert result.attempts, "a scripted session should produce at least one attempt"
@@ -56,7 +60,11 @@ def test_no_attempt_violates_its_gate():
     client = _fake_http_client()
     villain = load_villains()["538-ras-al-ghul"]
     result = run_scripted_session(
-        "538-ras-al-ghul", rng=random.Random(42), kafka_producer=producer, http_client=client
+        "538-ras-al-ghul",
+        rng=random.Random(42),
+        kafka_producer=producer,
+        http_client=client,
+        sleep_fn=lambda _: None,
     )
 
     techniques_by_id = {t.technique_id: t for t in load_techniques()}
@@ -71,7 +79,11 @@ def test_killer_croc_stalls_at_stage_two_or_earlier():
     producer = _FakeProducer()
     client = _fake_http_client()
     result = run_scripted_session(
-        "386-killer-croc", rng=random.Random(1), kafka_producer=producer, http_client=client
+        "386-killer-croc",
+        rng=random.Random(1),
+        kafka_producer=producer,
+        http_client=client,
+        sleep_fn=lambda _: None,
     )
     assert result.stalled is True
     assert result.max_stage_reached <= 2
@@ -81,7 +93,11 @@ def test_every_attempt_is_published_to_kafka_with_matching_key():
     producer = _FakeProducer()
     client = _fake_http_client()
     result = run_scripted_session(
-        "60-bane", rng=random.Random(7), kafka_producer=producer, http_client=client
+        "60-bane",
+        rng=random.Random(7),
+        kafka_producer=producer,
+        http_client=client,
+        sleep_fn=lambda _: None,
     )
     assert len(producer.messages) == len(result.attempts)
     for _topic, key, _value in producer.messages:
@@ -92,7 +108,11 @@ def test_attempt_seq_is_monotonic_and_technique_attempt_seq_resets_per_technique
     producer = _FakeProducer()
     client = _fake_http_client()
     result = run_scripted_session(
-        "60-bane", rng=random.Random(3), kafka_producer=producer, http_client=client
+        "60-bane",
+        rng=random.Random(3),
+        kafka_producer=producer,
+        http_client=client,
+        sleep_fn=lambda _: None,
     )
     seqs = [a.attempt_seq for a in result.attempts]
     assert seqs == sorted(seqs)
@@ -109,7 +129,11 @@ def test_decision_is_initial_only_on_the_first_attempt_of_each_stage():
     producer = _FakeProducer()
     client = _fake_http_client()
     result = run_scripted_session(
-        "60-bane", rng=random.Random(5), kafka_producer=producer, http_client=client
+        "60-bane",
+        rng=random.Random(5),
+        kafka_producer=producer,
+        http_client=client,
+        sleep_fn=lambda _: None,
     )
     seen_stages: set[int] = set()
     for a in result.attempts:
