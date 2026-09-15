@@ -1,0 +1,13 @@
+slug,name,archetype,intelligence,strength,speed,durability,power,combat
+370-joker,Joker,chaotic,100,10,12,60,43,70
+558-riddler,Riddler,cerebral,100,10,12,14,10,14
+60-bane,Bane,brute,88,38,23,56,51,95
+165-catwoman,Catwoman,stealth,69,11,33,28,27,85
+522-poison-ivy,Poison Ivy,stealth,81,14,21,40,100,40
+576-scarecrow,Scarecrow,cerebral,81,10,12,14,48,50
+514-penguin,Penguin,cerebral,75,10,12,28,30,45
+309-harley-quinn,Harley Quinn,chaotic,88,12,33,65,55,80
+457-mister-freeze,Mister Freeze,methodical,75,32,12,70,37,28
+386-killer-croc,Killer Croc,brute,19,53,35,90,53,60
+538-ras-al-ghul,Ra's Al Ghul,methodical,100,28,32,42,27,100
+678-two-face,Two-Face,cerebral,88,10,12,14,9,28

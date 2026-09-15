@@ -1,0 +1,24 @@
+technique_id,attack_id,attack_name,attack_tactic_id,stage,display_name,min_intelligence,min_power,min_strength,base_success_rate,w_intelligence,w_strength,w_speed,w_durability,w_power,w_combat,noise_level,retry_penalty,observability,detection_signature
+port_sweep,T1046,Network Service Discovery,TA0007,1,Port Sweep,15,0,0,0.75,0.25,0,0.35,0.1,0.1,0.2,2,0.85,partial,"burst of connections, minimal path variety"
+active_scan,T1595,Active Scanning,TA0043,1,Active Scan,25,0,0,0.7,0.4,0,0.3,0.05,0.1,0.15,4,0.8,high,"rapid sequential path enumeration, scanner-like user agent"
+net_info_gather,T1590,Gather Victim Network Information,TA0043,1,Network Recon,40,0,0,0.8,0.6,0,0.1,0.1,0.1,0.1,1,0.9,low,conducted off-platform; no distinctive HTTP trace
+identity_gather,T1589,Gather Victim Identity Information,TA0043,1,Identity Recon,55,0,0,0.72,0.65,0,0.05,0.1,0.1,0.1,1,0.9,low,conducted off-platform; no distinctive HTTP trace
+open_source_search,T1593,Search Open Websites/Domains,TA0043,1,OSINT Sweep,65,0,0,0.85,0.7,0,0.05,0.05,0.1,0.1,1,0.95,low,conducted off-platform; no distinctive HTTP trace
+brute_force,T1110,Brute Force,TA0006,2,Credential Brute Force,10,0,20,0.35,0.1,0.3,0.15,0.3,0.05,0.1,5,0.75,high,repeated POST /login with consecutive 401 responses
+exploit_public_app,T1190,Exploit Public-Facing Application,TA0001,2,Exploit Public App,70,0,0,0.45,0.45,0.05,0.05,0.1,0.2,0.15,4,0.7,high,"traversal and injection strings in path, query, or body"
+valid_accounts,T1078,Valid Accounts,TA0001,2,Use Valid Accounts,60,0,0,0.4,0.5,0,0.05,0.1,0.15,0.2,1,0.8,low,successful auth indistinguishable from legitimate use
+phishing,T1566,Phishing,TA0001,2,Phishing,50,0,0,0.38,0.4,0,0.1,0.15,0.15,0.2,1,0.8,low,delivery occurs off-platform
+external_remote_svc,T1133,External Remote Services,TA0001,2,External Remote Services,65,0,0,0.42,0.45,0.05,0.05,0.15,0.15,0.15,3,0.75,partial,"access to remote-service endpoints, ambiguous with legitimate use"
+account_discovery,T1087,Account Discovery,TA0007,3,Account Discovery,45,0,0,0.6,0.45,0,0.2,0.1,0.1,0.15,4,0.8,high,enumeration of user and account endpoints
+remote_services,T1021,Remote Services,TA0008,3,Remote Services,55,0,0,0.5,0.35,0.05,0.1,0.15,0.15,0.2,3,0.75,partial,"lateral endpoint access, overlaps legitimate traffic"
+privesc_exploit,T1068,Exploitation for Privilege Escalation,TA0004,3,Privilege Escalation,75,40,0,0.35,0.4,0.05,0.05,0.1,0.25,0.15,3,0.7,partial,elevated-endpoint access following failures
+exploit_remote_svc,T1210,Exploitation of Remote Services,TA0008,3,Exploit Remote Service,80,0,0,0.33,0.45,0.05,0.05,0.1,0.2,0.15,4,0.68,high,exploit payloads against service endpoints
+alt_auth_material,T1550,Use Alternate Authentication Material,TA0008,3,Alternate Auth Material,85,0,0,0.38,0.55,0,0.05,0.1,0.15,0.15,2,0.72,partial,anomalous or forged tokens in request headers
+indicator_removal,T1070,Indicator Removal,TA0005,3,Indicator Removal,70,0,0,0.45,0.5,0,0.1,0.15,0.1,0.15,2,0.75,partial,DELETE or modify against log and audit endpoints
+data_local_system,T1005,Data from Local System,TA0009,4,Collect Local Data,30,0,0,0.65,0.25,0.1,0.2,0.2,0.15,0.1,4,0.82,high,repeated GETs against tier-3 and tier-4 data endpoints
+screen_capture,T1113,Screen Capture,TA0009,4,Screen Capture,50,0,0,0.55,0.35,0,0.1,0.15,0.3,0.1,1,0.85,low,endpoint-side activity; no HTTP trace
+audio_capture,T1123,Audio Capture,TA0009,4,Audio Capture,50,0,0,0.55,0.35,0,0.1,0.15,0.3,0.1,1,0.85,low,endpoint-side activity; no HTTP trace
+video_capture,T1125,Video Capture,TA0009,4,Video Capture,50,0,0,0.55,0.35,0,0.1,0.15,0.3,0.1,1,0.85,low,endpoint-side activity; no HTTP trace
+input_capture,T1056,Input Capture,TA0009,4,Input Capture,60,0,0,0.48,0.45,0,0.05,0.15,0.25,0.1,1,0.85,low,endpoint-side activity; no HTTP trace
+exfil_over_c2,T1041,Exfiltration Over C2 Channel,TA0010,4,Exfiltrate Over C2,70,0,0,0.45,0.4,0.1,0.1,0.15,0.15,0.1,3,0.75,partial,"sustained outbound POST volume, elevated body sizes"
+deploy_batbot,T1071,Application Layer Protocol,TA0011,4,Deploy Bat Bot,40,0,0,0.7,0.4,0,0.05,0.15,0.3,0.1,5,0.8,high,chat session initiated against the assistant endpoint
