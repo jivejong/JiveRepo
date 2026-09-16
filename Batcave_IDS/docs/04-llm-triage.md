@@ -180,13 +180,37 @@ Technique recall grouped by observability tier. `low` is split further — see b
 because it is not one detection posture:
 
 ```
-tier              techniques  attempts  recalled  recall
-high                       7       412       —      —
-partial                    7       288       —      —
-low (no evidence)          8       —        —      —
-low (camouflaged)          1       —        —      —
-overall                   23       —        —      —
+tier              techniques  reachable  attempts  recalled  recall
+high                       7          6       412       —      —
+partial                    7          6       288       —      —
+low (no evidence)          8          6       —        —      —
+low (camouflaged)          1          1       —        —      —
+overall                   23         19       —        —      —
 ```
+
+**Recall is measured over the `reachable` column, not `techniques`.** Four of the twenty-three
+catalog techniques receive **zero attempts** in any corpus, so they never enter ground truth and
+their recall is undefined rather than zero — a technique the attacker never used cannot be missed.
+Measured on the seeded corpus (144 sessions, 2,102 attempts):
+
+| Stage | Row | Technique | Tier |
+|---|---|---|---|
+| 1 | 4 | `identity_gather` | low |
+| 1 | 5 | `open_source_search` | low |
+| 4 | 6 | `exfil_over_c2` | partial |
+| 4 | 7 | `deploy_batbot` | **high** |
+
+The cause is deterministic technique selection: `services/simulator/session.py` opens with
+`candidates[0]` and pivots to `untried[0]`, i.e. strict `techniques.csv` row order with no
+randomness, and runs end before reaching the tail of a stage's list. Stage-4 attempts decline
+monotonically with row order — 405, 210, 153, 82, 32, 0, 0 — which is what makes this a structural
+property rather than a sampling artifact.
+
+**Stating the denominator correctly matters more than the numerator.** A high-tier recall quoted
+over 7 techniques when only 6 can ever appear understates the result and, worse, describes a
+measurement that was never made. This is the same correction as the earlier low-tier `10 → 9` fix,
+for the same reason. docs/06 schedules the selection fix as Phase 6's first item; until then, every
+coverage figure is over 19 reachable techniques.
 
 The expected shape: strong on `high`, mixed on `partial`, near-zero on `low`. Write that up as a
 **detection coverage gap analysis**, because that is what it is. The conclusion a security team

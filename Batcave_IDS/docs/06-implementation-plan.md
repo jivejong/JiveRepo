@@ -162,6 +162,26 @@ this same layout, both real for dbt sources too:**
 
 ## Phase 6 — Scoring, triage, evaluation  (8–12h)
 
+**First item, before anything else: fix deterministic technique selection and re-run the baseline.**
+Phase 5 found that 4 of the 23 catalog techniques receive zero attempts in any corpus, because
+`services/simulator/session.py` opens a stage with `candidates[0]` and pivots to `untried[0]` —
+strict `techniques.csv` row order, no randomness — so runs end before reaching the tail of a stage's
+list (stage-4 attempts: 405, 210, 153, 82, 32, 0, 0). One unreachable technique is in each
+observability tier, including `deploy_batbot` at `high`.
+
+This is deliberately paid here rather than in Phase 5, because technique coverage is *this* phase's
+headline metric and discovering mid-phase that the denominator is wrong is worse than budgeting for
+it. Changing selection changes the corpus, so re-run and re-record, in this order:
+
+1. The separability effect sizes (`make separability`) — the Phase 3 baseline and its closest-pair
+   findings
+2. The pathology counts (`make pathology-check`) — all ten, plus the reconciliation block
+3. `mart_reconciliation` — the harness/dbt cross-check below is against the *new* numbers
+4. The coverage denominators in `docs/04` — they should become 23 of 23 if the fix works
+
+If the fix does not make all 23 reachable, say so and keep the reachable-denominator framing rather
+than quoting a coverage figure over techniques that never appeared.
+
 - `mart_threat_scores` with component breakdown
 - Rule-based baseline classifier
 - Triage service, prompt v1, strict JSON with repair retry, baseline fallback without an API key

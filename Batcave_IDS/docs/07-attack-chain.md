@@ -113,8 +113,30 @@ framing and the README, not just here.
 | 4 | `exfil_over_c2` | T1041 | Exfiltration Over C2 Channel | 70 | partial |
 | 4 | `deploy_batbot` | T1071 | Application Layer Protocol | 40 | **high** |
 
-`deploy_batbot` is attempted in Track A as an ordinary technique. It just produces no conversation
-until Track B exists.
+**`deploy_batbot` is never attempted in Track A** — corrected in Phase 5 against real data, where it
+received 0 attempts across 144 sessions and 882 stage-4 attempts. This section previously claimed it
+was "attempted as an ordinary technique," which was wrong, and wrong for a reason worth stating:
+technique selection is deterministic, not random. `services/simulator/session.py` opens a stage with
+`candidates[0]` and pivots to `untried[0]` — strict `techniques.csv` row order — so a run ends before
+reaching the tail of a long stage list. `deploy_batbot` is row 7 of 7 at stage 4. Its gate is not the
+obstacle: at `min_intelligence` 40 it is *lower* than three techniques above it that are attempted
+hundreds of times.
+
+Stage-4 attempts decline monotonically with row order, which is the evidence that this is structural
+rather than sampling noise:
+
+```
+row  1 data_local_system  405     row  5 input_capture   32
+row  2 screen_capture     210     row  6 exfil_over_c2    0
+row  3 audio_capture      153     row  7 deploy_batbot    0
+row  4 video_capture       82
+```
+
+Four of the twenty-three catalog techniques are unreachable this way — `identity_gather` and
+`open_source_search` (stage 1, rows 4-5), `exfil_over_c2` and `deploy_batbot` (stage 4, rows 6-7) —
+one in each observability tier. Stages 2 and 3 have no unreachable techniques, because sessions make
+enough attempts there to work through the whole list. The consequence for measurement is in
+`docs/04-llm-triage.md`; the fix is scheduled as Phase 6's first item in `docs/06`.
 
 The finale's wiper maps to T1561.001 / T1561.002 (Disk Wipe) and T1529 (System Shutdown/Reboot),
 executed **by the Batcomputer against the villain**. Those are counterstrike events, never attempts,
@@ -124,22 +146,40 @@ and they belong to Track B.
 
 ## Detection signatures
 
-Every `high` technique needs a concrete signature the honeypot emits, landing in one of the four
-evidence features in `int_session_features_observed`:
+Every `high` technique needs a concrete signature the honeypot emits, landing in one of the **five**
+evidence features in `int_session_features_observed`. This table is the authoritative mapping and is
+implemented directly in `assert_high_observability_techniques_leave_evidence`:
 
-| Technique | Signature in the request log | Evidence feature |
-|---|---|---|
-| `active_scan` | Rapid sequential path enumeration, scanner-like UA | `path_enumeration_runs` |
-| `brute_force` | Repeated POST `/login` with consecutive 401s | `repeated_auth_failure_runs` |
-| `exploit_public_app` | Traversal and injection strings in path, query, or body | `traversal_pattern_count`, `injection_pattern_count` |
-| `account_discovery` | Enumeration of user and account endpoints | `path_enumeration_runs` |
-| `exploit_remote_svc` | Exploit payloads against service endpoints | `injection_pattern_count` |
-| `data_local_system` | Repeated GETs on tier-3/4 data endpoints | `max_path_tier`, `distinct_paths` |
-| `deploy_batbot` | Chat session initiated | `chat_turns_completed` |
+| Technique | Signature in the request log | Evidence feature | Status |
+|---|---|---|---|
+| `active_scan` | Rapid sequential path enumeration, scanner-like UA | `path_enumeration_runs` | enforced |
+| `brute_force` | Repeated POST `/login` with consecutive 401s | `repeated_auth_failure_runs` | enforced |
+| `exploit_public_app` | Traversal strings in path, query, or body | `traversal_pattern_count` | enforced |
+| `account_discovery` | Enumeration of user and account endpoints | `path_enumeration_runs` | enforced |
+| `exploit_remote_svc` | Command-injection payloads against service endpoints | `injection_pattern_count` | enforced |
+| `data_local_system` | Repeated GETs on tier-3/4 data endpoints | `sensitive_data_access_runs` | enforced |
+| `deploy_batbot` | Chat session initiated | `chat_turns_completed` | **excluded (Track B)** |
+
+Three corrections made in Phase 5, all against real data:
+
+- **`data_local_system` had no evidence feature.** It was mapped to `max_path_tier` and
+  `distinct_paths`, neither of which is an evidence feature — so the technique was effectively
+  uncovered. `sensitive_data_access_runs` (docs/02) was added because repeated reads of tier-3/4
+  endpoints is exactly what a detector keys on for collection, so the gap was real rather than a
+  test artifact.
+- **`exploit_public_app` produces traversal evidence only, not both.** Its payload is
+  `?file=../../etc/passwd` — pure traversal. Matching `/etc/passwd` as *injection* as well made one
+  payload register as two different techniques' signatures, which would hand Phase 6's
+  reconstruction injection evidence for a session that only performed traversal. Sensitive file
+  targets are not injection syntax; the two matchers are now orthogonal, and a test asserts it.
+- **`deploy_batbot` is excluded, structurally.** Its evidence is `chat_turns_completed`, and Track A
+  produces no chat turns — it POSTs to `/api/v1/assistant`, which 404s until Track B builds the
+  assistant. The exclusion lifts in Track B. (It is also never attempted at all — see above.)
 
 `assert_high_observability_techniques_leave_evidence` enforces this: every `high` technique must
 produce a non-zero evidence feature in sessions that used it. If it does not, either the tier is
-wrong or the signature is not being emitted.
+wrong or the signature is not being emitted. Measured on the seeded corpus, all six enforced
+mappings are non-zero.
 
 ---
 

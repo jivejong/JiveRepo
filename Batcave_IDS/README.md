@@ -97,8 +97,17 @@ common real initial-access techniques: a successful login with legitimate creden
 successful login. Recall on that one is theoretically possible from session context; recall on the
 other 8 isn't possible from the event log at all, because there is no event.
 
+**A second limit, stated before the numbers rather than after them: 4 of the 23 techniques are never
+attempted at all**, so recall for them is undefined rather than zero — an attacker can't fail to be
+caught doing something they never did. The simulator picks techniques in catalog order rather than at
+random, so the last entries in a long stage list are never reached (stage-4 attempts fall 405, 210,
+153, 82, 32, 0, 0). One falls in each observability tier, so every coverage figure is quoted over
+**19 reachable techniques**, not 23. Measuring against the larger denominator would describe a
+measurement that was never made. The fix is scheduled (`docs/06`, Phase 6); the honest denominator is
+used until it lands.
+
 That turns a bare accuracy number into a detection coverage gap analysis, which is what a security
-team would actually produce.
+team would actually produce — including being explicit about what the corpus cannot measure.
 
 Both tasks are also run by a rule-based baseline. If the LLM does not beat a regex on
 high-observability techniques, the README says so.
