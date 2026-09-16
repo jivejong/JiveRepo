@@ -71,6 +71,25 @@ Giving the model the catalog and signatures is what keeps both tasks fair. Witho
 Two-Face are indistinguishable and technique reconstruction is guesswork. **Do not give it the
 `observability` column** — inferring which techniques are detectable is part of the task.
 
+**Write the signature notes to match what the data actually contains, not the lore (Phase 3
+finding).** Two signatures separate their villains through a *different* mechanism than their prose
+describes, and the prompt must describe the observable, not the story:
+
+- **Harley Quinn** — the lore is "erratic bursts separated by long pauses," but in the data she
+  separates from Joker on *pace variance*, not a distinct bimodal burst shape (her burstiness is
+  capped at the same total timing variance as Joker's high-intelligence jitter; docs/03). The prompt
+  should describe elevated, irregular request spacing and her high volume, not tell the model to look
+  for a burst/pause structure that isn't distinctly there. If Phase 6 shows the model confusing
+  Joker and Harley specifically, the first fix is the truer bimodal burst shape docs/03 flags as a
+  refinement — then update this note.
+- **Killer Croc** — his distinguishing trace is a very high `attempts_per_stage_reached` (he
+  concentrates a large volume into two stages), not the "highest raw request count" the lore
+  emphasizes (Mister Freeze can rival him on raw count). Describe the concentration.
+
+The general rule: the signature notes are threat intelligence *about the observed telemetry*, so
+they must track the harness's measured discriminators (`make separability`) as those get tuned,
+rather than restating docs/03's character descriptions where the two have diverged.
+
 ---
 
 ## Output contract

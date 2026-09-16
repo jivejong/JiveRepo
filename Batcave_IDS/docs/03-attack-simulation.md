@@ -128,9 +128,12 @@ factor on `attack_runs` so a reader can always tell which timing a session used.
 
 Honest caveat on that pair: the separation is currently driven mostly by base pace (Joker is slower,
 so his absolute gaps and their spread are larger), not by a distinct *bimodal* burst shape — Harley's
-burstiness is capped at the same total variance as Joker's high-intelligence jitter. A truer
-"bursts separated by long pauses" fingerprint (clustered fast requests plus occasional long pauses)
-is a possible refinement; the pair does separate on the named feature as-is.
+burstiness is capped at the same total variance as Joker's high-intelligence jitter. The pair does
+separate on the named feature as-is, so this is **a recorded refinement, not built**: a truer "bursts
+separated by long pauses" fingerprint would inject clustered fast requests plus occasional long
+pauses (higher kurtosis, not just higher variance), giving Harley a genuinely bimodal gap
+distribution. **If Phase 6 shows the LLM confusing Joker and Harley specifically, this is the first
+thing to reach for** — and the triage prompt's Harley note (docs/04) must then be updated to match.
 
 ---
 

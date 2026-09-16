@@ -237,6 +237,40 @@ Quarantined rows are never dropped. They flow to `fct_quarantined_events` with r
 The four evidence features exist so technique reconstruction has something to reason over. They are
 derived purely from request patterns, never from the attempt log.
 
+#### Feature-definition ambiguity pass (Phase 3)
+
+Three feature definitions already drifted from their prose during Phases 2–3 (`wasted_request_ratio`
+twice, the `pivot_ratio`/`retry_ratio` claims). A pass over the rest flagged the features whose prose
+implies a property the computation cannot express alone. **Phase 5 must lift the resolved definition,
+not the prose — an ambiguous feature becomes an ambiguous dbt model.** For each: `[def]` a definition
+that must be pinned, `[doc]` a wording fix, `[pair]` only meaningful alongside another feature.
+
+- **`wasted_request_ratio`** `[pair]` — resolved: fraction of requests not increasing
+  `tier_reached_so_far`, counted only up to first reaching the session's peak tier. Measures
+  efficiency *to its own peak*, so it only tells "efficient vs flailing" **paired with
+  `max_path_tier`** (how high). Ablation: load-bearing for the Riddler pairs; keep, weight lightly.
+- **`exact_duplicate_path_pairs`** `[def]` — the name says "pairs" but the working definition is the
+  count of *paths that appear more than once* in the session (paths with count > 1), not the number
+  of duplicate pairs (`n choose 2`). Phase 5 must implement the paths-with-duplicates count and the
+  name should be read that way, or renamed.
+- **`body_bytes_trend`** `[def]` — "trend" is computed as the Pearson correlation of `body_bytes`
+  with request order (guarded to 0 for constant bodies), not a slope or last-minus-first. State it;
+  the three would rank villains differently.
+- **`time_to_tier3_s`** `[def]` — undefined for a session that never reaches tier 3 (most stallers).
+  Needs an explicit convention (null, and excluded from aggregates — not 0, which reads as "instant").
+- **`repeated_auth_failure_runs`, `path_enumeration_runs`** `[def]` — "runs" implies streak counting
+  (consecutive events), but the run boundary is unspecified: how many consecutive 401s / sequential
+  paths constitute one run, and is the feature the count of runs or their total length. Phase 5 must
+  fix the streak definition before these evidence features mean anything for brute-force / scanning.
+- **`traversal_pattern_count`, `injection_pattern_count`** `[def]` — "pattern" needs a concrete
+  matcher (which substrings/regexes over path, query, and body count). The simulator emits specific
+  payloads (`services/simulator/traffic.py`); the detector must match those, and the two must be
+  defined together so a technique that leaves evidence is actually detected
+  (`assert_high_observability_techniques_leave_evidence`).
+- **`requests_per_min`** `[def]` — explodes toward infinity as `duration_s` → 0 (a 3-request burst
+  spanning milliseconds). Needs a duration floor or a rate cap (the harness caps at 600/min); state
+  which, so the dbt model and the harness agree.
+
 **`int_session_features_truth`** `[ground_truth]` — evaluation only.
 
 `max_stage_reached`, `stages_cleared`, `total_attempts`, `total_successes`, `overall_success_rate`,
