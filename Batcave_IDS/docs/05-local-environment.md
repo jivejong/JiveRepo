@@ -73,6 +73,7 @@ fastapi              # honeypot's HTTP server (added Phase 1, not in the origina
 uvicorn[standard]    # ASGI server for fastapi
 httpx                # HTTP client, used by the simulator to drive the honeypot — not the server
 pydantic             # event schema validation at the producer boundary
+pyyaml               # reads services/simulator/pathologies.yml
 groq
 ```
 

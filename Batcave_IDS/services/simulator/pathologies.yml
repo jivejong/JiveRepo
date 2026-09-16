@@ -1,0 +1,66 @@
+# The ten deliberate data pathologies (docs/03-attack-simulation.md).
+#
+# Pathologies corrupt the OBSERVED stream only — the honeypot's request
+# events, never the ground-truth attempt events or attack_runs. Corrupting
+# ground truth would poison the evaluation key.
+#
+# `rate` is per-request probability (0.0-1.0). `per_run` pathologies fire
+# once per run instead. Rates are the spec values from docs/03; the
+# verification corpus is sized so even the rarest (0.2%) appears with a
+# countable number of instances (make pathology-check).
+#
+# Which pathologies actually ran is recorded per run on attack_runs
+# (pathologies_enabled), so the corpus is self-describing.
+
+duplicate_delivery:      # #1 producer re-sends event with identical event_id
+  enabled: true
+  rate: 0.02
+
+out_of_order_client_ts:  # #2 client_ts shuffled within a 30s window
+  enabled: true
+  rate: 0.05
+
+unkeyed:                 # #3 published with a null Kafka key
+  enabled: true
+  rate: 0.01
+
+late_arrival:            # #4 client_ts 1-6 hours old
+  enabled: true
+  rate: 0.01
+
+malformed_body:          # #5 truncated / unbalanced JSON request body
+  enabled: true
+  rate: 0.03
+
+undeserializable:        # #6 raw non-JSON bytes as the message value
+  enabled: true
+  rate: 0.002
+
+missing_source_ip:       # #7a null source_ip (kept, feeds null_ip_ratio)
+  enabled: true
+  rate: 0.005
+
+missing_path:            # #7b null path (quarantine case)
+  enabled: true
+  rate: 0.005
+
+# #8 schema drift and #10 burst fire once per run rather than per-request.
+schema_drift:            # bump schema_version to v2 + add tls_fingerprint, mid-run
+  enabled: true
+  per_run: true
+
+burst:                   # occasional 10x rate spike
+  enabled: true
+  per_run: true
+
+# #9 clock skew, split into its two downstream-distinct sub-cases:
+#   future received_at   -> quarantine (docs/03)
+#   negative response_ms -> clamp to null and count (docs/03)
+# Kept separate so Phase 5 can't implement one and pass a test for the other.
+clock_skew_future_received_at:
+  enabled: true
+  rate: 0.01
+
+clock_skew_negative_response:
+  enabled: true
+  rate: 0.01

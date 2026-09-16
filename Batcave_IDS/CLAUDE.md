@@ -151,6 +151,7 @@ credentials, no service that can expire. This project must still run unchanged i
   (docs/03).
 - **httpx** — HTTP *client* library, used by the simulator (Phase 2+) to drive the honeypot. Not
   to be confused with the server framework above.
+- **PyYAML** — reads `services/simulator/pathologies.yml` (Phase 3 Part 2).
 - Dev tools: `ruff`, `pytest`, `sqlfluff` (DuckDB dialect), `pre-commit`.
 
 ## Repository layout
