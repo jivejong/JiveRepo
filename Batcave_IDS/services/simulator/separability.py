@@ -196,18 +196,39 @@ _STAT_FEATURES = [
 ]
 
 
-def run_corpus(time_scale: float, runs_per_villain: int, seed: int = 0) -> dict[str, str]:
-    """Run every villain `runs_per_villain` times; return {session_id: slug}.
+def run_corpus(
+    time_scale: float,
+    runs_per_villain: int,
+    seed: int = 0,
+    villains: list[str] | None = None,
+) -> dict[str, str]:
+    """Run each villain `runs_per_villain` times, concurrently; return
+    {session_id: slug}.
+
+    Runs sequentially. Thread-based concurrency was tried and abandoned: it
+    triggers a fatal C-extension GIL crash on this platform (confluent_kafka /
+    librdkafka, and/or httpx, driven from a ThreadPoolExecutor), even with a
+    single shared Producer. So the corpus cost is the sum of the runs, and at
+    faithful timing most of a slow villain's wall time is idle-gap sleep —
+    which makes a faithful full-corpus run too slow (>10 min). Faithful timing
+    is therefore reserved for a targeted `villains` subset; the full corpus
+    runs at a compressed clock.
+
+    `time_scale` is the idle-gap compression factor (1.0 = faithful pacing;
+    smaller = gaps shrunk for fast iteration). It compresses only the sleeps
+    between requests — request budgets, and every volume-derived feature, are
+    untouched. The one feature it distorts is inter_request_stddev_ms, which is
+    the gap distribution itself: below ~0.1 the compressed gaps fall under the
+    HTTP round-trip noise floor and the feature measures network jitter, not
+    villain pacing. The report labels which pairs were measured faithfully.
 
     Multiple runs per villain because a single run is noisy for stop-on-first-
-    error villains (Riddler, Two-Face) — durability 14 means a couple of early
-    rolls decide the whole session. That variance is correct behavior, not
-    noise to damp; averaging over runs just lets the steady-state separability
-    be read through it. Each run's seed is derived from `seed` so a batch is
-    reproducible (the seed is printed) without being locked to one value."""
+    error villains (Riddler, Two-Face). Each run's seed is derived from `seed`
+    so a batch is reproducible (the seed is printed) without being locked."""
     scaled_sleep = lambda s: time.sleep(s * time_scale)  # noqa: E731
+    slugs = villains if villains is not None else list(load_villains())
     mapping: dict[str, str] = {}
-    for vi, slug in enumerate(load_villains()):
+    for vi, slug in enumerate(slugs):
         for r in range(runs_per_villain):
             run_seed = seed + vi * 1000 + r
             result = run_scripted_session(slug, rng=random.Random(run_seed), sleep_fn=scaled_sleep)
@@ -562,19 +583,37 @@ def main() -> None:
     )
     ap.add_argument("--runs", type=int, default=10, help="runs per villain (averaged)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--villains",
+        type=str,
+        default="",
+        help="comma-separated slugs to run a targeted subset (e.g. timing-faithful pairs)",
+    )
     args = ap.parse_args()
 
+    faithful = args.time_scale >= 0.1
+    subset = [s for s in args.villains.split(",") if s] or None
+    label = f"{len(subset)} villains" if subset else "12 villains"
     print(
-        f"running 12 villains x {args.runs} runs (time-scale={args.time_scale}, seed={args.seed})"
+        f"running {label} x {args.runs} runs "
+        f"(time-scale={args.time_scale} [{'FAITHFUL' if faithful else 'compressed'}], "
+        f"seed={args.seed})"
     )
-    mapping = run_corpus(args.time_scale, args.runs, args.seed)
+    t0 = time.time()
+    mapping = run_corpus(args.time_scale, args.runs, args.seed, villains=subset)
+    print(f"corpus ran in {time.time() - t0:.1f}s wall clock (sequential)")
     time.sleep(2.0)  # let the last produces flush through
     events = consume_events()
     rows = compute_features(events, mapping)
     print(f"consumed {len(events)} events across {len(rows)} sessions")
+    print(
+        "inter_request_stddev_ms is "
+        + ("TIMING-FAITHFUL at this scale." if faithful else "an ARTIFACT at this scale (< 0.1).")
+    )
     report(rows)
     diagnostics(rows)
-    cluster_analysis(rows)
+    if subset is None:
+        cluster_analysis(rows)
     # Riddler and Two-Face (durability 14) are outcome-noisy by design; verify
     # their separation rests on the signature features, which are present
     # regardless of how far the run gets (plan / user directive).
