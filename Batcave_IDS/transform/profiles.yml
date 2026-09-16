@@ -8,3 +8,11 @@ batcave_ids:
       type: duckdb
       path: ../data/warehouse.duckdb
       threads: 4
+      settings:
+        # Not optional. `received_at` lands as TIMESTAMP WITH TIME ZONE and
+        # DuckDB renders those in the session's local zone, so every hour
+        # comparison against the `hour=` Hive partition is silently wrong
+        # anywhere but UTC. Found in Phase 4 (docs/06, services/consumer/
+        # landing_check.py) where it made an otherwise-correct partition check
+        # fail on all 2,592 rows.
+        TimeZone: "UTC"

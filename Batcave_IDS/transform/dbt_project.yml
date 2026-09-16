@@ -14,9 +14,23 @@ clean-targets:
   - "target"
   - "dbt_packages"
 
+# Resolved relative to dbt's working directory (transform/), so `make
+# transform` and CI both cd here first.
+vars:
+  data_root: "../data"
+
 # No directory-level +tags. staging/ holds both triage_input and
 # ground_truth models (docs/02-data-model.md) — a directory default would
 # encode exactly the leakage the project exists to prevent. Every model
 # gets its own tag in its own config block, starting Phase 5.
+#
+# Tables, not views, and deliberately so. A view over read_parquet() stores
+# the glob as text and re-resolves it against whatever process opens the
+# warehouse — so `../data/raw/...` works from transform/ and breaks from
+# anywhere else. Phase 6's triage service and Phase 7's Dagster both open
+# this file from a different working directory. Materializing as tables bakes
+# the data in and keeps data/warehouse.duckdb self-contained. The dataset is
+# small enough that the cost is irrelevant.
 models:
-  batcave_ids: {}
+  batcave_ids:
+    +materialized: table
