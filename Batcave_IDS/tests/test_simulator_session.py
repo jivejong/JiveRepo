@@ -40,6 +40,39 @@ def _fake_http_client(session_id: str = "fake-session-1") -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler), base_url="http://testhoneypot")
 
 
+def test_pathologies_ride_headers_to_the_honeypot_and_run_id_is_stamped():
+    """With an injector, driven requests carry X-Sim-Pathology / X-Run-Id, and
+    attempt events carry run_id. Captures the headers the simulator sent."""
+    from services.simulator.pathologies import PathologyConfig, PathologyInjector
+
+    seen_headers: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.append(dict(request.headers))
+        headers = {}
+        if f"{COOKIE_NAME}=s1" not in request.headers.get("cookie", ""):
+            headers["Set-Cookie"] = f"{COOKIE_NAME}=s1; Path=/"
+        return httpx.Response(200, headers=headers, json={"ok": True})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://h")
+    injector = PathologyInjector(PathologyConfig.load(), random.Random(7))
+    result = run_scripted_session(
+        "60-bane",
+        rng=random.Random(7),
+        kafka_producer=_FakeProducer(),
+        http_client=client,
+        sleep_fn=lambda _: None,
+        injector=injector,
+    )
+    assert result.run_id
+    assert all(a.run_id == result.run_id for a in result.attempts)
+    # Every driven request carries X-Run-Id, and over a Bane run (high volume)
+    # at least one pathology header fired.
+    driven = [h for h in seen_headers if h.get("x-attempt-id") != "session-bootstrap"]
+    assert driven and all("x-run-id" in h for h in driven)
+    assert any("x-sim-pathology" in h for h in driven)
+
+
 def test_session_produces_at_least_one_attempt_and_stamps_session_id():
     producer = _FakeProducer()
     client = _fake_http_client("fake-session-1")

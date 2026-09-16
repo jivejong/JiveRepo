@@ -84,6 +84,10 @@ class PathologyInjector:
         # schema_drift: once armed (mid-run), stays on for the rest of the run.
         self._schema_drifted = False
 
+    @property
+    def config(self) -> PathologyConfig:
+        return self._config
+
     def arm_schema_drift(self) -> None:
         self._schema_drifted = True
 

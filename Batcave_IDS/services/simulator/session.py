@@ -29,7 +29,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 import httpx
@@ -40,6 +40,7 @@ from services.honeypot.session import COOKIE_NAME
 from services.simulator.behavior import BehaviorProfile
 from services.simulator.catalog import Technique, gated_techniques, load_stages, load_villains
 from services.simulator.identity import RunIdentity
+from services.simulator.pathologies import PathologyInjector
 from services.simulator.probability import compute_probability, resolve_attempt
 from services.simulator.signatures import signature_for
 from services.simulator.traffic import request_specs_for, send_requests
@@ -85,9 +86,11 @@ class AttemptEvent(EventEnvelope):
 @dataclass
 class SessionResult:
     session_id: str
+    run_id: str
     villain_slug: str
     max_stage_reached: int
     stalled: bool
+    requests_sent: int = 0
     attempts: list[AttemptEvent] = field(default_factory=list)
 
 
@@ -150,11 +153,16 @@ def run_scripted_session(
     kafka_producer=None,
     http_client: httpx.Client | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
+    injector: PathologyInjector | None = None,
 ) -> SessionResult:
     """Run one villain's session, pacing requests in real time so the timing
     features (requests_per_min, duration_s, inter_request_stddev_ms) reflect
-    Layer 1. `sleep_fn` is injectable so tests pass a no-op and don't wait."""
+    Layer 1. `sleep_fn` is injectable so tests pass a no-op and don't wait.
+
+    `injector` (Phase 3 Part 2) decides which deliberate pathologies corrupt
+    each request event. None = clean stream (Phase 2 behavior)."""
     rng = rng or random.Random()
+    run_id = str(uuid.uuid4())
     villain = load_villains()[villain_slug]
     stages = load_stages()
 
@@ -182,7 +190,7 @@ def run_scripted_session(
             raise RuntimeError("honeypot did not set the batcave_sid session cookie")
 
         attempts: list[AttemptEvent] = []
-        state = {"attempt_seq": 0, "max_stage_reached": 0}
+        state = {"attempt_seq": 0, "max_stage_reached": 0, "requests_sent": 0}
 
         # Request budget: speed x durability, the docs/03 volume model. A fast
         # or persistent villain generates more traffic over its session; a
@@ -192,6 +200,19 @@ def run_scripted_session(
         # speed, because it terminated on stage resolution, not on a duration.
         request_budget = int(profile.requests_per_min * profile.session_duration_s / 60)
 
+        # Per-run pathology decisions (docs/03): burst is a 10x rate spike over
+        # a contiguous window; schema drift arms partway through the run and
+        # then stays on. Both fire once per run when enabled.
+        burst_window: range = range(0)
+        if injector and "burst" in injector.config.per_run:
+            start = rng.randint(1, max(1, request_budget - 10))
+            burst_window = range(start, start + 10)
+        schema_drift_at = (
+            rng.randint(1, max(1, request_budget))
+            if injector and "schema_drift" in injector.config.per_run
+            else None
+        )
+
         def emit(technique, stage_num, stage, decision, technique_attempt_seq):
             state["attempt_seq"] += 1
             attempt_at = datetime.now(UTC)
@@ -200,19 +221,42 @@ def run_scripted_session(
                 technique, villain, stage, technique_attempt_seq, evasion=profile.evasion, rng=rng
             )
             if technique.produces_traffic:
+                if schema_drift_at is not None and state["attempt_seq"] >= schema_drift_at:
+                    injector.arm_schema_drift()
                 growth = 1.0 + profile.body_growth * (state["attempt_seq"] / 20.0)
                 size = int(profile.mean_body_bytes * profile.body_repetition * growth)
                 body = (b"x" * size) if size > 0 else None
-                specs = signature.transform(request_specs_for(technique.technique_id), rng)
-                headers = identity.headers()
+                base_headers = {"X-Run-Id": run_id, **identity.headers()}
                 if signature.response_delay_ms > 0:
                     # Mister Freeze holds connections open — the honeypot honors
                     # X-Sim-Delay-Ms as a real server-side response delay,
                     # lifting response_time_ms and duration.
-                    headers["X-Sim-Delay-Ms"] = str(signature.response_delay_ms)
-                send_requests(http_client, specs, attempt_id, extra_headers=headers, body=body)
+                    base_headers["X-Sim-Delay-Ms"] = str(signature.response_delay_ms)
+                specs = signature.transform(request_specs_for(technique.technique_id), rng)
+                # Per-request pathology injection (Phase 3 Part 2). Decided per
+                # request so rates match the spec; corrupts the observed stream
+                # only. Simulator-direct pathologies change what we send
+                # (malformed body, client_ts); honeypot-executed ones ride the
+                # X-Sim-Pathology header.
+                for spec in specs:
+                    req_headers = dict(base_headers)
+                    req_body = body
+                    if injector is not None:
+                        p = injector.decide()
+                        if p.header_value():
+                            req_headers["X-Sim-Pathology"] = p.header_value()
+                        if p.malformed_body:
+                            req_body = b'{"truncated": '  # unbalanced JSON
+                        if p.client_ts_offset_s is not None:
+                            skewed = attempt_at + timedelta(seconds=p.client_ts_offset_s)
+                            req_headers["X-Client-Ts"] = skewed.isoformat()
+                    send_requests(
+                        http_client, [spec], attempt_id, extra_headers=req_headers, body=req_body
+                    )
+                    state["requests_sent"] += 1
             event = AttemptEvent(
                 session_id=session_id,
+                run_id=run_id,
                 received_at=attempt_at,
                 attempt_id=attempt_id,
                 stage=stage_num,
@@ -236,7 +280,13 @@ def run_scripted_session(
                 callback=_delivery_report,
             )
             kafka_producer.poll(0)
-            sleep_fn(_inter_request_delay(profile, signature.burstiness, rng))
+            # Burst pathology: inside the window, requests fire back to back
+            # (no idle gap) — a 10x rate spike, distinguishable in received_at
+            # even under a compressed clock (the normal gap isn't zero).
+            if state["attempt_seq"] in burst_window:
+                sleep_fn(0.0)
+            else:
+                sleep_fn(_inter_request_delay(profile, signature.burstiness, rng))
             return resolution.outcome
 
         stalled = False
@@ -301,9 +351,11 @@ def run_scripted_session(
 
         return SessionResult(
             session_id=session_id,
+            run_id=run_id,
             villain_slug=villain_slug,
             max_stage_reached=state["max_stage_reached"],
             stalled=stalled,
+            requests_sent=state["requests_sent"],
             attempts=attempts,
         )
     finally:
