@@ -1,0 +1,134 @@
+version: 2
+
+models:
+  - name: stg_attack_events
+    description: >
+      OBSERVED request stream, deduplicated on event_id. The root of everything
+      the triage model may reason over. `attempt_id` is deliberately absent —
+      it is a correlation key for evaluation, not a feature, and survives only
+      in int_request_attempt_link (ground_truth).
+    columns:
+      - name: event_id
+        description: Deduplication key. Unique here by construction.
+        data_tests: [unique, not_null]
+      - name: session_id
+        data_tests: [not_null]
+      - name: received_at
+        description: The only trustworthy timestamp. Partition and order on this.
+        data_tests: [not_null]
+      - name: event_kind
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["request"]
+      - name: path_tier
+        description: Route sensitivity 0-4.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1, 2, 3, 4]
+                quote: false
+      - name: quarantine_reason
+        description: >
+          Null for clean rows. Quarantined rows are flagged, never dropped, and
+          flow on to fct_quarantined_events.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["null_event_id", "null_received_at", "null_path", "future_received_at"]
+
+  - name: stg_attack_attempts
+    description: GROUND TRUTH. The answer key the triage reconstruction is scored against.
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: attempt_id
+        data_tests: [not_null]
+      - name: technique_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_techniques')
+                field: technique_id
+      - name: decision
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["initial", "retry", "pivot"]
+      - name: outcome
+        description: >
+          `detected` is orthogonal to success/failure and OVERWRITES it in this
+          enum (docs/07), which is why assert_probability_calibration scopes to
+          non-detected attempts.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["success", "failure", "detected"]
+      - name: stage
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1, 2, 3, 4]
+                quote: false
+
+  - name: stg_attack_runs
+    description: >
+      GROUND TRUTH, and the most sensitive model in the project: it carries
+      villain_slug, the identity the triage model must reconstruct.
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: run_id
+        data_tests: [not_null]
+      - name: villain_slug
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_villains')
+                field: slug
+      - name: run_outcome
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["cleared", "stalled"]
+
+  - name: stg_villains
+    description: Shared dimension - the roster is public; which villain ran a session is not.
+    columns:
+      - name: slug
+        data_tests: [unique, not_null]
+      - name: archetype
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["cerebral", "brute", "chaotic", "stealth", "methodical"]
+
+  - name: stg_techniques
+    description: Shared dimension - the ATT&CK catalog is public.
+    columns:
+      - name: technique_id
+        data_tests: [unique, not_null]
+      - name: observability
+        description: What makes detection-coverage analysis possible.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["high", "partial", "low"]
+
+  - name: stg_stages
+    columns:
+      - name: stage
+        data_tests: [unique, not_null]
+
+  - name: stg_botchat_turns
+    description: >
+      OBSERVED. Structurally EMPTY in Track A - nothing produces chat_turn
+      events until Track B (docs/08). Built now so the triage model's input
+      contract does not change shape when Track B lands.
+
+  - name: stg_counterstrike_events
+    description: >
+      Neither triage_input nor ground_truth: attribution here comes from the
+      triage model's PREDICTION, not from truth. Empty in Track A.

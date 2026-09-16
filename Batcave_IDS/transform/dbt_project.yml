@@ -28,6 +28,15 @@ vars:
   path_enumeration_run_min_length: 3
   sensitive_access_run_min_length: 2
 
+  # assert_probability_calibration. docs/02: "techniques with 30+ attempts".
+  calibration_min_attempts: 30
+  # Band width in binomial standard errors, not an absolute gap - see the test
+  # for why a flat band is the wrong shape. 3 sigma is ~99.7%, which does not
+  # false-positive across the 11 techniques that clear the attempt threshold
+  # (worst observed: z=2.08) while still tightening the bound as n grows.
+  calibration_sigma: 3.0
+  calibration_absolute_floor: 0.02
+
 # No directory-level +tags. staging/ holds both triage_input and
 # ground_truth models (docs/02-data-model.md) — a directory default would
 # encode exactly the leakage the project exists to prevent. Every model
