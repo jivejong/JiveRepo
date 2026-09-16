@@ -83,6 +83,27 @@ class AttemptEvent(EventEnvelope):
     attempt_at: datetime
 
 
+class AttackRunEvent(EventEnvelope):
+    """`event_kind = 'attack_run'` — one per run, GROUND TRUTH (docs/02).
+
+    Carries `villain_slug` — the ground-truth identity that request and attempt
+    events must never contain — plus run metadata and, per Phase 3, the
+    `timing_compression_factor` so the corpus is self-describing (Phase 5/6 can
+    tell real timing from compressed from the data alone)."""
+
+    event_kind: Literal["attack_run"] = "attack_run"
+    villain_slug: str
+    started_at: datetime
+    ended_at: datetime
+    duration_s: float
+    requests_sent: int
+    attempts_made: int
+    max_stage_reached: int
+    run_outcome: Literal["cleared", "stalled"]
+    pathologies_enabled: list[str]
+    timing_compression_factor: float
+
+
 @dataclass
 class SessionResult:
     session_id: str
@@ -154,15 +175,19 @@ def run_scripted_session(
     http_client: httpx.Client | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
     injector: PathologyInjector | None = None,
+    timing_compression_factor: float = 1.0,
 ) -> SessionResult:
     """Run one villain's session, pacing requests in real time so the timing
     features (requests_per_min, duration_s, inter_request_stddev_ms) reflect
     Layer 1. `sleep_fn` is injectable so tests pass a no-op and don't wait.
 
     `injector` (Phase 3 Part 2) decides which deliberate pathologies corrupt
-    each request event. None = clean stream (Phase 2 behavior)."""
+    each request event. None = clean stream (Phase 2 behavior). Publishes one
+    `attack_run` (ground truth) at the end, recording `timing_compression_factor`
+    so the corpus is self-describing."""
     rng = rng or random.Random()
     run_id = str(uuid.uuid4())
+    started_at = datetime.now(UTC)
     villain = load_villains()[villain_slug]
     stages = load_stages()
 
@@ -348,6 +373,30 @@ def run_scripted_session(
             while state["attempt_seq"] < request_budget and state["attempt_seq"] < MAX_ATTEMPTS:
                 grind_seq += 1
                 emit(last_technique, last_stage_num, last_stage, "retry", grind_seq)
+
+        ended_at = datetime.now(UTC)
+        run_event = AttackRunEvent(
+            session_id=session_id,
+            run_id=run_id,
+            received_at=ended_at,
+            villain_slug=villain_slug,
+            started_at=started_at,
+            ended_at=ended_at,
+            duration_s=(ended_at - started_at).total_seconds(),
+            requests_sent=state["requests_sent"],
+            attempts_made=len(attempts),
+            max_stage_reached=state["max_stage_reached"],
+            run_outcome="cleared" if state["max_stage_reached"] >= 4 else "stalled",
+            pathologies_enabled=sorted(injector.config.enabled) if injector else [],
+            timing_compression_factor=timing_compression_factor,
+        )
+        kafka_producer.produce(
+            KAFKA_TOPIC,
+            key=run_id.encode("utf-8"),
+            value=run_event.model_dump_json().encode("utf-8"),
+            callback=_delivery_report,
+        )
+        kafka_producer.poll(0)
 
         return SessionResult(
             session_id=session_id,

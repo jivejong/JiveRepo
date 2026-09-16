@@ -13,7 +13,16 @@ number in the repository is worthless.
 ## Shared event envelope
 
 Every Kafka message carries this, discriminated by `event_kind`
-(`request` | `attempt` | `chat_turn` | `counterstrike`).
+(`request` | `attempt` | `chat_turn` | `counterstrike` | `attack_run`).
+
+> **`attack_run` is a fifth kind, added in Phase 3.** The original design listed four and kept
+> `attack_runs` as a separate ground-truth source without saying how it's transported. It's published
+> through the same topic as a distinct `event_kind` so there's one data path (Kafka → consumer →
+> Parquet → dbt) and Phase 4's consumer lands it like the others. It carries `villain_slug` — the
+> ground-truth identity the request/attempt envelopes must never contain — which is fine: it's landed
+> separately and tagged `ground_truth` in dbt, and `assert_no_ground_truth_leakage` keeps it out of
+> triage. It also carries `timing_compression_factor` (Phase 3) so a reader can tell, from the data
+> alone, whether a run's timing was real or compressed.
 
 | Field | Type | Nullable | Notes |
 |---|---|---|---|
@@ -144,7 +153,10 @@ produces a wrong accusation.
 ### `attack_runs` — GROUND TRUTH
 
 `run_id`, `villain_slug`, `started_at`, `ended_at`, `duration_s`, `requests_sent`, `attempts_made`,
-`max_stage_reached`, `run_outcome`, `pathologies_enabled`.
+`max_stage_reached`, `run_outcome`, `pathologies_enabled`, `timing_compression_factor` (Phase 3 —
+1.0 = faithful pacing, smaller = idle gaps compressed for speed; see docs/05 "Timing model").
+Published as `event_kind = 'attack_run'`, keyed by `run_id`, which the run's request and attempt
+events also carry so the observed session joins to its ground truth.
 
 ---
 

@@ -132,9 +132,17 @@ def test_every_attempt_is_published_to_kafka_with_matching_key():
         http_client=client,
         sleep_fn=lambda _: None,
     )
-    assert len(producer.messages) == len(result.attempts)
-    for _topic, key, _value in producer.messages:
+    import json
+
+    # Attempt events are keyed by session_id; the one attack_run event is
+    # keyed by run_id. Separate them by event_kind in the value.
+    attempt_msgs = [m for m in producer.messages if json.loads(m[2])["event_kind"] == "attempt"]
+    run_msgs = [m for m in producer.messages if json.loads(m[2])["event_kind"] == "attack_run"]
+    assert len(attempt_msgs) == len(result.attempts)
+    for _topic, key, _value in attempt_msgs:
         assert key == result.session_id.encode("utf-8")
+    assert len(run_msgs) == 1
+    assert run_msgs[0][1] == result.run_id.encode("utf-8")
 
 
 def test_attempt_seq_is_monotonic_and_technique_attempt_seq_resets_per_technique():

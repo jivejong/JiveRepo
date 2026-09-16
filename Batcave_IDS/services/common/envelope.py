@@ -14,7 +14,12 @@ from pydantic import BaseModel, Field
 
 SCHEMA_VERSION = "v1"
 
-EventKind = Literal["request", "attempt", "chat_turn", "counterstrike"]
+# `attack_run` (Phase 3) is a fifth kind beyond docs/02's original four. It
+# carries the ground-truth run metadata (including villain_slug) so a run's
+# observed session joins to its truth; it's produced through the same topic to
+# keep one data path (Kafka -> consumer -> Parquet -> dbt), landed separately,
+# and tagged `ground_truth` in dbt like attack_attempts.
+EventKind = Literal["request", "attempt", "chat_turn", "counterstrike", "attack_run"]
 
 
 class EventEnvelope(BaseModel):
