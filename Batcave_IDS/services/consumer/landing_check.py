@@ -173,20 +173,35 @@ def report(data_root: Path, check_topic: bool = True) -> bool:
             )
             """
         ).fetchone()[0]
-        twoface = con.sql(
-            f"""
-            SELECT count(*) FROM (
-                SELECT session_id, path FROM {request_relation}
-                WHERE path IS NOT NULL
-                GROUP BY session_id, path
-                HAVING count(DISTINCT event_id) > 1
-            )
-            """
-        ).fetchone()[0]
         print(f"  same event_id, >1 row (delivery dup + replay): {replayed:5}  -> dedupe REMOVES")
-        print(
-            f"  same (session, path), distinct event_ids (Two-Face): {twoface:5}  -> dedupe KEEPS"
-        )
+
+        # Two-Face specifically, not "any session that revisited a path" -
+        # Killer Croc's real retries (highest retry_ratio, docs/03) match that
+        # same shape and would otherwise inflate this count with an unrelated
+        # signal. villain_slug lives only on attack_run, joined by run_id.
+        # DISTINCT first: attack_run rows duplicate on replay too (this
+        # corpus's Croc run did), and joining the raw relation fans out.
+        if run_relation is not None:
+            twoface = con.sql(
+                f"""
+                WITH run_villain AS (SELECT DISTINCT run_id, villain_slug FROM {run_relation}),
+                     twoface_requests AS (
+                         SELECT req.* FROM {request_relation} req
+                         JOIN run_villain rv ON req.run_id = rv.run_id
+                         WHERE rv.villain_slug = '678-two-face'
+                     )
+                SELECT count(*) FROM (
+                    SELECT session_id, path FROM twoface_requests
+                    WHERE path IS NOT NULL
+                    GROUP BY session_id, path
+                    HAVING count(DISTINCT event_id) > 1
+                )
+                """
+            ).fetchone()[0]
+            print(
+                f"  Two-Face, same (session, path), distinct event_ids:  {twoface:5}  "
+                f"-> dedupe KEEPS"
+            )
 
     # -- quarantine, and proof the consumer continued --------------------
     quarantine_dir = data_root / "quarantine" / "undeserializable"
