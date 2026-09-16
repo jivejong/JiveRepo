@@ -147,6 +147,7 @@ dev-down        docker compose down (preserve ./data)
 dev-reset       docker compose down -v, wipe data/raw except the committed sample-*, rm warehouse.duckdb
 attack          run the simulator: VILLAIN=<slug> DURATION=<seconds>
 attack-all      run all twelve villains sequentially
+separability    run the villain-separability harness (Phase 3 checkpoint)
 transform       dbt deps && dbt run && dbt test
 triage          score sessions, call LLM (or baseline), write orders + evaluations
 eval            print the triage accuracy report
@@ -159,6 +160,35 @@ test            pytest && dbt test
 
 Every target must work from a clean clone. Test this before the final commit by cloning into a
 fresh directory and running through `make dev-up`, `make attack`, `make transform`, `make eval`.
+
+### Timing model: real budgets, compressible idle gaps
+
+The simulator paces requests in real time so the timing features
+(`requests_per_min`, `duration_s`, `inter_request_stddev_ms`) reflect actual behavior. Two knobs
+are kept deliberately separate:
+
+- **Request budget** — how many requests a villain makes (speed × durability, docs/03). Always
+  preserved. Every volume-derived feature depends on it, so it is never compressed.
+- **Idle gaps** — the wall-clock time spent asleep *between* requests. Compressible by a
+  `time_scale` factor (1.0 = faithful; smaller = faster iteration). The separability harness defaults
+  to a small factor so a full twelve-villain corpus runs in ~1–2 minutes instead of ~20.
+
+Compressing the gaps distorts exactly one feature: `inter_request_stddev_ms`, which *is* the gap
+distribution. Below `time_scale ≈ 0.1` the compressed gaps fall under the HTTP round-trip noise
+floor (~10 ms) and the feature measures network jitter rather than villain pacing. The harness
+labels each run FAITHFUL or compressed and reserves faithful timing for a targeted `--villains`
+subset (the Joker/Harley burst-structure pair). **The compression factor is recorded per run on
+`attack_runs`** (not just in config) so Phase 5 and Phase 6 can tell, from the data alone, whether a
+session's timing was real — and so faithful and compressed runs can coexist in one corpus,
+distinguishable by column.
+
+Concurrency was tried to make faithful full-corpus runs affordable (the runs are independent) and
+**abandoned**: a `ThreadPoolExecutor` over the runs triggers a fatal C-extension GIL crash on this
+platform (`confluent_kafka`/librdkafka and/or httpx). The sequential path the simulator itself uses
+is unaffected and runs cleanly; only the harness optimization hit it. So a faithful full corpus is
+inherently slow (sum of the runs, idle-gap-dominated), which is why compressed-by-default plus a
+faithful subset is the model. Phase 4's pathology corpus, which needs enough volume for 0.5% rates
+to fire, should dial `time_scale` up for size rather than expect a fast faithful run.
 
 ---
 

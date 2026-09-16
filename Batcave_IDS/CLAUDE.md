@@ -27,17 +27,31 @@ Croc; low-durability villains identifiable by signature not outcome; Ra's discri
 wasted_request_ratio + max_path_tier 4 (a pairing, not one feature). `wasted_request_ratio` redefined
 progress-based (r=-0.05 vs error_ratio).
 
-**Separability Part 1 NOT yet passing — remaining before it can be called done:**
-- Wire Mister Freeze's response-delay signature (`X-Sim-Delay-Ms`) so his duration story holds — the
-  volume fix made Croc longest-duration, which is a stat-mapping artifact (decided: fix via signature).
+**Separability Part 1 — mostly validated; resolved since the status above:**
+- Freeze's response-delay signature landed — he's longest-duration again (via holding, not volume).
+- Volume fix made Croc highest `request_count` (docs/03 true, not edited).
+- Bane's signature (path concentration) added — it was missing entirely; the mid-stat cluster now
+  separates on signature features (Bane/Ivy 1.20, all Freeze pairs 2.7–5.0). The residual
+  Bane/Harley/Ivy weakness was a **measurement artifact**: `inter_request_stddev_ms` is flat under a
+  compressed clock (gaps below the HTTP noise floor). At faithful timing the Joker/Harley burst pair
+  separates (effect ≈ 1.2). Timing model + which features are faithful: docs/05, docs/03.
+- **Timing/concurrency, for Phase 4:** faithful full-corpus runs are slow (idle-gap-dominated);
+  thread concurrency to speed them up hits a fatal C-extension GIL crash and was abandoned. The
+  **sequential path the simulator uses is clean** — `make attack` runs fine; the crash was only the
+  harness's threaded optimization. Compressed-by-default + faithful subset is the model; the
+  compression factor will be recorded on `attack_runs`. Phase 4's larger pathology corpus should
+  dial `time_scale` up for size rather than expect a fast faithful run.
+
+**Still remaining before Part 1 is fully done:**
 - Build the ablation into the harness (effect sizes with `wasted_request_ratio` / `error_ratio`
   removed; report load-bearing pairs).
 - docs/02 feature-definition ambiguity pass (2-3 prose-vs-computation mismatches already found;
   likely more) + the wasted+max_path_tier pairing doc edits.
-- The generic mid-stat cluster (Bane/Harley/Poison Ivy/Freeze) still overlaps in effect size (<1) —
-  open question whether that's acceptable or needs more signature work.
-- Then Part 2: pathologies (`pathologies.yml` + injection + verification), `attack_runs`, real
-  `make attack`/`attack-all`.
+- Optional refinement (not a blocker): Harley's burstiness is redundant with jitter; a true bimodal
+  burst shape would be a cleaner fingerprint (docs/03 notes this).
+
+**Then Part 2:** pathologies (`pathologies.yml` + injection + verification), `attack_runs` (carrying
+the timing compression factor), real `make attack`/`attack-all`.
 
 Phases 0, 1, and 2 are all locally complete and verified against real output; none has been pushed,
 so **CI green is unconfirmed for all three** — nothing has gone to the public remote yet

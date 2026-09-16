@@ -114,6 +114,24 @@ Run all twelve villains for 120 seconds each, then confirm from `int_session_fea
 
 If any check fails, adjust the mapping before moving on. This checkpoint will loop — budget for it.
 
+### Which features are timing-faithful (Phase 3 measurement note)
+
+Separability is measured with `make separability`, which runs a real-time-paced corpus (see
+docs/05, "Timing model"). All volume- and content-derived features are honest at any clock, because
+request budgets are always preserved. **`inter_request_stddev_ms` is the exception**: it is the
+inter-request gap distribution, so under a compressed clock (the harness default, for speed) it
+falls below the HTTP round-trip noise floor and reports network jitter, not villain pacing. It is
+validated only at faithful timing, on a targeted `--villains` subset. Verification item 4 above
+(Joker/Harley burst structure) was checked that way: at faithful timing the pair separates
+(`inter_request_stddev_ms` ≈ 429 vs 145, effect size ≈ 1.2). The corpus records its compression
+factor on `attack_runs` so a reader can always tell which timing a session used.
+
+Honest caveat on that pair: the separation is currently driven mostly by base pace (Joker is slower,
+so his absolute gaps and their spread are larger), not by a distinct *bimodal* burst shape — Harley's
+burstiness is capped at the same total variance as Joker's high-intelligence jitter. A truer
+"bursts separated by long pauses" fingerprint (clustered fast requests plus occasional long pauses)
+is a possible refinement; the pair does separate on the named feature as-is.
+
 ---
 
 ## Deliberate data pathologies
