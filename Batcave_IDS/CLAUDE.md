@@ -42,16 +42,19 @@ progress-based (r=-0.05 vs error_ratio).
   compression factor will be recorded on `attack_runs`. Phase 4's larger pathology corpus should
   dial `time_scale` up for size rather than expect a fast faithful run.
 
-**Still remaining before Part 1 is fully done:**
-- Build the ablation into the harness (effect sizes with `wasted_request_ratio` / `error_ratio`
-  removed; report load-bearing pairs).
-- docs/02 feature-definition ambiguity pass (2-3 prose-vs-computation mismatches already found;
-  likely more) + the wasted+max_path_tier pairing doc edits.
-- Optional refinement (not a blocker): Harley's burstiness is redundant with jitter; a true bimodal
-  burst shape would be a cleaner fingerprint (docs/03 notes this).
+**Separability Part 1 — DONE.** All named checkpoint separations hold (measured, `make
+separability`): Riddler/Two-Face on signature features (riddle d≈6, duplicate d≈1.7, outcome flat),
+Scarecrow/Penguin and Joker/Harley both out of the closest-10, Joker/Harley validated at faithful
+timing (effect ≈1.2), Croc highest request_count + retry_ratio, Freeze longest duration. Closest
+remaining pair is Catwoman/Ra's al Ghul (0.77) — an *intended* similarity (both efficient operators
+reaching tier 4 in <25 requests), not a failure. Ablation: `error_ratio` load-bearing for 11/66
+pairs (strong keep), `wasted_request_ratio` for 2/66 (Riddler pairs — marginal keep, weight lightly
+in Phase 6). docs/02 ambiguity pass done (7 features flagged for Phase 5). Optional refinement
+recorded, not built: Harley's bimodal burst shape (docs/03/04).
 
-**Then Part 2:** pathologies (`pathologies.yml` + injection + verification), `attack_runs` (carrying
-the timing compression factor), real `make attack`/`attack-all`.
+**Then Part 2 (not started):** pathologies (`pathologies.yml` + injection + verification, docs/03's
+ten), `attack_runs` (carrying the timing compression factor per run), real `make attack`/
+`attack-all`. Fresh session per the plan.
 
 Phases 0, 1, and 2 are all locally complete and verified against real output; none has been pushed,
 so **CI green is unconfirmed for all three** — nothing has gone to the public remote yet
