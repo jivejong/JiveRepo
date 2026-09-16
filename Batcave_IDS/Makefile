@@ -1,5 +1,5 @@
 .PHONY: dev-up dev-down dev-reset attack attack-all separability pathology-check landing-check \
-        transform lint-sql triage eval \
+        transform lint-sql feature-crosscheck triage eval \
         reconcile coverage dagster docs fmt test
 
 TOPIC := attack.events
@@ -51,6 +51,12 @@ pathology-check:
 # agreement (Phase 4 checkpoint). Read-only - run a corpus first.
 landing-check:
 	uv run python -m services.consumer.landing_check
+
+# Proves the dbt feature models and the separability harness compute identical
+# values on the same rows (docs/06: a divergence is a bug in one of them, not
+# an acceptable difference). Requires a built warehouse - run `make transform`.
+feature-crosscheck:
+	uv run python -m services.simulator.feature_crosscheck
 
 # dbt runs from transform/ so the relative paths in profiles.yml
 # (../data/warehouse.duckdb) and dbt_project.yml (data_root: ../data) resolve.
