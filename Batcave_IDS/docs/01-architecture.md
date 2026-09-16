@@ -63,7 +63,8 @@ Single container, Kafka API, no ZooKeeper.
 - Retention 24 hours, ample for replay during development
 - Redpanda Console on `:8080` for topics, offsets, and consumer lag
 
-Four `event_kind` values share the topic: `request`, `attempt`, `chat_turn`, `counterstrike`.
+Five `event_kind` values share the topic: `request`, `attempt`, `chat_turn`, `counterstrike`, and
+`attack_run` (Phase 3 — ground truth, docs/02).
 
 ### Consumer (`services/consumer/`) — Track A
 Consumer group `attack-events-writer`. Batches and writes partitioned Parquet.

@@ -93,12 +93,23 @@ rate spike that would end up measuring the server's throughput rather than the v
 data/
   villains/                          # committed, vendored akabab subset
   raw/
-    attack_events/dt=/hour=/         # gitignored except one sample partition
-    attack_runs/
+    <event_kind>/dt=/hour=/          # one directory per event_kind (request, attempt,
+                                      #   attack_run, ...), each Hive-partitioned by
+                                      #   received_at. Gitignored except one sample
+                                      #   partition per kind (Phase 5).
   quarantine/
-    undeserializable/
+    undeserializable/                # flat, not partitioned (docs/01) - offset in the
+                                      #   filename, no trustworthy received_at to key on
   warehouse.duckdb                   # gitignored
 ```
+
+This resolves Conflict C (open since Phase 0): `data/raw/<event_kind>/dt=/hour=/` — one directory
+per `event_kind`, not the single `attack_events/` directory with a separate unpartitioned
+`attack_runs/` this section used to show. `attack_run` (Phase 3's fifth `event_kind`) lands the same
+way as every other kind, through the same consumer (`services/consumer/`, Phase 4) — that was the
+point of routing it through the topic as a kind rather than a side channel. Verified against real
+`services/consumer/writer.py` output and the `.gitignore` negation pattern, both of which already
+assumed this shape.
 
 **Commit one sample partition** — a few hundred rows of real landed Parquet. A reader can then
 inspect actual output, and `dbt run` works immediately after clone without generating traffic.
@@ -146,7 +157,7 @@ hit it unexplained.
 dev-up          docker compose up -d, wait for health, create topic
 dev-down        docker compose down (preserve ./data)
 dev-reset       docker compose down -v, wipe data/raw except the committed sample-*, rm warehouse.duckdb
-attack          run the simulator: VILLAIN=<slug> DURATION=<seconds>
+attack          run the simulator once: VILLAIN=<slug> [TIME_SCALE=<factor>]
 attack-all      run all twelve villains sequentially
 separability    run the villain-separability harness (Phase 3 checkpoint)
 transform       dbt deps && dbt run && dbt test

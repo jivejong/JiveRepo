@@ -187,12 +187,12 @@ Honeypot ──► request events ──► Kafka (3 partitions, keyed by sessio
 ## Quickstart
 
 ```bash
-make dev-up                                # Redpanda + honeypot + consumer
-make attack VILLAIN=riddler DURATION=120   # run a full kill chain headlessly
-make transform                             # dbt run + dbt test
-make triage                                # LLM triage (or baseline without a key)
-make eval                                  # attribution + technique accuracy report
-make reconcile                             # data quality reconciliation
+make dev-up                        # Redpanda + honeypot + consumer
+make attack VILLAIN=558-riddler    # run one villain against the honeypot
+make transform                     # dbt run + dbt test
+make triage                        # LLM triage (or baseline without a key)
+make eval                          # attribution + technique accuracy report
+make reconcile                     # data quality reconciliation
 make dev-down
 ```
 

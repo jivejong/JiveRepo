@@ -127,7 +127,7 @@ Kill the consumer mid-batch, restart, confirm the replayed batch produces visibl
 
 ## Phase 5 — dbt transformation layer  (12–16h)
 
-- Sources over landed Parquet with Hive partitioning; seeds loaded
+- Sources over landed Parquet with Hive partitioning (`union_by_name = true`); seeds loaded
 - staging, intermediate, marts per `docs/02-data-model.md`, including `int_stage_progression` and
   the three analytic marts
 - All generic and singular tests, including `assert_technique_gating_respected`,
@@ -149,6 +149,16 @@ in Python before the consumer exists; the dbt mart recomputes them after landing
 two must agree on the same seeded corpus (the seed-driven injection counts are exact; the
 timing-derived burst count is approximate). This is the same harness/dbt cross-check the separability
 harness sets up for Phase 5's feature models — build the Python number first, make dbt match it.
+
+**Two traps Phase 4's `landing_check.py` (`services/consumer/landing_check.py`) already hit reading
+this same layout, both real for dbt sources too:**
+- **`union_by_name = true` is required, not optional.** The schema-drift pathology means sibling
+  Parquet files in one `dt=/hour=` directory legitimately differ by a column (`tls_fingerprint`);
+  DuckDB's default strict read fails across them.
+- **`received_at` lands as `TIMESTAMP WITH TIME ZONE`, and DuckDB renders those in the session's
+  local zone**, not UTC — `strftime(received_at, '%H')` silently returns the wrong hour anywhere but
+  UTC and disagrees with the `hour=` partition value for every row. `SET TimeZone = 'UTC'` on the dbt
+  profile/connection, or every `dt`/`hour` comparison against `received_at` is wrong.
 
 ## Phase 6 — Scoring, triage, evaluation  (8–12h)
 

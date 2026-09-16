@@ -227,8 +227,9 @@ Makefile
 make dev-up          # docker compose up: redpanda, console UI, honeypot, consumer
 make dev-down        # tear down, preserve data/
 make dev-reset       # tear down and wipe generated data/raw + warehouse (spares the committed sample)
-make attack VILLAIN=<slug> DURATION=<seconds>
+make attack VILLAIN=<slug> [TIME_SCALE=<factor>]   # one villain, one run
 make attack-all      # all twelve villains sequentially
+make landing-check   # verify what the consumer landed (Phase 4 checkpoint)
 make transform       # dbt deps && dbt run && dbt test
 make triage          # score sessions, call LLM (or baseline), write orders + evaluations
 make eval            # attribution + technique reconstruction report
