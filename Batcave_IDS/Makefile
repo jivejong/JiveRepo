@@ -1,5 +1,5 @@
 .PHONY: dev-up dev-down dev-reset attack attack-all separability pathology-check landing-check \
-        transform lint-sql feature-crosscheck triage eval \
+        transform lint-sql feature-crosscheck sample-partition triage eval \
         reconcile coverage dagster docs fmt test
 
 TOPIC := attack.events
@@ -57,6 +57,11 @@ landing-check:
 # an acceptable difference). Requires a built warehouse - run `make transform`.
 feature-crosscheck:
 	uv run python -m services.simulator.feature_crosscheck
+
+# Regenerates the committed sample partition from the current corpus. Needs a
+# real corpus on disk (not just the sample) and a built warehouse.
+sample-partition:
+	uv run python -m services.consumer.sample_partition
 
 # dbt runs from transform/ so the relative paths in profiles.yml
 # (../data/warehouse.duckdb) and dbt_project.yml (data_root: ../data) resolve.
