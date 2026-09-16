@@ -19,6 +19,15 @@ clean-targets:
 vars:
   data_root: "../data"
 
+  # Minimum streak length for each "runs" evidence feature (docs/02's [def]
+  # ambiguity flags). "Runs" means maximal streaks of consecutive requests, and
+  # each feature counts the RUNS, not the matching requests. Thresholds are
+  # pinned here rather than inline so the basis is one place; the observed
+  # distribution behind each is recorded in docs/02-data-model.md.
+  auth_failure_run_min_length: 3
+  path_enumeration_run_min_length: 3
+  sensitive_access_run_min_length: 2
+
 # No directory-level +tags. staging/ holds both triage_input and
 # ground_truth models (docs/02-data-model.md) — a directory default would
 # encode exactly the leakage the project exists to prevent. Every model

@@ -55,10 +55,12 @@ landing-check:
 # dbt runs from transform/ so the relative paths in profiles.yml
 # (../data/warehouse.duckdb) and dbt_project.yml (data_root: ../data) resolve.
 # Both are relative to the PROCESS working directory, not to the project file.
+# `dbt build` rather than run+test: it loads seeds, builds models and runs each
+# model's tests in dependency order, so a failing test stops its dependents
+# instead of letting the run finish and reporting the damage afterwards.
 transform:
 	cd transform && uv run --project .. dbt deps --profiles-dir .
-	cd transform && uv run --project .. dbt run --profiles-dir .
-	cd transform && uv run --project .. dbt test --profiles-dir .
+	cd transform && uv run --project .. dbt build --profiles-dir .
 
 triage:
 	@echo "make triage: arrives in Phase 6 (scoring, triage, evaluation)." >&2
