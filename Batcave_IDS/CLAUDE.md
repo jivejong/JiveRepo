@@ -8,8 +8,8 @@ Context for Claude Code working in this repository.
 
 ```
 TRACK:  A  (headless core pipeline)
-PHASE:  3  (villain behavior and pathologies) — COMPLETE locally (Parts 1 and 2), nothing pushed
-NEXT:   Phase 4 (consumer and landing) — fresh session, plan mode first
+PHASE:  4  (consumer and landing) — COMPLETE locally, nothing pushed
+NEXT:   Phase 5 (dbt transformation layer) — fresh session, plan mode first
 IN SCOPE:    docs/01, 02, 03, 04, 05, 06, 07
 OUT OF SCOPE: docs/08  — no console, no bat bot, no finale, no dashboard
 ```
@@ -70,8 +70,33 @@ fixed). `attack_runs` published as a 5th `event_kind`, keyed by `run_id`, carryi
 dep audit found no other gaps. Invented mechanisms documented: `X-Sim-Pathology`/`X-Run-Id` headers
 (docs/01 consolidated table), `attack_run` kind (docs/02).
 
-Phases 0, 1, 2, and 3 are all locally complete and verified against real output; none has been
-pushed, so **CI green is unconfirmed for all four** — nothing has gone to the public remote yet
+**Phase 4 — DONE (verified by killing the consumer mid-batch, `docs/exercises.md`).** Consumer
+(`services/consumer/`) lands `attack.events` as partitioned Parquet:
+`data/raw/<event_kind>/dt=/hour=/part-<uuid>.parquet`, hand-declared schema per kind (parity with the
+Pydantic models enforced by test — inferring per batch broke on all-null nullable columns), atomic
+temp-then-rename writes, flush on 5,000 messages/30s. **Offset-commit ordering proven live, not read
+from the code:** a debug-only pre-commit delay (`CONSUMER_DEBUG_PRE_COMMIT_DELAY_S`, default 0, never
+set in compose) widened the write-then-commit window; killed the process inside it; `rpk group
+describe` showed a fully-written 92-row batch with zero offsets committed (full lag); restart replayed
+the exact same 92 rows byte-for-byte (184 landed = 92+92, one event_id/offset pair shown landing a
+minute apart). Undeserializable messages quarantine to `data/quarantine/undeserializable/`
+(offset in filename + content, idempotent on replay) and the consumer *continues* — proven via
+later-landed rows on the same partition, not just a file existing. `make landing-check` (DuckDB over
+the Hive layout, same as Phase 5's dbt sources will read it) verifies partitions, reconciliation
+against `attack_runs`, and the two duplicate populations Phase 5 must treat oppositely (replayed/
+delivery dup by identical `event_id` → dedupe removes; Two-Face's signature by distinct `event_id` at
+same session+path → dedupe keeps, properly villain-scoped via `run_id`→`attack_run.villain_slug` after
+a bug found live where Killer Croc's real retries — highest `retry_ratio`, docs/03 — inflated an
+unscoped version of that count). **Conflict C resolved:** `docs/05` was the layout outlier (a single
+`attack_events/` dir + unpartitioned `attack_runs/`) and was fixed to match docs/01/CLAUDE.md/the
+`.gitignore` pattern/the actual consumer output, which all already agreed. `.gitignore`'s
+`sample-*` negation verified against a real landed Parquet file (copied, checked, deleted — tree left
+clean). LocalStack note: checked (grep + `git log -S`), never existed, nothing to remove. Two DuckDB
+traps recorded for Phase 5 in docs/06: `union_by_name=true` required (schema drift), and
+`received_at` (TIMESTAMPTZ) renders in local time unless `SET TimeZone='UTC'`.
+
+Phases 0-4 are all locally complete and verified against real output; none has been
+pushed, so **CI green is unconfirmed for all five** — nothing has gone to the public remote yet
 (deliberately, per instruction: local first). Do not treat any of them as fully closed until CI is
 observed green after that push.
 
