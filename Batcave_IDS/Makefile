@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down dev-reset attack attack-all separability transform triage eval \
+.PHONY: dev-up dev-down dev-reset attack attack-all separability pathology-check transform triage eval \
         reconcile coverage dagster docs fmt test
 
 TOPIC := attack.events
@@ -37,6 +37,12 @@ attack-all:
 # distances are scale-invariant. Requires `make dev-up` first.
 separability:
 	uv run python -m services.simulator.separability --time-scale $(or $(TIME_SCALE),0.02)
+
+# Runs a corpus with all pathologies enabled and verifies each one is present
+# in real consumed data with a count (Phase 3 checkpoint, Part 2). Requires
+# `make dev-up` first.
+pathology-check:
+	uv run python -m services.simulator.pathology_check --runs $(or $(RUNS),12) --time-scale $(or $(TIME_SCALE),0.02)
 
 transform:
 	@echo "make transform: arrives in Phase 5 (dbt transformation layer)." >&2
