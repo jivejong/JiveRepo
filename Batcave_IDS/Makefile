@@ -1,4 +1,5 @@
-.PHONY: dev-up dev-down dev-reset attack attack-all separability pathology-check transform triage eval \
+.PHONY: dev-up dev-down dev-reset attack attack-all separability pathology-check landing-check \
+        transform triage eval \
         reconcile coverage dagster docs fmt test
 
 TOPIC := attack.events
@@ -44,6 +45,12 @@ separability:
 # `make dev-up` first.
 pathology-check:
 	uv run python -m services.simulator.pathology_check --runs $(or $(RUNS),12) --time-scale $(or $(TIME_SCALE),0.02)
+
+# Verifies what the consumer landed: partitions, counts reconciled against
+# attack_runs, the two duplicate populations, quarantine, and topic-vs-disk
+# agreement (Phase 4 checkpoint). Read-only - run a corpus first.
+landing-check:
+	uv run python -m services.consumer.landing_check
 
 transform:
 	@echo "make transform: arrives in Phase 5 (dbt transformation layer)." >&2
