@@ -18,6 +18,7 @@ dev-reset:
 	docker compose down -v
 	find data/raw -type f ! -name 'sample-*' -delete
 	find data/raw -type d -empty -delete
+	rm -rf data/quarantine
 	rm -f data/warehouse.duckdb
 
 # Run one villain (VILLAIN=<slug>) or all twelve against the honeypot with the

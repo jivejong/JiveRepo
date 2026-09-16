@@ -77,8 +77,32 @@ services:
     ports:
       - "8000:8000"
 
-  # consumer arrives in Phase 4. Including it now would block `make dev-up`
-  # on a service that doesn't exist yet, breaking Phase 0's own checkpoint.
+  consumer:
+    build:
+      context: .
+      dockerfile: services/consumer/Dockerfile
+    container_name: batcave-consumer
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:29092
+      KAFKA_TOPIC: attack.events
+      CONSUMER_GROUP: attack-events-writer
+      CONSUMER_FLUSH_MAX_MESSAGES: ${CONSUMER_FLUSH_MAX_MESSAGES:-5000}
+      CONSUMER_FLUSH_INTERVAL_S: ${CONSUMER_FLUSH_INTERVAL_S:-30}
+    volumes:
+      # Landed Parquet must appear on the host for DuckDB and dbt to read
+      # without a copy step (docs/05). DATA_ROOT=/app/data is set in the image.
+      - ./data:/app/data
+    # No healthcheck: this service has no endpoint to probe, and a liveness
+    # probe that only proves the process exists would say nothing about whether
+    # it is committing offsets. `make landing-check` is the real check.
+    #
+    # No restart policy, deliberately. `restart: unless-stopped` would bring the
+    # container straight back after `docker kill`, leaving no window to inspect
+    # the committed offsets before the replay — which is the whole observation
+    # the consumer-restart exercise depends on (docs/exercises.md).
 
 volumes:
   redpanda-data:
