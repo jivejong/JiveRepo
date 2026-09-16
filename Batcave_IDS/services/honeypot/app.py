@@ -17,6 +17,11 @@ carrying the cookie like any client, so its driven traffic and its attempt
 events share a session_id. This replaced the Phase 2 `X-Session-Id` response
 header, which couldn't survive the IP/UA rotation Penguin and the high-INT
 villains need.
+
+Private simulator control channel (`X-*` request headers) — see the full
+table in docs/01-architecture.md. None of this exists in a real honeypot;
+it is how the simulator drives this one. The consolidated table is the
+source of truth for what each header does and who sets it.
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ import json
 import os
 import time
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from confluent_kafka import Producer
 from fastapi import FastAPI, Request
@@ -125,6 +130,21 @@ def _parse_attempt_id(request: Request) -> str | None:
     return request.headers.get("x-attempt-id") or None
 
 
+def _parse_run_id(request: Request) -> str | None:
+    # Set by the simulator (Phase 3) so request events carry the same run_id
+    # as the run's attempt events and its attack_runs row — the ground-truth
+    # join key. Absent on a plain curl.
+    return request.headers.get("x-run-id") or None
+
+
+def _parse_pathology_tokens(request: Request) -> set[str]:
+    # Deliberate data pathologies the simulator asks the honeypot to inject
+    # into THIS request's event (docs/03, services/simulator/pathologies.py).
+    # Corrupts the observed request stream only; never attempt events.
+    raw = request.headers.get("x-sim-pathology", "")
+    return {t.strip() for t in raw.split(",") if t.strip()}
+
+
 @app.get("/healthz")
 async def healthz() -> dict:
     # Registered before the catch-all so it takes precedence (Starlette
@@ -163,6 +183,7 @@ async def _handle_request(request: Request) -> JSONResponse:
 
     event = RequestEvent(
         session_id=session_id,
+        run_id=_parse_run_id(request),
         received_at=received_at,
         client_ts=_parse_client_ts(request),
         source_ip=source_ip,
@@ -179,13 +200,39 @@ async def _handle_request(request: Request) -> JSONResponse:
         attempt_id=_parse_attempt_id(request),
     )
 
+    # Apply the deliberate pathologies the simulator asked for. Field-level
+    # ones are dict mutations (cleaner than fighting the model's types);
+    # produce-level ones change how/whether the value is published.
+    pathologies = _parse_pathology_tokens(request)
+    payload = event.model_dump(mode="json")
+    if "missing_source_ip" in pathologies:
+        payload["source_ip"] = None
+    if "missing_path" in pathologies:
+        payload["path"] = None
+    if "clock_skew_future_received_at" in pathologies:
+        payload["received_at"] = (received_at + timedelta(hours=1)).isoformat()
+    if "clock_skew_negative_response" in pathologies:
+        payload["response_time_ms"] = -abs(response_time_ms) - 1.0
+    if "schema_drift" in pathologies:
+        payload["schema_version"] = "v2"
+        payload["tls_fingerprint"] = "ja3:0123456789abcdef"
+
+    value = json.dumps(payload).encode("utf-8")
+    key = None if "unkeyed" in pathologies else session_id.encode("utf-8")
+
     producer = request.app.state.producer
-    producer.produce(
-        KAFKA_TOPIC,
-        key=session_id.encode("utf-8"),
-        value=event.model_dump_json().encode("utf-8"),
-        callback=_delivery_report,
-    )
+    if "undeserializable" in pathologies:
+        # Raw non-JSON bytes instead of the event — the consumer (Phase 4)
+        # quarantines these; here we only verify they reach the topic.
+        garbage = b"\x00\x01not-json\xff"
+        producer.produce(KAFKA_TOPIC, key=key, value=garbage, callback=_delivery_report)
+    else:
+        producer.produce(KAFKA_TOPIC, key=key, value=value, callback=_delivery_report)
+        if "duplicate_delivery" in pathologies:
+            # Re-send the identical event (same event_id) — at-least-once
+            # replay. Phase 5's dedupe on event_id removes this copy while
+            # keeping Two-Face's distinct-event_id duplicate requests.
+            producer.produce(KAFKA_TOPIC, key=key, value=value, callback=_delivery_report)
     producer.poll(0)
 
     response = JSONResponse(

@@ -105,6 +105,88 @@ def test_absurd_http_methods_are_answered_not_405(client, method):
     assert response.status_code != 405
 
 
+class _CapturingProducer:
+    def __init__(self):
+        self.messages = []  # list of (key, value)
+
+    def produce(self, topic, key=None, value=None, callback=None):
+        self.messages.append((key, value))
+
+    def poll(self, *a):
+        return 0
+
+    def flush(self, *a):
+        return 0
+
+
+def test_pathology_unkeyed_produces_null_key():
+    with TestClient(app) as c:
+        prod = _CapturingProducer()
+        c.app.state.producer = prod
+        c.get("/", headers={"X-Sim-Pathology": "unkeyed"})
+        assert prod.messages and prod.messages[-1][0] is None
+
+
+def test_pathology_undeserializable_produces_non_json():
+    import json as _json
+
+    with TestClient(app) as c:
+        prod = _CapturingProducer()
+        c.app.state.producer = prod
+        c.get("/", headers={"X-Sim-Pathology": "undeserializable"})
+        _, value = prod.messages[-1]
+        try:
+            _json.loads(value)
+            raise AssertionError("undeserializable payload should not parse as JSON")
+        except (ValueError, UnicodeDecodeError):
+            pass
+
+
+def test_pathology_duplicate_delivery_produces_two_identical_values():
+    import json as _json
+
+    with TestClient(app) as c:
+        prod = _CapturingProducer()
+        c.app.state.producer = prod
+        c.get("/", headers={"X-Sim-Pathology": "duplicate_delivery"})
+        assert len(prod.messages) == 2
+        v0, v1 = prod.messages[0][1], prod.messages[1][1]
+        assert v0 == v1
+        assert _json.loads(v0)["event_id"] == _json.loads(v1)["event_id"]
+
+
+def test_pathology_field_mutations():
+    import json as _json
+
+    with TestClient(app) as c:
+        prod = _CapturingProducer()
+        c.app.state.producer = prod
+        c.get(
+            "/admin",
+            headers={
+                "X-Sim-Pathology": (
+                    "missing_source_ip,missing_path,schema_drift,clock_skew_negative_response"
+                )
+            },
+        )
+        payload = _json.loads(prod.messages[-1][1])
+        assert payload["source_ip"] is None
+        assert payload["path"] is None
+        assert payload["schema_version"] == "v2"
+        assert "tls_fingerprint" in payload
+        assert payload["response_time_ms"] < 0
+
+
+def test_run_id_threaded_onto_event():
+    import json as _json
+
+    with TestClient(app) as c:
+        prod = _CapturingProducer()
+        c.app.state.producer = prod
+        c.get("/", headers={"X-Run-Id": "run-abc-123"})
+        assert _json.loads(prod.messages[-1][1])["run_id"] == "run-abc-123"
+
+
 def test_healthz_does_not_set_a_session_cookie(client):
     # /healthz is infrastructure, not attacker-facing traffic — it never
     # touches the session tracker or the producer, unlike every other route.
