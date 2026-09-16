@@ -20,15 +20,16 @@ dev-reset:
 	find data/raw -type d -empty -delete
 	rm -f data/warehouse.duckdb
 
-# ── Stubs — arrive in the phase noted, not yet implemented ─────────────
-
+# Run one villain (VILLAIN=<slug>) or all twelve against the honeypot with the
+# deliberate pathologies enabled. TIME_SCALE compresses idle gaps (recorded on
+# each attack_run). Requires `make dev-up` first.
 attack:
-	@echo "make attack: arrives in Phase 2-3 (simulator, stage machine, villain behavior)." >&2
-	@exit 1
+	uv run python -m services.simulator --villain $(VILLAIN) --time-scale $(or $(TIME_SCALE),0.05)
 
 attack-all:
-	@echo "make attack-all: arrives in Phase 3 (runs all twelve villains sequentially)." >&2
-	@exit 1
+	uv run python -m services.simulator --all --time-scale $(or $(TIME_SCALE),0.05)
+
+# ── Stubs — arrive in the phase noted, not yet implemented ─────────────
 
 # Runs all twelve villains, consumes the events back, and reports villain
 # separability in normalized feature space (Phase 3 checkpoint, Part 1).
