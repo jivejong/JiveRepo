@@ -294,6 +294,33 @@ def test_consumer_columns_are_stamped_on_every_row(tmp_path):
 # -- shutdown --------------------------------------------------------------
 
 
+def test_debug_pre_commit_delay_runs_before_the_commit_not_after(tmp_path, monkeypatch):
+    """The exercise's fault-injection hook: it must hold the batch open
+    (written, not yet committed), not delay AFTER commit - that would prove
+    nothing about the ordering."""
+    order = []
+    monkeypatch.setattr(consumer_module.time, "sleep", lambda s: order.append(f"sleep({s})"))
+
+    fake = _FakeConsumer([_FakeMessage(_event(), offset=0)])
+
+    def logging_commit(asynchronous=True):
+        order.append("commit")
+
+    fake.commit = logging_commit
+    landing = LandingConsumer(fake, tmp_path, debug_pre_commit_delay_s=5.0)
+    landing.handle(fake.poll(1.0))
+    landing.flush_and_commit()
+
+    assert order == ["sleep(5.0)", "commit"]
+
+
+def test_debug_pre_commit_delay_defaults_to_off(tmp_path):
+    """Default must be a no-op - never introduced into a normal run."""
+    fake = _FakeConsumer([_FakeMessage(_event(), offset=0)])
+    landing = LandingConsumer(fake, tmp_path)
+    assert landing.debug_pre_commit_delay_s == 0.0
+
+
 def test_graceful_stop_drains_the_buffer_before_exit(tmp_path):
     """SIGTERM must land what's buffered. Only SIGKILL should cause a replay."""
     fake = _FakeConsumer([_FakeMessage(_event(), offset=0)])

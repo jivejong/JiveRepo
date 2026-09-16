@@ -25,6 +25,9 @@ CONSUMER_GROUP = os.environ.get("CONSUMER_GROUP", "attack-events-writer")
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "data"))
 FLUSH_MAX_MESSAGES = int(os.environ.get("CONSUMER_FLUSH_MAX_MESSAGES", "5000"))
 FLUSH_INTERVAL_S = float(os.environ.get("CONSUMER_FLUSH_INTERVAL_S", "30"))
+# Testing aid for the restart exercise only - see consumer.py. Unset (0) in
+# every normal run; the compose file never sets it.
+DEBUG_PRE_COMMIT_DELAY_S = float(os.environ.get("CONSUMER_DEBUG_PRE_COMMIT_DELAY_S", "0"))
 
 
 def build_consumer() -> Consumer:
@@ -54,6 +57,7 @@ def main() -> None:
         data_root=DATA_ROOT,
         flush_max_messages=FLUSH_MAX_MESSAGES,
         flush_interval_s=FLUSH_INTERVAL_S,
+        debug_pre_commit_delay_s=DEBUG_PRE_COMMIT_DELAY_S,
     )
     landing.install_signal_handlers()
 

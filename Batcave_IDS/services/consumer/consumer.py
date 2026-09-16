@@ -55,12 +55,20 @@ class LandingConsumer:
         flush_max_messages: int = 5_000,
         flush_interval_s: float = 30.0,
         clock: Any = time.monotonic,
+        debug_pre_commit_delay_s: float = 0.0,
     ) -> None:
         self.consumer = consumer
         self.data_root = data_root
         self.flush_max_messages = flush_max_messages
         self.flush_interval_s = flush_interval_s
         self.clock = clock
+        # Testing aid ONLY, default 0 (no-op in normal operation). The real
+        # write-then-commit window this class exists to get right is normally
+        # microseconds wide - too narrow to land `docker kill` in on purpose.
+        # Set CONSUMER_DEBUG_PRE_COMMIT_DELAY_S to widen it so the restart
+        # exercise (docs/exercises.md) can hit it deterministically instead of
+        # by timing luck.
+        self.debug_pre_commit_delay_s = debug_pre_commit_delay_s
 
         self.buffer: dict[PartitionKey, list[dict[str, Any]]] = defaultdict(list)
         self.quarantined: list[tuple[int, int, bytes | None, bytes, str]] = []
@@ -172,6 +180,16 @@ class LandingConsumer:
         for partition, offset, key_bytes, raw, error in self.quarantined:
             write_quarantine(self.data_root, partition, offset, key_bytes, raw, error)
             self.rows_quarantined += 1
+
+        if self.debug_pre_commit_delay_s:
+            # Never reached in normal operation (see __init__). Holds the batch
+            # open, written-but-uncommitted, so a kill here proves the ordering.
+            log.warning(
+                "DEBUG: holding %.1fs after flush, before commit - "
+                "written but uncommitted; a kill now must replay this batch",
+                self.debug_pre_commit_delay_s,
+            )
+            time.sleep(self.debug_pre_commit_delay_s)
 
         # Only now. Everything above is durable.
         self.consumer.commit(asynchronous=False)
