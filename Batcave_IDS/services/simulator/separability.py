@@ -535,6 +535,31 @@ def _subset_effect_size(rows: list[dict], a: str, b: str, features: list[str]) -
     return centroid / pooled
 
 
+def ablation(rows: list[dict], feature: str) -> None:
+    """Recompute every pair's effect size with `feature` removed, and report
+    the pairs that move most — i.e. the pairs `feature` is load-bearing for.
+    A feature that changes no pair meaningfully isn't earning its place; one
+    that's load-bearing for even a single pair is a keep, and Phase 6's prompt
+    should weight it accordingly for that pair."""
+    villains = sorted({r["villain"] for r in rows})
+    full = _NORMALIZED_FEATURES
+    reduced = [f for f in full if f != feature]
+    moves = []
+    for i, a in enumerate(villains):
+        for b in villains[i + 1 :]:
+            before = _subset_effect_size(rows, a, b, full)
+            after = _subset_effect_size(rows, a, b, reduced)
+            moves.append((before - after, before, after, a, b))
+    moves.sort(reverse=True)  # largest drop in separation first
+    print(f"\n=== ablation: effect size with '{feature}' REMOVED (pairs that lose most) ===")
+    print("  drop    with    without   pair")
+    for drop, before, after, a, b in moves[:6]:
+        an, bn = a.split("-", 1)[1], b.split("-", 1)[1]
+        print(f"  {drop:5.2f}  {before:6.2f}  {after:7.2f}   {an} / {bn}")
+    load_bearing = [m for m in moves if m[0] > 0.15]
+    print(f"  load-bearing (drop > 0.15) for {len(load_bearing)} of {len(moves)} pairs")
+
+
 def cluster_analysis(rows: list[dict]) -> None:
     """The mid-stat cluster: report each pair's effect size on SIGNATURE
     features alone vs STAT features alone. If they overlap on stat features
@@ -614,6 +639,8 @@ def main() -> None:
     diagnostics(rows)
     if subset is None:
         cluster_analysis(rows)
+        ablation(rows, "wasted_request_ratio")
+        ablation(rows, "error_ratio")
     # Riddler and Two-Face (durability 14) are outcome-noisy by design; verify
     # their separation rests on the signature features, which are present
     # regardless of how far the run gets (plan / user directive).
