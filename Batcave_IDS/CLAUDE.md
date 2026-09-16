@@ -8,8 +8,8 @@ Context for Claude Code working in this repository.
 
 ```
 TRACK:  A  (headless core pipeline)
-PHASE:  3  (villain behavior and pathologies) — IN PROGRESS, paused for branch review
-NEXT:   finish separability Part 1, then pathologies (Part 2)
+PHASE:  3  (villain behavior and pathologies) — COMPLETE locally (Parts 1 and 2), nothing pushed
+NEXT:   Phase 4 (consumer and landing) — fresh session, plan mode first
 IN SCOPE:    docs/01, 02, 03, 04, 05, 06, 07
 OUT OF SCOPE: docs/08  — no console, no bat bot, no finale, no dashboard
 ```
@@ -52,12 +52,26 @@ pairs (strong keep), `wasted_request_ratio` for 2/66 (Riddler pairs — marginal
 in Phase 6). docs/02 ambiguity pass done (7 features flagged for Phase 5). Optional refinement
 recorded, not built: Harley's bimodal burst shape (docs/03/04).
 
-**Then Part 2 (not started):** pathologies (`pathologies.yml` + injection + verification, docs/03's
-ten), `attack_runs` (carrying the timing compression factor per run), real `make attack`/
-`attack-all`. Fresh session per the plan.
+**Part 2 — DONE (verified against real consumed data, `make pathology-check`).** All ten docs/03
+pathologies injected into the observed request stream only (never ground truth) via
+`services/simulator/pathologies.yml` + `pathologies.py` (single decision-maker; simulator-direct vs
+honeypot-executed via the `X-Sim-Pathology` header). Each verified present with a count on a
+`runs=12`/`time_scale=0.02`/`seed=0` corpus (144 sessions, 2,592 request events): duplicate_delivery
+40, out_of_order 137, unkeyed 24, late_arrival 36, malformed_body 21, undeserializable 2,
+missing_source_ip 12, missing_path 16, schema_drift 1141, clock_skew_future 20, clock_skew_negative
+24, burst 78; attack_run 144. Clock skew and missing-fields kept as **two counts each** (they diverge
+downstream). The three specific checks pass: Two-Face distinct-`event_id` duplicates coexist with and
+are distinguishable from identical-`event_id` delivery duplicates; undeserializable emitted now
+(consumer quarantine is Phase 4); distinct runs → distinct `session_id`s (Phase 2 merge bug stays
+fixed). `attack_runs` published as a 5th `event_kind`, keyed by `run_id`, carrying `villain_slug` +
+`timing_compression_factor`. `run_id` now links attempt/request/attack_run events. Reconciliation
+(2,442 sent / 2,592 on topic) captured in docs/03; Phase 5's `mart_reconciliation` must reproduce it
+(cross-check line added to docs/06 Phase 5). PyYAML declared as a direct dep (pyproject/docs05/CLAUDE);
+dep audit found no other gaps. Invented mechanisms documented: `X-Sim-Pathology`/`X-Run-Id` headers
+(docs/01 consolidated table), `attack_run` kind (docs/02).
 
-Phases 0, 1, and 2 are all locally complete and verified against real output; none has been pushed,
-so **CI green is unconfirmed for all three** — nothing has gone to the public remote yet
+Phases 0, 1, 2, and 3 are all locally complete and verified against real output; none has been
+pushed, so **CI green is unconfirmed for all four** — nothing has gone to the public remote yet
 (deliberately, per instruction: local first). Do not treat any of them as fully closed until CI is
 observed green after that push.
 
