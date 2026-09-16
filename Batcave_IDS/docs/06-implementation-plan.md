@@ -141,6 +141,15 @@ with real counts. Every pathology visibly accounted for — deduplicated, quaran
 counted. Nothing silently dropped. Commit one sample partition so the project runs from a clean
 clone.
 
+`mart_reconciliation` must reproduce the pre-consumer counts the Phase 3 harness
+(`services/simulator/pathology_check.py`, `make pathology-check`) already prints on the same corpus
+— requests sent by the simulator, request events on the topic, duplicate-delivery copies, invalid
+JSON bodies, late arrivals, undeserializable messages, `attack_run` rows. The harness computes them
+in Python before the consumer exists; the dbt mart recomputes them after landing and dedupe, and the
+two must agree on the same seeded corpus (the seed-driven injection counts are exact; the
+timing-derived burst count is approximate). This is the same harness/dbt cross-check the separability
+harness sets up for Phase 5's feature models — build the Python number first, make dbt match it.
+
 ## Phase 6 — Scoring, triage, evaluation  (8–12h)
 
 - `mart_threat_scores` with component breakdown

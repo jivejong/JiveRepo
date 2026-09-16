@@ -116,6 +116,39 @@ cookie continuity survives evasion. Called out here rather than left implied (de
 
 ---
 
+## Data quality: ten deliberate pathologies
+
+Most portfolio pipelines only ever run on clean data. This one injects ten failure modes into the
+**observed** request stream — never into ground truth — at fixed rates (`services/simulator/pathologies.yml`),
+so the consumer and the dbt layer have something real to handle. `make pathology-check` runs a
+seeded corpus with every pathology enabled, consumes the topic back raw, and counts each one in real
+data. Counts below are from a `runs=12`, `time_scale=0.02`, `seed=0` corpus — 144 sessions, 2,592
+request events on the topic:
+
+| # | Pathology | Injection | Observed count | Handled in |
+|---|---|---|---|---|
+| 1 | Duplicate delivery | ~2% re-sent with identical `event_id` | 40 | dedupe (Phase 5) |
+| 2 | Out-of-order `client_ts` | shuffled within a 30s window | 137 | never order on `client_ts` |
+| 3 | Unkeyed messages | ~1% with a null Kafka key | 24 | land normally; span partitions |
+| 4 | Late arrivals | ~1% with `client_ts` 1–6h old | 36 | partition on `received_at` |
+| 5 | Malformed JSON bodies | ~3% truncated/unbalanced | 21 | `body_is_valid_json = false` |
+| 6 | Undeserializable | ~0.2% raw non-JSON bytes | 2 | quarantine (Phase 4 consumer) |
+| 7 | Missing required fields | ~0.5% null `source_ip` / null `path` | 12 / 16 | null-ip kept, null-path quarantined |
+| 8 | Schema drift | mid-run bump to `schema_version=v2` + `tls_fingerprint` | 1,141 | staging tolerates the new column |
+| 9 | Clock skew | future `received_at` / negative `response_time_ms` | 20 / 24 | quarantine / clamp to null |
+| 10 | Burst | occasional 10x rate spike | 78 | consumer lag recovers, no loss |
+
+Two counts are split because the halves diverge downstream: missing fields (null `source_ip` is kept
+and fed to a ratio, null `path` is quarantined) and clock skew (future `received_at` is quarantined,
+negative `response_time_ms` is clamped to null and counted). Schema drift is high because the bump
+persists for the rest of a run once it fires mid-session, so every later request in that run carries
+the new column. Phase 3 verifies these are all **present and distinguishable in real consumed data**;
+the consumer (Phase 4) and dbt (Phase 5) verify each is correctly handled. Two more coexisting cases
+the checkpoint separates: Two-Face's deliberate duplicate *requests* (distinct `event_id`) must
+survive the dedupe that removes duplicate *delivery* (identical `event_id`).
+
+---
+
 ## Architecture
 
 ```

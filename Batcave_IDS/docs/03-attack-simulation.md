@@ -193,3 +193,26 @@ sessions spanning >1 partition     :      4   (unkeyed messages, expected)
 ```
 
 Committing this with real numbers does more for credibility than any amount of architecture prose.
+
+The numbers above are the **target** shape — the post-landing, post-dedupe view `mart_reconciliation`
+produces in Phase 5. Its **pre-consumer** half already exists: `make pathology-check` (Phase 3)
+runs a seeded corpus with every pathology enabled, consumes the topic back raw, and prints the
+observed counts before any consumer or dbt model has touched them. On a `runs=12`,
+`time_scale=0.02`, `seed=0` corpus (144 sessions):
+
+```
+requests sent by simulator (attack_runs)   : 2,442
+request events on topic                    : 2,592
+of which duplicate-delivery copies         :    40
+events with invalid JSON body              :    21
+late arrivals detected                     :    36
+undeserializable (non-JSON) messages       :     2
+attack_run rows                            :   144
+```
+
+Request events on the topic exceed requests-sent because `attack_runs.requests_sent` counts only
+technique-driven sends, while the topic also carries one session warm-up request each (144) plus the
+duplicate-delivery copies, minus the undeserializable substitutions. Dedupe and quarantine reconcile
+the delta in Phase 4/5, and `mart_reconciliation` must reproduce these same numbers on the same
+seeded corpus — the seed-driven injection counts exactly, the timing-derived burst count
+approximately. The full per-pathology counts are reproduced in the README.
