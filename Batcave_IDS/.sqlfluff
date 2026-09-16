@@ -1,11 +1,36 @@
 [sqlfluff]
 dialect = duckdb
-templater = jinja
-# Plain jinja templater for now, not sqlfluff-templater-dbt: that needs a
-# compiled dbt project and there are no models yet (Phase 5). Revisit then
-# — expect to switch, since the jinja templater throws noisy false
-# positives on ref() and source() once real dbt models exist.
+# Switched from the plain jinja templater in Phase 5, as the Phase 0 note here
+# predicted. The reason for deferring (no compiled dbt project to template
+# against) no longer holds, and the jinja templater cannot resolve this
+# project's macros — raw_events(), is_valid_json() and the rest come out as
+# "Undefined jinja template variable" on every model that uses them.
+#
+# This templater lints the SQL dbt actually compiles: macros expanded, refs
+# resolved. Stubbing each macro in config instead would lint a *different*
+# query than dbt runs, leaving everything inside a macro expansion unchecked.
+#
+# It needs a compiled project, so `sqlfluff lint` runs after `dbt deps` and
+# `dbt compile` (see .github/workflows/batcave-ids.yml — the lint lives in the
+# dbt job for exactly this reason, not the parallel lint job).
+templater = dbt
 max_line_length = 100
+
+# Rules turned off deliberately, with the reason, so a later reader doesn't
+# have to rediscover that it was a decision.
+#
+# RF04 (keywords used as identifiers): fires on `name`, `sequence`, and `hour`.
+# All three are fixed by docs/02-data-model.md and the committed seeds —
+# `name` on dim_villains/dim_stages, `sequence` on counterstrike_events, and
+# `hour` is the Hive partition column the consumer writes. Renaming warehouse
+# columns to satisfy a linter is the wrong trade; they are quoted where needed.
+exclude_rules = RF04
+
+[sqlfluff:templater:dbt]
+project_dir = transform
+profiles_dir = transform
+profile = batcave_ids
+target = dev
 
 [sqlfluff:indentation]
 tab_space_size = 4

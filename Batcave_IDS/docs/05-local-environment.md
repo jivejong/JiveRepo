@@ -77,7 +77,22 @@ pyyaml               # reads services/simulator/pathologies.yml
 groq
 ```
 
-Dev: `ruff`, `pytest`, `sqlfluff` with the DuckDB dialect, `pre-commit`.
+Dev: `ruff`, `pytest`, `sqlfluff` with the DuckDB dialect, `sqlfluff-templater-dbt`, `pre-commit`.
+
+**`sqlfluff-templater-dbt`** was added in Phase 5, as the Phase 0 note in `.sqlfluff` anticipated.
+The plain jinja templater cannot resolve this project's macros (`raw_events()`, `is_valid_json()`,
+the pattern matchers) and reports every model that uses one as an undefined template variable. The
+dbt templater lints the SQL dbt actually compiles — macros expanded, refs resolved — instead of the
+raw templated text. **It must be upgraded in lockstep with two things, and a mismatch on either
+fails confusingly:** it is a sqlfluff *plugin* and tracks sqlfluff's own version exactly (both 4.3.x
+here), and it imports dbt's internals, so it moves with `dbt-core`.
+
+It also compiles the project and opens the warehouse, which means **`sqlfluff` must run from
+`transform/`** like `dbt` does — `profiles.yml`'s `../data/warehouse.duckdb` is resolved against the
+process working directory. Run from anywhere else it fails trying to open a path that doesn't exist.
+`make fmt`, `make lint-sql`, and the CI step all `cd transform` first; in CI the lint lives in the
+`dbt` job after `dbt deps`/`dbt compile` rather than the parallel `lint` job, so the compiled project
+it needs already exists.
 
 **`fastapi`/`uvicorn`** weren't in the original dependency list — the honeypot needs an HTTP server
 and none was specified. Added Phase 1: Pydantic is already required for event validation, and

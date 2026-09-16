@@ -191,7 +191,9 @@ credentials, no service that can expire. This project must still run unchanged i
 - **httpx** — HTTP *client* library, used by the simulator (Phase 2+) to drive the honeypot. Not
   to be confused with the server framework above.
 - **PyYAML** — reads `services/simulator/pathologies.yml` (Phase 3 Part 2).
-- Dev tools: `ruff`, `pytest`, `sqlfluff` (DuckDB dialect), `pre-commit`.
+- Dev tools: `ruff`, `pytest`, `sqlfluff` (DuckDB dialect) + `sqlfluff-templater-dbt`,
+  `pre-commit`. The templater is version-locked to both sqlfluff and `dbt-core`, and sqlfluff must
+  run from `transform/` — see docs/05.
 
 ## Repository layout
 

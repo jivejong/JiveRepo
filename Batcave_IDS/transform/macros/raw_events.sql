@@ -49,7 +49,13 @@
         select * from read_parquet(
             '{{ raw_glob(event_kind) }}',
             hive_partitioning = true,
-            union_by_name = true
+            union_by_name = true,
+            {#- Pinned, not inferred. DuckDB guesses the partition column type
+                from the values present, so `hour` comes back BIGINT for a
+                corpus whose hours happen to have no leading zero and VARCHAR
+                for one that does — the same model would change column type
+                between runs on different data. -#}
+            hive_types = {'dt': DATE, 'hour': VARCHAR}
         )
     {%- else -%}
         {{ empty_event_relation(event_kind) }}

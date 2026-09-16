@@ -24,7 +24,14 @@ dependencies = [
 dev = [
     "ruff>=0.6",
     "pytest>=8.3",
-    "sqlfluff>=3.1",
+    "sqlfluff>=4.3",
+    # Lints the SQL dbt actually compiles (macros expanded, refs resolved)
+    # rather than the raw templated text. Two pins that matter: it must match
+    # sqlfluff's own major/minor exactly (it is a plugin, versioned in
+    # lockstep), and it imports dbt's internals, so it must be upgraded
+    # together with dbt-core. A mismatch on either fails confusingly.
+    # See docs/05-local-environment.md.
+    "sqlfluff-templater-dbt>=4.3,<4.4",
     "pre-commit>=3.8",
 ]
 

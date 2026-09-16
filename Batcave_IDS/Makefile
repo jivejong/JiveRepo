@@ -1,5 +1,5 @@
 .PHONY: dev-up dev-down dev-reset attack attack-all separability pathology-check landing-check \
-        transform triage eval \
+        transform lint-sql triage eval \
         reconcile coverage dagster docs fmt test
 
 TOPIC := attack.events
@@ -52,9 +52,13 @@ pathology-check:
 landing-check:
 	uv run python -m services.consumer.landing_check
 
+# dbt runs from transform/ so the relative paths in profiles.yml
+# (../data/warehouse.duckdb) and dbt_project.yml (data_root: ../data) resolve.
+# Both are relative to the PROCESS working directory, not to the project file.
 transform:
-	@echo "make transform: arrives in Phase 5 (dbt transformation layer)." >&2
-	@exit 1
+	cd transform && uv run --project .. dbt deps --profiles-dir .
+	cd transform && uv run --project .. dbt run --profiles-dir .
+	cd transform && uv run --project .. dbt test --profiles-dir .
 
 triage:
 	@echo "make triage: arrives in Phase 6 (scoring, triage, evaluation)." >&2
@@ -80,10 +84,16 @@ docs:
 	@echo "make docs: arrives in Phase 5 (dbt docs generate/serve)." >&2
 	@exit 1
 
+# sqlfluff uses the dbt templater, which compiles the project and opens the
+# warehouse — so it must run from transform/ for the same relative-path reason
+# `transform` does. From anywhere else it fails trying to open ../data/.
 fmt:
 	uv run ruff format .
 	uv run ruff check --fix .
-	uv run sqlfluff fix transform/models --dialect duckdb || true
+	cd transform && uv run --project .. sqlfluff fix models --dialect duckdb || true
+
+lint-sql:
+	cd transform && uv run --project .. sqlfluff lint models --dialect duckdb
 
 test:
 	uv run pytest

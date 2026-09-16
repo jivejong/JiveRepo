@@ -19,7 +19,9 @@ jobs:
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      # sqlfluff lint arrives in Phase 5 — no dbt model .sql files exist yet.
+      # sqlfluff is NOT here. It uses the dbt templater, which needs a compiled
+      # project, so it runs in the dbt job after `dbt deps`/`dbt compile`
+      # rather than duplicating those steps in this parallel job.
 
   test:
     runs-on: ubuntu-latest
@@ -41,6 +43,17 @@ jobs:
       - name: dbt compile
         working-directory: Batcave_IDS/transform
         run: uv run --project .. dbt compile --profiles-dir .
-      # dbt test and the named assert_no_ground_truth_leakage step
-      # (docs/02, docs/05) arrive in Phase 5 with the models the leakage
-      # test walks the manifest for. Faking a skip here would be theatre.
+
+      # After compile: the dbt templater lints the SQL dbt actually produces,
+      # with macros expanded and refs resolved.
+      - name: sqlfluff lint
+        working-directory: Batcave_IDS/transform
+        run: uv run --project .. sqlfluff lint models --dialect duckdb
+
+      # Named deliberately so a reader sees the invariant in the CI log
+      # (docs/02). It walks target/manifest.json rather than checking column
+      # names, because a column check is defeated by a rename — and it runs
+      # against a compiled project, so it needs no warehouse data.
+      - name: assert_no_ground_truth_leakage
+        working-directory: Batcave_IDS
+        run: uv run pytest tests/test_no_ground_truth_leakage.py -v
