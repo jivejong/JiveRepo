@@ -29,11 +29,30 @@ step explained by a named cause:
 Tagged ground_truth: it reads attack_runs for `requests_sent`.
 */
 
-with landed as (
-    /* Counted straight off the Parquet, deliberately NOT from staging: a
-       reconciliation that derives its "before" number from the thing it is
-       checking cannot detect a fault in it. */
-    select count(*) as n from ({{ raw_events('request') }})
+/* Counted straight off the Parquet, deliberately NOT from staging: a
+   reconciliation that derives its "before" number from the thing it is checking
+   cannot detect a fault in it.
+
+   Counted by DISTINCT (kafka_partition, kafka_offset) rather than by physical
+   row, because a Kafka offset uniquely identifies a message the consumer
+   landed, and the same message can legitimately be on disk more than once: the
+   committed sample partition (docs/05) is a subset of the corpus, so on a
+   machine that has both, physical rows double-count the overlap. Offsets are
+   immune to that — 2,857 physical rows here, 2,592 distinct messages, which is
+   exactly what the Phase 3 harness counted on the topic. */
+with landed_messages as (
+    select distinct
+        kafka_partition,
+        kafka_offset,
+        event_id,
+        client_ts,
+        received_at,
+        response_time_ms
+    from ({{ raw_events('request') }})
+),
+
+landed as (
+    select count(*) as n from landed_messages
 ),
 
 /* Raw pathology counts, before dedupe and quarantine. Present so the
@@ -46,7 +65,7 @@ landed_pathologies as (
         sum(case when client_ts < received_at - interval 30 minute then 1 else 0 end)
             as late_arrivals_raw,
         sum(case when response_time_ms < 0 then 1 else 0 end) as negative_response_raw
-    from ({{ raw_events('request') }})
+    from landed_messages
 ),
 
 staged as (
@@ -91,7 +110,7 @@ metrics as (
     union all
     select
         2,
-        'request events landed (raw Parquet)',
+        'request events landed (distinct kafka offsets)',
         (select n from landed),
         'includes duplicate-delivery copies and one warm-up request per session'
     union all

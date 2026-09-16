@@ -243,11 +243,30 @@ Quarantined rows are never dropped. They flow to `fct_quarantined_events` with r
 | `traversal_pattern_count`, `injection_pattern_count` | evidence for exploit techniques |
 | `repeated_auth_failure_runs` | evidence for brute force |
 | `path_enumeration_runs` | evidence for scanning and discovery |
-| `chat_turns_completed`, `probe_engagement_ratio`, `intent_flags_triggered` | bot chat |
+| `sensitive_data_access_runs` | evidence for collection (Phase 5 — see below) |
+| `chat_turns_completed`, `probe_engagement_ratio`, `intent_flags_triggered` | bot chat — **structurally zero in Track A** |
 | `late_arrival_count` | pathology |
 
-The four evidence features exist so technique reconstruction has something to reason over. They are
-derived purely from request patterns, never from the attempt log.
+The **five** evidence features exist so technique reconstruction has something to reason over. They
+are derived purely from request patterns, never from the attempt log. The authoritative
+technique → evidence mapping lives in `docs/07-attack-chain.md` ("Detection signatures") and is
+implemented directly in `assert_high_observability_techniques_leave_evidence`.
+
+**`sensitive_data_access_runs` was added in Phase 5**, not for symmetry but because a gap was real:
+of the seven `high` observability techniques, `data_local_system` had no covering evidence feature.
+docs/07 had mapped it to `max_path_tier` and `distinct_paths`, neither of which is an evidence
+feature, so the technique was effectively uncovered by the test that exists to catch exactly that.
+Repeated reads of tier-3/4 endpoints is what a detector keys on for collection and exfiltration.
+
+**The three chat features are structurally zero in Track A** and will stay that way until the bat bot
+exists (Track B, docs/08) — nothing produces `chat_turn` events, so `stg_botchat_turns` is a typed
+empty relation. They are carried anyway, deliberately: `int_session_features_observed` is the triage
+model's entire input contract, and if these appeared in Phase 6 but not Phase 5 then every Track A
+accuracy number would be measured against a different feature vector than every Track B number, with
+nothing flagging it. **A Phase 6 result showing them uninformative is therefore expected, not a
+finding.** They are excluded from `mart_threat_scores`' components, and
+`assert_chat_features_excluded_from_threat_score` enforces that so Track B landing real values cannot
+silently shift historical scores.
 
 #### Feature-definition ambiguity pass (Phase 3)
 
@@ -270,18 +289,42 @@ that must be pinned, `[doc]` a wording fix, `[pair]` only meaningful alongside a
   the three would rank villains differently.
 - **`time_to_tier3_s`** `[def]` — undefined for a session that never reaches tier 3 (most stallers).
   Needs an explicit convention (null, and excluded from aggregates — not 0, which reads as "instant").
-- **`repeated_auth_failure_runs`, `path_enumeration_runs`** `[def]` — "runs" implies streak counting
-  (consecutive events), but the run boundary is unspecified: how many consecutive 401s / sequential
-  paths constitute one run, and is the feature the count of runs or their total length. Phase 5 must
-  fix the streak definition before these evidence features mean anything for brute-force / scanning.
-- **`traversal_pattern_count`, `injection_pattern_count`** `[def]` — "pattern" needs a concrete
-  matcher (which substrings/regexes over path, query, and body count). The simulator emits specific
-  payloads (`services/simulator/traffic.py`); the detector must match those, and the two must be
-  defined together so a technique that leaves evidence is actually detected
-  (`assert_high_observability_techniques_leave_evidence`).
-- **`requests_per_min`** `[def]` — explodes toward infinity as `duration_s` → 0 (a 3-request burst
-  spanning milliseconds). Needs a duration floor or a rate cap (the harness caps at 600/min); state
-  which, so the dbt model and the harness agree.
+- **`repeated_auth_failure_runs`, `path_enumeration_runs`, `sensitive_data_access_runs`** `[def]` —
+  **RESOLVED in Phase 5.** "Runs" means maximal streaks of consecutive requests ordered by
+  `received_at` within a session, and each feature is the **count of runs**, not their total length —
+  counting matching requests instead would just re-count volume, which `request_count` already
+  carries. Minimum lengths are dbt vars, and each was chosen from the observed distribution on the
+  seeded corpus (144 sessions, 2,517 clean requests) rather than picked:
+
+  | Feature | Predicate | Min length | Observed run-length distribution | Why that cut |
+  |---|---|---|---|---|
+  | `repeated_auth_failure_runs` | `status_returned = 401` | **3** | 1×88, 2×11, 3×1, 4×1, 5×6, 41×1, 42×7, 43×4 | Cleanly bimodal. 99 runs of length 1–2 are incidental single failures; everything ≥3 is deliberate, and the cluster at 41–43 is Killer Croc's brute-force hammering. |
+  | `path_enumeration_runs` | path not seen before in this session | **3** | 1×301, 2×43, 3×43, 4×34, 5×23, 6×5, 7×4, 9×1 | Length 1 is every session's first request and any isolated new path — 301 of them, pure noise. `active_scan` emits 4 distinct paths in sequence, so 3 is the shortest run that reads as enumeration rather than ordinary browsing. |
+  | `sensitive_data_access_runs` | `path_tier >= 3` | **2** | 1×100, 2×56, then a long tail to 56 | No bimodal split, so the cut comes from the technique's own detection signature: "**repeated** GETs against tier-3/4 endpoints". A single sensitive read is not repetition; 2 is the minimum that is. |
+
+  A threshold with no stated basis is the next ambiguity flag, which is why the distributions are
+  recorded here and not just the numbers. These three features are what Phase 6's technique
+  reconstruction rests on.
+- **`traversal_pattern_count`, `injection_pattern_count`** `[def]` — **RESOLVED in Phase 5**, in
+  `transform/macros/attack_patterns.sql`, pinned to what the simulator actually emits
+  (`_REQUEST_SPECS` in `services/simulator/traffic.py`): `?file=../../etc/passwd` for
+  `exploit_public_app`, `?cmd=;cat%20/etc/shadow` for `exploit_remote_svc`. Two details decide
+  whether these ever match: `query_string` is stored **raw**, so the injection payload keeps its
+  `%20`; and the traversal marker lives in the **query**, not the path.
+  `tests/test_dbt_attack_patterns.py` imports those payloads rather than copying them and asserts
+  each matcher fires, so a changed payload fails at the seam instead of surfacing later as an
+  unexplained zero.
+  **The two matchers are deliberately orthogonal.** `/etc/passwd` and `/etc/shadow` are *targets*,
+  not injection *syntax*; matching them as injection made `exploit_public_app`'s traversal payload
+  register as both, which would hand Phase 6 injection evidence for a session that only performed
+  traversal. Caught by the test, not by review.
+- **`requests_per_min`** `[def]` — **RESOLVED**: duration floor of 0.001s **and** a 600/min cap, both
+  in SQL. The floor alone is not enough, and the cap is not decoration: the harness applies it in
+  Python *after* its SQL (`separability._REQ_PER_MIN_CAP`), so lifting only the SQL diverges on
+  exactly the burst sessions the cap exists for. Note that at `time_scale = 0.02` the compressed idle
+  gaps push **132 of 144 sessions to the cap**, leaving the feature saturated and near-uninformative —
+  the same compressed-clock distortion docs/05 records for `inter_request_stddev_ms`. Faithful timing
+  is needed for it to carry signal.
 
 **`int_session_features_truth`** `[ground_truth]` — evaluation only.
 
@@ -296,30 +339,41 @@ that must be pinned, `[doc]` a wording fix, `[pair]` only meaningful alongside a
 
 ### marts
 
-Dimensions: `dim_villains`, `dim_techniques`, `dim_stages`.
+**Phase is noted on every entry.** This list previously gave none, which is what made the Phase 5/6
+boundary ambiguous — several of these depend on triage output that does not exist until Phase 6.
 
-Facts: `fct_attack_events`, `fct_attack_attempts`, `fct_stage_progression`, `fct_botchat_turns`,
-`fct_sessions`, `fct_attack_runs`, `fct_quarantined_events`, `fct_intervention_orders`.
+Dimensions (Phase 5, untagged shared dimensions): `dim_villains`, `dim_techniques`, `dim_stages`.
+
+Facts (Phase 5): `fct_attack_events` `[triage_input]`, `fct_attack_attempts` `[ground_truth]`,
+`fct_stage_progression` `[ground_truth]`, `fct_botchat_turns` `[triage_input]`, `fct_attack_runs`
+`[ground_truth]`, `fct_quarantined_events` (untagged — an operational data-quality fact, neither a
+model input nor an answer key). `fct_intervention_orders` is **Phase 6** (triage output).
+`fct_sessions` is folded into `int_session_features_observed` / `_truth` rather than built
+separately — a third session-grain model would be a third place for the boundary to leak.
 
 Analytic marts:
 
-- **`mart_threat_scores`** `[triage_input]` — composite score from observed features only
-- **`mart_killchain_funnel`** — sessions entering and clearing each stage, conversion by villain and
-  archetype
-- **`mart_technique_efficacy`** — per technique per villain: attempts, successes, observed rate,
-  mean computed probability, delta
-- **`mart_detection_correlation`** — joins attempts to the requests they generated via `attempt_id`,
-  reporting evidence volume per technique. This is where `observability` tiers get validated against
-  actual log output, and it mirrors real detection engineering.
-- **`mart_reconciliation`** — the counts table from `docs/03-attack-simulation.md`
+- **`mart_threat_scores`** `[triage_input]` — **Phase 6.** Composite score from observed features only
+- **`mart_killchain_funnel`** `[ground_truth]` — **Phase 5.** Sessions entering and clearing each
+  stage, conversion by villain and archetype
+- **`mart_technique_efficacy`** `[ground_truth]` — **Phase 5.** Per technique per villain: attempts,
+  successes, observed rate, mean computed probability, delta
+- **`mart_detection_correlation`** `[ground_truth]` — **Phase 5.** Joins attempts to the requests they
+  generated via `attempt_id`, reporting evidence volume per technique. This is where `observability`
+  tiers get validated against actual log output, and it mirrors real detection engineering.
+- **`mart_reconciliation`** `[ground_truth]` — **Phase 5.** The counts table from
+  `docs/03-attack-simulation.md`
 
-Evaluation marts:
+Evaluation marts — **all Phase 6**, since each consumes triage predictions:
 
 - **`fct_triage_evaluations`** — villain identification, three levels
 - **`fct_technique_evaluations`** — per session per technique: predicted, actual, true/false
   positive/negative, joined to `observability`
 - **`mart_detection_coverage`** — technique recall grouped by observability tier. The headline
-  result of the whole project.
+  result of the whole project. Recall is measured over **reachable** techniques (19 of 23) — see
+  `docs/04-llm-triage.md`.
+
+`assert_threat_score_bounds` is likewise Phase 6: it tests a model that does not exist yet.
 
 ### Threat score
 
