@@ -139,3 +139,68 @@ partition=1 offset=1188:  53 later rows on that partition -> consumer CONTINUED
 ```
 proving the loop kept consuming past a message it couldn't parse, not just that a quarantine file
 exists.
+
+---
+
+## Zero-credential orchestration: the whole graph, no Groq key (Phase 7)
+
+**What this proves.** docs/04's documented zero-credential path — triage runs the rule-based baseline
+alone when `GROQ_API_KEY` is absent — has to hold not just for `make triage` in isolation, but for the
+*entire* Dagster asset graph, including the Python step sitting between two halves of the dbt build.
+Proven here by actually removing `.env` and running the graph, not by reading the asset code and
+assuming the fallback fires.
+
+### Procedure and real output
+
+1. `make transform` first — the graph needs an existing warehouse to attach to.
+2. Move `.env` aside entirely (not just unset one variable for one call):
+   ```
+   mv .env .env.bak
+   ```
+3. Execute the full asset job by name (`batcave_pipeline`, `AssetSelection.all()` —
+   `dagster asset materialize --select '*'` was tried first and rejected: a literal `*` in that
+   position gets expanded by the Windows CRT's own argv globbing before Dagster ever sees it, even
+   inside single quotes, and returns "unexpected extra arguments" naming the repo's own top-level
+   files. Targeting the job by name sidesteps the glob character entirely):
+   ```
+   DAGSTER_HOME=$PWD/orchestration/dagster_home \
+     uv run dagster job execute -m orchestration.definitions -j batcave_pipeline
+   ```
+4. **Real output, in order:**
+   ```
+   dbt_upstream: Finished running 3 seeds, 27 table models, 43 data tests in 7.38s.
+   Completed successfully. Done. PASS=73 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=73
+   ...
+   triage__raw_triage_predictions - STEP_START
+   no GROQ_API_KEY - running baseline only (docs/04's zero-credential path)
+   [1/20] 3978ca6c baseline=558-riddler
+   [2/20] bec8b9e7 baseline=576-scarecrow
+   ... (20 sessions total, the production threshold selection - 7 of 12 villains, docs/02's
+       calibration note)
+   wrote orders for 20 sessions
+   triage__raw_triage_predictions - STEP_SUCCESS in 959ms
+   ...
+   dbt_evaluation: Finished running 4 table models in 0.57s. Completed successfully.
+   ...
+   RUN_SUCCESS - Finished execution of run for "batcave_pipeline".
+   ```
+5. Restore `.env`:
+   ```
+   mv .env.bak .env
+   ```
+
+**The line that matters is `no GROQ_API_KEY - running baseline only`** appearing mid-run, between a
+successful upstream dbt build and a successful downstream one — proof the fallback fires inside the
+orchestrated graph, not just when the triage CLI is called directly, and that the two dbt asset groups
+either side of the Python step compose into one working run.
+
+### A verification step that writes to shared state needs to be checked against what it disturbs
+
+This exercise's own run added 4 sessions to `raw_triage_predictions` outside Phase 6's already-reported
+36-session evaluation sample (the production threshold selector chose 20 sessions, of which 4 weren't
+part of the earlier stratified sample). Running it silently shifted `mart_detection_coverage`'s
+high-tier baseline recall from the reported 89.7% to 87.3% — caught by regenerating
+`docs/images/detection-coverage.svg` and noticing it disagreed with the already-committed docs/04
+figures, not by any error or failed test; both runs completed successfully. Fixed by deleting the 4
+extra sessions and rebuilding the four evaluation marts, confirmed to reproduce the original numbers
+exactly. Full account: `docs/09-engineering-log.md`.
