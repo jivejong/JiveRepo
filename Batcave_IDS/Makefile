@@ -1,5 +1,5 @@
 .PHONY: dev-up dev-down dev-reset attack attack-all separability pathology-check landing-check \
-        transform lint-sql feature-crosscheck sample-partition triage eval \
+        transform lint-sql feature-crosscheck sample-partition triage triage-eval-sample eval \
         reconcile coverage dagster docs fmt test
 
 TOPIC := attack.events
@@ -85,6 +85,14 @@ transform:
 # marts on top of them. Requires `make transform` first.
 triage:
 	uv run python -m services.triage triage --limit $(or $(LIMIT),60)
+	cd transform && uv run --project .. dbt run --profiles-dir . --select fct_intervention_orders+
+
+# Evaluation breadth, not the production trigger: up to N sessions from
+# EVERY villain regardless of threat_score, since the threshold alone only
+# ever reaches 7 of 12 (docs/02's calibration note). docs/06 Phase 6
+# checkpoint: 30+ sessions across all twelve villains.
+triage-eval-sample:
+	uv run python -m services.triage triage --stratified-per-villain $(or $(N),3)
 	cd transform && uv run --project .. dbt run --profiles-dir . --select fct_intervention_orders+
 
 eval:

@@ -43,7 +43,10 @@ DEFAULT_LIMIT = 60
 
 def _select_sessions(con: duckdb.DuckDBPyConnection, limit: int) -> list[tuple[str, str]]:
     """Sessions at or above the triage threshold (mart_threat_scores already
-    applies docs/02's triage_threshold var), highest score first."""
+    applies docs/02's triage_threshold var), highest score first. This is the
+    PRODUCTION trigger (docs/04, Phase 7's Dagster asset uses the same
+    predicate) - deliberately narrow, because that's the point of a
+    threshold."""
     return con.execute(
         """
         select session_id, run_id from mart_threat_scores
@@ -52,6 +55,37 @@ def _select_sessions(con: duckdb.DuckDBPyConnection, limit: int) -> list[tuple[s
         limit ?
         """,
         [limit],
+    ).fetchall()
+
+
+def _select_stratified_sessions(
+    con: duckdb.DuckDBPyConnection, per_villain: int
+) -> list[tuple[str, str]]:
+    """`per_villain` sessions from EACH of the twelve villains, regardless of
+    threat_score - for evaluation breadth, not the production trigger.
+
+    Needed because the two purposes conflict: only 7 of 12 villains ever
+    produce a session above the triage threshold on this corpus (docs/02's
+    calibration note materializing at scale - Catwoman's mean threat_score is
+    the lowest of all twelve and never crosses it). The production trigger is
+    correctly narrow; scoring attribution and technique reconstruction fairly
+    across the whole roster needs the other five villains too, or the
+    evaluation would silently inherit the same blind spot the threshold has.
+    """
+    return con.execute(
+        """
+        select session_id, run_id from (
+            select
+                t.session_id, t.run_id,
+                row_number() over (
+                    partition by r.villain_slug order by t.threat_score desc
+                ) as rn
+            from mart_threat_scores as t
+            inner join fct_attack_runs as r on t.run_id = r.run_id
+        )
+        where rn <= ?
+        """,
+        [per_villain],
     ).fetchall()
 
 
@@ -64,11 +98,17 @@ def _feature_dict(con: duckdb.DuckDBPyConnection, session_id: str) -> dict:
     return dict(zip(FEATURE_COLUMNS, row, strict=True))
 
 
-def run_triage(con: duckdb.DuckDBPyConnection, limit: int) -> None:
+def run_triage(
+    con: duckdb.DuckDBPyConnection, limit: int, stratified_per_villain: int | None = None
+) -> None:
     ensure_table(con)
-    sessions = _select_sessions(con, limit)
+    if stratified_per_villain:
+        sessions = _select_stratified_sessions(con, stratified_per_villain)
+        print(f"stratified selection: up to {stratified_per_villain} sessions per villain")
+    else:
+        sessions = _select_sessions(con, limit)
     if not sessions:
-        print("no sessions at or above the triage threshold - nothing to do")
+        print("no sessions selected - nothing to do")
         return
 
     profiles = build_reference_profiles(con)
@@ -249,6 +289,18 @@ def main() -> None:
     parser.add_argument("command", choices=["triage", "eval"])
     parser.add_argument("--warehouse", type=Path, default=DEFAULT_WAREHOUSE)
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
+    parser.add_argument(
+        "--stratified-per-villain",
+        type=int,
+        default=None,
+        help=(
+            "ignore the triage threshold; take up to N sessions from EACH "
+            "villain instead. For evaluation breadth (docs/06 Phase 6 "
+            "checkpoint: 30+ sessions across all twelve villains) - the "
+            "threshold alone only ever reaches 7 of 12 (docs/02's "
+            "calibration note). Not the production trigger."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.warehouse.exists():
@@ -259,7 +311,7 @@ def main() -> None:
     con.execute("SET TimeZone = 'UTC'")
     try:
         if args.command == "triage":
-            run_triage(con, args.limit)
+            run_triage(con, args.limit, args.stratified_per_villain)
         else:
             run_eval(con)
     finally:
