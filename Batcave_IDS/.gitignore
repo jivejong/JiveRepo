@@ -51,6 +51,16 @@ transform/dbt_packages/
 transform/logs/
 transform/.user.yml
 
+# ── Dagster ────────────────────────────────────────────────────────────
+# `make dagster` points DAGSTER_HOME at orchestration/dagster_home/, which is
+# where the instance writes real runtime state (run history sqlite DBs,
+# compute logs, telemetry ID, the schedule/sensor tick store) once `dagster
+# dev` actually runs. dagster.yaml itself (the committed config: concurrency
+# pools, run coordinator) is the only file in that directory meant to be
+# tracked.
+orchestration/dagster_home/*
+!orchestration/dagster_home/dagster.yaml
+
 # ── Secrets ────────────────────────────────────────────────────────────
 .env
 api.txt

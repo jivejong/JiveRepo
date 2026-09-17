@@ -1,0 +1,15 @@
+# DuckDB holds a single-writer lock (docs/05): Dagster and an open DuckDB CLI
+# session cannot write concurrently, and neither can two Dagster runs. This
+# file only takes effect when DAGSTER_HOME points here - `make dagster` sets
+# it explicitly, since dagster dev silently ignores this config otherwise.
+
+run_coordinator:
+  module: dagster._core.run_coordinator
+  class: QueuedRunCoordinator
+
+concurrency:
+  runs:
+    max_concurrent_runs: 1
+  pools:
+    granularity: op
+    default_limit: 1

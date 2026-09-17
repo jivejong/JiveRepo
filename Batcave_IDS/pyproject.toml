@@ -12,6 +12,14 @@ dependencies = [
     "dagster>=1.8",
     "dagster-dbt>=0.24",
     "dagster-duckdb>=0.24",
+    # Pinned exactly to the installed dagster version, not left floating like
+    # the three lines above: `dagster dev` refuses to start without this
+    # package ("dagster-webserver must be installed"), it tracks dagster's
+    # own version closely, and a drift between the two is a confusing
+    # startup failure rather than an install-time one. Runtime, not dev: it
+    # is `make dagster`, in the README Quickstart and the clean-clone
+    # checkpoint.
+    "dagster-webserver==1.13.22",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",

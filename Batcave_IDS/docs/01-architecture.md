@@ -92,12 +92,42 @@ Specification: `docs/04-llm-triage.md`.
 ### Orchestration (`orchestration/`) — Track A
 Dagster. Assets rather than tasks:
 
-- `raw_events` — source asset observing the Parquet directories
-- dbt models as assets via `dagster-dbt`, giving lineage for free
-- `scored_sessions` → `intervention_orders` → `triage_evaluations` + `technique_evaluations`
+- `raw_events` — observable source asset over the Parquet landing zone
+- dbt models as assets via `dagster-dbt`
+- `mart_threat_scores` → `triage/raw_triage_predictions` (Python: baseline, or baseline+LLM with a
+  key) → `fct_intervention_orders` → `fct_triage_evaluations` + `fct_technique_evaluations`
 
-Schedule every 15 minutes plus a directory sensor. `dagster dev` on `:3000`. Screenshot the asset
-lineage graph for the README — it is the most legible artifact the project produces.
+**Naming note.** This section originally named the last four assets `scored_sessions`,
+`intervention_orders`, `triage_evaluations`, and `technique_evaluations` — conceptual names written
+before the dbt layer existed. By Phase 7 those are dbt models
+(`mart_threat_scores`/`fct_intervention_orders`/`fct_triage_evaluations`/`fct_technique_evaluations`),
+and the model names are what Dagster and the Makefile's `--select` strings actually use. Aliasing the
+Dagster asset keys back to the original conceptual names would desync the UI from both the `.sql`
+filenames and the Makefile — worse legibility, the opposite of the point — so the models stand as
+named and this note explains the drift instead. The lineage screenshot bands the graph by
+`group_name` (`raw`/`staging`/`marts`/`triage`/`evaluation`) so it still reads at a glance.
+
+`raw_events` is not free lineage the way the dbt-model assets are: the Parquet landing zone is read
+through a macro (`transform/macros/raw_events.sql` inlines `read_parquet()`), not a dbt source, so
+`dagster-dbt`'s translator sees no dependency on it by default. `orchestration/definitions.py`
+injects the dependency explicitly for the six models that read the macro.
+
+A Python step sits in the middle of the dbt graph, not after it: `fct_intervention_orders` reads
+both a dbt model and a dbt *source* (`raw_triage_predictions`) written by `services/triage/`, since
+dbt cannot call Groq or run the baseline classifier itself. The asset graph is split into two
+`@dbt_assets` definitions at that boundary (matching the Makefile's own `fct_intervention_orders+`
+selector) rather than one, which would cycle through the source.
+
+Schedule every 15 minutes plus a directory sensor (cursor-diff on a digest of `data/raw/`'s files,
+not an mtime poll, so an unchanged directory never triggers a run). `dagster dev` on `:3000`.
+Screenshot the asset lineage graph for the README — it is the most legible artifact the project
+produces.
+
+**Zero-credential requirement, verified rather than assumed**: the whole graph — dbt upstream, the
+triage asset, dbt evaluation — materializes end to end with `GROQ_API_KEY` genuinely absent (not
+just unset for one call; `.env` itself removed for the test). The triage asset runs the rule-based
+baseline in that case and the run still succeeds, which is what makes the clean-clone checkpoint
+meaningful.
 
 ### Console, bat bot, finale, dashboard — Track B
 Presentation over models that already exist. Specification: `docs/08-interactive-experience.md`.

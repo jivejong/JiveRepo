@@ -8,10 +8,9 @@ Context for Claude Code working in this repository.
 
 ```
 TRACK:  A  (headless core pipeline)
-PHASE:  5  (dbt transformation layer) — COMPLETE locally, nothing pushed
-NEXT:   Phase 6 (scoring, triage, evaluation) — fresh session, plan mode first
-        Phase 6's FIRST item is fixing deterministic technique selection and
-        re-running the baseline (docs/06) — 4 of 23 techniques are unreachable.
+PHASE:  6  (scoring, triage, evaluation) — COMPLETE locally, nothing pushed
+NEXT:   Phase 7 (orchestration and presentation) — the shippable milestone;
+        repo goes public at the end of it. In progress.
 IN SCOPE:    docs/01, 02, 03, 04, 05, 06, 07
 OUT OF SCOPE: docs/08  — no console, no bat bot, no finale, no dashboard
 ```
@@ -123,16 +122,17 @@ staging → intermediate → marts per docs/02, tagged model by model.
   uses a 3-sigma binomial band, not a flat gap (overall calibration gap 0.0038, confirming Phase 3's
   0.006); models materialize as **tables** because a view over `read_parquet` re-resolves its glob
   against whoever opens the warehouse.
-- **Known limitation, documented:** 4 of 23 techniques get zero attempts (deterministic catalog-order
-  selection), so coverage denominators are **19 reachable**, not 23. docs/04, docs/07, README and
-  docs/06 Phase 6 all record it; fixing it is Phase 6's first item.
+- **Resolved in Phase 6**: the 4-of-23-unreachable limitation above was fixed by randomizing
+  technique selection (`services/simulator/session.py`); confirmed 23/23 reachable on the re-run
+  corpus. docs/04, docs/07, and README all updated to the real denominator.
 - New dep: `sqlfluff-templater-dbt` (version-locked to sqlfluff AND dbt-core; sqlfluff must run from
   `transform/`).
 
-Phases 0-5 are all locally complete and verified against real output; none has been
-pushed, so **CI green is unconfirmed for all six** — nothing has gone to the public remote yet
-(deliberately, per instruction: local first). Do not treat any of them as fully closed until CI is
-observed green after that push.
+Phases 0-6 are all locally complete and verified against real output; none has been
+pushed, so **CI green is unconfirmed for all seven** — nothing has gone to the public remote yet
+(deliberately, per instruction: local first). Phase 7 authorizes one exception: a `ci-verify` branch
+push to confirm the GitHub Actions workflow itself, deleted afterward, never `main`. Do not treat any
+phase as fully closed until CI is observed green.
 
 **Phase 1 summary** (full detail: docs/02 "Session derivation", docs/01 header table): gap-based
 session derivation (not a fixed time bucket — docs/06 corrected), three invented request headers

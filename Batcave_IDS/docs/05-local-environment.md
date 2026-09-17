@@ -69,6 +69,10 @@ dbt-duckdb
 dagster
 dagster-dbt
 dagster-duckdb
+dagster-webserver    # dagster dev refuses to start without it (docs/01, Phase 7) — pinned
+                     # exactly to the installed dagster version, not left floating like the
+                     # three lines above, since a drift between the two is a confusing
+                     # startup failure rather than an install-time one
 fastapi              # honeypot's HTTP server (added Phase 1, not in the original list — see below)
 uvicorn[standard]    # ASGI server for fastapi
 httpx                # HTTP client, used by the simulator to drive the honeypot — not the server
