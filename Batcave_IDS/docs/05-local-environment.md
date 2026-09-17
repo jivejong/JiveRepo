@@ -209,6 +209,40 @@ subset (the Joker/Harley burst-structure pair). **The compression factor is reco
 session's timing was real — and so faithful and compressed runs can coexist in one corpus,
 distinguishable by column.
 
+**This claim was false for the separability harness specifically, from Phase 3 until Phase 6.**
+`run_corpus()` in `services/simulator/separability.py` never passed `time_scale` through to
+`run_scripted_session()`'s `timing_compression_factor` parameter, so every separability-generated
+`attack_run` recorded the *default* (`1.0`, faithful) regardless of the real `--time-scale` used for
+pacing — the exact opposite of this section's claim, for this one caller only. `make attack`,
+`make attack-all`, and `make pathology-check` (via `services/simulator/__main__.py` and
+`pathology_check.py`) always threaded it correctly; only the harness itself did not. Fixed in Phase
+6. Found by noticing an implausible session count while re-deriving the Phase 3 baseline (below),
+not by a test — there was no test on this field's correctness, which is itself worth noting: a
+recorded-but-unverified ground-truth field is exactly the kind of thing that silently drifts.
+
+**This was the second time a pathology-era fix hadn't propagated to a parallel code path**
+(`consume_events()`'s tolerance was the first, above) — worth checking for a third rather than
+assuming it was the last. Phase 6 swept every topic consumer for the same class of gap: does it
+survive the full ten-pathology set, not just parse tolerance? `services/consumer/consumer.py` (the
+production path) and `services/simulator/pathology_check.py` were already sound — both were built
+pathology-aware from Phase 3/4 and guard every nullable field (`path`, `client_ts`,
+`response_time_ms`) before use. `services/consumer/landing_check.py`'s own topic read was already
+wrapped in the same tolerant-parse pattern. `separability.py` was the outlier specifically because
+it predates the pathology system (Phase 3 Part 1, before Part 2 added pathologies) and was never
+revisited when Part 2 landed — the same reason its `consume_events()` needed the fix above. No third
+instance found.
+
+**This did not corrupt any historical separability number.** Real per-request pacing
+(`time.sleep(s * time_scale)`) was always applied correctly regardless of what got recorded — the
+bug was in the metadata written to the `attack_run` event, not in the actual wall-clock behavior
+that produced the timestamps every reported number is computed from. Every effect size, distance,
+and per-feature `d` value in docs/03 and CLAUDE.md was computed from real per-request timestamps
+during generation using the harness's own in-memory villain mapping, which never reads
+`timing_compression_factor` back. No historical process relied on the persisted field to select or
+filter data — that only became possible with the `--consume-only` mode added alongside this fix. So
+the numbers stand; only the field itself, on any separability-generated `attack_run` row landed
+before this fix, cannot be trusted to say what clock produced it.
+
 Concurrency was tried to make faithful full-corpus runs affordable (the runs are independent) and
 **abandoned**: a `ThreadPoolExecutor` over the runs triggers a fatal C-extension GIL crash on this
 platform (`confluent_kafka`/librdkafka and/or httpx). The sequential path the simulator itself uses

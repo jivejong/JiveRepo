@@ -93,7 +93,9 @@ run to run *by design*, not from a mapping defect. Their separability therefore 
 **signature** features, which are present regardless of how far the run gets. The harness confirms
 this directly: over 10 runs each, Riddler vs Two-Face show large per-feature effect sizes on the
 signature features (`riddle_param_count` d≈3.3, `exact_duplicate_path_pairs` d≈2.2) but near-zero on
-the outcome features (`max_path_tier` d≈0.08, `duration_s` d≈0.37).
+the outcome features (`max_path_tier` d≈0.08, `duration_s` d≈0.37). None of these four are
+clock-sensitive the way `inter_request_stddev_ms` is (see the `timing_compression_factor` note
+below), so the harness's pre-Phase-6 mislabeling of that field doesn't bear on them regardless.
 
 This is a real, testable property: **a low-durability villain is recognizable by *how* it attacks,
 not by *how far* it gets** — a prediction Phase 6 can check against the LLM's per-session
@@ -124,7 +126,15 @@ falls below the HTTP round-trip noise floor and reports network jitter, not vill
 validated only at faithful timing, on a targeted `--villains` subset. Verification item 4 above
 (Joker/Harley burst structure) was checked that way: at faithful timing the pair separates
 (`inter_request_stddev_ms` ≈ 429 vs 145, effect size ≈ 1.2). The corpus records its compression
-factor on `attack_runs` so a reader can always tell which timing a session used.
+factor on `attack_runs` so a reader can always tell which timing a session used — **true of the
+corpus in general, but not of this specific measurement's own `attack_run` rows**: the separability
+harness had a bug (Phase 3 through Phase 6, fixed in Phase 6 — docs/05 "Timing model") that recorded
+every one of its runs as `1.0` regardless of the real `--time-scale` used. This number is still
+correct: it was computed from real per-request timestamps during generation, not from the mislabeled
+field. Re-verified in Phase 6 on the full twelve-villain corpus at `time_scale=0.2` rather than the
+original two-villain faithful subset: Joker/Harley now separates *more* strongly (full-feature effect
+1.34; on `inter_request_stddev_ms` alone, 977.5ms vs 315.3ms, effect 2.44) and is outside the
+closest-10 pairs.
 
 Honest caveat on that pair: the separation is currently driven mostly by base pace (Joker is slower,
 so his absolute gaps and their spread are larger), not by a distinct *bimodal* burst shape — Harley's

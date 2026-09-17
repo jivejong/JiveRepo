@@ -39,6 +39,16 @@ Assembled **exclusively** from `int_session_features_observed` and raw request a
 - Source IP, first three octets only
 - Bot chat turn metadata and intent flags
 
+**Feature weighting is not conditioned on the Phase 3 ablation result (Phase 6 correction, see
+docs/02's `wasted_request_ratio` entry).** That result — `error_ratio` load-bearing for 11 of 66
+villain pairs, `wasted_request_ratio` for 2 of 66 (Riddler-only) — came from a corpus with
+deterministic technique selection at `time_scale=0.02`. Re-run on the Phase 6 corpus (randomized
+selection, `time_scale=0.2`), both show **0 of 66 pairs load-bearing**. **Ablation is corpus-
+dependent, and this specific result is confounded**: selection randomization and the clock change
+landed in the same re-run, so the shift can't be attributed to one cause without a third corpus.
+Neither prior nor current result singles a feature out cleanly enough to justify downweighting it in
+the prompt or the baseline classifier — both features are weighted at face value, per docs/02.
+
 **Excluded — enforced by lineage test:**
 - Anything from `attack_attempts`, `attack_runs`, `int_stage_progression`, or
   `int_session_features_truth`

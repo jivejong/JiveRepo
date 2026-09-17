@@ -279,7 +279,22 @@ that must be pinned, `[doc]` a wording fix, `[pair]` only meaningful alongside a
 - **`wasted_request_ratio`** `[pair]` — resolved: fraction of requests not increasing
   `tier_reached_so_far`, counted only up to first reaching the session's peak tier. Measures
   efficiency *to its own peak*, so it only tells "efficient vs flailing" **paired with
-  `max_path_tier`** (how high). Ablation: load-bearing for the Riddler pairs; keep, weight lightly.
+  `max_path_tier`** (how high).
+
+  **Ablation superseded in Phase 6 — the "weight lightly, Riddler-only" guidance below no longer
+  applies, and Part B does not use it.** The Phase 3 ablation (`error_ratio` load-bearing for 11 of
+  66 pairs, `wasted_request_ratio` for 2 of 66, both Riddler pairs) was measured on a corpus with
+  deterministic technique selection at `time_scale=0.02`. Re-run on the Phase 6 corpus (randomized
+  selection, `time_scale=0.2`) both features show **0 of 66 pairs load-bearing**. Selection
+  randomization and the clock change landed together in that re-run, so the shift can't be
+  attributed to one alone without a third corpus — noted as confounded, not as either feature having
+  stopped mattering. Since neither ablation result singles either feature out anymore, both are
+  weighted per their ordinary role in the feature set: `error_ratio` keeps its docs/02 threat-score
+  weight (10, unchanged — it was never conditioned on the stale ablation), and
+  `wasted_request_ratio` (not a threat-score component; a prompt/baseline-classifier signal) is no
+  longer downweighted or scoped to Riddler-like cases.
+  <br>*Original Phase 3 measurement, superseded above: load-bearing for the Riddler pairs; keep,
+  weight lightly.*
 - **`exact_duplicate_path_pairs`** `[def]` — the name says "pairs" but the working definition is the
   count of *paths that appear more than once* in the session (paths with count > 1), not the number
   of duplicate pairs (`n choose 2`). Phase 5 must implement the paths-with-duplicates count and the
