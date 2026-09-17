@@ -415,7 +415,21 @@ fall below threshold, that is a real detector failure mode worth writing up, not
   falls within tolerance of mean computed probability. **Validates the simulation itself.**
 - `assert_stage_monotonic.sql` — no session enters stage N+1 without clearing stage N
 - `assert_twoface_duplicates_survive.sql` — Two-Face's deliberate duplicate requests have distinct
-  `event_id`s and must survive deduplication, or the villain disappears
+  `event_id`s and must survive deduplication, or the villain disappears. **Scoped in Phase 6** to
+  sessions with at least one traffic-producing attempt — there's nothing to duplicate otherwise. The
+  reason the scoping exists is more interesting than the test: before Phase 6, technique selection
+  was deterministic (`techniques.csv` row order), and stage 1's row 0 was always a traffic-producing
+  technique, so every Two-Face session touched the honeypot at least once *by accident of catalog
+  order*, not by any real guarantee. Randomizing selection (the fix for 4 unreachable techniques,
+  above) removed that accident: a session can now stall entirely on `net_info_gather` /
+  `open_source_search` / `phishing` — 3 of stage 1's 5 techniques don't touch the honeypot at all —
+  before ever making a request. Two-Face's low durability (14) means he gives up fast; this is what
+  fast can look like. Legitimate corpus behavior, not a regression, but it means "every Two-Face
+  session shows a duplicate" was never quite the right invariant — "every Two-Face session that
+  touched the honeypot shows a duplicate" is. `assert_twoface_test_is_not_vacuous.sql` guards the
+  scoping itself: at least half of Two-Face's sessions must qualify (a fraction, not a fixed count,
+  so it scales with corpus size), or a future bug that made every Two-Face session traffic-free would
+  leave the duplicate-survival test green while checking nothing.
 - `assert_high_observability_techniques_leave_evidence.sql` — every technique marked `high` produces
   a non-zero evidence feature in the sessions that used it. If it does not, either the tier is wrong
   or the detection signature is not being emitted.

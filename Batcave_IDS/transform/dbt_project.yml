@@ -37,6 +37,13 @@ vars:
   calibration_sigma: 3.0
   calibration_absolute_floor: 0.02
 
+  # assert_twoface_test_is_not_vacuous. Minimum fraction of Two-Face sessions
+  # that must have made a traffic-producing attempt, guarding the duplicate-
+  # survival test's scoping against degrading to an empty, trivially-passing
+  # set. 92% qualified on the Phase 6 seeded corpus; 0.5 is a regression
+  # floor, not a tight fit.
+  twoface_min_qualifying_fraction: 0.5
+
 # No directory-level +tags. staging/ holds both triage_input and
 # ground_truth models (docs/02-data-model.md) — a directory default would
 # encode exactly the leakage the project exists to prevent. Every model
