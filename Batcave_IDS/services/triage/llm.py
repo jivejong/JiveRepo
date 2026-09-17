@@ -24,7 +24,7 @@ from groq import Groq, GroqError
 
 log = logging.getLogger("triage.llm")
 
-MODEL = os.environ.get("TRIAGE_MODEL", "llama-3.3-70b-versatile")
+MODEL = os.environ.get("TRIAGE_MODEL", "qwen/qwen3.8-27b")
 TIMEOUT_S = float(os.environ.get("TRIAGE_TIMEOUT_S", "30"))
 TRANSPORT_RETRIES = 1
 TRANSPORT_BACKOFF_S = 2.0

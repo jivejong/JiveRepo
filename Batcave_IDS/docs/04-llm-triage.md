@@ -187,40 +187,18 @@ actual yes/no, outcome class, joined to `observability`.
 ### `mart_detection_coverage` — the headline result
 
 Technique recall grouped by observability tier. `low` is split further — see below —
-because it is not one detection posture:
+because it is not one detection posture.
 
-```
-tier              techniques  reachable  attempts  recalled  recall
-high                       7          6       412       —      —
-partial                    7          6       288       —      —
-low (no evidence)          8          6       —        —      —
-low (camouflaged)          1          1       —        —      —
-overall                   23         19       —        —      —
-```
+**Resolved in Phase 6 Part A**: deterministic technique selection (`services/simulator/session.py`
+picking `candidates[0]` / `untried[0]` in strict `techniques.csv` row order) left 4 of 23 techniques
+unreachable, understating the denominator. Fixed by shuffling candidates per stage entry with the
+session's own RNG before selection (deterministic per seed, uniform over many). Confirmed on the
+re-run corpus: **all 23 catalog techniques are now reachable** — see `mart_detection_coverage`'s
+real output below, where `reachable` equals `techniques` in every tier.
 
-**Recall is measured over the `reachable` column, not `techniques`.** Four of the twenty-three
-catalog techniques receive **zero attempts** in any corpus, so they never enter ground truth and
-their recall is undefined rather than zero — a technique the attacker never used cannot be missed.
-Measured on the seeded corpus (144 sessions, 2,102 attempts):
-
-| Stage | Row | Technique | Tier |
-|---|---|---|---|
-| 1 | 4 | `identity_gather` | low |
-| 1 | 5 | `open_source_search` | low |
-| 4 | 6 | `exfil_over_c2` | partial |
-| 4 | 7 | `deploy_batbot` | **high** |
-
-The cause is deterministic technique selection: `services/simulator/session.py` opens with
-`candidates[0]` and pivots to `untried[0]`, i.e. strict `techniques.csv` row order with no
-randomness, and runs end before reaching the tail of a stage's list. Stage-4 attempts decline
-monotonically with row order — 405, 210, 153, 82, 32, 0, 0 — which is what makes this a structural
-property rather than a sampling artifact.
-
-**Stating the denominator correctly matters more than the numerator.** A high-tier recall quoted
-over 7 techniques when only 6 can ever appear understates the result and, worse, describes a
-measurement that was never made. This is the same correction as the earlier low-tier `10 → 9` fix,
-for the same reason. docs/06 schedules the selection fix as Phase 6's first item; until then, every
-coverage figure is over 19 reachable techniques.
+**Recall is still measured over the `reachable` column, not `techniques`, as a matter of principle**
+even though the two now coincide on this corpus — a technique with zero real attempts still can't be
+scored, and a future corpus (fewer runs, a different seed) could reopen the gap.
 
 The expected shape: strong on `high`, mixed on `partial`, near-zero on `low`. Write that up as a
 **detection coverage gap analysis**, because that is what it is. The conclusion a security team
@@ -270,10 +248,175 @@ definition pattern-matchable.
 
 ## Configuration
 
-- Model: Groq, Llama. Pin the exact model string in config, not code.
+- Model: Groq, `qwen/qwen3.8-27b`. Pinned via the `TRIAGE_MODEL` env var (default in
+  `services/triage/llm.py`), not hardcoded elsewhere. Originally spec'd as Llama; by Phase 6,
+  Groq had removed every plain Llama chat model from serving (confirmed via the account's live
+  `/models` list - `llama-3.3-70b-versatile` 404s, and no `llama-*` chat model remains in the
+  catalog at all).
+
+  Two models were tried and rejected before this one, both against the real corpus, not in the
+  abstract: `openai/gpt-oss-20b` (a reasoning model) returned `400 json_validate_failed` from
+  Groq's own server-side JSON-mode validator on nearly every call - not a parsing bug on our
+  side, Groq rejected the raw output before we ever saw it - and its reasoning-token overhead
+  (~3,500-4,000 tokens/call) exhausted the account's entire 200,000-token/day budget partway
+  through a single 36-session run. `qwen/qwen3.8-27b` is not a reasoning model, returns clean
+  JSON under `response_format: json_object`, and a single verified test call correctly attributed
+  a real Riddler session with grounded evidence (cited the actual `riddle=` query parameters and
+  request sequence) at ~4,170 tokens. Documenting the full swap chain here rather than silently
+  repointing the default.
 - `GROQ_API_KEY` from environment, never committed
 - `temperature: 0` for reproducibility
 - Timeout 30s, one retry with backoff
 - **Without `GROQ_API_KEY`, triage runs the baseline instead**, so the entire pipeline including
   both evaluations is demonstrable with zero credentials. This matters for the durability goal: a
   reader can clone and run everything with no accounts at all.
+
+---
+
+## Results (Phase 6 checkpoint, real run)
+
+36 sessions, 3 per villain across all twelve, stratified rather than threshold-selected (the
+threshold alone only ever reaches 7 of 12 villains — docs/02's Catwoman calibration finding). Both
+sources scored against the same sessions through the same evaluation marts.
+
+**Read this against the Configuration section above: the LLM half ran on Groq's free tier against
+`qwen/qwen3.8-27b`, a substitute for the originally spec'd Llama model, which no longer exists on
+Groq at all.** That bounds what this comparison establishes — it is not a clean test of "the best
+available LLM against a regex," it's a test of one free-tier-accessible model against one, under
+real rate limits. Treat the LLM numbers as a lower bound on what a better-resourced run would show,
+not as the ceiling.
+
+### Attribution
+
+| source | n | exact | top_3 | archetype | parse_fail |
+|---|---|---|---|---|---|
+| baseline | 36 | 30.6% | 77.8% | 41.7% | 0.0% |
+| llm | 36 | 16.7% | 36.1% | 36.1% | 27.8% |
+| random | — | 8.3% | 25.0% | ~20% | — |
+
+**The archetype column is not apples-to-apples, and reading it as one is the wrong conclusion.**
+Baseline's `suspected_archetype` is a mechanical lookup on its own villain guess
+(`villain_archetype_map()`, `services/triage/__main__.py:152`) — it is not an independent
+prediction, it cannot be, by construction. Of baseline's 15 archetype matches, **11 are tautological**
+(the same 11 sessions where it also got the exact villain right — archetype correctness follows for
+free) and only **4 are genuine** wrong-villain-but-right-family hits. So baseline's real,
+non-tautological archetype signal is closer to 11.1% (4/36) riding on top of its 30.6% exact rate,
+not a standalone 41.7%. The LLM's `suspected_archetype` is architecturally independent — its own
+field in the output contract, asked for separately from `suspected_villain` — and its 36.1% against
+its own 16.7% exact rate is genuine family-level recognition: on roughly a fifth of all 36 sessions,
+it named the wrong villain but the right archetype. That's a real capability the baseline has no
+mechanism to produce at all, tautological or otherwise.
+
+### Technique reconstruction
+
+| source | precision | recall | f1 | hallucination_rate |
+|---|---|---|---|---|
+| baseline | 65.4% | 39.7% | 0.49 | 0.00 |
+| llm | 57.0% | 20.5% | 0.30 | 0.00 |
+
+Zero hallucinated technique IDs from the LLM across all 36 sessions. One hallucinated villain slug
+(below, in the Killer Croc detail) — the model named the right villain with a malformed slug, not a
+fabricated one.
+
+### Coverage by tier
+
+| tier | techniques | reachable | attempts | baseline recall | llm recall |
+|---|---|---|---|---|---|
+| high | 7 | 7 | 2,690 | 89.7% | 44.3% |
+| partial | 7 | 7 | 1,108 | 0.0% | 0.0% |
+| low_camouflaged | 1 | 1 | 241 | 0.0% | 11.1% |
+| low_no_evidence | 8 | 8 | 1,761 | 0.0% | 0.0% |
+
+**Baseline wins high-tier decisively** — pattern matching against signatures that are
+pattern-matchable by definition is a hard bar, and the baseline clears it. **Partial tier: zero
+movement, 0% for both sources.** The hope that LLM inference would beat keyword matching on
+ambiguous evidence did not hold on this corpus — reporting that as measured, not as a near-miss.
+
+### Killer Croc and Ra's al Ghul: the strongest result in this project
+
+Both were flagged in earlier phases as structurally hard, for different reasons — Killer Croc
+because gating gives him only loud, high-observability techniques and his real discriminator
+(`attempts_per_stage_reached`) is ground-truth-only, unobservable to either evaluator; Ra's al Ghul
+because his discriminator is `wasted_request_ratio` + `max_path_tier`, which the Phase 3 ablation
+showed load-bearing for only 2 of 66 villain pairs (both Riddler) and not load-bearing for him at
+all. The baseline scores **0/3 on both** — every real Killer Croc session gets called Poison Ivy,
+every real Ra's al Ghul session gets called Joker. That was the testable prediction going in: if the
+LLM also fails both, the information isn't in the observed data at all, a stronger finding than a
+baseline limitation; if it gets either, that's a concrete argument for the LLM.
+
+**Killer Croc: the LLM found real signal where the baseline found none.** Of his 3 true sessions, 1
+hit a rate-limit failure with zero real generation (excluded below — infrastructure, not a model
+answer). Of the **2 sessions where the model actually responded, both correctly identified Killer
+Croc**:
+
+- Exact match (`386-killer-croc`, confidence 0.85): *"The session exhibits a high volume of requests
+  (149 rpm) concentrated almost exclusively on a single endpoint (/login) with a 93% error rate,
+  matching Killer Croc's signature of high-volume, low-precision brute force against a narrow slice
+  of the kill chain. The lack of evasion, single user agent, and persistence through 41 requests
+  after the first error align with the brute archetype's durability and lack of stealth."*
+- Same villain, malformed slug (`killer-croc` — missing the `386-` prefix, so it fails exact-match
+  scoring and is flagged `hallucinated_villain`; this is the run's one hallucination): near-identical
+  reasoning, same 0.85 confidence, same correct villain. A slug-formatting miss, not a content miss.
+
+Two out of two genuine attempts got the right villain, against a baseline that got zero out of three.
+That's a concrete case for the LLM adding value exactly where the ablation said the baseline's tools
+couldn't reach.
+
+**Ra's al Ghul: the LLM correctly found no signal, and said so.** Of his 3 true sessions, 1 was a
+genuine parse failure (49.5 seconds of real generation, still unparseable after the repair retry —
+not a rate-limit artifact). The other 2 both came back `suspected_villain: "unknown"`, with confidence
+dropping to **0.45** — well below the model's typical 0.85–0.92 elsewhere in this run. The reasoning
+for one names exactly what's missing:
+
+> *"The session exhibits high-speed, high-entropy path traversal with evasion via 5 distinct user
+> agents and a single source IP, reaching tier-4 data endpoints quickly. The presence of exploit
+> patterns and invalid bodies suggests a chaotic or automated attack rather than a methodical villain
+> like Ra's Al Ghul, but the lack of specific signatures (riddles, IP rotation, burst patterns) makes
+> attribution uncertain."*
+
+This is not the same outcome as failing to guess. The model considered Ra's al Ghul by name, checked
+for his specific signatures, found them absent, and dropped its confidence accordingly rather than
+picking a villain anyway. That calibrated-uncertainty behavior is exactly what distinguishes
+inference from confabulation, and the baseline has no equivalent of it — nearest-centroid always
+returns a nearest neighbor, confident or not, because "I don't know" isn't in its output space. Tied
+to the earlier prediction: Ra's al Ghul's discriminator was already shown non-load-bearing by the
+ablation before this run. **The model finding no signal where we had already measured there was none
+is the confirmation of that finding, not a new one** — two independent methods (a statistical
+ablation over 66 pairs, and an LLM reasoning over individual sessions) landing on the same answer.
+
+### Parse failures, unedited
+
+27.8% (10/36) raw parse-failure rate for the LLM. Not recomputed, not adjusted — reported as
+measured. Of those 10:
+
+- **4 are pure rate-limit infrastructure failures** — Groq's free-tier output-tokens-per-minute cap
+  (1,000 OTPM on this model) was hit repeatedly through the run; these 4 show the exact ~2,100ms
+  signature of one transport retry then giving up, meaning zero real model generation was ever
+  attempted for these sessions.
+- **6 are genuine failures** — the model did respond, after waiting through real rate-limit backoff
+  (19–52 seconds of actual generation time), and still produced unparseable JSON even after the one
+  repair retry built into `services/triage/llm.py`.
+
+The environment measurably contributed to the raw number. The headline 27.8% stands as measured —
+this is not "27.8%, but really 16.7% if the infrastructure had cooperated." What can honestly be said
+is narrower: roughly a third of the failures are attributable to the free-tier environment rather
+than the model, which bounds how much weight the raw parse-failure rate alone should carry when
+judging the model itself.
+
+### Evidence spot-check
+
+Every reasoning and evidence field checked by hand cites specific, verifiable numbers from the actual
+session — request rates, error ratios, exact `riddle=` query-parameter counts, specific status-code
+sequences — not generic template language. The Riddler example above (806b3735) cites "20 'riddle='
+query parameters... short duration and low volume fit his low Durability... 5 injection patterns."
+Every one of those numbers is checkable against the session's own features and matches. Verdict: real
+inference grounded in the session's own evidence, not plausible-sounding guessing.
+
+### Overall framing
+
+**The baseline wins on pattern-matchable evidence. The LLM wins where evidence is sparse or absent.
+The partial tier is 0% for both.** That is a more useful finding than either source winning outright,
+and it is an honest answer to "does the LLM add value here": yes, specifically on the cases
+pattern-matching structurally cannot reach (Killer Croc, and the calibrated non-answer on Ra's al
+Ghul) — and not otherwise. A reader who only wants the accuracy numbers will conclude the LLM lost;
+the coverage-by-tier and Croc/Ra's al Ghul detail is where the actual result is.
