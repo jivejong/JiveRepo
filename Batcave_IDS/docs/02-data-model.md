@@ -445,6 +445,17 @@ fall below threshold, that is a real detector failure mode worth writing up, not
   scoping itself: at least half of Two-Face's sessions must qualify (a fraction, not a fixed count,
   so it scales with corpus size), or a future bug that made every Two-Face session traffic-free would
   leave the duplicate-survival test green while checking nothing.
+
+  **This is the first of two confirmed instances of the same confusion**, both on
+  `exact_duplicate_path_pairs`. The second: Phase 6's rule-based baseline used the feature as a hard
+  discriminator for Two-Face (`>= 2`) and it fired on 143 of 381 real sessions - Killer Croc's
+  retry-grinding produces a nearly identical mean (2.12 vs Two-Face's 2.21), because the feature
+  can't tell "duplicated on purpose" from "duplicated by grinding." The discriminator was dropped
+  in favor of nearest-centroid classification (`services/triage/baseline.py`) after three narrower
+  single-feature fixes all failed to separate them. Two independent code paths, two different
+  villain-facing symptoms (a flaky dbt test, an over-firing classifier rule), same root cause both
+  times: this is a property of the Two-Face/Killer-Croc pair on this feature, not two unrelated bugs
+  - see `docs/03-attack-simulation.md`'s Layer 2 section for the full comparison.
 - `assert_high_observability_techniques_leave_evidence.sql` — every technique marked `high` produces
   a non-zero evidence feature in the sessions that used it. If it does not, either the tier is wrong
   or the detection signature is not being emitted.

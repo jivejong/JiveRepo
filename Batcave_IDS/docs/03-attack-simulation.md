@@ -67,6 +67,23 @@ distinct events with distinct `event_id`s and must not be removed by deduplicati
 collapses identical `event_id`s. Worth an explicit test: a Two-Face session should retain its
 duplicate path pairs after staging.
 
+**Two-Face and Killer Croc are confusable on `exact_duplicate_path_pairs`, and it has now taken
+explicit scoping twice to keep them apart.** Two-Face's coin-flip-between-two design and Killer
+Croc's grinding retries (`retry_ratio` leader, above) both produce repeated visits to the same small
+set of paths, and the feature doesn't distinguish *duplicated on purpose* from *duplicated by
+grinding* - on the real corpus their means land within a few hundredths of each other (2.21 vs 2.12).
+First instance: `assert_twoface_duplicates_survive.sql` needed explicit scoping to Two-Face sessions
+with traffic-producing attempts, not because Croc leaked into it, but because the same underlying
+ambiguity - which of these two villains a duplicate-heavy session belongs to - is what made the test
+fragile once technique selection stopped guaranteeing traffic. Second instance, Phase 6: the
+rule-based baseline's Two-Face hard discriminator (`exact_duplicate_path_pairs >= 2`) fired on 143 of
+381 real sessions when only ~28 are his, because it can't separate him from Croc's retry-grinding
+either - three different single-feature thresholds were tried and none isolated him (docs/02,
+`services/triage/baseline.py`); the discriminator was dropped and he's now classified by
+nearest-centroid only. Both times the fix was the same shape: stop treating the shared feature as
+sufficient on its own. That's a property of this specific villain pair, not two unrelated bugs - a
+future feature meant to separate them needs to encode *why* the paths repeat, not just that they do.
+
 ### What `pivot_ratio` and `retry_ratio` actually measure (Phase 3 finding)
 
 `pivot_ratio` and `retry_ratio` are only defined for villains that *fail often enough to face the
