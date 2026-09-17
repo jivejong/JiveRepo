@@ -98,21 +98,26 @@ triage-eval-sample:
 eval:
 	uv run python -m services.triage eval
 
+# mart_reconciliation, readable in ten seconds: does every event the simulator
+# sent still exist somewhere, and is every pathology accounted for. Requires
+# `make transform` first.
 reconcile:
-	@echo "make reconcile: arrives in Phase 5 (mart_reconciliation)." >&2
-	@exit 1
+	uv run python -c "import duckdb; con = duckdb.connect('data/warehouse.duckdb', read_only=True); rows = con.execute('select ord, metric, value, note from mart_reconciliation order by ord').fetchall(); [print(f'{ord:>3}  {metric:<52} {value:>8}  {note}') for ord, metric, value, note in rows]"
 
+# mart_detection_coverage on its own - the tier/reachable/attempts columns are
+# meaningful before any session has been triaged. `make eval` prints the same
+# table plus recall by source, once orders exist.
 coverage:
-	@echo "make coverage: arrives in Phase 6 (mart_detection_coverage)." >&2
-	@exit 1
+	uv run python -m services.triage coverage
 
+# DAGSTER_HOME must be set or dagster.yaml (concurrency limits, run
+# coordinator) is silently ignored. UI on :3000; screenshot the asset graph.
 dagster:
-	@echo "make dagster: arrives in Phase 7 (orchestration)." >&2
-	@exit 1
+	DAGSTER_HOME=$(CURDIR)/orchestration/dagster_home uv run dagster dev -m orchestration.definitions -p 3000
 
 docs:
-	@echo "make docs: arrives in Phase 5 (dbt docs generate/serve)." >&2
-	@exit 1
+	cd transform && uv run --project .. dbt docs generate --profiles-dir .
+	cd transform && uv run --project .. dbt docs serve --profiles-dir .
 
 # sqlfluff uses the dbt templater, which compiles the project and opens the
 # warehouse — so it must run from transform/ for the same relative-path reason
@@ -127,4 +132,4 @@ lint-sql:
 
 test:
 	uv run pytest
-	@echo "dbt test: arrives in Phase 5 (no dbt models yet)." >&2
+	cd transform && uv run --project .. dbt test --profiles-dir .

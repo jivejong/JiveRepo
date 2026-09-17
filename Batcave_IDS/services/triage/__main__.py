@@ -283,10 +283,17 @@ def run_eval(con: duckdb.DuckDBPyConnection) -> None:
     _print_detection_coverage(con)
 
 
+def run_coverage(con: duckdb.DuckDBPyConnection) -> None:
+    """`make coverage` - mart_detection_coverage on its own, since the tier/
+    reachable/attempts columns are meaningful before any session has been
+    triaged (recall by source is simply absent until orders exist)."""
+    _print_detection_coverage(con)
+
+
 def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["triage", "eval"])
+    parser.add_argument("command", choices=["triage", "eval", "coverage"])
     parser.add_argument("--warehouse", type=Path, default=DEFAULT_WAREHOUSE)
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument(
@@ -312,8 +319,10 @@ def main() -> None:
     try:
         if args.command == "triage":
             run_triage(con, args.limit, args.stratified_per_villain)
-        else:
+        elif args.command == "eval":
             run_eval(con)
+        else:
+            run_coverage(con)
     finally:
         con.close()
 
