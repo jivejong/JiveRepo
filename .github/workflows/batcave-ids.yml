@@ -50,6 +50,23 @@ jobs:
         working-directory: Batcave_IDS/transform
         run: uv run --project .. sqlfluff lint models --dialect duckdb
 
+      # raw_triage_predictions is a dbt SOURCE, written by services/triage/,
+      # not by dbt - fct_intervention_orders+ needs the table to exist (even
+      # empty) before `dbt build` runs, same as `make transform` locally.
+      - name: ensure raw_triage_predictions exists
+        working-directory: Batcave_IDS
+        run: >
+          uv run python -c "import duckdb; from services.triage.store import
+          ensure_table; ensure_table(duckdb.connect('data/warehouse.duckdb'))"
+
+      # Builds and tests against the committed sample partition only - no
+      # Docker, no live Kafka. `data/raw/**/sample-*` is the only corpus data
+      # tracked in git; everything else under data/raw is gitignored, so a
+      # fresh checkout has exactly what this step needs and nothing more.
+      - name: dbt build (sample partition)
+        working-directory: Batcave_IDS/transform
+        run: uv run --project .. dbt build --profiles-dir .
+
       # Named deliberately so a reader sees the invariant in the CI log
       # (docs/02). It walks target/manifest.json rather than checking column
       # names, because a column check is defeated by a rename — and it runs
