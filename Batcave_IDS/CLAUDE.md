@@ -8,9 +8,27 @@ Context for Claude Code working in this repository.
 
 ```
 TRACK:  A  (headless core pipeline)
-PHASE:  6  (scoring, triage, evaluation) — COMPLETE locally, nothing pushed
-NEXT:   Phase 7 (orchestration and presentation) — the shippable milestone;
-        repo goes public at the end of it. In progress.
+PHASE:  7  (orchestration and presentation) — IN PROGRESS
+        Done: Dagster orchestration layer (orchestration/definitions.py),
+        verified zero-credential end to end via `dagster job execute`; the
+        four overdue Makefile stubs (reconcile/coverage/docs/dbt-test); the
+        README's decision log, honest limitations, and results chart
+        (docs/images/generate_coverage_chart.py, hand-written SVG);
+        docs/09-engineering-log.md; a second real exercise in
+        docs/exercises.md; the CI workflow's missing dbt-build step, added
+        and verified in a clean git worktree.
+        In flight: verifying .github/workflows/batcave-ids.yml is actually
+        green on GitHub Actions via a `ci-verify` branch (never main, per
+        instruction) — two real issues found and fixed so far
+        (astral-sh/setup-uv@v10 doesn't exist as a moving tag, pinned to
+        v10.1.0; the workflow's own `paths: ["Batcave_IDS/**"]` filter means
+        an edit to the workflow file itself never triggers a push-based run,
+        so workflow_dispatch was added). ci-verify branch to be deleted once
+        confirmed green.
+        Still open: the two GUI screenshots (Dagster lineage, Redpanda
+        consumer lag) need a human to capture — instructions are in the
+        README's Architecture section. `make dagster` has been left running
+        on :3000 for this.
 IN SCOPE:    docs/01, 02, 03, 04, 05, 06, 07
 OUT OF SCOPE: docs/08  — no console, no bat bot, no finale, no dashboard
 ```

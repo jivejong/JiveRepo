@@ -5,6 +5,10 @@ on:
     paths: ["Batcave_IDS/**"]
   pull_request:
     paths: ["Batcave_IDS/**"]
+  # An edit to this workflow file itself doesn't match the path filter above
+  # (the file lives outside Batcave_IDS/), so it would otherwise be
+  # impossible to manually re-run CI after changing only the workflow.
+  workflow_dispatch:
 
 defaults:
   run:
