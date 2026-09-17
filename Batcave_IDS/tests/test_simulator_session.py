@@ -40,6 +40,63 @@ def _fake_http_client(session_id: str = "fake-session-1") -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler), base_url="http://testhoneypot")
 
 
+def test_technique_selection_reaches_the_whole_gated_catalog_over_many_seeds():
+    """Phase 6 fix: candidates[0] / untried[0] picked strict techniques.csv row
+    order, which is catalog-entry order, not a priority - confirmed by stage
+    4's own rows not being monotonic in min_intelligence. That meant 4 of 23
+    catalog techniques (the tail of stage 1's and stage 4's lists) never got
+    an attempt in ANY corpus, docs/04/docs/06's pre-committed Phase 6 item.
+
+    This sweeps many seeds across all twelve villains and asserts every
+    technique that CAN be gated in by some villain (produces_traffic and
+    reachable by at least one roster member) is attempted at least once -
+    the thing that was false before the shuffle fix.
+    """
+    all_techniques = {t.technique_id: t for t in load_techniques()}
+    villains = load_villains()
+
+    seen: set[str] = set()
+    for slug in villains:
+        for seed in range(40):
+            producer = _FakeProducer()
+            client = _fake_http_client(f"sweep-{slug}-{seed}")
+            result = run_scripted_session(
+                slug,
+                rng=random.Random(seed),
+                kafka_producer=producer,
+                http_client=client,
+                sleep_fn=lambda _: None,
+            )
+            seen.update(a.technique_id for a in result.attempts)
+
+    # Reachable = gated by at least one villain's stats, on the seeds tried.
+    # Excludes only techniques no roster member could ever qualify for -
+    # that's a gating/roster question, not this fix's concern.
+    reachable = {
+        tid
+        for tid, t in all_techniques.items()
+        if any(
+            v.intelligence >= t.min_intelligence
+            and v.power >= t.min_power
+            and v.strength >= t.min_strength
+            for v in villains.values()
+        )
+    }
+
+    missing = reachable - seen
+    assert not missing, (
+        f"never attempted across {len(villains) * 40} sessions: {sorted(missing)} - "
+        "selection is still avoiding part of the catalog"
+    )
+
+    # The four specifically named in docs/04/docs/06 as the known-zero set.
+    previously_zero = {"identity_gather", "open_source_search", "exfil_over_c2", "deploy_batbot"}
+    assert previously_zero <= seen, (
+        f"the four techniques the Phase 5 finding named are still unreached: "
+        f"{previously_zero - seen}"
+    )
+
+
 def test_pathologies_ride_headers_to_the_honeypot_and_run_id_is_stamped():
     """With an injector, driven requests carry X-Sim-Pathology / X-Run-Id, and
     attempt events carry run_id. Captures the headers the simulator sent."""

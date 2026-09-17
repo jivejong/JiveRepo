@@ -327,6 +327,19 @@ def run_scripted_session(
                 stalled = True
                 break
 
+            # Phase 6 fix: `candidates` comes back in techniques.csv row order,
+            # which is catalog-entry order, not a priority — confirmed by the
+            # stage-4 rows themselves not being monotonic in min_intelligence
+            # (30, 50, 50, 50, 60, 70, 40). Picking `candidates[0]` and later
+            # pivoting to `untried[0]` therefore always preferred the same
+            # early rows and never reached the tail of a long stage list: 4 of
+            # 23 catalog techniques got zero attempts in any corpus (docs/04,
+            # docs/06). Shuffling once here, with the session's own seeded rng,
+            # makes "first" and "first untried" random per session without
+            # touching gated_techniques() itself or any other reference below.
+            candidates = list(candidates)
+            rng.shuffle(candidates)
+
             current_technique = candidates[0]
             decision: Literal["initial", "retry", "pivot"] = "initial"
             tried: dict[str, int] = {}
