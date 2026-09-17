@@ -318,12 +318,17 @@ thing a static docs/01 diagram can't show as convincingly as the real tool can.*
 
 ![Redpanda Console showing attack.events consumer lag climbing during a burst of simulator traffic, then draining back to zero](docs/images/redpanda-lag.png)
 
-*Capture instructions: with the stack up, open `http://localhost:8080` → Topics → `attack.events` →
-Consumer Groups, start watching lag, then in another terminal run `make attack-all TIME_SCALE=1` (or
-several `make attack` calls back to back) to produce a real burst. Screenshot while lag is visibly
-nonzero and climbing, ideally with enough history in view to also show it draining back down — that
-drain is the more informative half, since it's the proof the consumer keeps up rather than falls
-permanently behind.*
+*Capture instructions, verified for real before writing them down: with the stack up, open
+`http://localhost:8080` → Topics → `attack.events` → Consumer Groups, start watching lag, then in
+another terminal run `make attack-all TIME_SCALE=0.02` (the harness's fast default, not `1.0`) to
+produce a real burst. **`TIME_SCALE=1` (faithful) does not work for this** — at real villain pacing,
+requests trickle in well within the consumer's 30-second flush window and lag never leaves zero; only
+a compressed time scale bunches all twelve villains' traffic tightly enough to outrun it. Verified: a
+fresh `TIME_SCALE=0.02` run took `TOTAL-LAG` from 0 to a peak of 322 (`rpk group describe
+attack-events-writer`) and back to 0 within the 30-second window, no manual tuning needed. Screenshot
+while lag is visibly nonzero and climbing, ideally with enough history in view to also show it draining
+back down — that drain is the more informative half, since it's the proof the consumer keeps up rather
+than falls permanently behind.*
 
 ---
 

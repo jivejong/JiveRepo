@@ -105,7 +105,11 @@ and the model names are what Dagster and the Makefile's `--select` strings actua
 Dagster asset keys back to the original conceptual names would desync the UI from both the `.sql`
 filenames and the Makefile — worse legibility, the opposite of the point — so the models stand as
 named and this note explains the drift instead. The lineage screenshot bands the graph by
-`group_name` (`raw`/`staging`/`marts`/`triage`/`evaluation`) so it still reads at a glance.
+`group_name` (`raw`/`staging`/`intermediate`/`marts`/`triage`, plus the three seeds each showing as
+their own singleton group) so it still reads at a glance. The four evaluation marts
+(`fct_intervention_orders`, `fct_triage_evaluations`, `fct_technique_evaluations`,
+`mart_detection_coverage`) share the `marts` group with every other mart rather than a separate
+band — they live in the same dbt folder, and `group_name` follows the folder.
 
 `raw_events` is not free lineage the way the dbt-model assets are: the Parquet landing zone is read
 through a macro (`transform/macros/raw_events.sql` inlines `read_parquet()`), not a dbt source, so
