@@ -53,3 +53,9 @@ transform/.user.yml
 
 # ── Secrets ────────────────────────────────────────────────────────────
 .env
+api.txt
+*.key
+*.pem
+credentials*
+secrets*
+*token*
