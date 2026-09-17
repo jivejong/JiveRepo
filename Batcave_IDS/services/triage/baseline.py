@@ -19,12 +19,18 @@ features of the session actually being scored); scoring a session against
 them never reads that session's own villain_slug.
 
 **Signature features are hard discriminators**, not just inputs to the
-distance: docs/02's own disambiguating-feature list (`riddle_param_count` /
-Riddler, `exact_duplicate_path_pairs` / Two-Face, `distinct_source_ips` /
-Penguin, `body_bytes_trend` / Poison Ivy, `error_ratio` + low duration /
-Scarecrow, `wasted_request_ratio` / Ra's al Ghul) is used directly: if a
-session clears a villain's threshold, that villain is preferred outright over
-the nearest-centroid result, mirroring the two-layer model itself (Layer 2
+distance: five of docs/02's own disambiguating-feature list
+(`riddle_param_count` / Riddler, `distinct_source_ips` / Penguin,
+`body_bytes_trend` / Poison Ivy, `error_ratio` + low duration / Scarecrow,
+`wasted_request_ratio` / Ra's al Ghul) are used directly - if a session
+clears a villain's threshold, that villain is preferred outright over the
+nearest-centroid result, mirroring the two-layer model itself (Layer 2
+
+The sixth, `exact_duplicate_path_pairs` / Two-Face, is deliberately NOT used
+as a hard rule - see the comment on HARD_DISCRIMINATORS below for why three
+different single-feature thresholds all failed to isolate him from
+retry-heavy villains on the real corpus, and cost more accuracy than they
+gave back. He's classified by nearest-centroid only.
 signatures are the thing that disambiguates once Layer 1 stats alone don't).
 
 Killer Croc's real discriminator (`attempts_per_stage_reached`) is
@@ -74,9 +80,38 @@ CENTROID_FEATURES = [
 
 # docs/02's own disambiguating-feature list, made executable. Each predicate
 # takes the session's raw feature dict; a match overrides nearest-centroid.
+#
+# **No Two-Face rule here, though docs/02 names exact_duplicate_path_pairs as
+# his disambiguating feature.** Tried three single-feature thresholds against
+# the real corpus and none isolate him:
+#   - exact_duplicate_path_pairs >= 2: fires on 143 of 381 sessions when only
+#     ~28 are really his - Killer Croc's retry-driven path revisits produce a
+#     nearly identical mean (2.12 vs Two-Face's 2.21), because retrying a
+#     technique revisits its path exactly the way Two-Face's deliberate
+#     doubling does. The feature can't tell "duplicated on purpose" from
+#     "duplicated by grinding."
+#   - the same feature as a ratio to distinct_paths: still 0.71 vs 0.73 -
+#     Croc's narrow gating (low intelligence -> few available techniques)
+#     means he also revisits most of his own small path set.
+#   - distinct_paths alone (his coin-flip-between-two signature implies it
+#     should be low): median 2 for Two-Face, but also 2 for Croc and Riddler -
+#     three villains cluster in the same low range for different reasons.
+# Adding a request_count cap to separate him from Croc specifically (his
+# short, low-durability sessions vs Croc's long grinding ones) cut the
+# Croc confusion but left the rule still firing on ~140 sessions, because
+# OTHER moderate-volume villains clear it too. Forcing a single-feature
+# override that's wrong 4 times out of 5 is worse than no override: nearest-
+# centroid weighs this feature alongside the other twelve simultaneously,
+# which is the more principled way to use a feature that's informative in
+# combination but not decisive alone - exactly what "nearest neighbour in
+# normalized stat space" (docs/04) already does. A genuinely reliable
+# Two-Face rule would need a feature this project doesn't compute yet (e.g.
+# a per-session ratio of distinct-event-id path pairs to total techniques
+# attempted, isolating the "always exactly two" pattern from open-ended
+# retry counts) - worth a future feature-engineering pass, not a threshold
+# hack here.
 HARD_DISCRIMINATORS: dict[str, Callable[[dict], bool]] = {
     "558-riddler": lambda f: f["riddle_param_count"] >= 1,
-    "678-two-face": lambda f: f["exact_duplicate_path_pairs"] >= 2,
     "514-penguin": lambda f: f["distinct_source_ips"] >= 2,
     "522-poison-ivy": lambda f: f["body_bytes_trend"] >= 0.5,
     "576-scarecrow": lambda f: f["error_ratio"] >= 0.4 and f["duration_s"] < 30,
@@ -181,6 +216,12 @@ def classify_villain(features: dict, profiles: dict) -> tuple[str, list[str], fl
     nearest_distance = _distance(z, profiles["centroids"][ranked[0]])
     confidence = 1.0 / (1.0 + nearest_distance)
     return ranked[0], ranked[1:3], confidence
+
+
+def villain_archetype_map(con: duckdb.DuckDBPyConnection) -> dict[str, str]:
+    """slug -> archetype, for deriving suspected_archetype from the baseline's
+    predicted villain - the classifier itself only ever predicts a slug."""
+    return dict(con.execute("select villain_slug, archetype from dim_villains").fetchall())
 
 
 def classify_techniques(features: dict) -> list[dict]:

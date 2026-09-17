@@ -1,0 +1,16 @@
+version: 2
+
+sources:
+  - name: triage
+    description: >
+      Tables written directly by services/triage/store.py rather than derived
+      by `dbt run` - dbt can't call the Groq API or run the baseline's
+      classification logic. Declared as a source so downstream models depend
+      on it explicitly, the same as any other landed data.
+    schema: main
+    tables:
+      - name: raw_triage_predictions
+        description: >
+          One row per (session_id, prediction source). `source` is 'llm' or
+          'baseline' - both write the same shape so they score side by side
+          without a schema fork (docs/04).

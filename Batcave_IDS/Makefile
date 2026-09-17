@@ -69,17 +69,26 @@ sample-partition:
 # `dbt build` rather than run+test: it loads seeds, builds models and runs each
 # model's tests in dependency order, so a failing test stops its dependents
 # instead of letting the run finish and reporting the damage afterwards.
+# raw_triage_predictions is a dbt SOURCE (written by services/triage/store.py,
+# not by dbt itself - dbt can't call the Groq API or run classification
+# logic). fct_intervention_orders+ read it via source(), which requires the
+# table to already exist even when empty - ensured here so `make transform`
+# works before `make triage` has ever run, on a clean clone.
 transform:
+	uv run python -c "import duckdb; from services.triage.store import ensure_table; ensure_table(duckdb.connect('data/warehouse.duckdb'))"
 	cd transform && uv run --project .. dbt deps --profiles-dir .
 	cd transform && uv run --project .. dbt build --profiles-dir .
 
+# Scores + triages sessions at or above the threat threshold: rule-based
+# baseline always, LLM too when GROQ_API_KEY is set (docs/04's zero-
+# credential path otherwise). Writes orders, then rebuilds the evaluation
+# marts on top of them. Requires `make transform` first.
 triage:
-	@echo "make triage: arrives in Phase 6 (scoring, triage, evaluation)." >&2
-	@exit 1
+	uv run python -m services.triage triage --limit $(or $(LIMIT),60)
+	cd transform && uv run --project .. dbt run --profiles-dir . --select fct_intervention_orders+
 
 eval:
-	@echo "make eval: arrives in Phase 6 (scoring, triage, evaluation)." >&2
-	@exit 1
+	uv run python -m services.triage eval
 
 reconcile:
 	@echo "make reconcile: arrives in Phase 5 (mart_reconciliation)." >&2

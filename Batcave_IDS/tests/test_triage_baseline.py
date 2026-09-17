@@ -87,9 +87,15 @@ def test_riddler_discriminator_does_not_fire_without_riddle_params():
     assert HARD_DISCRIMINATORS["558-riddler"](features) is False
 
 
-def test_twoface_discriminator_needs_at_least_two_duplicate_paths():
-    assert HARD_DISCRIMINATORS["678-two-face"](_feature_row(exact_duplicate_path_pairs=2)) is True
-    assert HARD_DISCRIMINATORS["678-two-face"](_feature_row(exact_duplicate_path_pairs=1)) is False
+def test_twoface_has_no_hard_discriminator():
+    """Found live on the real corpus: exact_duplicate_path_pairs (docs/02's
+    named disambiguating feature for him) fired on 143 of 381 sessions when
+    only ~28 are really his - Killer Croc's retry-driven path revisits
+    produce a nearly identical mean. No single-feature threshold tried
+    isolated him; nearest-centroid, which weighs this feature alongside the
+    other twelve, is the more principled fallback. Guards against silently
+    reintroducing an unreliable rule."""
+    assert "678-two-face" not in HARD_DISCRIMINATORS
 
 
 def test_penguin_discriminator_needs_ip_rotation():
