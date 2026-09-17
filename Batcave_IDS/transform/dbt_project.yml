@@ -44,6 +44,9 @@ vars:
   # floor, not a tight fit.
   twoface_min_qualifying_fraction: 0.5
 
+  # mart_threat_scores. docs/02: "Triage threshold >= 60, as a dbt variable."
+  triage_threshold: 60
+
 # No directory-level +tags. staging/ holds both triage_input and
 # ground_truth models (docs/02-data-model.md) — a directory default would
 # encode exactly the leakage the project exists to prevent. Every model
