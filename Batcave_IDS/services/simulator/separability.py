@@ -231,7 +231,12 @@ def run_corpus(
     for vi, slug in enumerate(slugs):
         for r in range(runs_per_villain):
             run_seed = seed + vi * 1000 + r
-            result = run_scripted_session(slug, rng=random.Random(run_seed), sleep_fn=scaled_sleep)
+            result = run_scripted_session(
+                slug,
+                rng=random.Random(run_seed),
+                sleep_fn=scaled_sleep,
+                timing_compression_factor=time_scale,
+            )
             mapping[result.session_id] = slug
     return mapping
 
@@ -256,6 +261,7 @@ def consume_events() -> list[dict]:
     }
 
     events: list[dict] = []
+    skipped = 0
     done = {p: ends[p] == 0 for p in partitions}
     try:
         while not all(done.values()):
@@ -264,12 +270,74 @@ def consume_events() -> list[dict]:
                 break
             if msg.error():
                 continue
-            events.append(json.loads(msg.value()))
+            # Tolerant, not because THIS harness's own corpus is expected to
+            # contain the undeserializable pathology (it doesn't inject
+            # pathologies), but because it reads the WHOLE topic from
+            # earliest, and the topic is shared and retained (24h). Any
+            # pathology-enabled corpus run earlier (make pathology-check,
+            # make attack) leaves real non-JSON bytes sitting on the topic,
+            # and a bare json.loads crashes this harness on data that has
+            # nothing to do with its own run. pathology_check.py already
+            # solved this for its own reader (consume_raw/_parse); this
+            # generalizes the same tolerance here rather than assuming a
+            # freshly reset topic, which "make separability" cannot assume
+            # in normal use.
+            try:
+                events.append(json.loads(msg.value()))
+            except (ValueError, UnicodeDecodeError):
+                skipped += 1
             if msg.offset() >= ends[msg.partition()] - 1:
                 done[msg.partition()] = True
     finally:
         consumer.close()
+    if skipped:
+        print(f"consume_events: skipped {skipped} non-JSON message(s) on the topic")
     return events
+
+
+def session_to_villain_from_attack_runs(
+    events: list[dict], *, time_scale: float | None = None
+) -> dict[str, str]:
+    """The villain mapping straight from the corpus's own ground truth
+    (attack_run events carry session_id + villain_slug), rather than only the
+    in-memory dict run_corpus() returns.
+
+    Two reasons to prefer this over the in-memory mapping alone: it survives
+    a crash between generation and consumption (this harness generates, then
+    separately reads the topic back - a consumption-side failure would
+    otherwise strand a corpus that already exists with no way to analyze it
+    short of regenerating), and it is what a real analyst would have -
+    ground truth recovered from the data, not a side-channel only the
+    process that happened to produce it could see.
+
+    **Filtered, not "every attack_run event ever on the topic".** The topic is
+    shared and retained (24h), so without filtering this pulls in every prior
+    corpus too - caught in practice: an unfiltered version of this function
+    merged this harness's own 120-session run with an unrelated 144-session
+    `make pathology-check` corpus sitting on the same topic (120+144=264,
+    exactly what got returned), and the pathology corpus's clock-skew and
+    out-of-order pathologies produced nonsense inter_request_stddev_ms values
+    (six figures, vs ~250ms on the real run) that would have been reported as
+    separability findings. This harness never enables pathologies
+    (`run_corpus` passes no injector), so `pathologies_enabled == []` alone
+    excludes any pathology corpus regardless of its time_scale.
+    `time_scale`, matched against `timing_compression_factor`, additionally
+    disambiguates between multiple clean separability runs left on the topic
+    at different scales - pass the same value used for generation/reporting.
+    """
+    matches = {}
+    for e in events:
+        if e.get("event_kind") != "attack_run":
+            continue
+        if e.get("pathologies_enabled"):
+            continue
+        if time_scale is not None:
+            factor = e.get("timing_compression_factor")
+            if factor is None or abs(factor - time_scale) > 1e-9:
+                continue
+        if e.get("session_id") and e.get("villain_slug"):
+            matches[e["session_id"]] = e["villain_slug"]
+    return matches
 
 
 def compute_features(events: list[dict], session_to_villain: dict[str, str]) -> list[dict]:
@@ -614,21 +682,47 @@ def main() -> None:
         default="",
         help="comma-separated slugs to run a targeted subset (e.g. timing-faithful pairs)",
     )
+    ap.add_argument(
+        "--consume-only",
+        action="store_true",
+        help=(
+            "skip generating a new corpus; analyze whatever is already on the "
+            "topic (villain mapping recovered from attack_run ground truth). "
+            "For re-analyzing a corpus a prior run already produced, e.g. "
+            "after a consumption-side crash, without paying to regenerate it."
+        ),
+    )
     args = ap.parse_args()
 
     faithful = args.time_scale >= 0.1
     subset = [s for s in args.villains.split(",") if s] or None
     label = f"{len(subset)} villains" if subset else "12 villains"
-    print(
-        f"running {label} x {args.runs} runs "
-        f"(time-scale={args.time_scale} [{'FAITHFUL' if faithful else 'compressed'}], "
-        f"seed={args.seed})"
-    )
-    t0 = time.time()
-    mapping = run_corpus(args.time_scale, args.runs, args.seed, villains=subset)
-    print(f"corpus ran in {time.time() - t0:.1f}s wall clock (sequential)")
-    time.sleep(2.0)  # let the last produces flush through
+
+    mapping: dict[str, str] = {}
+    if not args.consume_only:
+        print(
+            f"running {label} x {args.runs} runs "
+            f"(time-scale={args.time_scale} [{'FAITHFUL' if faithful else 'compressed'}], "
+            f"seed={args.seed})"
+        )
+        t0 = time.time()
+        mapping = run_corpus(args.time_scale, args.runs, args.seed, villains=subset)
+        print(f"corpus ran in {time.time() - t0:.1f}s wall clock (sequential)")
+        time.sleep(2.0)  # let the last produces flush through
+    else:
+        print("--consume-only: reading the existing topic, not generating a new corpus")
+
     events = consume_events()
+    # Ground truth from the topic takes precedence over (and, in
+    # --consume-only mode, entirely replaces) the in-memory mapping. Scoped to
+    # this run's own time_scale and to pathology-free runs only - see the
+    # function docstring for the contamination this prevents.
+    mapping = {
+        **mapping,
+        **session_to_villain_from_attack_runs(events, time_scale=args.time_scale),
+    }
+    if subset is not None:
+        mapping = {sid: v for sid, v in mapping.items() if v in subset}
     rows = compute_features(events, mapping)
     print(f"consumed {len(events)} events across {len(rows)} sessions")
     print(
