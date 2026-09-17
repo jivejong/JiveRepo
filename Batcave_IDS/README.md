@@ -97,20 +97,59 @@ common real initial-access techniques: a successful login with legitimate creden
 successful login. Recall on that one is theoretically possible from session context; recall on the
 other 8 isn't possible from the event log at all, because there is no event.
 
-**A second limit, stated before the numbers rather than after them: 4 of the 23 techniques are never
-attempted at all**, so recall for them is undefined rather than zero — an attacker can't fail to be
-caught doing something they never did. The simulator picks techniques in catalog order rather than at
-random, so the last entries in a long stage list are never reached (stage-4 attempts fall 405, 210,
-153, 82, 32, 0, 0). One falls in each observability tier, so every coverage figure is quoted over
-**19 reachable techniques**, not 23. Measuring against the larger denominator would describe a
-measurement that was never made. The fix is scheduled (`docs/06`, Phase 6); the honest denominator is
-used until it lands.
+**A second limit, resolved in Phase 6 rather than stated as an open gap:** the simulator originally
+picked techniques in strict catalog order rather than at random, so the last entries in a long
+stage-4 list were never reached, leaving 4 of 23 techniques with zero attempts — recall for them was
+undefined rather than zero, since an attacker can't fail to be caught doing something they never did.
+Fixed by shuffling candidates per stage before selection (deterministic per seed, uniform over many).
+Confirmed on the re-run corpus: **all 23 catalog techniques are reachable**, and every coverage figure
+below is measured over the full 23, not a reduced denominator.
 
 That turns a bare accuracy number into a detection coverage gap analysis, which is what a security
 team would actually produce — including being explicit about what the corpus cannot measure.
 
 Both tasks are also run by a rule-based baseline. If the LLM does not beat a regex on
 high-observability techniques, the README says so.
+
+### Results (real run, 36 sessions across all twelve villains)
+
+| | baseline | LLM (`qwen/qwen3.8-27b`, Groq free tier) | random |
+|---|---|---|---|
+| Attribution — exact | 30.6% | 16.7% | 8.3% |
+| Attribution — top-3 | 77.8% | 36.1% | 25.0% |
+| Attribution — archetype | 41.7%¹ | 36.1% | ~20% |
+| Technique — precision / recall / F1 | 65.4% / 39.7% / 0.49 | 57.0% / 20.5% / 0.30 | — |
+| Coverage — high tier recall | 89.7% | 44.3% | — |
+| Coverage — partial tier recall | 0.0% | 0.0% | — |
+
+¹ Not apples-to-apples with the LLM's number: the baseline's archetype guess is a mechanical lookup
+on its own villain guess (right villain ⇒ right archetype, for free), and 11 of its 15 archetype
+matches are exactly that — only 4 are genuine wrong-villain-same-family hits. The LLM's archetype
+field is independently predicted, asked for separately from the villain guess, so its 36.1% is real
+family-level recognition. Full breakdown: `docs/04-llm-triage.md`.
+
+**The baseline wins on pattern-matchable evidence. The LLM wins where evidence is sparse or absent.
+The partial tier is 0% for both.** That's the actual result, not the accuracy table above it.
+High-tier signatures are pattern-matchable by definition, and the baseline cleans up there. But on
+Killer Croc and Ra's al Ghul — two villains the baseline scored **0 for 3** on, flagged as
+structurally hard in earlier phases — the LLM identified Killer Croc correctly on both of its real
+responses ("high volume of requests (149 rpm) concentrated almost exclusively on a single endpoint
+... 93% error rate, matching Killer Croc's signature"), and on Ra's al Ghul it correctly found
+*nothing* — confidence dropping to 0.45 from a typical 0.85–0.92, reasoning that named the exact
+signatures it couldn't find ("the lack of specific signatures (riddles, IP rotation, burst patterns)
+makes attribution uncertain"). That calibrated non-answer, not a guess, is a behavior the baseline
+has no equivalent of, and it lines up with an independent finding from Phase 3's ablation: Ra's al
+Ghul's discriminator wasn't load-bearing to begin with. Two different methods, same conclusion.
+
+Reported without adjustment: the LLM's parse-failure rate was 27.8% (10/36). 4 of those never got a
+real response at all — Groq's free-tier rate limit cut them off before generation — the other 6 are
+genuine failures to produce parseable JSON. The environment measurably contributed to that number;
+the number itself is reported as measured, not adjusted for what the infrastructure cost it. The LLM
+half of this comparison ran on a free tier against `qwen/qwen3.8-27b`, a substitute for the originally
+planned model (Groq removed every plain Llama chat model from serving during this project; a second
+substitute, a reasoning model, produced zero valid parses across 72 calls before this one was found to
+work) — that bounds what the comparison establishes. Full results, the Killer Croc / Ra's al Ghul
+detail, and a hand spot-check of the LLM's evidence fields: `docs/04-llm-triage.md`.
 
 ### One deliberate simplification, stated up front
 
