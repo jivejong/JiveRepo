@@ -10,8 +10,6 @@ A set of Databricks notebooks built to demonstrate production-relevant data engi
 | [`Spiderman_Karen.ipynb`](#project-karen)                                    | Deterministic pre-filtering to cut LLM token cost, concurrent API calls with backoff, geospatial visualization      |
 | [`zork.ipynb`](#zork--the-unofficial-python-edition)                         | Data-driven state machine design in pure Python (no external dependencies)                                          |
 
-## Each notebook is available with or without ouput (\_output)
-
 ## Common patterns across the pipeline notebooks
 
 The four data pipeline notebooks (Gringotts, Spinal Tap, Wayne-Stark, K.A.R.E.N.) share a consistent set of engineering decisions, independent of their subject matter:
