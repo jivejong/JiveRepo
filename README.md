@@ -6,24 +6,6 @@ This is the public, working portfolio behind my resume: production-style softwar
 
 ---
 
-## Skills
-
-**Languages:** Java · C# · JavaScript · SQL (T-SQL, PL/pgSQL, PLSQL) · Bash · PowerShell · Python
-
-**AI / ML / LLM Engineering:** Agentic AI · Multi-agent orchestration · RAG (Retrieval-Augmented Generation) · Prompt engineering · LLM-as-classifier · Structured JSON output / schema-constrained generation · Vector databases (Chroma) · Embeddings · Cross-model orchestration (Groq, Google Gemini, OpenAI-compatible endpoints) · Speech-to-text (Whisper) · Text-to-speech (gTTS, edge-tts) · Prompt-injection detection · MLOps · Observability for GenAI (OpenTelemetry, GenAI semantic conventions)
-
-**Backend / Frameworks:** Spring Boot · Spring Statemachine · .NET 10 · Blazor Server · Entity Framework Core · REST API design · Streamlit
-
-**Frontend:** React · Blazor · HTML/CSS
-
-**Data & Databases:** PostgreSQL (full-text search) · SQL Server · Oracle · Teradata · Database CRUD tooling · ETL · Databricks · Snowflake · Big Query
-
-**Cloud / Infrastructure:** Cloud architecture (NetWare to cloud migration experience) · CI/CD-oriented tooling · Socrata Open Data API integration · GCP · AWS · Azure
-
-**Practices:** Test-driven verification (real infrastructure, not mocks) · State machine design · Statistical/arithmetic decisioning against real datasets (BLS wage data) · Security-conscious scripting (credential handling, prompt-injection scanning) · Technical writing / architecture documentation
-
----
-
 ## What's Here
 
 ### [`/SpringfieldTalentPipeline`](./SpringfieldTalentPipeline)
@@ -37,6 +19,14 @@ A Blazor Server app pairing real Chicago Police Department crime data with a see
 ### [`/projects`](./projects)
 
 Experiments and code. Mostly stuff in work. Functional implementations with documented architectural decisions — not just what it does, but why it was built the way it was.
+
+### [`/data_engineering`](./data_engineering)
+
+Databricks portfolio notebooks demonstrating production-relevant data engineering and LLM-orchestration patterns — medallion architecture (Bronze/Silver/Gold), strict deterministic-vs-LLM separation, resilient API design (backoff/jitter, concurrency caps), and retrieval pipelines — each wrapped in a pop-culture theme that's cosmetic to the underlying engineering: a full LLM-as-judge complaint-triage pipeline (Gringotts), a PDF-to-semantic-search RAG pipeline (Spinal Tap), an EAV-to-dimensional urban-triage scoring model with multi-agent synthesis (Wayne-Stark), a deterministic-pre-filter-then-LLM threat analysis with geospatial output (K.A.R.E.N.), and a dependency-free Zork rebuild as a state-machine counterpoint. See the [data_engineering README](./data_engineering/README.md).
+
+### [`/Batcave_IDS`](./Batcave_IDS)
+
+A local, streaming intrusion-detection pipeline: a simulated five-stage attack lands telemetry through Kafka (Redpanda) into a partitioned Parquet lakehouse, transformed with dbt on DuckDB and orchestrated by Dagster, with data-quality handling for ten deliberately injected pathologies (duplicates, late/out-of-order events, malformed JSON, schema drift, clock skew). An LLM analyst then reconstructs attacker identity and MITRE ATT&CK techniques from sensor data alone — with a ground-truth-leakage check enforced at the dbt-lineage level — and is scored against a rule-based baseline across attribution and technique-recall metrics, reported by detection-observability tier. Runs entirely locally on Docker; no cloud account required. See the [Batcave_IDS README](./Batcave_IDS/README.md).
 
 ### [`/agentic_AI`](./agentic_AI)
 
@@ -60,6 +50,26 @@ Long-form writing in three formats: `articles/` (pieces for LinkedIn and other p
 
 ---
 
+## Skills
+
+**Languages:** Java · C# · JavaScript · SQL (T-SQL, PL/pgSQL, PLSQL) · Bash · PowerShell · Python
+
+**AI / ML / LLM Engineering:** Agentic AI · Multi-agent orchestration · RAG (Retrieval-Augmented Generation) · Prompt engineering · LLM-as-classifier · LLM-as-judge evaluation · Structured JSON output / schema-constrained generation · Vector databases (Chroma, Databricks AI Search) · Embeddings · Semantic search · Cross-model orchestration (Groq, Google Gemini, OpenAI-compatible endpoints) · Speech-to-text (Whisper) · Text-to-speech (gTTS, edge-tts) · Prompt-injection detection · MLOps · Observability for GenAI (OpenTelemetry, GenAI semantic conventions) · Measured LLM evaluation against ground truth (precision/recall/F1, hallucination rate)
+
+**Backend / Frameworks:** Spring Boot · Spring Statemachine · .NET 10 · Blazor Server · Entity Framework Core · REST API design · Streamlit
+
+**Frontend:** React · Blazor · HTML/CSS
+
+**Data & Databases:** PostgreSQL (full-text search) · SQL Server · Oracle · Teradata · Database CRUD tooling · ETL/ELT · Databricks (PySpark, Unity Catalog, Delta Lake, medallion architecture) · Snowflake · Big Query · Kafka (Redpanda) streaming ingestion · dbt transformations · Dagster orchestration · DuckDB · Parquet lakehouses · Jupyter notebooks · Data quality engineering (deduplication, schema drift, late/out-of-order/malformed data)
+
+**Cloud / Infrastructure:** Cloud architecture (NetWare to cloud migration experience) · CI/CD-oriented tooling · Socrata Open Data API integration · Docker · GCP · AWS · Azure
+
+**Security:** MITRE ATT&CK-mapped threat detection · Detection coverage / observability-gap analysis · Prompt-injection detection
+
+**Practices:** Test-driven verification (real infrastructure, not mocks) · State machine design · Statistical/arithmetic decisioning against real datasets (BLS wage data) · Security-conscious scripting (credential handling, prompt-injection scanning) · Technical writing / architecture documentation
+
+---
+
 ## Background
 
 30+ years in professional IT, and tamer of computers for even longer. Old enough to remember the sound of a modem's handshake, young enough to still ship fast, and wise enough to avoid breaking things. The technical work spans PC field work to enterprise architecture, systems administration to full-stack web and ETL development, and — most recently — hands-on AI/LLM engineering and AI implementation strategy. Roles and responsibilities across that span include software engineer, solutions architect, systems administrator, and technical lead. I have the coffee and aspirin bills to prove it.
@@ -68,8 +78,8 @@ Long-form writing in three formats: `articles/` (pieces for LinkedIn and other p
 
 ## Contact
 
-- **LinkedIn** — [Jong Lee](https://www.linkedin.com/in/jong-lee-874aa49/) (best way to reach me — open to full-time, contract, and consulting conversations)
-- **Location** — Northern Virginia, USA (open to remote / hybrid)
+- **LinkedIn** — [Jong Lee](https://www.linkedin.com/in/jong-lee-874aa49/) (best way to reach me)
+- **Location** — Northern Virginia, USA
 
 ## Channels
 
