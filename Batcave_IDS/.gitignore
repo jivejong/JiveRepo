@@ -70,7 +70,6 @@ credentials*
 secrets*
 *token*
 
-# ── Claude ────────────────────────────────────────────────────────────
 docs/
 HANDOFF-PROMPT.md
 CLAUDE.md
