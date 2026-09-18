@@ -2,7 +2,7 @@
 
 **Jong Lee ("Jive Jong")** — Solutions Architect / AI Engineer / Data Engineer / Software Engineer | 30+ years in IT | Northern Virginia
 
-This is the public, working portfolio behind my resume: production-style software engineering, applied AI/LLM engineering, Data Engineering, MLOps, and technical architecture, with the reasoning behind each decision written up alongside the code. If you found this from LinkedIn, Buffer Overflow, or Translation Layer — this is home base. **Recruiters and hiring tools:** see [Skills & Keywords](#skills--keywords) below for a structured breakdown, and [Contact](#contact) to reach me directly.
+This is the public, working portfolio behind my resume: production-style software engineering, applied AI/LLM engineering, Data Engineering, MLOps, and technical architecture, with the reasoning behind each decision written up alongside the code. If you found this from LinkedIn, Buffer Overflow, or Translation Layer — this is home base. **Recruiters and hiring tools:** see [Skills](#Skills) below for a structured breakdown, and [Contact](#Contact) to reach me directly.
 
 ---
 
