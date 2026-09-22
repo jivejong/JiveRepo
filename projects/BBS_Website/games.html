@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Buffer Overflow BBS Arcade</title>
+<style>
+:root {
+  --green: #33ff33;
+  --cyan: #7cc6b8;
+  --amber: #ffb000;
+  --yellow: #edf171;
+  --red: #cb5c53;
+  --bg: #050805;
+  --panel: #0a120a;
+  --dim: #2f7033;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #000;
+  color: var(--green);
+  font-family: "Courier New", monospace;
+}
+
+body.keyboard-mode { cursor: none; }
+
+#arcade {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+#arcade::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0, 0, 0, 0.16) 2px, rgba(0, 0, 0, 0.16) 4px);
+  box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.8);
+}
+
+.view {
+  display: none;
+  width: 100%;
+  height: 100%;
+}
+
+.view.active { display: flex; }
+
+#catalog-view, #instructions-view {
+  overflow-y: auto;
+  padding: clamp(18px, 4vw, 42px);
+  flex-direction: column;
+}
+
+.header {
+  border-bottom: 1px solid var(--dim);
+  margin-bottom: 22px;
+  padding-bottom: 14px;
+}
+
+h1, h2, p { margin-top: 0; }
+h1 { color: var(--cyan); font-size: clamp(22px, 4vw, 34px); margin-bottom: 8px; }
+h2 { color: var(--yellow); font-size: 20px; }
+.dim { color: var(--dim); }
+.amber { color: var(--amber); }
+
+#game-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 10px;
+  max-width: 1000px;
+}
+
+.game-link {
+  display: block;
+  padding: 12px 14px;
+  border: 1px solid var(--dim);
+  color: var(--green);
+  text-decoration: none;
+  background: var(--panel);
+}
+
+.mouse-mode .game-link:hover,
+.game-link:focus-visible {
+  color: var(--bg);
+  background: var(--green);
+  outline: none;
+}
+
+.game-link span { color: var(--amber); }
+
+.footer-command {
+  margin-top: auto;
+  padding-top: 24px;
+  color: var(--amber);
+}
+
+#instructions-view { max-width: 960px; margin: 0 auto; }
+
+#game-summary {
+  max-width: 780px;
+  line-height: 1.55;
+}
+
+#controls-table {
+  width: min(680px, 100%);
+  border-collapse: collapse;
+  margin: 10px 0 24px;
+}
+
+#controls-table th,
+#controls-table td {
+  padding: 8px 12px;
+  border: 1px solid var(--dim);
+  text-align: left;
+}
+
+#controls-table th { color: var(--cyan); }
+
+.action-link {
+  display: inline-block;
+  width: fit-content;
+  margin: 4px 14px 4px 0;
+  color: var(--amber);
+  text-decoration: none;
+}
+
+.mouse-mode .action-link:hover { color: var(--yellow); text-decoration: underline; }
+
+#play-view {
+  flex-direction: column;
+  background: #000;
+}
+
+#game-toolbar {
+  position: relative;
+  z-index: 30;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 38px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--dim);
+  background: var(--panel);
+  color: var(--cyan);
+  font-size: 13px;
+}
+
+#bbs-return {
+  color: var(--amber);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+#game-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #000;
+}
+
+@media (max-width: 600px) {
+  #game-toolbar { align-items: flex-start; flex-direction: column; gap: 4px; }
+}
+</style>
+</head>
+<body>
+<main id="arcade">
+  <section id="catalog-view" class="view active" aria-labelledby="arcade-title">
+    <header class="header">
+      <h1 id="arcade-title">BUFFER OVERFLOW BBS ARCADE</h1>
+      <p class="dim">Seven recovered cabinet images are online. Select a title for controls and launch instructions.</p>
+    </header>
+    <div id="game-list"></div>
+    <div class="footer-command">[ESC] Return to BBS Main Menu</div>
+  </section>
+
+  <section id="instructions-view" class="view" aria-labelledby="game-title">
+    <header class="header">
+      <div class="dim">ARCADE FILE / OPERATOR NOTES</div>
+      <h1 id="game-title"></h1>
+    </header>
+    <p id="game-summary"></p>
+    <h2>Controls</h2>
+    <table id="controls-table">
+      <thead><tr><th>Key / Input</th><th>Action</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="amber">[ESC] always returns directly to the BBS Main Menu.</p>
+    <div>
+      <a id="play-game" class="action-link" href="#play">[ENTER] Load Game</a>
+      <a id="back-to-games" class="action-link" href="#games">[BACKSPACE] Choose Another Game</a>
+    </div>
+  </section>
+
+  <section id="play-view" class="view" aria-label="Active arcade game">
+    <div id="game-toolbar">
+      <span id="playing-title">ARCADE SESSION</span>
+      <a id="bbs-return" href="index.html?menu=1">[ESC] BBS MAIN MENU</a>
+    </div>
+    <iframe id="game-frame" title="Arcade game" allow="autoplay" src="about:blank"></iframe>
+  </section>
+</main>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const inputMode = params.get('mode') === 'mouse' ? 'mouse' : 'keyboard';
+document.body.classList.add(`${inputMode}-mode`);
+
+// Control summaries are condensed from the README files beside each game.
+const GAMES = [
+  {
+    key: '1',
+    name: 'Asteroids',
+    path: 'asteroids/index.html',
+    summary: 'Pilot a vector starship through splitting asteroids and hostile UFOs. Momentum carries the ship until you counter-thrust.',
+    controls: [['Arrow Left / Right or A / D', 'Rotate'], ['Arrow Up or W', 'Thrust'], ['Space', 'Fire'], ['Shift', 'Hyperspace'], ['Enter', 'Start game']],
+  },
+  {
+    key: '2',
+    name: 'Breakout',
+    path: 'breakout/index.html',
+    summary: 'Clear each brick wall by keeping the ball in play. Paddle angle and movement influence the return trajectory.',
+    controls: [['Arrow Left / Right or A / D', 'Move paddle'], ['Enter or Space', 'Start game / serve ball']],
+  },
+  {
+    key: '3',
+    name: 'Centipede',
+    path: 'centipede/index.html',
+    summary: 'Defend the mushroom field from a segmented centipede and its supporting insect swarm. Shooting body segments splits the creature.',
+    controls: [['Arrow Keys or WASD', 'Move in four directions'], ['Space', 'Fire'], ['Enter', 'Start game']],
+  },
+  {
+    key: '4',
+    name: 'Galaxian',
+    path: 'galaxian/index%20(1).html',
+    summary: 'Defend against a colorful alien formation whose ships break ranks for individual and convoy dive-bomb attacks.',
+    controls: [['Arrow Left / Right or A / D', 'Move ship'], ['Space', 'Fire'], ['Enter', 'Start game']],
+  },
+  {
+    key: '5',
+    name: 'Space Invaders',
+    path: 'invaders/index.html',
+    summary: 'Destroy the descending formation, use the shields for cover, and watch the invaders accelerate as their numbers fall.',
+    controls: [['Arrow Left / Right or A / D', 'Move cannon'], ['Space', 'Fire'], ['Enter', 'Start game']],
+  },
+  {
+    key: '6',
+    name: 'Missile Command',
+    path: 'missle/index.html',
+    summary: 'Protect six cities from incoming missiles. Every defensive shot consumes one interceptor from the selected silo.',
+    controls: [['Mouse', 'Aim crosshair'], ['1 / 2 / 3', 'Fire from left / center / right silo'], ['Enter or Space', 'Start game']],
+  },
+  {
+    key: '7',
+    name: 'Pac-Man',
+    path: 'pacman/index.html',
+    summary: 'Clear the maze while managing four ghosts with distinct chase behavior. Power pellets briefly turn pursuit into opportunity.',
+    controls: [['Arrow Keys or WASD', 'Move Pac-Man'], ['Enter', 'Start game / restart']],
+  },
+];
+
+const views = document.querySelectorAll('.view');
+const list = document.getElementById('game-list');
+const frame = document.getElementById('game-frame');
+let selectedGame = null;
+
+function showView(id) {
+  views.forEach(view => view.classList.toggle('active', view.id === id));
+}
+
+function returnToBBSMenu() {
+  window.location.href = `index.html?menu=1&mode=${inputMode}`;
+}
+
+function showInstructions(game) {
+  selectedGame = game;
+  document.getElementById('game-title').textContent = game.name.toUpperCase();
+  document.getElementById('game-summary').textContent = game.summary;
+
+  const tbody = document.querySelector('#controls-table tbody');
+  tbody.innerHTML = '';
+  game.controls.forEach(([control, action]) => {
+    const row = document.createElement('tr');
+    const controlCell = document.createElement('td');
+    const actionCell = document.createElement('td');
+    controlCell.textContent = control;
+    actionCell.textContent = action;
+    row.append(controlCell, actionCell);
+    tbody.appendChild(row);
+  });
+
+  showView('instructions-view');
+}
+
+function launchGame() {
+  if (!selectedGame) return;
+  document.getElementById('playing-title').textContent = `NOW PLAYING: ${selectedGame.name.toUpperCase()}`;
+  document.getElementById('bbs-return').href = `index.html?menu=1&mode=${inputMode}`;
+  frame.title = selectedGame.name;
+  frame.src = `${selectedGame.path}?mode=${inputMode}`;
+  showView('play-view');
+  frame.focus();
+}
+
+GAMES.forEach(game => {
+  const link = document.createElement('a');
+  link.className = 'game-link';
+  link.href = `#${game.name.toLowerCase().replaceAll(' ', '-')}`;
+  link.innerHTML = `<span>[${game.key}]</span> ${game.name}`;
+  link.addEventListener('click', event => {
+    event.preventDefault();
+    showInstructions(game);
+  });
+  list.appendChild(link);
+});
+
+document.getElementById('play-game').addEventListener('click', event => {
+  event.preventDefault();
+  launchGame();
+});
+
+document.getElementById('back-to-games').addEventListener('click', event => {
+  event.preventDefault();
+  selectedGame = null;
+  showView('catalog-view');
+});
+
+document.getElementById('bbs-return').addEventListener('click', event => {
+  event.preventDefault();
+  returnToBBSMenu();
+});
+
+document.addEventListener('keydown', event => {
+  const activeView = document.querySelector('.view.active').id;
+
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    returnToBBSMenu();
+    return;
+  }
+
+  if (activeView === 'catalog-view') {
+    const game = GAMES.find(item => item.key === event.key);
+    if (game) showInstructions(game);
+    return;
+  }
+
+  if (activeView === 'instructions-view') {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      launchGame();
+    } else if (event.key === 'Backspace') {
+      event.preventDefault();
+      selectedGame = null;
+      showView('catalog-view');
+    }
+  }
+});
+</script>
+</body>
+</html>

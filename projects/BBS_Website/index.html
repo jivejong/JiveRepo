@@ -95,6 +95,10 @@ body {
   cursor: none;
 }
 
+#screen.mouse-enabled {
+  cursor: default;
+}
+
 /* Scanlines */
 #screen::before {
   content: '';
@@ -279,11 +283,117 @@ body {
   transition: none;
 }
 
+#menu-phase .menu-item a {
+  color: inherit;
+  text-decoration: none;
+  text-shadow: inherit;
+}
+
+#screen.mouse-enabled #menu-phase .menu-item a {
+  cursor: pointer;
+}
+
 #menu-phase .menu-item.highlight {
   background: var(--term-green);
   color: var(--term-bg);
   text-shadow: none;
 }
+
+/* Pine-style mail composer */
+.pine-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: #000;
+  color: #e8e8e8;
+  font-size: 14px;
+  text-shadow: none;
+}
+
+.pine-titlebar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 8px;
+  background: #e8e8e8;
+  color: #000;
+  font-weight: bold;
+}
+
+.pine-statusbar {
+  padding: 4px 8px;
+  background: #1c3f73;
+  color: #fff;
+  text-align: center;
+}
+
+.pine-headers {
+  padding: 6px 8px;
+  border-bottom: 1px solid #a0a0a0;
+}
+
+.pine-field {
+  display: grid;
+  grid-template-columns: 9ch minmax(0, 1fr);
+  align-items: center;
+  min-height: 25px;
+}
+
+.pine-field label { color: #f0f0f0; }
+
+.pine-field input,
+.pine-body {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: #000;
+  color: #fff;
+  font: inherit;
+  caret-color: #fff;
+}
+
+.pine-field input[readonly] { color: var(--c64-cyan); }
+
+.pine-body {
+  flex: 1 1 auto;
+  min-height: 120px;
+  resize: none;
+  padding: 8px;
+  line-height: 1.45;
+}
+
+.pine-message-status {
+  min-height: 23px;
+  padding: 3px 8px;
+  background: #1c3f73;
+  color: #fff;
+  text-align: center;
+}
+
+.pine-commands {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px 16px;
+  padding: 5px 8px;
+  background: #000;
+  color: #fff;
+}
+
+.pine-command {
+  color: #fff;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.pine-command strong {
+  background: #e8e8e8;
+  color: #000;
+  padding: 0 2px;
+}
+
+#screen.mouse-enabled .pine-command { cursor: pointer; }
+#screen.mouse-enabled .pine-command:hover { color: var(--c64-yellow); }
 
 /* Mouse warning overlay */
 #mouse-warning {
@@ -362,6 +472,8 @@ body {
 </head>
 <body>
 
+<audio id="handshake-audio" src="handshake.mp3" preload="auto"></audio>
+
 <!-- Mobile block -->
 <div id="mobile-block">
   <div>
@@ -375,8 +487,7 @@ body {
     <br>
     <div style="margin: 20px 0; border-top: 1px solid #1a5a1a; padding-top: 16px;">
       <div class="line dim" style="color: #1a5a1a; margin-bottom: 12px;">In the meantime:</div>
-      <div style="margin: 8px 0;"><a href="#youtube" style="color: var(--term-green); text-decoration: none; text-shadow: 0 0 6px rgba(51,255,51,0.3); font-family: inherit; font-size: 15px;">[V] Videos</a></div>
-      <div style="margin: 8px 0;"><a href="#linkedin" style="color: var(--term-green); text-decoration: none; text-shadow: 0 0 6px rgba(51,255,51,0.3); font-family: inherit; font-size: 15px;">[L] LinkedIn</a></div>
+      <div id="mobile-links"></div>
     </div>
     <br>
     <div class="line dim" style="color: #1a5a1a;">- THE SYSOP</div>
@@ -467,17 +578,68 @@ const BBS = {
   currentPhase: null,
   audioCtx: null,
   beepsEnabled: true,
+  inputMode: 'keyboard',
   clueLevel: 0,
   maxClues: 3,
   puzzleAttempts: 0,
   gaveAnswer: false,
 };
 
+// ============================================================
+// LINKS: UPDATE EXTERNAL URLS HERE
+// Games is intentionally configured separately as a local page.
+// ============================================================
+const LINK_CONFIG = {
+  linkedIn: 'https://www.linkedin.com/in/jong-lee-874aa49/',
+  github: 'https://github.com/jivejong/JiveRepo',
+  research: 'https://zenodo.org/communities/jivejong/',
+  contact: 'https://www.linkedin.com/in/jong-lee-874aa49/',
+  contactEmail: '', // Optional: add an email address to enable the Pine Send command.
+  translationLayerVideos: 'https://www.youtube.com/@TranslationLayer',
+  bufferOverflowVideos: 'https://www.youtube.com/@BufferOverflow-v2j',
+};
+
+const EXTERNAL_MENU_ITEMS = [
+  { key: 'L', label: 'LinkedIn', type: 'external', url: LINK_CONFIG.linkedIn },
+  { key: 'R', label: 'GitHub Repo', type: 'external', url: LINK_CONFIG.github },
+  { key: 'W', label: 'White Papers and Research', type: 'external', url: LINK_CONFIG.research },
+  { key: 'C', label: 'Contact the SYSOP', type: 'external', url: LINK_CONFIG.contact },
+  { key: 'T', label: 'Videos (The Translation Layer)', type: 'external', url: LINK_CONFIG.translationLayerVideos },
+  { key: 'B', label: 'Videos (Buffer Overflow)', type: 'external', url: LINK_CONFIG.bufferOverflowVideos },
+];
+
+const mobileLinks = document.getElementById('mobile-links');
+EXTERNAL_MENU_ITEMS.forEach(item => {
+  const row = document.createElement('div');
+  row.style.margin = '8px 0';
+
+  const link = document.createElement('a');
+  link.href = item.url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = `[${item.key}] ${item.label}`;
+  link.style.cssText = 'color:var(--term-green);text-decoration:none;text-shadow:0 0 6px rgba(51,255,51,0.3);font-family:inherit;font-size:15px;';
+
+  row.appendChild(link);
+  mobileLinks.appendChild(row);
+});
+
 // ---- POST BEEP AUDIO ----
 function initAudio() {
   if (!BBS.audioCtx) {
     BBS.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   }
+}
+
+function playHandshake() {
+  if (!BBS.beepsEnabled) return;
+
+  const handshake = document.getElementById('handshake-audio');
+  handshake.currentTime = 0;
+  handshake.volume = 0.55;
+  handshake.play().catch(() => {
+    // Some browsers may still block playback despite the initiating keypress.
+  });
 }
 
 function postBeep(freq, duration, volume) {
@@ -573,7 +735,43 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+const transitionKeys = new Set();
+
+document.addEventListener('keydown', event => {
+  const keyId = event.code || event.key;
+  if (!transitionKeys.has(keyId)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+
+document.addEventListener('keyup', event => {
+  transitionKeys.delete(event.code || event.key);
+}, true);
+
+function consumeTransitionKey(event) {
+  event.preventDefault();
+  transitionKeys.add(event.code || event.key);
+}
+
+function clearScreenInputs() {
+  const activeElement = document.activeElement;
+  if (activeElement && typeof activeElement.blur === 'function') {
+    activeElement.blur();
+  }
+
+  document.querySelectorAll('.phase input, .phase textarea, .phase select').forEach(field => {
+    if (field instanceof HTMLInputElement && (field.type === 'checkbox' || field.type === 'radio')) {
+      field.checked = false;
+    } else if (field instanceof HTMLSelectElement) {
+      field.selectedIndex = -1;
+    } else {
+      field.value = '';
+    }
+  });
+}
+
 function setPhase(id) {
+  clearScreenInputs();
   document.querySelectorAll('.phase').forEach(p => p.classList.remove('active'));
   const el = document.getElementById(id);
   if (el) {
@@ -677,6 +875,7 @@ async function runBoot() {
 
   return new Promise(resolve => {
     function handler(e) {
+      consumeTransitionKey(e);
       document.removeEventListener('keydown', handler);
       prompt.remove();
       resolve();
@@ -708,6 +907,7 @@ async function runInputSelection() {
     function handler(e) {
       const key = e.key.toUpperCase();
       if (key === 'K' || key === 'M') {
+        consumeTransitionKey(e);
         document.removeEventListener('keydown', handler);
         if (key === 'K') {
           postBeep(1000, 0.1, 0.05);
@@ -771,6 +971,7 @@ async function runCrackIntro() {
 
   return new Promise(resolve => {
     function handler(e) {
+      consumeTransitionKey(e);
       document.removeEventListener('keydown', handler);
       stopSIDMusic();
       successBeep();
@@ -915,6 +1116,7 @@ async function runPuzzle() {
       if (BBS.currentPhase !== 'puzzle-phase') return;
 
       if (e.key === 'Enter') {
+        e.preventDefault();
         let val = input.value.trim().toUpperCase();
         input.value = '';
 
@@ -928,6 +1130,7 @@ async function runPuzzle() {
 
         // Check for the answer: SYS 64738, SYS64738, 64738
         if (val === 'SYS 64738' || val === 'SYS64738' || val === '64738') {
+          consumeTransitionKey(e);
           document.removeEventListener('keydown', handleKeydown);
           addLine(c, '', '');
           addLine(c, 'The terminal flickers. The screen clears.', 'green');
@@ -1056,78 +1259,95 @@ async function runMainMenu() {
   addLine(c, '', '');
 
   const menuItems = [
-    { key: 'V', label: '[V] Videos',               url: '#videos' },
-    { key: 'R', label: '[R] Research / White Papers', url: '#papers' },
-    { key: 'L', label: '[L] LinkedIn',              url: '#linkedin' },
-    { key: 'C', label: '[C] Contact the SYSOP',    url: '#contact' },
-    { key: 'B', label: '[B] Toggle Beeps',          url: null },
-    { key: 'G', label: '[G] Goodbye',               url: null },
+    ...EXTERNAL_MENU_ITEMS.slice(0, 3),
+    { key: 'C', label: 'Contact the SYSOP', type: 'contact' },
+    { key: 'G', label: 'Games', type: 'games' },
+    ...EXTERNAL_MENU_ITEMS.slice(4),
+    { key: 'S', label: `Sound: ${BBS.beepsEnabled ? 'ON' : 'OFF'}`, type: 'sound' },
+    // links.txt assigns G to both Games and Goodbye. Q avoids the collision.
+    { key: 'Q', label: 'Goodbye', type: 'goodbye' },
   ];
 
   for (const item of menuItems) {
-    const div = addLine(c, item.label, 'green menu-item');
+    const div = addLine(c, '', 'green menu-item');
     div.dataset.key = item.key;
+    const label = `[${item.key}] ${item.label}`;
+
+    if (BBS.inputMode === 'mouse') {
+      const link = document.createElement('a');
+      link.textContent = label;
+
+      if (item.type === 'external') {
+        link.href = item.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+      } else if (item.type === 'games') {
+        link.href = `games.html?mode=${BBS.inputMode}`;
+      } else {
+        link.href = `#${item.type}`;
+        link.addEventListener('click', event => {
+          event.preventDefault();
+          activateMenuItem(item);
+        });
+      }
+
+      div.appendChild(link);
+    } else {
+      div.textContent = label;
+    }
   }
 
   addLine(c, '', '');
   const promptLine = addLine(c, 'Your choice? ', 'amber cursor');
+
+  function activateMenuItem(item) {
+    initAudio();
+    postBeep(1000, 0.08, 0.04);
+
+    const el = c.querySelector(`[data-key="${item.key}"]`);
+    if (el) {
+      el.classList.add('highlight');
+      setTimeout(() => el.classList.remove('highlight'), 200);
+    }
+
+    if (item.type === 'sound') {
+      BBS.beepsEnabled = !BBS.beepsEnabled;
+      const status = BBS.beepsEnabled ? 'ON' : 'OFF';
+      const labelTarget = el.querySelector('a') || el;
+      labelTarget.textContent = `[S] Sound: ${status}`;
+      return;
+    }
+
+    if (item.type === 'goodbye') {
+      document.removeEventListener('keydown', menuHandler);
+      runGoodbye(c);
+      return;
+    }
+
+    if (item.type === 'games') {
+      document.removeEventListener('keydown', menuHandler);
+      window.location.href = `games.html?mode=${BBS.inputMode}`;
+      return;
+    }
+
+    if (item.type === 'contact') {
+      document.removeEventListener('keydown', menuHandler);
+      runContact();
+      return;
+    }
+
+    if (item.type === 'external') {
+      window.open(item.url, '_blank', 'noopener,noreferrer');
+    }
+  }
 
   // Keyboard handler
   function menuHandler(e) {
     const key = e.key.toUpperCase();
     const item = menuItems.find(m => m.key === key);
     if (!item) return;
-
-    postBeep(1000, 0.08, 0.04);
-
-    // Flash the selected item
-    const el = c.querySelector(`[data-key="${key}"]`);
-    if (el) {
-      el.classList.add('highlight');
-      setTimeout(() => el.classList.remove('highlight'), 200);
-    }
-
-    if (key === 'B') {
-      BBS.beepsEnabled = !BBS.beepsEnabled;
-      const status = BBS.beepsEnabled ? 'ON' : 'OFF';
-      addLine(c, `  POST beeps: ${status}`, 'dim');
-      return;
-    }
-
-    if (key === 'G') {
-      document.removeEventListener('keydown', menuHandler);
-      runGoodbye(c);
-      return;
-    }
-
-    if (key === 'V') {
-      // Placeholder: link to YouTube
-      addLine(c, '', '');
-      addLine(c, '  Opening video archive...', 'amber');
-      addLine(c, '  [YouTube link would go here]', 'dim');
-      addLine(c, '', '');
-      return;
-    }
-
-    if (key === 'R') {
-      document.removeEventListener('keydown', menuHandler);
-      runApacheDirectory();
-      return;
-    }
-
-    if (key === 'L') {
-      addLine(c, '', '');
-      addLine(c, '  Opening LinkedIn...', 'amber');
-      addLine(c, '  [LinkedIn link would go here]', 'dim');
-      addLine(c, '', '');
-      return;
-    }
-
-    if (key === 'C') {
-      document.removeEventListener('keydown', menuHandler);
-      runContact();
-      return;
-    }
+    consumeTransitionKey(e);
+    activateMenuItem(item);
   }
 
   document.addEventListener('keydown', menuHandler);
@@ -1183,33 +1403,104 @@ async function runApacheDirectory() {
   document.addEventListener('keydown', dirHandler);
 }
 
-// ---- CONTACT (Pine/Elm style) ----
-async function runContact() {
+// ---- CONTACT (Pine-style composer) ----
+function runContact() {
   setPhase('menu-phase');
   const c = document.getElementById('menu-content');
-  c.innerHTML = '';
-  c.style.padding = '20px 24px';
+  c.style.padding = '0';
+  c.innerHTML = `
+    <div class="pine-shell">
+      <div class="pine-titlebar">
+        <span>PINE 4.64</span>
+        <span>COMPOSE MESSAGE</span>
+        <span>Folder: INBOX</span>
+      </div>
+      <div class="pine-statusbar">Compose message to the Buffer Overflow SYSOP</div>
+      <div class="pine-headers">
+        <div class="pine-field"><label for="pine-to">To</label><input id="pine-to" value="sysop@bufferoverflow.bbs" readonly></div>
+        <div class="pine-field"><label for="pine-cc">Cc</label><input id="pine-cc" value=""></div>
+        <div class="pine-field"><label for="pine-from">From</label><input id="pine-from" placeholder="your@email.example" autocomplete="email"></div>
+        <div class="pine-field"><label for="pine-subject">Subject</label><input id="pine-subject" placeholder="Message from the BBS"></div>
+      </div>
+      <textarea id="pine-body" class="pine-body" aria-label="Message body" placeholder="Type your message here..."></textarea>
+      <div id="pine-message-status" class="pine-message-status">Ctrl+X to send, Escape to cancel</div>
+      <div class="pine-commands">
+        <a href="#help" class="pine-command" data-pine-command="help"><strong>^G</strong> Get Help</a>
+        <a href="#cancel" class="pine-command" data-pine-command="cancel"><strong>ESC</strong> Cancel</a>
+        <a href="#send" class="pine-command" data-pine-command="send"><strong>^X</strong> Send</a>
+        <a href="#files" class="pine-command" data-pine-command="files"><strong>^T</strong> To Files</a>
+        <a href="#postpone" class="pine-command" data-pine-command="postpone"><strong>^O</strong> Postpone</a>
+        <a href="#justify" class="pine-command" data-pine-command="justify"><strong>^J</strong> Justify</a>
+      </div>
+    </div>`;
 
-  addLine(c, '', '');
-  addLine(c, 'COMPOSE MAIL', 'white');
-  addLine(c, '────────────────────────────────', 'dim');
-  addLine(c, 'To    : sysop@bufferoverflow.bbs', 'cyan');
-  addLine(c, '', '');
-  addLine(c, 'This feature is coming soon.', 'amber');
-  addLine(c, 'The SYSOP is still wiring up SMTP.', 'dim');
-  addLine(c, '', '');
-  addLine(c, 'VERIFY YOU ARE HUMAN:', 'green');
-  addLine(c, 'Type the following command: SYS ___738', 'green');
-  addLine(c, '', '');
-  addLine(c, '[M] Return to Main Menu', 'amber');
+  const status = document.getElementById('pine-message-status');
+  const from = document.getElementById('pine-from');
+  const subject = document.getElementById('pine-subject');
+  const body = document.getElementById('pine-body');
 
-  function contactHandler(e) {
-    if (e.key.toUpperCase() === 'M') {
-      document.removeEventListener('keydown', contactHandler);
-      runMainMenu();
+  function setStatus(message) {
+    status.textContent = message;
+  }
+
+  function closeComposer() {
+    document.removeEventListener('keydown', contactHandler, true);
+    runMainMenu();
+  }
+
+  function sendMessage() {
+    if (!from.value.trim() || !subject.value.trim() || !body.value.trim()) {
+      errorBeep();
+      setStatus('Fill in From, Subject, and the message body before sending.');
+      return;
+    }
+
+    if (LINK_CONFIG.contactEmail) {
+      const mailParams = new URLSearchParams({
+        subject: subject.value.trim(),
+        body: `From: ${from.value.trim()}\nCc: ${document.getElementById('pine-cc').value.trim()}\n\n${body.value}`,
+      });
+      window.location.href = `mailto:${LINK_CONFIG.contactEmail}?${mailParams.toString()}`;
+      setStatus('Message handed to your local mail client.');
+      successBeep();
+      return;
+    }
+
+    warningBeep();
+    setStatus('SMTP gateway offline. Opening the SYSOP contact channel instead...');
+    window.open(LINK_CONFIG.contact, '_blank', 'noopener,noreferrer');
+  }
+
+  function showHelp() {
+    setStatus('TAB moves through fields. Ctrl+X sends. Escape returns to the BBS menu.');
+  }
+
+  function contactHandler(event) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeComposer();
+    } else if (event.ctrlKey && event.key.toLowerCase() === 'x') {
+      event.preventDefault();
+      sendMessage();
+    } else if (event.ctrlKey && event.key.toLowerCase() === 'g') {
+      event.preventDefault();
+      showHelp();
     }
   }
-  document.addEventListener('keydown', contactHandler);
+
+  document.querySelectorAll('[data-pine-command]').forEach(command => {
+    command.addEventListener('click', event => {
+      event.preventDefault();
+      const action = command.dataset.pineCommand;
+      if (action === 'send') sendMessage();
+      else if (action === 'cancel') closeComposer();
+      else if (action === 'help') showHelp();
+      else setStatus(`${command.textContent.trim()} is not available on this node.`);
+    });
+  });
+
+  document.addEventListener('keydown', contactHandler, true);
+  from.focus();
 }
 
 // ---- GOODBYE ----
@@ -1256,8 +1547,11 @@ async function main() {
   await runBoot();
   const inputChoice = await runInputSelection();
 
-  if (inputChoice === 'mouse') {
+  BBS.inputMode = inputChoice;
+
+  if (BBS.inputMode === 'mouse') {
     mouseWarningShown = true; // suppress mouse warning
+    document.getElementById('screen').classList.add('mouse-enabled');
   }
 
   await runPuzzle();
@@ -1267,15 +1561,25 @@ async function main() {
 
 // Start on first interaction (needed for audio context)
 let started = false;
-document.addEventListener('keydown', function starter() {
+
+function starter(event) {
   if (started) return;
+  consumeTransitionKey(event);
   started = true;
   document.removeEventListener('keydown', starter);
+  playHandshake();
   main();
-});
+}
 
-// Show "press any key" initially
-(function showStartPrompt() {
+const returnParams = new URLSearchParams(window.location.search);
+if (returnParams.get('menu') === '1') {
+  started = true;
+  BBS.inputMode = returnParams.get('mode') === 'mouse' ? 'mouse' : 'keyboard';
+  mouseWarningShown = BBS.inputMode === 'mouse';
+  document.getElementById('screen').classList.toggle('mouse-enabled', BBS.inputMode === 'mouse');
+  runMainMenu();
+} else {
+  document.addEventListener('keydown', starter);
   setPhase('boot-phase');
   const c = document.getElementById('boot-lines');
   addLine(c, '', '');
@@ -1283,7 +1587,7 @@ document.addEventListener('keydown', function starter() {
   addLine(c, '  BUFFER OVERFLOW BBS', 'cyan');
   addLine(c, '', '');
   addLine(c, '  Press any key to initialize...', 'blink amber');
-})();
+}
 </script>
 
 </body>
