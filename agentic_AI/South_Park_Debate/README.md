@@ -1,33 +1,51 @@
-# 🎤 South Park: Town Hall Debate (Multi-Agent LLM App)
+# South Park: Town Hall Debate
 
-An interactive, multi-agent Large Language Model (LLM) application built with **Streamlit** and powered by the **Groq API**. Watch as over 25 classic South Park characters engage in absurd, fully automated Lincoln-Douglas style town hall debates, complete with dynamic topic generation, a panel of celebrity judges, and OpenTelemetry instrumentation for real-time performance tracking.
+A Streamlit multi-agent debate simulator. The user selects two characters and a number of rounds; a generated town-hall topic, character arguments, three independent judge evaluations, and a final announcement are produced step by step.
 
-## ✨ Features
+## Debate orchestration
 
-- **Multi-Agent Orchestration:** Simulates an autonomous debate using multiple distinct LLM system prompts interacting with each other's outputs.
-- **Dynamic Topic Generation:** "Mayor McDaniels" dynamically generates a unique, absurd debate topic for every session.
-- **25+ Unique Personas:** Carefully engineered system prompts capture the vocal mannerisms and logical fallacies of classic characters (e.g., Cartman's mental gymnastics, Timmy's limited vocabulary, PC Principal's microaggression policing) without triggering API safety guardrails.
-- **Judge Panel & Grand Finale:** Independent agent judges (Chef, Mr. Mackey, Wendy) evaluate the transcript, before passing their scorecards to "Terrance & Phillip" for the final verdict.
-- **OpenTelemetry Integration:** Built-in OTEL tracing monitors latency and tracks token economy (Prompt, Completion, and Total Tokens) per agent call to ensure optimal free-tier API usage.
-- **Production-Ready Secrets Management:** Uses Streamlit's native `secrets.toml` architecture for secure API key handling.
+1. Mayor McDaniels generates a family-friendly, absurd topic.
+2. A coin flip selects the opening speaker; the chosen two characters argue opposite sides for one to five rounds.
+3. Chef, Mr. Mackey, and Wendy independently assess the transcript.
+4. Terrance and Phillip synthesize the judges' conclusions into the final announcement.
 
-## 🛠️ Tech Stack
+The character roster contains more than 25 scoped persona prompts. System prompts are distinct by role: combatant, moderator, judge, and announcer. A completed debate is saved in session state and can be re-rendered without another model request.
 
-- **Frontend/UI:** [Streamlit](https://streamlit.io/)
-- **LLM Provider:** [Groq API](https://groq.com/) (Targeting open-weights models like `gpt-oss-20b` for ultra-low latency generation)
-- **Observability:** [OpenTelemetry (OTEL)](https://opentelemetry.io/) SDK & API
-- **Language:** Python 3.8+
+## Cost model and telemetry
 
-## 🚀 Getting Started
+Each debate uses `5 + (2 x rounds)` Gemini calls: one topic, two arguments per round, three judges, and one announcer. Before a run starts, the app checks that the whole debate fits the remaining quota.
 
-### 1. Prerequisites
+The sidebar displays live OpenTelemetry-backed information for every model call, including agent, role, latency, status, and token counts. The current implementation uses an in-memory exporter for that display.
 
-You will need Python installed on your machine and a free API key from [Groq Console](https://console.groq.com/).
+## Setup
 
-### 2. Installation
-
-Clone this repository or download the source code, then install the required dependencies:
-
-```bash
+```powershell
 pip install -r requirements.txt
+Copy-Item .streamlit\secrets.toml.example .streamlit\secrets.toml
+streamlit run app.py
 ```
+
+Set `GEMINI_API_KEY` and strong access codes in the copied file. The app uses `gemini-3.1-flash-lite`. Keep the real secrets file local or in your deployment's protected secret store.
+
+## Access and quota behavior
+
+The access-code screen precedes client and telemetry initialization. The configured `owner` identity is unlimited; other identities use `limits.max_billable_operations_per_session` (default: 20). The app reserves one quota unit per model call and blocks overlapping calls.
+
+The quota is intentionally session-scoped for a private demo; a new browser session can receive a new allowance. It is not a replacement for user accounts, persistent auditing, revocation, rate limiting, or provider-side spend controls.
+
+## Project layout
+
+```text
+app.py                  debate orchestration, Gemini calls, and live telemetry UI
+security.py             access gate, capacity checks, and session controls
+requirements.txt        Streamlit, Gemini, and OpenTelemetry dependencies
+tests/test_security.py  unit coverage for access and quota behavior
+.streamlit/             local secrets and the tracked safe template
+```
+
+## Concepts demonstrated
+
+- Multi-agent role separation and transcript handoffs
+- Deterministic call budgeting for a variable-length workflow
+- Session-safe rendering that avoids duplicate inference
+- In-app OpenTelemetry visibility for agent calls

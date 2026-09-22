@@ -1,5 +1,6 @@
 # Streamlit secrets (NEVER UPLOAD THESE)
-.streamlit/
+.streamlit/*
+!.streamlit/secrets.toml.example
 secrets.toml
 
 # Python virtual environments
@@ -11,3 +12,8 @@ env/
 __pycache__/
 *.pyc
 
+# OS-specific files
+.DS_Store
+Thumbs.db
+ 
+ 

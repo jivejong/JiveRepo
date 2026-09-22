@@ -1,8 +1,15 @@
 import streamlit as st
 import requests
 import json
-import re
-from urllib.parse import quote
+
+from security import (
+    UsageLimitReached,
+    consume_llm_call,
+    end_session,
+    is_owner,
+    max_llm_calls_per_session,
+    require_access,
+)
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -10,6 +17,10 @@ st.set_page_config(
     page_icon="🔥",
     layout="centered",
 )
+
+# This gate intentionally runs before custom UI setup, session initialization,
+# or any access to the Gemini API key. Unauthenticated sessions stop here.
+user = require_access()
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -142,6 +153,26 @@ html, body, [class*="css"] {
     transform: none !important;
 }
 
+/* Sample-term buttons — deliberately more compact than the primary action. */
+[class*="st-key-example_"] button {
+    padding: 0.45rem 0.35rem !important;
+    font-family: 'Space Grotesk', sans-serif !important;
+    font-size: 0.72rem !important;
+    letter-spacing: 0.02em !important;
+    box-shadow: none !important;
+}
+
+[class*="st-key-end_session"] button {
+    background: transparent !important;
+    border: 1px solid #2a2a3a !important;
+    box-shadow: none !important;
+    color: #777 !important;
+    font-family: 'Space Grotesk', sans-serif !important;
+    font-size: 0.72rem !important;
+    padding: 0.4rem 0.65rem !important;
+    text-transform: none !important;
+}
+
 /* ── Result cards ── */
 .result-card {
     border-radius: 20px;
@@ -248,32 +279,6 @@ html, body, [class*="css"] {
     font-size: 0.9rem;
 }
 
-/* ── Examples ── */
-.examples-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-top: 0.75rem;
-}
-.example-chip {
-    display: inline-block;
-    background: #1a1a2a;
-    border: 1px solid #2a2a3a;
-    border-radius: 30px;
-    padding: 0.3rem 0.9rem;
-    font-size: 0.8rem;
-    color: #aaa;
-    cursor: pointer;
-    transition: all 0.15s ease;
-    font-weight: 500;
-    text-decoration: none;
-}
-.example-chip:hover {
-    background: #26263a;
-    border-color: #ff4d6d;
-    color: #fff;
-}
-
 /* ── Footer ── */
 .footer {
     text-align: center;
@@ -298,12 +303,33 @@ def reset():
     st.session_state.result = None
     st.session_state.slang_term = ""
     st.session_state.trigger_search = False
-    st.query_params.clear()
 
-# ── Helper: call Groq API ─────────────────────────────────────────────────────
+
+def queue_example(term: str) -> None:
+    """Populate the form and queue a sample-term check in this session."""
+    st.session_state.slang_term = term
+    st.session_state.trigger_search = True
+
+
+def render_access_controls(identity: str) -> None:
+    """Show access information and a session lock control in the main page."""
+    status_column, lock_column = st.columns([4, 1])
+    with status_column:
+        if is_owner(identity):
+            st.caption("LLM access: Unlimited")
+        else:
+            limit = max_llm_calls_per_session()
+            used = st.session_state["llm_calls"]
+            st.caption(f"LLM calls remaining: {max(0, limit - used)} / {limit}")
+    with lock_column:
+        if st.button("End session", key="end_session", use_container_width=True):
+            end_session()
+            st.rerun()
+
+# ── Helper: call Gemini API ───────────────────────────────────────────────────
 def check_slang(term: str) -> dict:
-    """Call the Groq API (Qwen3.6 27B) to evaluate a slang term."""
-    api_key = st.secrets["GROQ_API_KEY"]
+    """Call Gemini 3.1 Flash-Lite to evaluate a slang term."""
+    api_key = st.secrets["GEMINI_API_KEY"]
 
     system_prompt = """You are the ultimate authority on Gen Z slang — a cultural linguist who lives online and knows exactly what's fire and what's cringe. 
 
@@ -326,43 +352,35 @@ Verdicts:
 
 Be honest, be harsh if needed, be funny. This is serious slang business."""
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-
     payload = {
-        "model": "qwen/qwen3.6-27b",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f'Evaluate this slang term: "{term}"'},
-        ],
-        "temperature": 0.7,
-        # Reasoning models spend tokens on hidden reasoning *before* the
-        # answer, and those count against this budget. 500 truncated the
-        # JSON mid-object; give it real headroom so the object completes.
-        "max_tokens": 4096,
-        # Force valid JSON output — qwen3.6 is a reasoning model and will
-        # otherwise wrap the JSON in a <think>…</think> preamble.
-        "response_format": {"type": "json_object"},
-        # Required with JSON mode on a reasoning model: Groq rejects the
-        # default "raw" reasoning with a 400. "hidden" drops the reasoning
-        # entirely so `content` is pure JSON.
-        "reasoning_format": "hidden",
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": f'Evaluate this slang term: "{term}"'}],
+        }],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 4096,
+            "responseMimeType": "application/json",
+        },
     }
 
     response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers=headers,
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-3.1-flash-lite:generateContent",
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
         json=payload,
         timeout=30,
     )
     response.raise_for_status()
 
-    content = response.json()["choices"][0]["message"]["content"]
-
-    # Fallback: strip any reasoning preamble the model may still emit.
-    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    content = "".join(
+        part.get("text", "")
+        for part in response.json()["candidates"][0]["content"]["parts"]
+    ).strip()
 
     # Strip markdown fences if present
     if content.startswith("```"):
@@ -384,17 +402,10 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+render_access_controls(user)
+
 # Main input
 #st.markdown('<div class="input-card">', unsafe_allow_html=True)
-
-# A clicked example chip arrives here as a ?q= query param — load it into the
-# input and queue a search, then clear the param so the same chip can be
-# re-clicked later.
-chip_query = st.query_params.get("q")
-if chip_query:
-    st.session_state.slang_term = chip_query
-    st.session_state.trigger_search = True
-    st.query_params.clear()
 
 # Wrapping the input + submit button in a form makes Enter submit it.
 with st.form("check_form"):
@@ -406,20 +417,26 @@ with st.form("check_form"):
         label_visibility="collapsed",
     )
 
-    EXAMPLE_TERMS = ["rizz", "no cap", "bussin", "GOAT", "lowkey", "yeet", "slay", "on fleek"]
-    chips_html = "".join(
-        f'<a class="example-chip" href="?q={quote(term)}" target="_self">{term}</a>'
-        for term in EXAMPLE_TERMS
-    )
-    st.markdown(f"""
-<div style="margin: 0.5rem 0 1rem; color: #555; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;">
+    check_btn = st.form_submit_button("CHECK THE VIBE →", use_container_width=True)
+
+
+EXAMPLE_TERMS = ["rizz", "no cap", "bussin", "GOAT", "lowkey", "yeet", "slay", "on fleek"]
+st.markdown("""
+<div style="margin: 0.5rem 0 0.75rem; color: white; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;">
 Try these ↓
 </div>
-<div class="examples-row">{chips_html}</div>
-<br>
 """, unsafe_allow_html=True)
-
-    check_btn = st.form_submit_button("CHECK THE VIBE →", use_container_width=True)
+for first_index in range(0, len(EXAMPLE_TERMS), 4):
+    columns = st.columns(4)
+    for column, term in zip(columns, EXAMPLE_TERMS[first_index:first_index + 4]):
+        with column:
+            st.button(
+                term,
+                key=f"example_{term.replace(' ', '_')}",
+                on_click=queue_example,
+                args=(term,),
+                use_container_width=True,
+            )
 
 reset_btn = st.button("RESET", on_click=reset, use_container_width=True, key="reset_btn")
 
@@ -433,14 +450,24 @@ if do_check:
     else:
         with st.spinner("Consulting the culture..."):
             try:
+                if st.session_state.get("llm_call_in_flight"):
+                    st.warning("A request is already running.")
+                    st.stop()
+
+                st.session_state["llm_call_in_flight"] = True
+                # Exactly one Gemini generate-content request is made per check.
+                # Reserve quota immediately before that billable request.
+                consume_llm_call(user)
                 st.session_state.result = check_slang(slang_input.strip())
                 st.session_state.result["_term"] = slang_input.strip()
+            except UsageLimitReached:
+                st.markdown('<div class="custom-error">Demo usage limit reached for this session.</div>', unsafe_allow_html=True)
             except requests.exceptions.HTTPError as e:
                 status = e.response.status_code if e.response is not None else "?"
-                if status == 401:
-                    st.markdown('<div class="custom-error">🔑 Invalid API key. Check your .streamlit/secrets.toml file.</div>', unsafe_allow_html=True)
+                if status in (400, 401):
+                    st.markdown('<div class="custom-error">🔑 Invalid Gemini API key. Check your .streamlit/secrets.toml file.</div>', unsafe_allow_html=True)
                 elif status == 403:
-                    st.markdown('<div class="custom-error">🚫 Groq blocked this network (403). Turn off any VPN/proxy and try again.</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="custom-error">🚫 Gemini rejected this request (403). Check API access and try again.</div>', unsafe_allow_html=True)
                 elif status == 429:
                     st.markdown('<div class="custom-error">🚦 Rate limit hit. Chill for a sec and try again.</div>', unsafe_allow_html=True)
                 else:
@@ -451,11 +478,13 @@ if do_check:
                         detail = e.response.text if e.response is not None else ""
                     st.markdown(f'<div class="custom-error">💀 API error {status}: {detail or str(e)}</div>', unsafe_allow_html=True)
             except requests.exceptions.Timeout:
-                st.markdown('<div class="custom-error">⏱️ Request timed out. Groq is busy rn, try again.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="custom-error">⏱️ Request timed out. Gemini is busy rn, try again.</div>', unsafe_allow_html=True)
             except json.JSONDecodeError:
                 st.markdown('<div class="custom-error">😵 Couldn\'t parse the response. The AI said something unhinged. Try again.</div>', unsafe_allow_html=True)
             except Exception as e:
                 st.markdown(f'<div class="custom-error">Something went unexpectedly wrong: {str(e)}</div>', unsafe_allow_html=True)
+            finally:
+                st.session_state["llm_call_in_flight"] = False
 
 if st.session_state.result:
     result = st.session_state.result
@@ -508,6 +537,6 @@ if st.session_state.result:
 
 st.markdown("""
 <div class="footer">
-  POWERED BY GROQ · BUILT FOR THE CULTURE · NO UNC ENERGY ALLOWED
+  POWERED BY GEMINI · BUILT FOR THE CULTURE · NO UNC ENERGY ALLOWED
 </div>
 """, unsafe_allow_html=True)

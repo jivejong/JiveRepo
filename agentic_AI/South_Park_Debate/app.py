@@ -1,8 +1,16 @@
 import streamlit as st
-from groq import Groq
+from google import genai
+from google.genai import types
 import random
 import time
 from typing import Tuple
+
+from security import (
+    billable_operation,
+    ensure_billable_capacity,
+    render_access_controls,
+    require_access,
+)
 
 # OpenTelemetry Imports
 from opentelemetry import trace
@@ -15,7 +23,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 # ==========================================
 st.set_page_config(page_title="South Park: Town Hall Debate", page_icon="🎤", layout="wide")
 
-MODEL_NAME = "openai/gpt-oss-20b"
+MODEL_NAME = "gemini-3.1-flash-lite"
 
 # Guardrail-Safe Personas - Focusing purely on vocal mannerisms and safe debate styles
 PERSONAS = {
@@ -73,21 +81,19 @@ def setup_opentelemetry() -> Tuple[trace.Tracer, InMemorySpanExporter]:
     trace.set_tracer_provider(provider)
     return trace.get_tracer(__name__), exporter
 
-tracer, otel_exporter = setup_opentelemetry()
-
 # ==========================================
 # CLIENT INIT & CORE LLM FUNCTIONS
 # ==========================================
 @st.cache_resource
-def get_groq_client() -> Groq:
+def get_gemini_client() -> genai.Client:
     try:
-        api_key = st.secrets["GROQ_API_KEY"]
-        return Groq(api_key=api_key)
+        api_key = st.secrets["GEMINI_API_KEY"]
+        return genai.Client(api_key=api_key)
     except KeyError:
-        st.error("⚠️ `GROQ_API_KEY` is missing in `.streamlit/secrets.toml`.")
+        st.error("⚠️ `GEMINI_API_KEY` is missing in `.streamlit/secrets.toml`.")
         st.stop()
 
-def generate_response(client: Groq, character: str, prompt: str, temp: float, role_type: str = "combatant") -> Tuple[str, int]:
+def generate_response(client: genai.Client, tracer: trace.Tracer, character: str, prompt: str, temp: float, role_type: str = "combatant") -> Tuple[str, int]:
     if role_type == "judge":
         system_instruction = JUDGES[character]
     elif role_type == "moderator":
@@ -97,198 +103,405 @@ def generate_response(client: Groq, character: str, prompt: str, temp: float, ro
     else:
         system_instruction = PERSONAS[character]
     
-    with tracer.start_as_current_span(f"llm_call_{character.replace(' ', '_')}") as span:
-        start_time = time.time()
-        
-        try:
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temp
-            )
-            
-            latency = time.time() - start_time
-            text_response = response.choices[0].message.content
-            
-            if not text_response or not text_response.strip():
-                finish_reason = getattr(response.choices[0], "finish_reason", "unknown")
-                text_response = f"*(API Issue)* Generation halted. Reason: {finish_reason}."
-                
-            if hasattr(response, "usage") and response.usage is not None:
-                prompt_tokens = getattr(response.usage, "prompt_tokens", 0)
-                completion_tokens = getattr(response.usage, "completion_tokens", 0)
-                total_tokens = getattr(response.usage, "total_tokens", 0)
-            else:
-                prompt_tokens, completion_tokens, total_tokens = 0, 0, 0
-            
+    with billable_operation():
+        with tracer.start_as_current_span(f"llm_call_{character.replace(' ', '_')}") as span:
+            start_time = time.time()
+            prompt_tokens = 0
+            completion_tokens = 0
+            total_tokens = 0
+            call_status = "ok"
             span.set_attribute("agent.name", character)
             span.set_attribute("agent.role", role_type)
-            span.set_attribute("metrics.latency_sec", round(latency, 2))
-            span.set_attribute("metrics.prompt_tokens", prompt_tokens)
-            span.set_attribute("metrics.completion_tokens", completion_tokens)
-            span.set_attribute("metrics.total_tokens", total_tokens)
-            
-        except Exception as e:
-            text_response = f"*(API Error)*: {str(e)}"
-            total_tokens = 0
-            span.record_exception(e)
-            
-        return text_response, total_tokens
+
+            try:
+                response = client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=temp,
+                    ),
+                )
+
+                text_response = response.text
+
+                if not text_response or not text_response.strip():
+                    candidates = getattr(response, "candidates", None) or []
+                    finish_reason = (
+                        getattr(candidates[0], "finish_reason", "unknown")
+                        if candidates
+                        else "unknown"
+                    )
+                    text_response = f"*(API Issue)* Generation halted. Reason: {finish_reason}."
+
+                usage_metadata = getattr(response, "usage_metadata", None)
+                if usage_metadata is not None:
+                    prompt_tokens = getattr(
+                        usage_metadata, "prompt_token_count", 0
+                    ) or 0
+                    completion_tokens = getattr(
+                        usage_metadata, "candidates_token_count", 0
+                    ) or 0
+                    total_tokens = getattr(
+                        usage_metadata, "total_token_count", 0
+                    ) or 0
+                else:
+                    prompt_tokens, completion_tokens, total_tokens = 0, 0, 0
+
+            except Exception as e:
+                text_response = "*(API Error)* The model request failed. Please try again."
+                call_status = "error"
+                span.record_exception(e)
+            finally:
+                latency = time.time() - start_time
+                span.set_attribute("call.status", call_status)
+                span.set_attribute("metrics.latency_sec", round(latency, 2))
+                span.set_attribute("metrics.prompt_tokens", prompt_tokens)
+                span.set_attribute("metrics.completion_tokens", completion_tokens)
+                span.set_attribute("metrics.total_tokens", total_tokens)
+
+            return text_response, total_tokens
 
 # ==========================================
 # UI & APPLICATION FLOW
 # ==========================================
+def billable_operations_for_debate(rounds: int) -> int:
+    """One topic, two arguments per round, three judges, and one announcer."""
+    return 5 + (2 * rounds)
+
+
+def collect_telemetry(otel_exporter):
+    """Convert finished OpenTelemetry spans into display-friendly rows."""
+    telemetry_data = []
+    for span in otel_exporter.get_finished_spans():
+        attrs = span.attributes
+        if attrs:
+            telemetry_data.append(
+                {
+                    "Agent": attrs.get("agent.name"),
+                    "Role": attrs.get("agent.role"),
+                    "Status": attrs.get("call.status"),
+                    "Latency (s)": attrs.get("metrics.latency_sec"),
+                    "Prompt Tokens": attrs.get("metrics.prompt_tokens"),
+                    "Completion Tokens": attrs.get("metrics.completion_tokens"),
+                    "Total Tokens": attrs.get("metrics.total_tokens"),
+                }
+            )
+    return telemetry_data
+
+
+def render_telemetry_panel(placeholder, telemetry_data, total_tokens):
+    """Replace the sidebar telemetry panel with the latest call statistics."""
+    placeholder.empty()
+    with placeholder.container():
+        st.subheader("📊 OpenTelemetry (Live)")
+        metric_col1, metric_col2 = st.columns(2)
+        metric_col1.metric("Calls", len(telemetry_data))
+        metric_col2.metric("Tokens", total_tokens)
+        if telemetry_data:
+            st.dataframe(telemetry_data, use_container_width=True)
+        else:
+            st.caption("Stats appear here as each model call completes.")
+
+
+def run_debate(
+    client,
+    tracer,
+    otel_exporter,
+    telemetry_placeholder,
+    opp1,
+    opp2,
+    rounds,
+    temperature,
+):
+    """Run one explicitly requested debate and return session-local render data."""
+    otel_exporter.clear()
+    total_session_tokens = 0
+    round_results = []
+    judge_results = []
+
+    st.header("🏛️ The Town Hall Arena")
+    with st.spinner("Mayor McDaniels is thinking of a topic..."):
+        topic, tokens = generate_response(
+            client,
+            tracer,
+            "Moderator",
+            "Give us today's debate topic.",
+            temperature,
+            role_type="moderator",
+        )
+        total_session_tokens += tokens
+    render_telemetry_panel(
+        telemetry_placeholder,
+        collect_telemetry(otel_exporter),
+        total_session_tokens,
+    )
+
+    st.success(f"**TODAY'S TOPIC:** {topic}")
+
+    stances = {opp1: "FOR (Affirmative)", opp2: "AGAINST (Negative)"}
+    st.write(f"**{opp1}** will be arguing **{stances[opp1]}**.")
+    st.write(f"**{opp2}** will be arguing **{stances[opp2]}**.")
+    st.divider()
+
+    first_agent = random.choice([opp1, opp2])
+    second_agent = opp2 if first_agent == opp1 else opp1
+    st.subheader("🪙 Coin Flip for Opening Statement")
+    st.info(
+        f"The coin landed on heads! **{first_agent}** gets the opening statement."
+    )
+
+    transcript = f"Topic: {topic}\n{opp1} is FOR. {opp2} is AGAINST.\n\n"
+
+    st.subheader("🔥 The Debate")
+    for round_number in range(1, rounds + 1):
+        st.markdown(f"#### Round {round_number}")
+        for current_agent, opponent in (
+            (first_agent, second_agent),
+            (second_agent, first_agent),
+        ):
+            with st.spinner(f"{current_agent} is preparing their argument..."):
+                prompt = (
+                    f"The debate topic is: '{topic}'.\n"
+                    f"Your stance is: {stances[current_agent]}.\n"
+                    f"Your opponent {opponent} is arguing {stances[opponent]}.\n"
+                    f"Here is the transcript so far:\n{transcript}\n\n"
+                    "Deliver your next debate argument. Stay strictly in character."
+                )
+                argument, tokens = generate_response(
+                    client,
+                    tracer,
+                    current_agent,
+                    prompt,
+                    temperature,
+                    role_type="combatant",
+                )
+                total_session_tokens += tokens
+                render_telemetry_panel(
+                    telemetry_placeholder,
+                    collect_telemetry(otel_exporter),
+                    total_session_tokens,
+                )
+                transcript += f"[{current_agent}]: {argument}\n"
+                message_type = (
+                    "user" if current_agent == first_agent else "assistant"
+                )
+                round_result = {
+                    "round": round_number,
+                    "character": current_agent,
+                    "message_type": message_type,
+                    "argument": argument,
+                }
+                round_results.append(round_result)
+                with st.chat_message(message_type):
+                    st.markdown(f"**{current_agent}**: {argument}")
+        st.divider()
+
+    judge_evaluations = []
+    st.subheader("⚖️ The Judges' Verdict")
+    for judge in JUDGES:
+        st.markdown(f"#### {judge}")
+        with st.spinner(f"{judge} is evaluating the debate..."):
+            prompt = (
+                f"The debate between {opp1} and {opp2} on the topic "
+                f"'{topic}' has ended. Here is the transcript:\n{transcript}\n\n"
+                "Provide your evaluation of their logic and pick a winner."
+            )
+            evaluation, tokens = generate_response(
+                client,
+                tracer,
+                judge,
+                prompt,
+                temperature,
+                role_type="judge",
+            )
+            total_session_tokens += tokens
+            render_telemetry_panel(
+                telemetry_placeholder,
+                collect_telemetry(otel_exporter),
+                total_session_tokens,
+            )
+            judge_evaluations.append(f"[{judge}'s Verdict]: {evaluation}")
+            judge_results.append({"judge": judge, "evaluation": evaluation})
+        with st.chat_message("assistant"):
+            st.markdown(f"**{judge}**: {evaluation}")
+
+    st.divider()
+    st.subheader("🏆 The Final Verdict")
+    with st.spinner("Terrance and Phillip are reviewing the judges' scorecards..."):
+        judges_combined = "\n\n".join(judge_evaluations)
+        announcer_prompt = (
+            f"The debate was between {opp1} and {opp2}.\n"
+            f"Here is what the judges decided:\n{judges_combined}\n\n"
+            "Based on the judges' scores, declare the ultimate winner!"
+        )
+        announcer_text, tokens = generate_response(
+            client,
+            tracer,
+            "Terrance & Phillip",
+            announcer_prompt,
+            temperature,
+            role_type="announcer",
+        )
+        total_session_tokens += tokens
+    render_telemetry_panel(
+        telemetry_placeholder,
+        collect_telemetry(otel_exporter),
+        total_session_tokens,
+    )
+    with st.chat_message("assistant"):
+        st.markdown(f"**Terrance & Phillip 🇨🇦**: {announcer_text}")
+
+    telemetry_data = collect_telemetry(otel_exporter)
+
+    return {
+        "topic": topic,
+        "opp1": opp1,
+        "opp2": opp2,
+        "stances": stances,
+        "first_agent": first_agent,
+        "rounds": rounds,
+        "round_results": round_results,
+        "judge_results": judge_results,
+        "announcer_text": announcer_text,
+        "telemetry_data": telemetry_data,
+        "total_session_tokens": total_session_tokens,
+    }
+
+
+def render_debate_result(result):
+    """Render a completed debate without repeating any model calls."""
+    st.header("🏛️ The Town Hall Arena")
+    st.success(f"**TODAY'S TOPIC:** {result['topic']}")
+    st.write(
+        f"**{result['opp1']}** will be arguing "
+        f"**{result['stances'][result['opp1']]}**."
+    )
+    st.write(
+        f"**{result['opp2']}** will be arguing "
+        f"**{result['stances'][result['opp2']]}**."
+    )
+    st.divider()
+
+    st.subheader("🪙 Coin Flip for Opening Statement")
+    st.info(
+        f"The coin landed on heads! **{result['first_agent']}** gets the opening statement."
+    )
+
+    st.subheader("🔥 The Debate")
+    for round_number in range(1, result["rounds"] + 1):
+        st.markdown(f"#### Round {round_number}")
+        for argument in result["round_results"]:
+            if argument["round"] != round_number:
+                continue
+            with st.chat_message(argument["message_type"]):
+                st.markdown(f"**{argument['character']}**: {argument['argument']}")
+        st.divider()
+
+    st.subheader("⚖️ The Judges' Verdict")
+    judge_tabs = st.tabs([item["judge"] for item in result["judge_results"]])
+    for tab, item in zip(judge_tabs, result["judge_results"]):
+        with tab:
+            with st.chat_message("assistant"):
+                st.markdown(f"**{item['judge']}**: {item['evaluation']}")
+
+    st.divider()
+    st.subheader("🏆 The Final Verdict")
+    with st.chat_message("assistant"):
+        st.markdown(f"**Terrance & Phillip 🇨🇦**: {result['announcer_text']}")
+
+    st.success(
+        f"Debate completed using `{MODEL_NAME}` in {result['rounds']} rounds."
+    )
+
+
 def main():
+    require_access()
+    render_access_controls()
+
     st.title("🎤 South Park: Town Hall Debate")
-    st.markdown(f"A multi-agent LLM debate powered by Groq and `{MODEL_NAME}`.")
-    
-    client = get_groq_client()
-    
+    st.markdown(f"A multi-agent LLM debate powered by Gemini and `{MODEL_NAME}`.")
+
     with st.sidebar:
         st.header("⚙️ Match Configuration")
-        
-        temperature = st.slider("Agent Temperature (Creativity/Chaos)", min_value=0.0, max_value=1.0, value=0.7, step=0.1)
+        temperature = st.slider(
+            "Agent Temperature (Creativity/Chaos)",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.7,
+            step=0.1,
+        )
         rounds = st.slider("Number of Rounds", min_value=1, max_value=5, value=2)
-        
         category = st.radio("Select Roster", ["Children", "Adults"])
-        
+
         child_roster = [
-            "Stan Marsh", "Kyle Broflovski", "Eric Cartman", "Kenny McCormick", 
-            "Butters Stotch", "Jimmy Valmer", "Timmy Burch", "Clyde Donovan", 
-            "Tolkien Black", "Craig Tucker", "Tweek Tweak", "Towelie"
+            "Stan Marsh", "Kyle Broflovski", "Eric Cartman", "Kenny McCormick",
+            "Butters Stotch", "Jimmy Valmer", "Timmy Burch", "Clyde Donovan",
+            "Tolkien Black", "Craig Tucker", "Tweek Tweak", "Towelie",
         ]
-        
         adult_roster = [
             "Randy Marsh", "Sheila Broflovski", "Liane Cartman", "Stuart McCormick",
             "Mr. Garrison", "PC Principal", "Sharon Marsh", "Gerald Broflovski",
             "Stephen Stotch", "Jimbo Kern", "Ned Gerblansky", "Carol McCormick",
-            "Principal Victoria", "Officer Barbrady", "Big Gay Al"
+            "Principal Victoria", "Officer Barbrady", "Big Gay Al",
         ]
-        
         roster = child_roster if category == "Children" else adult_roster
-        
+
         col1, col2 = st.columns(2)
         with col1:
             opp1 = st.selectbox("Opponent 1 (FOR)", roster, index=2)
         with col2:
             opp2 = st.selectbox("Opponent 2 (AGAINST)", roster, index=0)
-            
+
         if opp1 == opp2:
             st.error("Opponents must be different!")
             st.stop()
-            
-        start_battle = st.button("⚖️ Generate Topic & Start Debate", use_container_width=True, type="primary")
+
+        start_battle = st.button(
+            "⚖️ Generate Topic & Start Debate",
+            use_container_width=True,
+            type="primary",
+        )
+
+    telemetry_placeholder = st.sidebar.empty()
+    saved_debate = st.session_state.get("last_debate")
+    if saved_debate is not None and not start_battle:
+        render_telemetry_panel(
+            telemetry_placeholder,
+            saved_debate["telemetry_data"],
+            saved_debate["total_session_tokens"],
+        )
+    else:
+        render_telemetry_panel(telemetry_placeholder, [], 0)
 
     if start_battle:
-        otel_exporter.clear()
-        total_session_tokens = 0
-        
-        st.header("🏛️ The Town Hall Arena")
-        
-        with st.spinner("Mayor McDaniels is thinking of a topic..."):
-            topic, tokens = generate_response(client, "Moderator", "Give us today's debate topic.", temperature, role_type="moderator")
-            total_session_tokens += tokens
-            
-        st.success(f"**TODAY'S TOPIC:** {topic}")
-        
-        stances = {opp1: "FOR (Affirmative)", opp2: "AGAINST (Negative)"}
-        st.write(f"**{opp1}** will be arguing **{stances[opp1]}**.")
-        st.write(f"**{opp2}** will be arguing **{stances[opp2]}**.")
-        st.divider()
-        
-        st.subheader("🪙 Coin Flip for Opening Statement")
-        coin_toss = random.choice([opp1, opp2])
-        first_agent = coin_toss
-        second_agent = opp2 if first_agent == opp1 else opp1
-        st.info(f"The coin landed on heads! **{first_agent}** gets the opening statement.")
-        
-        transcript = f"Topic: {topic}\n{opp1} is FOR. {opp2} is AGAINST.\n\n"
-        
-        st.subheader("🔥 The Debate")
-        
-        for r in range(1, rounds + 1):
-            st.markdown(f"#### Round {r}")
-            
-            for current_agent, opponent in [(first_agent, second_agent), (second_agent, first_agent)]:
-                with st.spinner(f"{current_agent} is preparing their argument..."):
-                    prompt = (
-                        f"The debate topic is: '{topic}'.\n"
-                        f"Your stance is: {stances[current_agent]}.\n"
-                        f"Your opponent {opponent} is arguing {stances[opponent]}.\n"
-                        f"Here is the transcript so far:\n{transcript}\n\n"
-                        f"Deliver your next debate argument. Stay strictly in character."
-                    )
-                    
-                    argument, tokens = generate_response(client, current_agent, prompt, temperature, role_type="combatant")
-                    total_session_tokens += tokens
-                    transcript += f"[{current_agent}]: {argument}\n"
-                    
-                    with st.chat_message("user" if current_agent == first_agent else "assistant"):
-                        st.markdown(f"**{current_agent}**: {argument}")
-            st.divider()
+        if st.session_state.get("debate_in_flight") is True:
+            st.warning("A debate is already running.")
+            st.stop()
 
-        st.subheader("⚖️ The Judges' Verdict")
-        
-        judge_tabs = st.tabs(list(JUDGES.keys()))
-        judge_evaluations = [] 
-        
-        for idx, judge in enumerate(JUDGES.keys()):
-            with judge_tabs[idx]:
-                with st.spinner(f"{judge} is evaluating the debate..."):
-                    prompt = (
-                        f"The debate between {opp1} and {opp2} on the topic '{topic}' has ended. "
-                        f"Here is the transcript:\n{transcript}\n\n"
-                        f"Provide your evaluation of their logic and pick a winner."
-                    )
-                    eval_text, tokens = generate_response(client, judge, prompt, temperature, role_type="judge")
-                    total_session_tokens += tokens
-                    judge_evaluations.append(f"[{judge}'s Verdict]: {eval_text}")
-                    
-                    with st.chat_message("assistant"):
-                        st.markdown(f"**{judge}**: {eval_text}")
-
-        st.divider()
-        st.subheader("🏆 The Final Verdict")
-        
-        with st.spinner("Terrance and Phillip are reviewing the judges' scorecards..."):
-            judges_combined = "\n\n".join(judge_evaluations)
-            tp_prompt = (
-                f"The debate was between {opp1} and {opp2}.\n"
-                f"Here is what the judges decided:\n{judges_combined}\n\n"
-                f"Based on the judges' scores, declare the ultimate winner!"
+        ensure_billable_capacity(billable_operations_for_debate(rounds))
+        st.session_state["debate_in_flight"] = True
+        try:
+            # Client and telemetry resources initialize only after access and an
+            # explicit, quota-approved user action.
+            tracer, otel_exporter = setup_opentelemetry()
+            client = get_gemini_client()
+            st.session_state["last_debate"] = run_debate(
+                client,
+                tracer,
+                otel_exporter,
+                telemetry_placeholder,
+                opp1,
+                opp2,
+                rounds,
+                temperature,
             )
-            
-            announcer_text, tokens = generate_response(client, "Terrance & Phillip", tp_prompt, temperature, role_type="announcer")
-            total_session_tokens += tokens
-            
-        with st.chat_message("assistant"):
-            st.markdown(f"**Terrance & Phillip 🇨🇦**: {announcer_text}")
+        finally:
+            st.session_state["debate_in_flight"] = False
+        st.rerun()
 
-
-        st.divider()
-        st.subheader("📊 OpenTelemetry Trace & Stats")
-        
-        spans = otel_exporter.get_finished_spans()
-        telemetry_data = []
-        for span in spans:
-            attrs = span.attributes
-            if attrs:
-                telemetry_data.append({
-                    "Agent": attrs.get("agent.name"),
-                    "Role": attrs.get("agent.role"),
-                    "Latency (s)": attrs.get("metrics.latency_sec"),
-                    "Prompt Tokens": attrs.get("metrics.prompt_tokens"),
-                    "Completion Tokens": attrs.get("metrics.completion_tokens"),
-                    "Total Tokens": attrs.get("metrics.total_tokens"),
-                })
-        
-        if telemetry_data:
-            st.dataframe(telemetry_data, use_container_width=True)
-            st.metric(label="Total Session Tokens Used", value=total_session_tokens)
-            st.success(f"Debate completed using `{MODEL_NAME}` in {rounds} rounds.")
+    if "last_debate" in st.session_state:
+        render_debate_result(st.session_state["last_debate"])
 
 if __name__ == "__main__":
     main()

@@ -1,8 +1,8 @@
-"""OpenTelemetry instrumentation for the Spousal Approval System.
+"""OpenTelemetry instrumentation for The Bundy Approval Desk.
 
 Implements the OpenTelemetry **GenAI semantic conventions** so every AI
-operation in the pipeline — speech-to-text (Groq Whisper), the scoring /
-persona LLM calls (Groq LLaMA), and neural text-to-speech (edge-tts) — shows
+operation in the pipeline — Gemini Flash-Lite transcription, scoring, persona
+generation, and neural text-to-speech (edge-tts) — shows
 up as a properly attributed span, with token-usage and latency metrics.
 
 Zero-config by default: spans and metrics print to the console. If the
@@ -147,7 +147,7 @@ def genai_span(
     operation: str,
     model: str,
     *,
-    system: str = "groq",
+    system: str = "gemini",
     temperature: float | None = None,
     conversation_id: str | None = None,
     extra_attrs: dict | None = None,
@@ -198,28 +198,35 @@ def genai_span(
                 )
 
 
-def record_llm_response(span: Any, response: Any, *, model: str, system: str = "groq") -> None:
-    """Attach response-side GenAI attributes + token metrics from a Groq/OpenAI
-    -shaped chat completion response to ``span``."""
+def record_llm_response(span: Any, response: Any, *, model: str, system: str = "gemini") -> None:
+    """Attach Gemini response attributes and usage metrics to ``span``.
+
+    The Google GenAI SDK exposes token counts under ``usage_metadata``. The
+    fallback field names keep this helper tolerant of SDK response variants.
+    """
     if span is None or not _OTEL_AVAILABLE:
         return
 
-    response_model = getattr(response, "model", None) or model
-    response_id = getattr(response, "id", None)
+    response_model = getattr(response, "model_version", None) or getattr(response, "model", None) or model
+    response_id = getattr(response, "response_id", None) or getattr(response, "id", None)
     if response_model:
         span.set_attribute(GEN_AI_RESPONSE_MODEL, response_model)
     if response_id:
         span.set_attribute(GEN_AI_RESPONSE_ID, response_id)
 
-    choices = getattr(response, "choices", None) or []
-    finish_reasons = [c.finish_reason for c in choices if getattr(c, "finish_reason", None)]
+    candidates = getattr(response, "candidates", None) or []
+    finish_reasons = [str(c.finish_reason) for c in candidates if getattr(c, "finish_reason", None)]
     if finish_reasons:
         span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, finish_reasons)
 
-    usage = getattr(response, "usage", None)
+    usage = getattr(response, "usage_metadata", None) or getattr(response, "usage", None)
     if usage is not None:
-        input_tokens = getattr(usage, "prompt_tokens", None)
-        output_tokens = getattr(usage, "completion_tokens", None)
+        input_tokens = getattr(usage, "prompt_token_count", None)
+        if input_tokens is None:
+            input_tokens = getattr(usage, "prompt_tokens", None)
+        output_tokens = getattr(usage, "candidates_token_count", None)
+        if output_tokens is None:
+            output_tokens = getattr(usage, "completion_tokens", None)
         if input_tokens is not None:
             span.set_attribute(GEN_AI_USAGE_INPUT_TOKENS, input_tokens)
             _record_tokens(input_tokens, "input", model, system)
@@ -227,10 +234,7 @@ def record_llm_response(span: Any, response: Any, *, model: str, system: str = "
             span.set_attribute(GEN_AI_USAGE_OUTPUT_TOKENS, output_tokens)
             _record_tokens(output_tokens, "output", model, system)
 
-        # Reasoning ("thinking") tokens — the main driver of token burn on
-        # hybrid reasoning models. Groq nests these under completion_tokens_details.
-        details = getattr(usage, "completion_tokens_details", None)
-        reasoning_tokens = getattr(details, "reasoning_tokens", None) if details else None
+        reasoning_tokens = getattr(usage, "thoughts_token_count", None)
         if reasoning_tokens:
             span.set_attribute("gen_ai.usage.reasoning_tokens", reasoning_tokens)
             _record_tokens(reasoning_tokens, "reasoning", model, system)

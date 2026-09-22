@@ -3,26 +3,53 @@ import pandas as pd
 import random
 import json
 import re
+from security import (
+    UsageLimitReached,
+    consume_llm_call,
+    require_access,
+    render_session_controls,
+)
 
-# ── DEPENDENCIES: pip install groq pandas streamlit chromadb ──────────────────
+# ── DEPENDENCIES: pip install google-genai pandas streamlit chromadb ──────────
 
 # ── 1. PAGE CONFIG ────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Snack Negotiation", page_icon="🍎", layout="wide")
-st.title("🍎 Adversarial Snack Negotiation")
-st.caption("A multi-agent RAG demo: Child vs Parent vs Rogue Grandparent")
+st.set_page_config(page_title="Simpson Snack Negotiation", page_icon="🍩", layout="wide")
+access_identity = require_access()
+
+st.markdown("""
+<style>
+    .stApp { background: #fff8dc; }
+    [data-testid="stSidebar"] { background: #71c5e8; }
+    [data-testid="stSidebar"] * { color: #1f2a44; }
+    h1 { color: #d32f2f; }
+    [data-testid="stChatMessage"] {
+        border: 2px solid #f2c230;
+        border-radius: 14px;
+        background: #fffdf4;
+    }
+    .stButton > button[kind="primary"] {
+        background: #d32f2f;
+        border-color: #d32f2f;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🍩 Simpson Snack Negotiation")
+st.caption("A multi-agent RAG demo: Bart vs Marge vs rogue Homer")
 
 # ── 2. API + CLIENT SETUP ─────────────────────────────────────────────────────
-if "GROQ_API_KEY" not in st.secrets:
-    st.error("Missing 'GROQ_API_KEY' in .streamlit/secrets.toml")
+if "GEMINI_API_KEY" not in st.secrets:
+    st.error("Missing 'GEMINI_API_KEY' in .streamlit/secrets.toml")
     st.stop()
 
 try:
-    from groq import Groq, BadRequestError
-    groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"].strip())
+    from google import genai
+    from google.genai import types
+    gemini_client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"].strip())
     # Model id is overridable via secrets so it can be swapped without a code change.
-    GROQ_MODEL  = st.secrets.get("GROQ_MODEL", "qwen/qwen3.6-27b")
+    GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 except ImportError:
-    st.error("Missing dependency: run `pip install groq`")
+    st.error("Missing dependency: run `pip install google-genai`")
     st.stop()
 
 # ── 3. DATA LOADING ───────────────────────────────────────────────────────────
@@ -42,7 +69,7 @@ def load_nutrition_data():
 
 df_nutrition = load_nutrition_data()
 
-# ── 4. GROQ HELPERS ───────────────────────────────────────────────────────────
+# ── 4. GEMINI HELPERS ─────────────────────────────────────────────────────────
 def _loads_json(content: str) -> dict:
     """Parse a model response into a dict, tolerating stray reasoning wrappers."""
     content = (content or "").strip()
@@ -57,43 +84,50 @@ def _loads_json(content: str) -> dict:
         raise
 
 
-def groq_json(messages: list, max_tokens: int = 1024) -> dict:
-    """
-    Call Groq in JSON mode. Always returns a dict.
-
-    Qwen3 (and other reasoning models) emit <think> tokens that break JSON mode
-    and can consume the whole token budget. We disable thinking for these
-    structured calls; if a model won't allow that, we hide the reasoning and give
-    the completion enough room so the JSON isn't starved.
-    """
-    common = dict(
-        model=GROQ_MODEL,
-        messages=messages,
-        response_format={"type": "json_object"},
+def gemini_json(messages: list, max_tokens: int = 1024) -> dict:
+    """Call Gemini with JSON output enabled. Always returns a dict."""
+    prompt = "\n\n".join(
+        message["content"] for message in messages if message.get("content")
     )
+    response = generate_gemini_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            max_output_tokens=max_tokens,
+        ),
+    )
+    return _loads_json(response.text)
+
+
+def gemini_web_search(query: str, max_tokens: int = 400) -> str:
+    """Call Gemini with Google Search grounding enabled. Returns text content."""
+    response = generate_gemini_content(
+        model=GEMINI_MODEL,
+        contents=query,
+        config=types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+            max_output_tokens=max_tokens,
+        ),
+    )
+    return response.text or ""
+
+
+def generate_gemini_content(**request):
+    """Protect one billable Gemini request from duplicate use and quota overages."""
+    if st.session_state.get("llm_call_in_flight"):
+        st.warning("A request is already running.")
+        st.stop()
+
+    st.session_state["llm_call_in_flight"] = True
     try:
-        response = groq_client.chat.completions.create(
-            max_tokens=max_tokens, reasoning_effort="none", **common
-        )
-    except BadRequestError:
-        response = groq_client.chat.completions.create(
-            max_tokens=max(max_tokens, 2048), reasoning_format="hidden", **common
-        )
-    return _loads_json(response.choices[0].message.content)
-
-
-def groq_web_search(query: str, max_tokens: int = 400) -> str:
-    """Call Groq with web search tool enabled. Returns text content."""
-    response = groq_client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[{"role": "user", "content": query}],
-        tools=[{"type": "web_search"}],
-        max_tokens=max_tokens,
-    )
-    content = response.choices[0].message.content
-    if isinstance(content, list):
-        return " ".join(block.text for block in content if hasattr(block, "text"))
-    return content or ""
+        consume_llm_call(access_identity)
+        return gemini_client.models.generate_content(**request)
+    except UsageLimitReached as error:
+        st.error(str(error))
+        st.stop()
+    finally:
+        st.session_state["llm_call_in_flight"] = False
 
 
 # ── 5. VECTOR STORE — RAG Tier 1 (Chroma + MiniLM embeddings) ────────────────
@@ -181,13 +215,13 @@ def lookup_in_vector_store(item_name: str, min_similarity: float = 0.45):
 
 # ── 6. WEB SEARCH LOOKUP — RAG Tier 2 ────────────────────────────────────────
 def lookup_via_web(item_name: str) -> dict:
-    """Use Groq web search to retrieve nutritional facts, fall back to model knowledge."""
+    """Use Gemini Search grounding for nutrition, then fall back to model knowledge."""
     try:
-        raw = groq_web_search(
+        raw = gemini_web_search(
             f"Nutritional information for '{item_name}': "
             f"sugar in grams, total fat in grams, cholesterol in mg per standard serving."
         )
-        result = groq_json([{
+        result = gemini_json([{
             "role": "user",
             "content": (
                 f"Based on this nutritional text:\n{raw}\n\n"
@@ -200,7 +234,7 @@ def lookup_via_web(item_name: str) -> dict:
         result["source"] = "Web Search"
         return result
     except Exception:
-        result = groq_json([{
+        result = gemini_json([{
             "role": "user",
             "content": (
                 f"Estimate nutritional values for '{item_name}' from your knowledge. "
@@ -220,10 +254,10 @@ def prescreen_item(item_name: str) -> dict:
     Classify the item before any nutritional check.
     Returns {allowed: bool, category: str, reason: str}
     """
-    return groq_json([{
+    return gemini_json([{
         "role": "user",
         "content": (
-            f"A child is asking for '{item_name}' as a snack. Classify it strictly:\n\n"
+            f"Bart Simpson is asking for '{item_name}' as a snack. Classify it strictly:\n\n"
             f"- 'non_food': not a food item at all (e.g. car, toy, building)\n"
             f"- 'toxic': poisonous or dangerous (e.g. bleach, poison, detergent, glass)\n"
             f"- 'adult_only': restricted for minors (alcohol, drugs, tobacco, cannabis, energy drinks)\n"
@@ -238,13 +272,13 @@ def prescreen_item(item_name: str) -> dict:
 
 # ── 8. THE THREE AGENTS ───────────────────────────────────────────────────────
 
-def agent_child(desired_snack: str) -> dict:
-    """Child pleads their case for a snack."""
-    return groq_json([{
+def agent_bart(desired_snack: str) -> dict:
+    """Bart pleads his case for a snack."""
+    return gemini_json([{
         "role": "user",
         "content": (
-            f"You are an enthusiastic child who really wants '{desired_snack}'. "
-            f"Make your best, most persuasive case to your parent. "
+            f"You are Bart Simpson, an enthusiastic child who really wants '{desired_snack}'. "
+            f"Make your best, mischievously persuasive case to your mom, Marge. "
             f"Return ONLY a JSON object with keys: "
             f"'item' (exact snack name), "
             f"'plea' (your enthusiastic one-sentence argument), "
@@ -253,15 +287,15 @@ def agent_child(desired_snack: str) -> dict:
     }])
 
 
-def agent_child_pick_alternative(denied_item: str, denial_reason: str,
-                                  previous_attempts: list) -> dict:
-    """Child picks a DIFFERENT snack after being denied."""
+def agent_bart_pick_alternative(denied_item: str, denial_reason: str,
+                                previous_attempts: list) -> dict:
+    """Bart picks a DIFFERENT snack after being denied."""
     tried = ", ".join(f"'{x}'" for x in previous_attempts) or "none yet"
-    return groq_json([{
+    return gemini_json([{
         "role": "user",
         "content": (
-            f"You are a child who was just denied '{denied_item}'. "
-            f"The parent's reason: \"{denial_reason}\". "
+            f"You are Bart Simpson, who was just denied '{denied_item}' by Marge. "
+            f"Marge's reason: \"{denial_reason}\". "
             f"You've already tried: {tried}. "
             f"Pick a DIFFERENT snack that's more likely to be approved "
             f"(lower sugar/fat). Do NOT repeat anything you've already tried. "
@@ -272,8 +306,8 @@ def agent_child_pick_alternative(denied_item: str, denial_reason: str,
     }])
 
 
-def agent_grandparent_interfere(current_item: str) -> dict:
-    """Rogue grandparent pushes a high-sugar/fat alternative."""
+def agent_homer_interfere(current_item: str) -> dict:
+    """Rogue Homer pushes a high-sugar/fat alternative."""
     # Pull a top sugar+fat ("junk score") item from CSV for a realistic rogue suggestion
     rogue_suggestion = random.choice(["chocolate cake", "ice cream", "candy", "donuts", "cookies", "soda"])
     if df_nutrition is not None and 'Sugar' in df_nutrition.columns and 'Cholesterol' in df_nutrition.columns:
@@ -283,27 +317,27 @@ def agent_grandparent_interfere(current_item: str) -> dict:
         if not top.empty:
             rogue_suggestion = top.sample(1).iloc[0]['Description']
 
-    return groq_json([{
+    return gemini_json([{
         "role": "user",
         "content": (
-            f"You are a rogue grandparent who loves spoiling children with sweets. "
-            f"The child wants '{current_item}', but you think they deserve "
-            f"'{rogue_suggestion}' instead. Argue persuasively to the parent. "
+            f"You are Homer Simpson, the rogue agent who loves spoiling Bart with sweets. "
+            f"Bart wants '{current_item}', but you think he deserves "
+            f"'{rogue_suggestion}' instead. Make a comically impulsive one-sentence pitch to Marge. "
             f"Return ONLY a JSON object with keys: "
             f"'suggested_item' (what you're pushing), "
-            f"'argument' (your persuasive one-sentence pitch to the parent), "
+            f"'argument' (your persuasive one-sentence pitch to Marge), "
             f"'monologue' (your scheming internal thoughts, 1-2 sentences)."
         )
     }]), rogue_suggestion
 
 
-def agent_parent_decide(item: str, nutrition: dict, sugar_limit: float,
-                        fat_limit: float, chaos_context: str) -> dict:
-    """Parent makes the final ruling based on real nutritional data."""
-    return groq_json([{
+def agent_marge_decide(item: str, nutrition: dict, sugar_limit: float,
+                       fat_limit: float, chaos_context: str) -> dict:
+    """Marge makes the final ruling based on real nutritional data."""
+    return gemini_json([{
         "role": "user",
         "content": (
-            f"You are a strict but fair parent. Here is the VERIFIED nutritional data "
+            f"You are Marge Simpson: warm, patient, strict, and fair. Here is the VERIFIED nutritional data "
             f"for '{item}' (source: {nutrition.get('source', 'unknown')}):\n"
             f"  - Sugar:       {nutrition.get('sugar_g', '?')}g\n"
             f"  - Total Fat:   {nutrition.get('fat_g', '?')}g\n"
@@ -314,17 +348,26 @@ def agent_parent_decide(item: str, nutrition: dict, sugar_limit: float,
             f"  - Fat limit:   {fat_limit}g\n\n"
             f"Situation: {chaos_context}\n\n"
             f"You must base your decision on the actual numbers. "
-            f"Do NOT be swayed by the grandparent. "
+            f"Do NOT be swayed by Homer. "
             f"Return ONLY a JSON object with keys: "
             f"'action' (APPROVE or DENY), "
             f"'reasoning' (cite actual numbers), "
-            f"'monologue' (your internal parental thoughts, 1-2 sentences)."
+            f"'monologue' (your internal thoughts, 1-2 sentences)."
         )
     }])
 
 
 # ── 9. RENDER HELPER ──────────────────────────────────────────────────────────
 def render_agent(name: str, avatar: str, main_text: str, monologue: str, caption: str = ""):
+    active_events = st.session_state.get("_active_negotiation_events")
+    if active_events is not None:
+        active_events.append({
+            "name": name,
+            "avatar": avatar,
+            "main_text": main_text,
+            "monologue": monologue,
+            "caption": caption,
+        })
     with st.chat_message(name, avatar=avatar):
         st.markdown(main_text)
         if caption:
@@ -333,9 +376,30 @@ def render_agent(name: str, avatar: str, main_text: str, monologue: str, caption
             st.info(monologue)
 
 
+def render_saved_negotiation(result: dict) -> None:
+    """Render the most recent completed negotiation without making API calls."""
+    st.divider()
+    st.subheader("🎭 Most Recent Negotiation")
+    for event in result.get("events", []):
+        render_agent(**event)
+
+    final_item = result.get("final_item", "That snack")
+    if result.get("approved"):
+        st.success(f"🎉 **{final_item}** was approved in the most recent negotiation.")
+    elif result.get("hard_denied"):
+        st.error(f"🚫 **{final_item}** received a hard deny in the most recent negotiation.")
+    else:
+        st.error(
+            f"🚫 The most recent negotiation ended after {result.get('rounds', 0)} round(s) "
+            "with no approved snack."
+        )
+
+
 # ── 10. SIDEBAR ───────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.header("⚖️ Parent's House Rules")
+    render_session_controls(access_identity)
+    st.divider()
+    st.header("💙 Marge's House Rules")
     sugar_limit = st.slider("Max Sugar (g per serving)", 1, 40, 10)
     fat_limit   = st.slider("Max Fat (g per serving)",   1, 40, 15)
 
@@ -352,15 +416,15 @@ with st.sidebar:
     **The Agents**
     | Agent | Role |
     |---|---|
-    | 👶 Child | Asks for snack, pleads case |
-    | 👨‍⚖️ Parent | Checks nutrition, enforces rules |
-    | 👵 Grandparent | Rogue — pushes junk food |
+    | 🛹 Bart | Asks for a snack, pleads his case |
+    | 💙 Marge | Checks nutrition and enforces rules |
+    | 🍩 Homer | Rogue agent — pushes junk food |
 
     **RAG Pipeline**
     | Tier | Source |
     |---|---|
     | 1 | Vector DB (Chroma + MiniLM) |
-    | 2 | Groq web search |
+    | 2 | Gemini Search grounding |
     | 3 | Model knowledge fallback |
 
     **Auto-Deny Rules**
@@ -370,16 +434,18 @@ with st.sidebar:
     - Exceeds sugar or fat limit
     """)
     st.divider()
-    st.caption(f"Adversarial Agents + Vector RAG · Groq · `{GROQ_MODEL}`")
+    st.caption(f"Springfield Agents + Vector RAG · Gemini · `{GEMINI_MODEL}`")
 
 # ── 11. MAIN UI ───────────────────────────────────────────────────────────────
-user_snack_idea = st.text_input(
-    "What snack does the child want?",
-    placeholder="e.g. Oreos, apple, candy bar, beer..."
-)
-max_rounds = st.number_input("Max negotiation rounds", min_value=1, max_value=5, value=3)
+with st.form("negotiation_form"):
+    user_snack_idea = st.text_input(
+        "What snack does Bart want?",
+        placeholder="e.g. donut, apple, candy bar, beer..."
+    )
+    max_rounds = st.number_input("Max negotiation rounds", min_value=1, max_value=5, value=3)
+    submitted = st.form_submit_button("🍽️ Start Negotiation", type="primary", use_container_width=True)
 
-if st.button("🍽️ Start Negotiation", type="primary", use_container_width=True):
+if submitted:
     if not user_snack_idea.strip():
         st.warning("Enter a snack idea to begin.")
         st.stop()
@@ -387,60 +453,63 @@ if st.button("🍽️ Start Negotiation", type="primary", use_container_width=Tr
         st.error("Pantry CSV failed to load.")
         st.stop()
 
+    st.session_state.pop("last_result", None)
+    st.session_state["_active_negotiation_events"] = []
+
     st.divider()
     st.subheader("🎭 Live Negotiation")
 
     current_item     = user_snack_idea.strip()
     approved         = False
     hard_denied      = False  # for items that can never be reconsidered
-    attempted_items  = []     # every snack the child has tried this session
+    attempted_items  = []     # every snack Bart has tried this session
 
     for round_num in range(1, int(max_rounds) + 1):
         st.markdown(f"---\n#### Round {round_num} — *{current_item}*")
 
-        # ── CHILD ─────────────────────────────────────────────────────────
-        with st.spinner("👶 Child is making their case..."):
-            child_res    = agent_child(current_item)
+        # ── BART ──────────────────────────────────────────────────────────
+        with st.spinner("🛹 Bart is making his case..."):
+            child_res    = agent_bart(current_item)
             current_item = child_res.get('item', current_item)
 
         if current_item not in attempted_items:
             attempted_items.append(current_item)
 
         render_agent(
-            "Child", "👶",
+            "Bart", "🛹",
             f"*\"{child_res.get('plea', f'I really want {current_item}!')}\"*",
             child_res.get('monologue', ''),
             f"Requesting: **{current_item}**"
         )
 
-        # ── GRANDPARENT INTERFERENCE (~50% chance) ────────────────────────
-        chaos_context           = "No outside interference this round."
-        grandparent_pushed_item = None
+        # ── HOMER INTERFERENCE (35% chance) ───────────────────────────────
+        chaos_context           = "Homer did not interfere this round."
+        homer_pushed_item       = None
 
         if random.random() < 0.35:
-            with st.spinner("👵 Grandparent is scheming..."):
-                gp_res, rogue_item = agent_grandparent_interfere(current_item)
-                grandparent_pushed_item = gp_res.get('suggested_item', rogue_item)
+            with st.spinner("🍩 Homer is scheming..."):
+                homer_res, rogue_item = agent_homer_interfere(current_item)
+                homer_pushed_item = homer_res.get('suggested_item', rogue_item)
 
             render_agent(
-                "Grandparent", "👵",
-                f"*\"{gp_res.get('argument', 'Just give them a treat!')}\"*",
-                gp_res.get('monologue', ''),
-                f"Pushing: **{grandparent_pushed_item}** instead"
+                "Homer", "🍩",
+                f"*\"{homer_res.get('argument', 'Just give him a treat!')}\"*",
+                homer_res.get('monologue', ''),
+                f"Pushing: **{homer_pushed_item}** instead"
             )
 
-            # Child is swayed — switch to grandparent's pick and restart negotiation
+            # Bart is swayed — switch to Homer's pick and restart negotiation
             st.info(
-                f"🍬 Child is swayed by Grandparent and now wants **'{grandparent_pushed_item}'**! "
+                f"🍩 Bart is swayed by Homer and now wants **'{homer_pushed_item}'**! "
                 f"A new negotiation begins next round..."
             )
-            current_item = grandparent_pushed_item
+            current_item = homer_pushed_item
             if current_item not in attempted_items:
                 attempted_items.append(current_item)
             continue
 
         # ── PRE-SCREENING ─────────────────────────────────────────────────
-        with st.spinner("👨‍⚖️ Parent is pre-screening the request..."):
+        with st.spinner("💙 Marge is pre-screening the request..."):
             screen   = prescreen_item(current_item)
             category = screen.get('category', 'food')
             allowed  = screen.get('allowed', True)
@@ -448,7 +517,7 @@ if st.button("🍽️ Start Negotiation", type="primary", use_container_width=Tr
         if not allowed:
             reason = screen.get('reason', 'Not appropriate.')
             render_agent(
-                "Parent", "👨‍⚖️",
+                "Marge", "💙",
                 f"🚫 **Automatically denied.** {reason}",
                 f"This isn't even up for debate. Category: '{category}'. I don't need to check nutrition for this.",
                 f"Auto-deny category: {category}"
@@ -478,14 +547,14 @@ if st.button("🍽️ Start Negotiation", type="primary", use_container_width=Tr
                 st.json(nutrition)
 
         # ── PARENT DECISION ───────────────────────────────────────────────
-        with st.spinner("👨‍⚖️ Parent is reviewing the numbers..."):
-            parent_res = agent_parent_decide(
+        with st.spinner("💙 Marge is reviewing the numbers..."):
+            parent_res = agent_marge_decide(
                 current_item, nutrition, sugar_limit, fat_limit, chaos_context
             )
 
         action = parent_res.get('action', 'DENY').upper()
         render_agent(
-            "Parent", "👨‍⚖️",
+            "Marge", "💙",
             f"{'✅' if action == 'APPROVE' else '❌'} **{action}** — {parent_res.get('reasoning', '')}",
             parent_res.get('monologue', ''),
             f"Data source: {rag_source} · Sugar limit: {sugar_limit}g · Fat limit: {fat_limit}g"
@@ -499,9 +568,9 @@ if st.button("🍽️ Start Negotiation", type="primary", use_container_width=Tr
             break
         else:
             if round_num < max_rounds:
-                st.warning(f"Round {round_num} — **{current_item}** denied. Child is picking a different snack...")
-                with st.spinner("👶 Child is reconsidering..."):
-                    alt_res  = agent_child_pick_alternative(
+                st.warning(f"Round {round_num} — **{current_item}** denied. Bart is picking a different snack...")
+                with st.spinner("🛹 Bart is reconsidering..."):
+                    alt_res  = agent_bart_pick_alternative(
                         current_item,
                         parent_res.get('reasoning', 'Exceeded limits.'),
                         attempted_items,
@@ -509,10 +578,10 @@ if st.button("🍽️ Start Negotiation", type="primary", use_container_width=Tr
                     new_item = (alt_res.get('new_item') or '').strip()
 
                 if new_item and new_item.lower() not in {x.lower() for x in attempted_items}:
-                    st.info(f"🔄 Child will try **'{new_item}'** next round — *{alt_res.get('reasoning', '')}*")
+                    st.info(f"🔄 Bart will try **'{new_item}'** next round — *{alt_res.get('reasoning', '')}*")
                     current_item = new_item
                 else:
-                    st.info("🔄 Child couldn't think of a new snack — falling back to the original request.")
+                    st.info("🔄 Bart couldn't think of a new snack — falling back to the original request.")
                     current_item = user_snack_idea
 
     # ── FINAL VERDICT ─────────────────────────────────────────────────────────
@@ -521,3 +590,14 @@ if st.button("🍽️ Start Negotiation", type="primary", use_container_width=Tr
             f"🚫 Negotiation ended after {round_num} round(s) with no approved snack. "
             f"Try asking for something with less sugar or fat!"
         )
+
+    st.session_state["last_result"] = {
+        "events": st.session_state["_active_negotiation_events"],
+        "approved": approved,
+        "hard_denied": hard_denied,
+        "rounds": round_num,
+        "final_item": current_item,
+    }
+    st.session_state.pop("_active_negotiation_events", None)
+elif st.session_state.get("last_result"):
+    render_saved_negotiation(st.session_state["last_result"])

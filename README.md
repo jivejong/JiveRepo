@@ -16,15 +16,21 @@ A Spring Boot REST API modeling a full recruiting pipeline (ATS) — sourcing, r
 
 A Blazor Server app pairing real Chicago Police Department crime data with a seeded, fictional superhero roster in a synthetic "intervention" model — deploy a hero to a neighborhood and see a deterministic, illustrative projected effect per real crime category, followed by an LLM-generated report per hero. C# only, .NET 10, EF Core over Postgres, Groq for structured-JSON report generation with a disclaimer injected by code rather than left to the model. The crime pull is bounded to a trailing 90-day window via Socrata's `$where` filter rather than the multi-million-row full table; the hero roster is a build-time snapshot from SuperheroAPI, with the ingestion script checked in and re-runnable rather than treated as a one-off. The UI marks the exact point where real data ends and the fictional scoring model begins with an explicit banner, not just a code comment. See the [project README](./SuperHeroOps/README.md).
 
+### [`/BBS_Website`](./BBS_Website)
+
+An interactive portfolio site presented as a late-1980s bulletin board system. The complete experience — modem handshake, C64-inspired boot sequence, keyboard and mouse navigation, puzzle gate, demoscene-style intro, synthesized audio, Pine-inspired contact screen, and in-page arcade — is built in plain HTML, CSS, and JavaScript without a framework, build step, or runtime dependency. Its deliberately compact architecture demonstrates choosing the smallest viable toolset for the experience rather than defaulting to a framework. See the [project README](./BBS_Website/README.md).
+
+### [`/Chord_Chart_Manager`](./Chord_Chart_Manager)
+
+A local, searchable chord-chart manager for live performance, combining a Python document-import pipeline with a React/Vite progressive web app, Express API, and PostgreSQL. It supports chart editing and transposition, setlists with gig-specific song settings and notes, and IndexedDB-backed offline work that syncs safely when a connection returns. Docker Compose runs the complete local application; cloud and Kubernetes deployment remain documented future work. See the [project README](./Chord_Chart_Manager/README.md).
+
 ### [`/Batcave_IDS`](./Batcave_IDS)
 
 A local, streaming intrusion-detection pipeline: a simulated five-stage attack lands telemetry through Kafka (Redpanda) into a partitioned Parquet lakehouse, transformed with dbt on DuckDB and orchestrated by Dagster, with data-quality handling for ten deliberately injected pathologies (duplicates, late/out-of-order events, malformed JSON, schema drift, clock skew). An LLM analyst then reconstructs attacker identity and MITRE ATT&CK techniques from sensor data alone — with a ground-truth-leakage check enforced at the dbt-lineage level — and is scored against a rule-based baseline across attribution and technique-recall metrics, reported by detection-observability tier. Runs entirely locally on Docker; no cloud account required. See the [Batcave_IDS README](./Batcave_IDS/README.md).
 
-### [`/agentic_AI`](./agentic_AI)
+### [`/Agentic_AI`](./Agentic_AI)
 
-This collection features five agentic AI projects exploring multi-agent dynamics, multimodal pipelines, and interactive workflows. **Agentic Poet** turns images into audio-visual poetry performances via six coordinated agents and closed-loop validation. **Agentic Snacks** models adversarial negotiations over dietary choices using three-tier RAG across thousands of food items. **Spouse Approval** acts as an escalating state machine that transcribes bad ideas and scores marital risk with multi-voice neural TTS and full telemetry. **South Park Town Hall Debate** runs automated, Lincoln-Douglas style character debates with dynamic topics and celebrity judges, while **NoCap** uses strict prompt engineering to evaluate Gen Z slang into structured cultural verdicts.
-
-Across the suite, the projects share a unified foundation built on Streamlit interfaces, Groq-powered inference (Llama 3.3 and Qwen models), and Streamlit secrets management. Each application augments this core with specialized capabilities, incorporating tools such as Gemini vision analysis, Whisper speech-to-text, Chroma vector storage, edge-tts narration, and OpenTelemetry instrumentation to support diverse agent behaviors. See the [agentic_AI README](./agentic_AI/README.md).
+Five Streamlit applications that each isolate a different agentic pattern while sharing Gemini `gemini-3.1-flash-lite`, local Streamlit Secrets, deliberate user-triggered inference, and session-level demo safeguards. **Agentic Adversarial** is a Bart/Marge/Homer snack negotiation using Chroma-backed nutrition retrieval with grounded and model-knowledge fallbacks. **Agentic Approval** turns a recorded idea into an explicit Bundy-household escalation state machine, with Gemini transcription, Edge TTS, and OpenTelemetry traces. **Agentic Collaborative** uses a TMNT team to transform an image into a verified poem, narration, and mood-matched local music. **South Park Town Hall Debate** coordinates persona prompts, independent judges, call-budget checks, and a live telemetry panel. **No Cap** is a compact structured-output classifier for slang relevance. See the [Agentic_AI README](./Agentic_AI/README.md).
 
 ### [`/data_engineering`](./data_engineering)
 
@@ -38,9 +44,9 @@ ASCII art and small games written entirely in SQL — recursive CTEs rendering a
 
 Standalone operations scripts: Bash tooling for database CRUD across three engines, rolling backups, and prompt-injection scanning; PowerShell tooling for Windows duplicate-file/folder cleanup. See the [shell_scripts README](./shell_scripts/README.md).
 
-### [`/prompts`](./prompts)
+### [`/Prompts`](./Prompts)
 
-AI system prompts organized around one principle: **AI should expand human thinking, not replace it.** Six families — `healthyAI/` (guardrails against dependency and drift), `thinking/` (inward, outward, and pedagogy-based perspective tools), `codeDojo/` (programming practice built on Eastern pedagogical traditions), `training/` (a learning pipeline modeled on the ML lifecycle), `writing/` (corrective and collaborative writing partners), and `health/` (six holistic-health epistemologies). Practical, tested, no hype. See the [prompts README](./prompts/readme.md).
+AI system prompts organized around one principle: **AI should expand human thinking, not replace it.** Six families — `healthy-ai/` (guardrails against dependency and drift), `thinking/` (inward, outward, and pedagogy-based perspective tools), `code-dojo/` (programming practice built on Eastern pedagogical traditions), `training/` (a learning pipeline modeled on the ML lifecycle), `writing/` (corrective and collaborative writing partners), and `health/` (six holistic-health epistemologies). Practical, tested, no hype. See the [prompts README](./Prompts/readme.md).
 
 ### [`/docs`](./docs)
 
@@ -48,27 +54,35 @@ Long-form writing in three formats: `articles/` (pieces for LinkedIn and other p
 
 ### [`/projects`](./projects)
 
-Experiments and code. Mostly stuff in work. Functional implementations with documented architectural decisions — not just what it does, but why it was built the way it was.
+The holding area for applications and code still in progress. Projects move into the repository root once they are ready to stand as complete portfolio work.
+
+---
+
+## File Naming Conventions
+
+- **Java and C#:** `PascalCase`
+- **Python:** `snake_case`
+- **Prompts:** `kebab-case`
 
 ---
 
 ## Skills
 
-**Languages:** Java · C# · JavaScript · SQL (T-SQL, PL/pgSQL, PLSQL) · Bash · PowerShell · Python
+Skills demonstrated across the applications, pipelines, and supporting documentation in this repository:
 
-**AI / ML / LLM Engineering:** Agentic AI · Multi-agent orchestration · RAG (Retrieval-Augmented Generation) · Prompt engineering · LLM-as-classifier · LLM-as-judge evaluation · Structured JSON output / schema-constrained generation · Vector databases (Chroma, Databricks AI Search) · Embeddings · Semantic search · Cross-model orchestration (Groq, Google Gemini, OpenAI-compatible endpoints) · Speech-to-text (Whisper) · Text-to-speech (gTTS, edge-tts) · Prompt-injection detection · MLOps · Observability for GenAI (OpenTelemetry, GenAI semantic conventions) · Measured LLM evaluation against ground truth (precision/recall/F1, hallucination rate)
+**Languages:** Java · C# · Python · JavaScript/JSX · SQL (PostgreSQL, T-SQL, PL/SQL, Spark SQL) · Bash · PowerShell · HTML/CSS
 
-**Backend / Frameworks:** Spring Boot · Spring Statemachine · .NET 10 · Blazor Server · Entity Framework Core · REST API design · Streamlit
+**Application Engineering:** Spring Boot (Web, Data JPA, Statemachine) · .NET 10 · Blazor Server · Entity Framework Core · Node.js/Express · REST APIs · PostgreSQL full-text search · deterministic workflow and state-machine design · offline-first synchronization
 
-**Frontend:** React · Blazor · HTML/CSS
+**Frontend & Product:** React · Vite · Progressive Web Apps · IndexedDB · responsive HTML/CSS/JavaScript · Web Audio API · keyboard-first interaction design · Playwright-driven browser verification
 
-**Data & Databases:** PostgreSQL (full-text search) · SQL Server · Oracle · Teradata · Database CRUD tooling · ETL/ELT · Databricks (PySpark, Unity Catalog, Delta Lake, medallion architecture) · Snowflake · Big Query · Kafka (Redpanda) streaming ingestion · dbt transformations · Dagster orchestration · DuckDB · Parquet lakehouses · Jupyter notebooks · Data quality engineering (deduplication, schema drift, late/out-of-order/malformed data)
+**AI / LLM Systems:** agentic and multi-agent applications · Groq and Gemini API integration · structured JSON and schema-constrained generation · RAG, embeddings, and semantic retrieval · Chroma and Databricks AI Search · LLM-as-classifier and LLM-as-judge evaluation · cross-model evaluation · Whisper speech-to-text · gTTS and edge-tts · OpenTelemetry with GenAI semantic conventions
 
-**Cloud / Infrastructure:** Cloud architecture (NetWare to cloud migration experience) · CI/CD-oriented tooling · Socrata Open Data API integration · Docker · GCP · AWS · Azure
+**Data, Streaming & Analytics:** PySpark · Spark SQL · Databricks · Unity Catalog · Delta Lake · Bronze/Silver/Gold medallion pipelines · Kafka-compatible Redpanda · Parquet lakehouses · dbt · Dagster · DuckDB · data quality, lineage, and ground-truth-leakage controls · Socrata Open Data API integration
 
-**Security:** MITRE ATT&CK-mapped threat detection · Detection coverage / observability-gap analysis · Prompt-injection detection
+**Delivery & Quality:** Docker and Docker Compose · Gradle · npm · GitHub Actions · JUnit · xUnit · pytest · Vitest · Playwright/Chromium · Ruff · SQLFluff · pre-commit
 
-**Practices:** Test-driven verification (real infrastructure, not mocks) · State machine design · Statistical/arithmetic decisioning against real datasets (BLS wage data) · Security-conscious scripting (credential handling, prompt-injection scanning) · Technical writing / architecture documentation
+**Security & Architecture:** MITRE ATT&CK-mapped threat detection · prompt-injection scanning · secret-aware configuration · deterministic/probabilistic system boundaries · observability and evaluation design · Kubernetes and Terraform architecture design · ADRs, handoffs, and technical architecture documentation
 
 ---
 
@@ -92,9 +106,7 @@ Experiments and code. Mostly stuff in work. Functional implementations with docu
 
 ## Academic Work
 
-White papers published on [Zenodo](https://zenodo.org) — peer-indexed, DOI-assigned, citable.
-
-Current work connects media strategy, LLM SEO, and MLOps as converging disciplines. Links in `/docs`.
+White papers published on [Zenodo](https://zenodo.org/communities/jivejong/) — peer-indexed, DOI-assigned, citable. Current work examines how organizations can turn legacy data estates into durable AI advantages without recreating the debt through undisciplined ingestion; how AI tools can preserve productive human judgment rather than prematurely closing thought; and how frontier models differ in behavior, self-perception, and image-generation strategy under controlled comparisons. It also proposes digital archaeology, digital therapy, and LLM SEO as emerging disciplines for recovering, repairing, and deliberately preserving knowledge in an age of training compression. Links in `/docs`.
 
 ---
 

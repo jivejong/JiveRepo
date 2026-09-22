@@ -1,5 +1,4 @@
 google-genai
 streamlit
-gTTS
+edge-tts
 Pillow
-groq

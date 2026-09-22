@@ -11,4 +11,10 @@ env/
 # Python cache
 __pycache__/
 *.pyc
-tests/
+
+# Persisted Chroma vector index (rebuilt from the CSV on first run)
+chroma_db/
+
+# OS-specific files
+.DS_Store
+Thumbs.db

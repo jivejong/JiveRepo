@@ -1,91 +1,45 @@
-# 🤖 Agentic AI Projects
+# Agentic AI Projects
 
-A collection of small, self-contained [Streamlit](https://streamlit.io/) apps, each demonstrating a different pattern in agentic AI — from single-agent classifiers to multi-agent negotiations, compound multimodal pipelines, and voice-driven state machines. Every project is playful on the surface but built to showcase a specific, reusable technique underneath.
+Five independent Streamlit applications that demonstrate distinct agentic-AI patterns. The themes are playful; the implementations focus on explicit orchestration, controlled model calls, structured outputs, retrieval, multimodal interaction, and visible runtime behavior.
 
----
+## Projects
 
-## The Projects
+| Project | Pattern | Summary |
+| --- | --- | --- |
+| [Agentic Adversarial](Agentic_Adversarial/) | Adversarial multi-agent RAG | Bart, Marge, and a rogue Homer negotiate snack choices against configurable household nutrition rules. |
+| [Agentic Approval](Agentic_Approval/) | State-machine orchestration | A spoken idea is transcribed, scored, and routed through an escalating Bundy-household response flow. |
+| [Agentic Collaborative](Agentic_Collaborative/) | Compound multimodal pipeline | A TMNT team turns an uploaded or camera image into a verified poem, narration, and mood-matched music. |
+| [No Cap](No_Cap/) | Structured single-agent classification | A cultural-linguist prompt evaluates slang and returns a constrained `bussin` / `mid` / `unc` verdict. |
+| [South Park Debate](South_Park_Debate/) | Multi-agent simulation | Configurable character debates produce a generated topic, debate transcript, independent judging, and final announcement. |
 
-### 📸 [Agentic Poet](Agentic_Poet/)
+## Shared approach
 
-A photo passes through six specialized agents — vision analysis (Gemini), poetry composition, quality moderation with closed-loop retry, mood detection, voice narration (gTTS), and music selection from a local library — producing a live audio-visual performance.
+All applications use Streamlit and Gemini `gemini-3.1-flash-lite`, configured through local Streamlit Secrets. They are intentionally independent: install dependencies and run commands from the individual project directory.
 
-**Highlights:** cross-model orchestration (Gemini for vision, Groq for text) · two-stage moderation (cheap Python check before an LLM call) · closed-loop retry when the poem doesn't match the photo.
+Each app includes a tracked `.streamlit/secrets.toml.example` template and a private-demo access gate. The `owner` access code is unlimited; other configured identities are subject to a per-session quota. This protects a portfolio demo from casual model spending, but is not a replacement for authentication, provider-side rate limits, or spending controls.
 
-### 🍎 [Agentic Snacks](Agentic_Snacks/)
+## Quick start
 
-Three LLM agents negotiate in real time over a snack request, with a rogue Grandparent agent that randomly hijacks the negotiation to push high-sugar alternatives. The Parent agent pre-screens items and enforces configurable nutrition limits.
+Choose a project, follow its README, then run its Streamlit entry point:
 
-**Highlights:** adversarial agents working against each other · three-tier RAG (Chroma vector DB → web search → model knowledge) over ~7,400 embedded food items · LLM-as-classifier pre-screening.
-
-### 💍 [Spouse Approval](Spouse_Approval/)
-
-The user speaks a potentially bad idea; the app transcribes it (Whisper), scores its marital risk 1–10, and routes it through an escalating pipeline — calm warning → friend intervention → spousal rage → exile — with neural voice audio (edge-tts) at every stage.
-
-**Highlights:** explicit agentic state machine with guarded transitions · speech-to-text and multi-voice neural TTS · production-grade OpenTelemetry observability (GenAI semantic conventions) exportable to any OTLP backend.
-
-### 🎤 [South Park Town Hall Debate](South_Park_Debate/)
-
-An interactive, multi-agent Large Language Model (LLM) application built with **Streamlit** and powered by the **Groq API**. Watch as over 25 classic South Park characters engage in absurd, fully automated Lincoln-Douglas style town hall debates, complete with dynamic topic generation, a panel of celebrity judges, and OpenTelemetry instrumentation for real-time performance tracking.
-
-### 🔥 [NoCap](NoCap/)
-
-A single-agent app that evaluates a Gen Z slang term's current cultural relevance, returning a structured verdict (`bussin` / `mid` / `unc`), a relevance score, origin, example usage, and a cringe warning.
-
-**Highlights:** structured JSON output enforced purely through prompt engineering · prompt-persona design · direct REST integration via an OpenAI-compatible endpoint · fully custom CSS-themed Streamlit UI.
-
----
-
-## Common Stack
-
-All four projects share a consistent foundation:
-
-| Layer              | Technology                             |
-| ------------------ | -------------------------------------- |
-| UI                 | Streamlit                              |
-| Primary LLM        | Groq API (Qwen3.6 27B / Llama 3.3 70B) |
-| Vision (Poet only) | Google Gemini 2.5 Flash                |
-| Secrets            | `.streamlit/secrets.toml`              |
-
-Each project also draws on task-specific tooling — Chroma + MiniLM embeddings (Snacks), gTTS and a local audio library (Poet), Whisper + edge-tts (Spouse Approval), and OpenTelemetry instrumentation (Spouse Approval).
-
----
-
-## Running Any Project
-
-Each project is independent and follows the same pattern:
-
-```bash
-cd <project-folder>
-pip install -r requirements.txt        # or the pip line in that project's README
+```powershell
+cd Agentic_AI\Agentic_Adversarial
+pip install -r requirements.txt
+Copy-Item .streamlit\secrets.toml.example .streamlit\secrets.toml
+# Add your Gemini API key and strong access codes to the local secrets file.
+streamlit run app.py
 ```
 
-Add a Groq API key (and a Gemini key for the Poet) to `.streamlit/secrets.toml`:
+`No_Cap` has no requirements file; install `streamlit` and `requests`, then run `streamlit run nocap.py`.
 
-```toml
-GROQ_API_KEY  = "your-groq-api-key"
-# GENAI_API_KEY = "your-gemini-api-key"   # Agentic Poet only
-```
+## Techniques represented
 
-Then run it:
+- Agent handoffs and goal conflict: snack negotiation and character debate
+- Explicit state and branching: the approval workflow
+- Multimodal image-to-audio composition: the collaborative poet
+- Structured JSON outputs and prompt-constrained classification: No Cap
+- Retrieval with local embeddings and fallbacks: the snack negotiation app
+- Session-aware quotas, deliberate user-triggered calls, and saved results to avoid accidental repeat inference
+- OpenTelemetry traces and usage telemetry: the approval workflow and debate app
 
-```bash
-streamlit run app.py                   # NoCap uses nocap.py
-```
-
-See each project's own `README.md` for setup details, configuration options, and the concepts it demonstrates.
-
----
-
-## Concepts Across the Collection
-
-Taken together, these projects cover a broad slice of agentic AI patterns:
-
-- **Single-agent classification** with structured output (NoCap)
-- **Compound pipelines** where specialized agents each own one step (Poet)
-- **Adversarial multi-agent negotiation** with competing goals (Snacks)
-- **Agentic state machines** with escalation routing (Spouse Approval)
-- **RAG** — multi-tier retrieval with graceful fallback (Snacks)
-- **Multimodal input** — vision and voice as first-class inputs (Poet, Spouse Approval)
-- **Cost-aware design** — cheap checks before expensive LLM calls, disabled reasoning, token caps
-- **Observability** — OpenTelemetry GenAI-convention traces and metrics (Spouse Approval)
+See the individual READMEs for architecture, configuration, and operational details.
