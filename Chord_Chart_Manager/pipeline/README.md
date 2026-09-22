@@ -1,4 +1,4 @@
-# Chart Book data pipeline
+# Chord Chart Manager data pipeline
 
 The pipeline converts Word chord-chart documents into JSON, optionally enriches
 their metadata, and loads them into PostgreSQL. The recommended workflow uses

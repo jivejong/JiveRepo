@@ -1,4 +1,4 @@
-# Chart Book application
+# Chord Chart Manager application
 
 The application is a React/Vite progressive web app backed by an Express API
 and PostgreSQL. The production image builds the client into `dist/`; Express

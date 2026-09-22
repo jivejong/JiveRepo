@@ -1,6 +1,6 @@
-# Chart Book
+# Chord Chart Manager
 
-Chart Book is a searchable, transposable chord-chart manager for live
+Chord Chart Manager is a searchable, transposable chord-chart manager for live
 performance. It combines a Python import pipeline, a React/Vite progressive
 web app, an Express API, and PostgreSQL.
 
@@ -41,7 +41,7 @@ The remaining prerequisites are user-provided data and credentials:
 
 ## Repository layout
 
-- [`pipeline/`](pipeline/) parses `.docx` chart books, optionally enriches
+- [`pipeline/`](pipeline/) parses `.docx` chord chart docs, optionally enriches
   metadata through MusicBrainz and GetSongBPM, and loads PostgreSQL. See
   [pipeline/README.md](pipeline/README.md).
 - [`app/`](app/) contains the React/Vite PWA, Express API, PostgreSQL schema,
