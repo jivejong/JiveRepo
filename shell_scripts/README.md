@@ -1,205 +1,98 @@
-# 🛠️ Shell Scripts
+# Shell Scripts
 
-Standalone operations scripts — no build step, no dependencies beyond what each script declares. Two families live here:
+A small cross-platform operations toolkit: Bash utilities for backup, database operations, and AI-ingestion hygiene; PowerShell utilities for Windows storage analysis and cleanup. Each script is standalone and intentionally keeps its scope narrow.
 
-- **Bash scripts** (`*.sh`) — Linux/macOS operational tooling: database CRUD, backups, and pre-ingestion content scanning.
-- **PowerShell scripts** (`*.ps1`) — Windows filesystem hygiene: duplicate detection and empty-folder cleanup.
+## Highlights
 
----
+- **Security-conscious database automation** — `db_orchestrator.sh` supports the same CRUD workflow across Oracle, Teradata, and SQL Server without putting passwords in command-line arguments.
+- **Safe cleanup patterns** — duplicate-file tools verify content with hashes and quarantine files for review instead of permanently deleting them.
+- **Practical AI tooling** — `scan_injections.sh` provides a simple pre-ingestion screening step, while `dir-lens.ps1` produces a local-LLM directory audit through Ollama.
+- **Defensive defaults** — Bash scripts use `set -euo pipefail`; PowerShell cleanup scripts support previewing work with `-WhatIf`.
 
-## Bash Scripts
+## Requirements
 
-### 🗄️ `db_orchestrator.sh`
+| Area | Requirements |
+| --- | --- |
+| Bash scripts | Bash, plus standard Unix tools such as `tar`, `gzip`, `find`, and `grep` where applicable |
+| Database script | One supported client: Oracle SQL*Plus, Teradata BTEQ, or Microsoft `sqlcmd` |
+| PowerShell scripts | PowerShell 5.1+ or PowerShell 7+ on Windows; file hashing is built in |
+| `dir-lens.ps1` | [Ollama](https://ollama.com/) running locally and a local model (default: `llama3.2`) |
 
-A single CRUD front-end for three database engines — Teradata (BTEQ), Oracle (SQL\*Plus), and SQL Server (`sqlcmd`) — designed so that **credentials never appear in the process table**.
+On Linux or macOS, make the Bash scripts executable before first use:
 
 ```bash
-./db_orchestrator.sh -e <engine> -a <action> [options]
+chmod +x *.sh
 ```
 
-| Flag              | Purpose                                                         |
-| ----------------- | --------------------------------------------------------------- |
-| `-e <engine>`     | `teradata`, `oracle`, or `sqlserver` (required)                 |
-| `-a <action>`     | `create`, `read`, `update`, or `delete` (required)              |
-| `-i <id>`         | Record ID — required for update/delete, optional filter on read |
-| `-u <username>`   | Username — required for create                                  |
-| `-m <email>`      | Email — required for create                                     |
-| `--config <path>` | Credentials env file (default `~/.db_credentials.env`)          |
-| `-h, --help`      | Usage text                                                      |
+## Script Guide
 
-All actions target a fixed table, `app_users (id, username, email)`.
+### Bash
 
-**How credentials stay out of `ps`:**
+| Script | Purpose | Example |
+| --- | --- | --- |
+| `db_orchestrator.sh` | Runs CRUD actions against a fixed `app_users` table on Oracle, Teradata, or SQL Server. | `./db_orchestrator.sh -e oracle -a read -i 101` |
+| `rolling_backup.sh` | Creates and verifies timestamped `.tar.gz` backups, then removes expired archives for that source. | `./rolling_backup.sh /var/www/site /mnt/backups 7` |
+| `scan_injections.sh` | Screens common text formats for configurable prompt-injection signatures and moves flagged files to quarantine. | `./scan_injections.sh ./incoming ./quarantine` |
+| `wordle.sh` | A terminal Wordle-style game with duplicate-letter-aware feedback. | `./wordle.sh` |
 
-| Engine     | Technique                                                                          |
-| ---------- | ---------------------------------------------------------------------------------- |
-| Oracle     | Invoked as `sqlplus -s -S /nolog`; the `CONNECT user/pass@tns` is fed via stdin    |
-| Teradata   | `bteq` is invoked with zero flags; `.LOGON` arrives via a stdin heredoc            |
-| SQL Server | `SQLCMDPASSWORD` is exported and `-P` is omitted, so the password is never in argv |
+### PowerShell
 
-**Config file.** The script refuses to run unless the config file exists and its permissions are exactly `600` or `400`. It is sourced as shell, so use plain `KEY=value` lines:
+| Script | Scope | Detection / action | Example |
+| --- | --- | --- | --- |
+| `dir-lens.ps1` | One directory tree | Collects size, extension, and large-file metadata; asks a local Ollama model for cleanup recommendations. | `.\dir-lens.ps1 -Path 'C:\Users\me\Downloads'` |
+| `DeDupeArchive.ps1` | One directory tree | MD5; keeps the deepest copy and places others in a flat isolation folder. | `.\DeDupeArchive.ps1 -AnalyzePath 'D:\Archive' -DuplicatesPath 'D:\Dupes' -WhatIf` |
+| `Move-DuplicateFiles.ps1` | One directory tree | Size + SHA-256; keeps the deepest copy and moves the rest to a path-preserving quarantine. | `.\Move-DuplicateFiles.ps1 -SourcePath 'D:\Photos' -QuarantinePath 'D:\Quarantine' -WhatIf` |
+| `Remove-DuplicateFiles_all.ps1` | One directory tree | Size + SHA-256; keeps the shallowest copy and quarantines the rest. Includes informational filename-similarity logging. | `.\Remove-DuplicateFiles_all.ps1 -TargetPath 'D:\Media' -QuarantinePath 'D:\Quarantine' -WhatIf` |
+| `Remove-DuplicateFiles.ps1` | Folder A compared to Folder B | Size + SHA-256; preserves Folder B and quarantines matching copies from Folder A. | `.\Remove-DuplicateFiles.ps1 -FolderA 'D:\Inbox' -FolderB 'D:\Master' -QuarantinePath 'D:\Quarantine' -WhatIf` |
+| `Remove-DuplicateFolders.ps1` | Directory trees | Matches folders with the same name and a SHA-256 manifest fingerprint; keeps the shortest path. | `.\Remove-DuplicateFolders.ps1 -TargetPath 'D:\Projects' -QuarantinePath 'D:\Quarantine' -WhatIf` |
+| `Remove-EmptyFolders.ps1` | One directory tree | Removes empty folders bottom-up, repeating until no newly empty parents remain. | `.\Remove-EmptyFolders.ps1 -TargetPath 'D:\Archive' -WhatIf` |
+
+## Database Orchestrator
+
+`db_orchestrator.sh` targets `app_users (id, username, email)` and accepts these core options:
+
+```text
+./db_orchestrator.sh -e <teradata|oracle|sqlserver> -a <create|read|update|delete> [options]
+```
+
+| Option | Meaning |
+| --- | --- |
+| `-i <id>` | Numeric ID; required for update and delete, optional filter for read |
+| `-u <username>` | Required for create; optional for update |
+| `-m <email>` | Required for create; optional for update |
+| `--config <path>` | Credentials file; defaults to `~/.db_credentials.env` |
+
+The credentials file must be permissioned `600` or `400`. It is sourced by Bash, so use ordinary `KEY=value` entries; only the selected engine's variables are needed.
 
 ```bash
-# ~/.db_credentials.env   (chmod 600)
-ORACLE_USER=...        ORACLE_PASS=...        ORACLE_TNS=...
-TERADATA_TDP=...       TERADATA_USER=...      TERADATA_PASS=...
-SQLSERVER_HOST=...     SQLSERVER_USER=...     SQLSERVER_DB=...
+# chmod 600 ~/.db_credentials.env
+ORACLE_USER=...
+ORACLE_PASS=...
+ORACLE_TNS=...
+
+TERADATA_TDP=...
+TERADATA_USER=...
+TERADATA_PASS=...
+
+SQLSERVER_HOST=...
+SQLSERVER_USER=...
+SQLSERVER_DB=...
 SQLCMDPASSWORD=...
 ```
 
-Only the variables for the engine you invoke need to be present.
+Oracle and Teradata credentials are sent through standard input; SQL Server reads `SQLCMDPASSWORD` from the environment. This avoids password exposure in process arguments. The script interpolates username and email values into SQL, so it is a trusted-operator utility—not a public-facing API.
 
-```bash
-./db_orchestrator.sh -e oracle    -a create -u "jdoe" -m "jdoe@corp.internal"
-./db_orchestrator.sh -e teradata  -a read   -i 101
-./db_orchestrator.sh -e sqlserver -a update -i 101 -m "newemail@corp.internal"
-```
+## Safety Notes
 
-> ⚠️ **Note on input handling.** `-i` is validated as an integer, but `-u` and `-m` are interpolated directly into the SQL text. Treat this as a trusted-operator tool: do not wire it up behind untrusted input without adding parameter binding or quoting.
+- Start every PowerShell cleanup run with `-WhatIf`, inspect the log and quarantine contents, then rerun without it only when the result is expected.
+- `Remove-EmptyFolders.ps1` is the exception: it deletes empty folders rather than quarantining them.
+- Quarantine folders should be outside the source tree where practical. `DeDupeArchive.ps1` explicitly avoids scanning its isolation folder when it is nested within the source tree.
+- Hashing and folder fingerprinting read file contents and can take significant time on large or remote volumes.
+- `scan_injections.sh` is pattern-based triage, not a complete prompt-injection defense. Review flagged files before discarding them, and extend its `PATTERNS` array for your threat model.
+- `rolling_backup.sh` removes matching archives older than the retention window only after the newly created archive passes `gzip -t` validation. Test retention behavior in a non-production location first.
 
----
+## Operational Details
 
-### 💾 `rolling_backup.sh`
+Most PowerShell cleanup scripts write timestamped logs to the **current working directory**. Run them from a writable location or provide `-LogFile` where that parameter is available. `DeDupeArchive.ps1` has a custom `-WhatIf` switch; the other cleanup scripts use PowerShell's standard `SupportsShouldProcess` pattern.
 
-Creates a timestamped `.tar.gz` of a directory, verifies it with `gzip -t`, then prunes older archives of the same target.
-
-```bash
-./rolling_backup.sh <source_directory> <backup_directory> [retention_days]
-```
-
-- Archive name: `<sourceBasename>_backup_YYYYMMDD_HHMMSS.tar.gz`
-- `retention_days` defaults to **3**; pruning uses `find -mtime +N` and only matches archives for the same source basename.
-- A failed integrity check deletes the broken archive and exits `1` — nothing is pruned in that case.
-
-```bash
-./rolling_backup.sh /var/www/site /mnt/backups        # 3-day retention
-./rolling_backup.sh /opt/database /backups/db 7       # 7-day retention
-```
-
-| Exit | Meaning                                               |
-| ---- | ----------------------------------------------------- |
-| `0`  | Backup created and pruning completed                  |
-| `1`  | Bad/missing arguments, or archive verification failed |
-
----
-
-### 🛡️ `scan_injections.sh`
-
-Pre-ingestion guard for LLM pipelines. Scans flat files for prompt-injection and jailbreak signatures and moves anything suspicious out of the ingestion path.
-
-```bash
-./scan_injections.sh <input_directory> [quarantine_directory]
-```
-
-- Walks `<input_directory>` to a depth of 2, inspecting only `.txt`, `.md`, `.json`, `.csv`, `.log`.
-- Matches a case-insensitive regex built from a pattern list in the script — "ignore previous instructions", "new system prompt:", "developer mode enabled", "DAN mode", "reveal your initial instructions", and similar.
-- Prints each matching line, then moves the file to the quarantine directory (default `./quarantine`).
-- Extend coverage by adding entries to the `PATTERNS` array near the top of the file.
-
-| Exit | Meaning                                        |
-| ---- | ---------------------------------------------- |
-| `0`  | Clean — nothing matched                        |
-| `1`  | Invalid arguments or missing input directory   |
-| `2`  | One or more files were flagged and quarantined |
-
-Exit `2` is the useful one for CI: fail the ingestion job when anything is quarantined.
-
----
-
-## PowerShell Scripts
-
-Four duplicate-finders and one empty-folder cleaner. They differ in **what they compare** and **which copy survives** — the table below is the fast way to pick one.
-
-| Script                          | Compares                        | Hash    | Keeps                            | Duplicates go to      |
-| ------------------------------- | ------------------------------- | ------- | -------------------------------- | --------------------- |
-| `DeDupeArchive.ps1`             | All files under one path        | MD5     | **Deepest** copy                 | Flat isolation folder |
-| `Move-DuplicateFiles.ps1`       | All files under one path        | SHA-256 | **Deepest** copy                 | Quarantine, tree kept |
-| `Remove-DuplicateFiles_all.ps1` | All files under one path        | SHA-256 | **Shallowest** copy              | Quarantine, tree kept |
-| `Remove-DuplicateFiles.ps1`     | Folder A against Folder B       | SHA-256 | Everything in **Folder B**       | Quarantine, tree kept |
-| `Remove-DuplicateFolders.ps1`   | Whole folders (name + contents) | SHA-256 | Shortest path, ties alphabetical | Quarantine            |
-
-Nothing here permanently deletes files — every duplicate is **moved**, so you review the quarantine folder and delete it yourself when satisfied. `Remove-EmptyFolders.ps1` is the one exception; it deletes.
-
-> 🔍 **Always dry-run first.** Every script supports `-WhatIf`.
-
-### 🗃️ `DeDupeArchive.ps1`
-
-The lightest of the set. It hashes every file under `-AnalyzePath` with MD5, and for each duplicate cluster keeps the copy **deepest** in the tree, relocating the shallower copies into a single flat folder. Name collisions in that folder get a `_Duplicate_N` suffix. Reports total files processed and space recovered in GB.
-
-```powershell
-.\DeDupeArchive.ps1 -AnalyzePath 'D:\Archive' -DuplicatesPath 'D:\Dupes' -WhatIf
-.\DeDupeArchive.ps1 -AnalyzePath 'D:\Archive' -DuplicatesPath 'D:\Dupes'
-```
-
-Files already inside `-DuplicatesPath` are skipped, so the isolation folder can safely sit inside the analyzed tree. No log file — output is console only.
-
-### 📦 `Move-DuplicateFiles.ps1`
-
-Three-phase scan of a single tree: group by size (cheap), hash only the size collisions with SHA-256, then quarantine. The **deepest** copy is kept; on a depth tie the alphabetically **last** path is kept and the earlier ones are moved. Quarantined files keep their relative sub-path so you can see where each came from.
-
-```powershell
-.\Move-DuplicateFiles.ps1 -SourcePath 'D:\Photos' -QuarantinePath 'D:\Quarantine' -WhatIf
-```
-
-Writes `.\Move-DuplicateFiles_<timestamp>.log` in the working directory.
-
-> The header comment in the file states that on a depth tie the alphabetically earlier path is kept; the sort applies `-Descending` to both keys, so the later path is actually the keeper. Only affects tie-breaks between equal-depth copies.
-
-### 🧹 `Remove-DuplicateFiles_all.ps1`
-
-Same single-tree, size-then-SHA-256 approach as `Move-DuplicateFiles.ps1`, with the **opposite** survival rule: the copy **closest to the root** is kept, ties broken alphabetically first. It also computes a Levenshtein name-similarity percentage between keeper and duplicate and logs it — informational only; size + hash remain the authoritative signal.
-
-```powershell
-.\Remove-DuplicateFiles_all.ps1 -TargetPath 'D:\Media' -QuarantinePath 'D:\Quarantine' -WhatIf
-```
-
-| Parameter         | Default                                     |
-| ----------------- | ------------------------------------------- |
-| `-TargetPath`     | required                                    |
-| `-QuarantinePath` | required                                    |
-| `-LogFile`        | `.\RemoveDuplicateFiles_<timestamp>.log`    |
-| `-MinSizeBytes`   | `0` — raise it to skip small files entirely |
-
-### 🔀 `Remove-DuplicateFiles.ps1`
-
-A **two-folder** comparison rather than a self-scan. Folder B is the reference set and is never touched; any file in Folder A that matches a Folder B file by size + SHA-256 is quarantined. Folder B is indexed by size first and hashed lazily, so only files whose size actually collides get read.
-
-```powershell
-.\Remove-DuplicateFiles.ps1 -FolderA 'D:\Inbox' -FolderB 'D:\Master' `
-                            -QuarantinePath 'D:\Quarantine' -WhatIf
-```
-
-Use this when merging a staging folder into a curated library: point `-FolderA` at the staging copy.
-
-### 📁 `Remove-DuplicateFolders.ps1`
-
-Operates on whole directories. Each folder is fingerprinted as the SHA-256 of a sorted `relativePath|size|hash` manifest of everything beneath it; folders sharing **both a name and a fingerprint** are duplicates. The shortest path wins (ties alphabetical) and the rest are moved to quarantine, with a `_dupN` suffix on collision.
-
-```powershell
-.\Remove-DuplicateFolders.ps1 -TargetPath 'D:\Projects' -QuarantinePath 'D:\Quarantine' -WhatIf
-```
-
-Fingerprinting hashes every file in the tree, including folders that turn out to have no duplicate — expect this to be slow on large trees. Empty folders all fingerprint as `EMPTY`, so same-named empty folders are treated as duplicates of each other.
-
-### 🗑️ `Remove-EmptyFolders.ps1`
-
-Recursively deletes empty folders under `-TargetPath`, looping until a full pass finds nothing — one pass can empty a parent, which the next pass then catches.
-
-```powershell
-.\Remove-EmptyFolders.ps1 -TargetPath 'D:\Archive' -WhatIf
-.\Remove-EmptyFolders.ps1 -TargetPath 'D:\Archive'
-```
-
-> ⚠️ This script **deletes** rather than quarantines. Run `-WhatIf` first.
-
----
-
-## Conventions
-
-**Bash.** All three scripts use `set -euo pipefail`, accept `-h/--help`, and write errors to stderr. Make them executable with `chmod +x *.sh`.
-
-**PowerShell.** Every `.ps1` except `DeDupeArchive.ps1` uses `[CmdletBinding(SupportsShouldProcess)]`, so `-WhatIf` behaves as a standard PowerShell dry run. `DeDupeArchive.ps1` implements `-WhatIf` as a plain switch — same intent, but it is not the built-in mechanism and does not inherit `$WhatIfPreference`.
-
-Scripts that log write a timestamped `.log` file into the **current working directory**, not the script directory — `cd` somewhere writable before running.
-
-**Secrets.** The local [.gitignore](.gitignore) excludes `.logins/` and `logins/`. Keep credential files there or outside the repo — never commit `~/.db_credentials.env` or its equivalents.
+Do not commit database credential files or quarantine data. The repository `.gitignore` excludes `logins/` and `.logins/`; storing secrets outside the repository remains the safest choice.
