@@ -240,7 +240,7 @@ headless path did not, and that divergence should be resolved in favor of the he
 - Blocking consent notice before the chat opens, including the warehouse-storage disclosure
   (exact text in `docs/08-interactive-experience.md`)
 - 3–5 turn cap, hard enforced
-- Separate prompt file, same Groq model as triage; scripted fallback without an API key
+- Separate prompt file, same Gemini model as triage; scripted fallback without an API key
 - `botchat_turns` events with intent flags
 - `assert_no_user_text_in_sample` passing
 

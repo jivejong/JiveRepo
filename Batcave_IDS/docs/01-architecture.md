@@ -85,8 +85,9 @@ dbt with `dbt-duckdb`. Three layers plus analytic and evaluation marts. The cent
 is the observed / truth boundary — see `docs/02-data-model.md`.
 
 ### Triage (`services/triage/`) — Track A
-Reads observed session features, calls Groq for structured JSON, writes intervention orders and two
-sets of evaluation rows: villain attribution and technique reconstruction.
+Reads observed session features, calls Gemini for schema-constrained structured JSON (originally Groq;
+swapped for operational reasons, see docs/04's Configuration section and docs/09), writes intervention
+orders and two sets of evaluation rows: villain attribution and technique reconstruction.
 Specification: `docs/04-llm-triage.md`.
 
 ### Orchestration (`orchestration/`) — Track A
@@ -118,7 +119,7 @@ injects the dependency explicitly for the six models that read the macro.
 
 A Python step sits in the middle of the dbt graph, not after it: `fct_intervention_orders` reads
 both a dbt model and a dbt *source* (`raw_triage_predictions`) written by `services/triage/`, since
-dbt cannot call Groq or run the baseline classifier itself. The asset graph is split into two
+dbt cannot call the LLM API or run the baseline classifier itself. The asset graph is split into two
 `@dbt_assets` definitions at that boundary (matching the Makefile's own `fct_intervention_orders+`
 selector) rather than one, which would cycle through the source.
 
@@ -128,10 +129,10 @@ Screenshot the asset lineage graph for the README — it is the most legible art
 produces.
 
 **Zero-credential requirement, verified rather than assumed**: the whole graph — dbt upstream, the
-triage asset, dbt evaluation — materializes end to end with `GROQ_API_KEY` genuinely absent (not
+triage asset, dbt evaluation — materializes end to end with `GEMINI_API_KEY` genuinely absent (not
 just unset for one call; `.env` itself removed for the test). The triage asset runs the rule-based
 baseline in that case and the run still succeeds, which is what makes the clean-clone checkpoint
-meaningful.
+meaningful. Re-verified after the Groq→Gemini provider swap, not assumed to carry over unchanged.
 
 ### Console, bat bot, finale, dashboard — Track B
 Presentation over models that already exist. Specification: `docs/08-interactive-experience.md`.
@@ -168,7 +169,7 @@ Bat bot (Track B) ── chat_turn events ─────────►        
      mart_threat_scores                                   int_stage_progression
                         │                                                      │
                         ▼                                                      │
-              Triage service → Groq LLM                                        │
+              Triage service → Gemini LLM                                      │
                         │                                                      │
                         ▼                                                      │
              fct_intervention_orders ──────────── joined for scoring ──────────┤

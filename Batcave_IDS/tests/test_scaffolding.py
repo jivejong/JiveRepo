@@ -23,8 +23,8 @@ def test_makefile_creates_topic_with_three_partitions():
 
 def test_env_example_has_no_real_secret():
     env_example = (REPO_ROOT / ".env.example").read_text()
-    assert "GROQ_API_KEY=" in env_example
+    assert "GEMINI_API_KEY=" in env_example
     for line in env_example.splitlines():
-        if line.startswith("GROQ_API_KEY="):
+        if line.startswith("GEMINI_API_KEY="):
             value = line.split("=", 1)[1].strip()
-            assert value == "", "GROQ_API_KEY in .env.example must stay empty, not a real key"
+            assert value == "", "GEMINI_API_KEY in .env.example must stay empty, not a real key"

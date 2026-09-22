@@ -78,7 +78,9 @@ uvicorn[standard]    # ASGI server for fastapi
 httpx                # HTTP client, used by the simulator to drive the honeypot — not the server
 pydantic             # event schema validation at the producer boundary
 pyyaml               # reads services/simulator/pathologies.yml
-groq
+google-genai         # triage LLM client (Gemini); originally groq, swapped post-Phase-7 for an
+                     # operational reason (Groq's VPN incompatibility), not a quality one — docs/04,
+                     # docs/09
 ```
 
 Dev: `ruff`, `pytest`, `sqlfluff` with the DuckDB dialect, `sqlfluff-templater-dbt`, `pre-commit`.

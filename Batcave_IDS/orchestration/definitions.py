@@ -3,10 +3,10 @@
 Two `@dbt_assets` definitions instead of one, because a Python step sits in
 the middle of the dbt graph: `fct_intervention_orders` reads both
 `ref('mart_threat_scores')` and `source('triage', 'raw_triage_predictions')`,
-and that source is written by `services/triage/` (dbt cannot call Groq or
-run the baseline classifier). A single `@dbt_assets` over the whole project
-would create a cycle through that source. Split at the same boundary the
-Makefile already uses (`--select fct_intervention_orders+`):
+and that source is written by `services/triage/` (dbt cannot call the
+Gemini API or run the baseline classifier). A single `@dbt_assets` over the
+whole project would create a cycle through that source. Split at the same
+boundary the Makefile already uses (`--select fct_intervention_orders+`):
 
     dbt_upstream (everything except fct_intervention_orders+)
         -> triage_predictions (Python: baseline, or baseline+LLM with a key)
@@ -21,7 +21,7 @@ Verified disjoint and exhaustive against `transform/target/manifest.json`:
 4 nodes in the downstream selection, 31 in the complement, 35 total, and all
 43 dbt tests attach to the upstream group.
 
-Zero-credential path (docs/04): without `GROQ_API_KEY`, the triage asset
+Zero-credential path (docs/04): without `GEMINI_API_KEY`, the triage asset
 runs the rule-based baseline only, and the graph still materializes end to
 end - verified via `dagster asset materialize --select '*'` with the key
 genuinely unset, not merely absent from one call.
@@ -156,7 +156,7 @@ def triage_predictions(context: AssetExecutionContext, config: TriageConfig) -> 
     source `dbt_evaluation`'s `fct_intervention_orders` reads. Calls the same
     entry point `make triage` does; no separate implementation.
 
-    Runs the baseline only when `GROQ_API_KEY` is unset (docs/04's documented
+    Runs the baseline only when `GEMINI_API_KEY` is unset (docs/04's documented
     zero-credential path) - this asset never requires a key to materialize.
     """
     con = duckdb.connect(str(WAREHOUSE_PATH))

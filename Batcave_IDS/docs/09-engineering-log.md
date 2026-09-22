@@ -241,3 +241,119 @@ the four downstream evaluation marts. The regenerated chart matched the committe
 afterward. The general lesson: a verification step that writes to shared state needs to be checked
 against what it might disturb, not just against what it was designed to prove — a green checkpoint and
 a silently shifted dataset can coexist.
+
+---
+
+## A live doc-fetch on Gemini's API described a method that doesn't exist in the installed SDK
+
+**What broke:** nothing in the codebase — this is a finding from *before* any code was written, while
+researching the Groq→Gemini provider swap. Two independent fetches of Google's official quickstart and
+structured-output documentation both described `client.interactions.create(...)` as the current method
+for structured JSON output on the `google-genai` SDK. That method does not exist on the installed
+package (`google-genai==2.24.0`) — `dir(genai)` has no `interactions` attribute at all. The real,
+working method is `client.models.generate_content(...)`, a plainer and more familiar shape.
+
+**How it was caught:** by rule, not by accident — this project's standing practice (established
+repeatedly: the dagster-dbt API surface, the Groq model catalog, the sqlfluff autofix behavior) is to
+verify a fetched or remembered API against the actually-installed package before writing code against
+it, specifically because a documentation summary can embellish plausible-sounding details when a page
+is sparse or JS-rendered. Two independent fetches agreeing with each other was *not* treated as
+sufficient corroboration on its own; `dir()` and `inspect.signature()` against the real installed
+package were checked before any implementation code was written. A live 404 error later, while
+smoke-testing the model choice, independently corroborated the doc content wasn't entirely fabricated:
+Gemini's own API error message for a deprecated model said *"We recommend you to use the Interactions
+API"* — so an Interactions API most likely exists somewhere, just not as a public method on this SDK
+version's `Client` object. The doc summary wasn't pure hallucination; it described something real that
+isn't reachable the way it claimed.
+
+**What changed:** nothing had to be undone, because the verification step happened before the
+first line of `_call()` was written — the entire point of doing it in this order. Two further API
+details were only discoverable by testing against the live service, not documentation, and both
+surfaced during the same swap:
+- `gemini-2.5-flash-lite`, the more mature and conservative model choice, returned a live `404`:
+  *"This model models/gemini-2.5-flash-lite is no longer available to new users."* Nothing in Google's
+  docs at the time of fetching flagged this — it was a real, current account-facing state, not
+  something a training-data-bound model could have known in advance regardless of cutoff date.
+- `thinking_config=ThinkingConfig(thinking_budget=0)`, added specifically to avoid repeating the
+  `openai/gpt-oss-20b` reasoning-token failure from Phase 6, was **rejected** by `gemini-3.5-flash-lite`
+  with an opaque `400 INVALID_ARGUMENT` carrying no field-level detail. Isolated by testing each config
+  parameter individually against the live API (`temperature`, `response_mime_type`, `thinking_config`,
+  `http_options`, `system_instruction`, one at a time) until the single failing one was found. Omitting
+  the field entirely turned out to already produce zero thinking tokens on this model by default — the
+  fix was simpler than the diagnosis.
+
+Same shape, three times over in one investigation: a documentation source (fetched, remembered, or
+scraped) is a lead, not ground truth, and the only source of truth for "does this API call actually
+work" is calling it.
+
+---
+
+## Schema-constrained output fixed parse failures completely, and quietly removed calibrated uncertainty
+
+**What broke:** nothing, exactly — this is a trade discovered by re-running the same 36-session
+evaluation against a different provider, not a bug. Groq's free tier didn't cooperate with the
+maintainer's VPN, so the triage LLM moved from Groq (`qwen/qwen3.8-27b`, plain
+`response_format: json_object`) to Gemini (`gemini-3.5-flash-lite`, schema-constrained
+`response_schema=TriageOutput`). Parse failures went from 27.8% (10/36, Phase 6) to **0.0% (0/36)** —
+every one of 36 real API calls returned schema-conformant JSON on the first attempt. That's the
+reliability win the schema constraint was expected to produce, and it fully delivered.
+
+What wasn't expected: qwen had answered `suspected_villain: "unknown"` on 8 of 36 sessions, including
+a well-calibrated non-answer on 2 of Ra's al Ghul's 3 sessions (confidence dropping to 0.45, reasoning
+that named the specific signatures it couldn't find). Gemini answered `"unknown"` **zero times across
+all 36 sessions**, at a flat ~0.84 mean confidence *including on sessions it got wrong* — one Killer
+Croc misattribution came back at 0.90 confidence with grounded, specific, entirely wrong reasoning. The
+Killer Croc / Ra's al Ghul result that had been the project's strongest LLM finding under qwen (2/2
+real attempts correct on Croc, a calibrated non-answer on Ra's al Ghul) did not replicate under Gemini
+at all — both villains went back to 0/3, same as the baseline.
+
+**How it was caught:** by re-running the full evaluation rather than assuming a "better," more reliable
+model would just be strictly better. The parse-failure improvement was expected and confirmed. The
+missing calibrated-uncertainty behavior was not something being looked for — it fell out of comparing
+the two chapters' confusion matrices and `confidence` distributions side by side, the same as any other
+result in this project: reported because it was measured, not because it was anticipated.
+
+**What changed:** docs/04's Results section keeps both chapters side by side rather than replacing the
+qwen numbers, and states plainly that the qwen-era "the model can express calibrated uncertainty"
+finding does not hold for the current default — it was a property of one model on one sample, not a
+property of "LLM triage." Nothing in the pipeline changed to chase this; it's reported as a real,
+measured trade a reader evaluating this pattern for their own use should weigh: schema-constrained
+output buys structural reliability and appears to cost the model's willingness to decline an answer.
+Whether that's inherent to constrained decoding, specific to this model, or an artifact of the prompt
+not asking for it explicitly enough is an open question this project didn't have grounds to answer from
+one comparison — worth a note for whoever picks this pattern up next, not a conclusion.
+
+---
+
+## `raw_triage_predictions` has no snapshot identity, and it's bitten the same evaluation twice
+
+**What broke, the first time:** documented above ("Verifying the zero-credential orchestration path
+silently mutated the reported evaluation dataset") — the Phase 7 Dagster zero-credential check ran
+`run_triage()` with its production threshold selector, added 4 sessions outside the pinned 36-session
+evaluation sample, and silently shifted `mart_detection_coverage`'s reported baseline recall.
+
+**What broke, the second time, same shape:** while closing out the Gemini provider swap, re-verifying
+that the literal `make triage` target (not just the underlying module call) still worked post-swap did
+the same thing again — 72 rows in `raw_triage_predictions` became 76, 36 distinct sessions became 40,
+same 4 session IDs both times. Caught immediately by the same before/after row-count check, not by any
+test failing, and fixed the same way: identify the sessions with no `llm`-source counterpart, delete
+them, rebuild the four evaluation marts.
+
+**This is one pattern under two trigger paths, not two unrelated incidents.** `_select_sessions()`
+(bare `make triage`, the production trigger — "sessions at or above the triage threshold") and
+`_select_stratified_sessions()` (`make triage-eval-sample`, evaluation breadth — "top N sessions per
+villain regardless of threshold") are both working exactly as designed; neither is missing a guard,
+and adding one to either would be the wrong fix. `mart_threat_scores` and `dim_villains` mean
+different things to a threshold cutoff versus a per-villain ranking, so the two selectors legitimately
+pick different, overlapping-but-not-identical session sets from the same warehouse — that's correct
+behavior for their two different purposes (docs/02's Catwoman calibration note is exactly why both
+need to exist). The actual gap is structural: `raw_triage_predictions` is one shared, mutable table
+keyed only by `(session_id, source)`, with no concept of "these rows belong to evaluation run X."
+**Any** selector run against a warehouse whose current `raw_triage_predictions` content backs a
+specific reported evaluation will silently extend it — this is a property of testing against shared
+warehouse state with multiple independently-correct selection modes, not a bug in either mode. It's an
+operational footgun for local iteration on a warehouse that already holds a pinned evaluation snapshot,
+not a code defect to patch. A one-line pointer to this entry is left at the point in the code where a
+future run is most likely to trigger it again; a real fix, if one is ever wanted, would mean giving
+evaluation snapshots their own identity (a `run_id` or a separate table) rather than sharing the one
+live table production writes to — worth doing if this bites a third time, not before.

@@ -1,7 +1,7 @@
 """Rule-based baseline for both triage tasks (docs/04 "Baseline").
 
 Run on every session alongside the LLM, or in its place when there is no
-Groq key - the documented zero-credential path a cold clone depends on
+Gemini key - the documented zero-credential path a cold clone depends on
 (docs/04's Configuration section). Reads exactly the same
 `int_session_features_observed` columns `services/triage/context.py` does -
 same input contract as the LLM, nothing extra, nothing ground-truth.

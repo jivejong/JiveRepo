@@ -1,6 +1,6 @@
 """Writes triage predictions (LLM or baseline) into the warehouse as a plain
 table dbt reads as a source - the bridge between Python (which has to call
-Groq / run the baseline classifier) and the SQL evaluation layer.
+Gemini / run the baseline classifier) and the SQL evaluation layer.
 
 `raw_triage_predictions` is deliberately NOT a dbt model: dbt can't call an
 external API or run Python classification logic, so this table is the one

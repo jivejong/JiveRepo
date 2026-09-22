@@ -125,7 +125,7 @@ Emits `chat_turn` events: `turn_number`, `speaker`, `objective`, `bot_text`, `us
 `assert_no_user_text_in_sample`, and verified by grepping the committed Parquet rather than trusting
 the code.
 
-Same Groq model as triage, separate prompt file. Scripted fallback without an API key so the finale
+Same Gemini model as triage, separate prompt file. Scripted fallback without an API key so the finale
 still runs with zero credentials.
 
 ---

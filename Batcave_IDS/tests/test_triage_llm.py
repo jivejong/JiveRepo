@@ -1,5 +1,5 @@
 """services.triage.llm — the defensive parsing, fence-stripping, and
-validation logic, tested against fabricated Groq responses (no live API
+validation logic, tested against fabricated Gemini responses (no live API
 calls). The transport-retry and repair-retry paths are exercised with a fake
 client that returns pre-scripted responses in sequence.
 """
@@ -7,9 +7,8 @@ client that returns pre-scripted responses in sequence.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 
-from groq import GroqError
+import httpx
 
 from services.triage.llm import (
     REQUIRED_FIELDS,
@@ -150,44 +149,42 @@ def test_required_fields_matches_docs04_output_contract():
 # --- triage_session: the repair-retry path ------------------------------
 
 
-@dataclass
-class _FakeUsage:
-    prompt_tokens: int = 10
-    completion_tokens: int = 20
-
-
-class _FakeMessage:
-    def __init__(self, content: str):
-        self.content = content
-
-
-class _FakeChoice:
-    def __init__(self, content: str):
-        self.message = _FakeMessage(content)
+class _FakeUsageMetadata:
+    def __init__(self, prompt_token_count: int = 10, candidates_token_count: int = 20):
+        self.prompt_token_count = prompt_token_count
+        self.candidates_token_count = candidates_token_count
 
 
 class _FakeResponse:
     def __init__(self, content: str):
-        self.choices = [_FakeChoice(content)]
-        self.usage = _FakeUsage()
+        self.text = content
+        self.usage_metadata = _FakeUsageMetadata()
 
 
-class _ScriptedClient:
-    """Returns each scripted response in sequence, one per call. Mimics the
-    subset of the Groq client triage_session actually uses."""
+class _FakeModels:
+    """Mimics the subset of google.genai.Client().models triage_session
+    actually uses."""
 
-    def __init__(self, responses: list[str | Exception]):
-        self._responses = list(responses)
-        self.calls: list[str] = []
-        self.chat = self
-        self.completions = self
+    def __init__(self, responses: list[str | Exception], calls: list[str]):
+        self._responses = responses
+        self._calls = calls
 
-    def create(self, **kwargs):
-        self.calls.append(kwargs["messages"][-1]["content"])
+    def generate_content(self, **kwargs):
+        self._calls.append(kwargs["contents"])
         item = self._responses.pop(0)
         if isinstance(item, Exception):
             raise item
         return _FakeResponse(item)
+
+
+class _ScriptedClient:
+    """Returns each scripted response in sequence, one per call. Mimics the
+    subset of the google.genai.Client interface triage_session actually
+    uses."""
+
+    def __init__(self, responses: list[str | Exception]):
+        self.calls: list[str] = []
+        self.models = _FakeModels(list(responses), self.calls)
 
 
 def test_triage_session_succeeds_first_try():
@@ -226,12 +223,19 @@ def test_triage_session_sets_parse_failed_when_repair_also_fails():
 
 
 def test_triage_session_never_raises_on_transport_failure():
-    client = _ScriptedClient([GroqError("connection reset"), GroqError("connection reset")])
+    """httpx.ConnectError (no response ever came back) rather than an API
+    error with an HTTP response, since that's the failure mode this
+    project's Groq-to-Gemini provider swap exists to survive - an
+    uncooperative VPN produces a connection that never completes, not a
+    clean HTTP error."""
+    client = _ScriptedClient(
+        [httpx.ConnectError("connection reset"), httpx.ConnectError("connection reset")]
+    )
     result = triage_session(
         client, "system", {"session_id": "s1"}, KNOWN_VILLAINS, KNOWN_ATTACK_IDS
     )
     assert result.parse_failed is True
-    assert "Groq call failed" in result.error
+    assert "Gemini call failed" in result.error
 
 
 def test_triage_session_records_prompt_version():

@@ -2,7 +2,7 @@
 
 `triage`: selects sessions at or above the triage threshold from
 `mart_threat_scores`, runs the rule-based baseline on every one of them, and
-additionally runs the LLM when `GROQ_API_KEY` is set - the documented
+additionally runs the LLM when `GEMINI_API_KEY` is set - the documented
 zero-credential path (docs/04's Configuration section) means baseline-only is
 never an error, just what happens without a key.
 
@@ -46,7 +46,15 @@ def _select_sessions(con: duckdb.DuckDBPyConnection, limit: int) -> list[tuple[s
     applies docs/02's triage_threshold var), highest score first. This is the
     PRODUCTION trigger (docs/04, Phase 7's Dagster asset uses the same
     predicate) - deliberately narrow, because that's the point of a
-    threshold."""
+    threshold.
+
+    Running this (or `make triage`) against a warehouse whose
+    raw_triage_predictions already backs a specific reported evaluation
+    (e.g. a stratified sample from `make triage-eval-sample`) will silently
+    extend that snapshot with whatever else clears the threshold - the table
+    has no run/snapshot identity, so this isn't a bug here so much as a
+    property of the shared table. Bitten this twice already: docs/09,
+    "raw_triage_predictions has no snapshot identity"."""
     return con.execute(
         """
         select session_id, run_id from mart_threat_scores
@@ -115,15 +123,15 @@ def run_triage(
     id_map = technique_id_to_attack_id(con)
     archetypes = villain_archetype_map(con)
 
-    groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
     llm_client = None
     system_prompt = None
     known_villains: set[str] = set()
     known_attack_ids: set[str] = set()
-    if groq_key:
-        from groq import Groq
+    if gemini_key:
+        from google import genai
 
-        llm_client = Groq(api_key=groq_key)
+        llm_client = genai.Client(api_key=gemini_key)
         system_prompt = build_system_prompt(con)
         known_villains = {
             r[0] for r in con.execute("select villain_slug from dim_villains").fetchall()
@@ -131,9 +139,9 @@ def run_triage(
         known_attack_ids = {
             r[0] for r in con.execute("select attack_id from dim_techniques").fetchall()
         }
-        print(f"GROQ_API_KEY present - running LLM (prompt {PROMPT_VERSION}) + baseline")
+        print(f"GEMINI_API_KEY present - running LLM (prompt {PROMPT_VERSION}) + baseline")
     else:
-        print("no GROQ_API_KEY - running baseline only (docs/04's zero-credential path)")
+        print("no GEMINI_API_KEY - running baseline only (docs/04's zero-credential path)")
 
     for i, (session_id, run_id) in enumerate(sessions, 1):
         features = _feature_dict(con, session_id)

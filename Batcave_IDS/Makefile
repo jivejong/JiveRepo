@@ -70,7 +70,7 @@ sample-partition:
 # model's tests in dependency order, so a failing test stops its dependents
 # instead of letting the run finish and reporting the damage afterwards.
 # raw_triage_predictions is a dbt SOURCE (written by services/triage/store.py,
-# not by dbt itself - dbt can't call the Groq API or run classification
+# not by dbt itself - dbt can't call the Gemini API or run classification
 # logic). fct_intervention_orders+ read it via source(), which requires the
 # table to already exist even when empty - ensured here so `make transform`
 # works before `make triage` has ever run, on a clean clone.
@@ -80,7 +80,7 @@ transform:
 	cd transform && uv run --project .. dbt build --profiles-dir .
 
 # Scores + triages sessions at or above the threat threshold: rule-based
-# baseline always, LLM too when GROQ_API_KEY is set (docs/04's zero-
+# baseline always, LLM too when GEMINI_API_KEY is set (docs/04's zero-
 # credential path otherwise). Writes orders, then rebuilds the evaluation
 # marts on top of them. Requires `make transform` first.
 triage:
