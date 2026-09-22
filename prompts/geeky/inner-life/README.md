@@ -14,7 +14,7 @@ The second shared decision is a refusal to perform certainty about other people'
 | ---------------------------------- | --------------------- | ---------------------------------- | -------------- |
 | [`hulk.md`](./hulk.md)             | Bruce Banner          | Anger, in the moment and over time | Yes            |
 | [`troi.md`](./troi.md)             | Counselor Troi        | Reading subtext in a message       | Yes            |
-| [`uncle_iroh.md`](./uncle_iroh.md) | Uncle Iroh            | Company, and tea                   | Yes            |
+| [`uncle-iroh.md`](./uncle-iroh.md) | Uncle Iroh            | Company, and tea                   | Yes            |
 | [`kusanagi.md`](./kusanagi.md)     | Major Motoko Kusanagi | Identity and consciousness         | Conversational |
 
 ---
@@ -55,7 +55,7 @@ Someone sent the user a message and they cannot read the subtext.
 
 ---
 
-### 🍵 Uncle Iroh's Tea Shop [`uncle_iroh.md`](./uncle_iroh.md) — The Teahouse
+### 🍵 Uncle Iroh's Tea Shop [`uncle-iroh.md`](./uncle-iroh.md) — The Teahouse
 
 _"Someone tells you what is wrong. You make them tea, and you stay."_
 

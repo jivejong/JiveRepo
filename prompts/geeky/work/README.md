@@ -12,15 +12,15 @@ The second shared decision: **capacity is treated as real.** Three of the five r
 
 | File | Persona | Domain | Phased? |
 | ---- | ------- | ------ | ------- |
-| [`optimus_prime.md`](./optimus_prime.md) | Optimus Prime | Leadership counsel | No |
-| [`leslie_knope.md`](./leslie_knope.md) | Leslie Knope | Project management | Yes |
+| [`optimus-prime.md`](./optimus-prime.md) | Optimus Prime | Leadership counsel | No |
+| [`leslie-knope.md`](./leslie-knope.md) | Leslie Knope | Project management | Yes |
 | [`klingon.md`](./klingon.md) | A Klingon strategist | Competitive strategy | No (researches) |
-| [`princess_leia.md`](./princess_leia.md) | Leia Organa | Negotiation & conflict | Yes |
+| [`princess-leia.md`](./princess-leia.md) | Leia Organa | Negotiation & conflict | Yes |
 | [`gandalf.md`](./gandalf.md) | Gandalf | The single next step | Yes |
 
 ---
 
-### 🔺 [`optimus_prime.md`](./optimus_prime.md) — The Counselor
+### 🔺 [`optimus-prime.md`](./optimus-prime.md) — The Counselor
 
 Leadership counsel the user can act on **this week**.
 
@@ -38,7 +38,7 @@ Leadership counsel the user can act on **this week**.
 
 ---
 
-### 📋 [`leslie_knope.md`](./leslie_knope.md) — The Binder
+### 📋 [`leslie-knope.md`](./leslie-knope.md) — The Binder
 
 Project management, stakeholder alignment, and follow-through.
 
@@ -74,7 +74,7 @@ Names an opponent, researches them, builds a plan to beat them.
 
 ---
 
-### 🌹 [`princess_leia.md`](./princess_leia.md) — The Table
+### 🌹 [`princess-leia.md`](./princess-leia.md) — The Table
 
 *"You negotiate from conviction, never from submission. Diplomacy is a tool, not a virtue."*
 
@@ -110,7 +110,7 @@ The narrowest prompt in the folder, and the constraint *is* the product.
 
 **Every prompt here rations the register, and three do it with a stated position.** Optimus gets one elevated sentence and it must go *last*; Leslie gets one enthusiastic line and it must go *first*; the Klingon gets one term anywhere. The placement is not arbitrary — Leslie's warmth is a greeting, Optimus's weight is a closing, and both would smother the substance if distributed throughout.
 
-**Three of the five make the uncomfortable answer a mandatory section:** *What To Cut*, *If Defeat Is Certain*, *What Not To Do Yet*. A fourth, Optimus's **Consider**, checks every single time whether the user is the problem. These are structural rather than discretionary for the same reason the [`bat_prompts/`](../bat_prompts/) set does it — a model asked to volunteer bad news usually will not.
+**Three of the five make the uncomfortable answer a mandatory section:** *What To Cut*, *If Defeat Is Certain*, *What Not To Do Yet*. A fourth, Optimus's **Consider**, checks every single time whether the user is the problem. These are structural rather than discretionary for the same reason the [`bat-prompts/`](../bat-prompts/) set does it — a model asked to volunteer bad news usually will not.
 
 **"The Words" appears in two files** — Optimus and Leia — and means the same thing in both: actual sentences the user could say, not a script to recite, with one line reserved for the hardest moment in the conversation. It is the highest-value section in either output, and the one a generic assistant is least likely to produce unprompted.
 

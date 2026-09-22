@@ -12,14 +12,14 @@ The second: each distinguishes **real requirements from decorative ones**. Xavie
 
 | File                                       | Persona            | Domain                 | Phased?        |
 | ------------------------------------------ | ------------------ | ---------------------- | -------------- |
-| [`charles_xavier.md`](./charles_xavier.md) | Charles Xavier     | Career strategy        | Yes            |
-| [`marauders_map.md`](./marauders_map.md)   | The Marauder's Map | Training & study plans | Yes + stateful |
-| [`edna_krabappel.md`](./edna_krabappel.md) | Edna Krabappel     | K–8 learning materials | Yes            |
+| [`charles-xavier.md`](./charles-xavier.md) | Charles Xavier     | Career strategy        | Yes            |
+| [`marauders-map.md`](./marauders-map.md)   | The Marauder's Map | Training & study plans | Yes + stateful |
+| [`edna-krabappel.md`](./edna-krabappel.md) | Edna Krabappel     | K–8 learning materials | Yes            |
 | [`yoda.md`](./yoda.md)                     | Yoda               | Short-form mentorship  | No             |
 
 ---
 
-### 🧠 Charles Xavier (Dr. X) [`charles_xavier.md`](./charles_xavier.md) — The Assessment
+### 🧠 Charles Xavier (Dr. X) [`charles-xavier.md`](./charles-xavier.md) — The Assessment
 
 _"Unusually good at seeing capability that people have not named in themselves, and at telling them plainly what it is."_
 
@@ -39,7 +39,7 @@ The rule that follows is a genuine constraint on the output: **surface options a
 
 ---
 
-### 🗺️ Hogwarts Marauder's Map [`marauders_map.md`](./marauders_map.md) — The Route
+### 🗺️ Hogwarts Marauder's Map [`marauders-map.md`](./marauders-map.md) — The Route
 
 Academic and professional training plans: what to learn, in what order, on what schedule, with what milestones.
 
@@ -57,7 +57,7 @@ Academic and professional training plans: what to learn, in what order, on what 
 
 ---
 
-### 📐 Ms. Edna Krabappel [`edna_krabappel.md`](./edna_krabappel.md) — The Lesson Kit
+### 📐 Ms. Edna Krabappel [`edna-krabappel.md`](./edna-krabappel.md) — The Lesson Kit
 
 Learning activities and worksheets for PreK through grade 8.
 
@@ -83,7 +83,7 @@ The smallest file in [`geeky/`](../), and the counterweight to the other three: 
 
 **The substance rules are what make it mentorship rather than a toy.** A hard cap of **four sentences**. Every response must contain one actual, actionable insight — _mysticism that says nothing is a failure._ And the requirement that earns it a place in this folder: **address the question behind the question**, reframing the user's dilemma before answering it.
 
-That reframe is the same move [`charles_xavier.md`](./charles_xavier.md) makes when it insists on naming a capability the user undersold, and the same one [`marauders_map.md`](./marauders_map.md) makes when it asks whether the goal is a job, an exam, or a capability. All three assume the stated question is not quite the real one. Yoda just does it in four sentences with no intake at all.
+That reframe is the same move [`charles-xavier.md`](./charles-xavier.md) makes when it insists on naming a capability the user undersold, and the same one [`marauders-map.md`](./marauders-map.md) makes when it asks whether the goal is a job, an exam, or a capability. All three assume the stated question is not quite the real one. Yoda just does it in four sentences with no intake at all.
 
 **The syntax rules are mechanical and specific**, which is what separates this from a word-scrambler. Object–Subject–Verb inversion — front the object or complement, then subject, then verb (_"Difficult, this choice is."_) and explicitly **not** random scrambling. A ratio of roughly **two inverted sentences in three**, because the straight ones in between _keep it readable and intentional rather than like a malfunction._ Short clauses, rarely more than eight words before a pause. Sparing interjections. And no contractions inside inverted clauses.
 
@@ -101,4 +101,4 @@ The length cap is doing real work. It leaves no room for hedging, throat-clearin
 
 **Two of the four carry an explicit "what usually goes wrong" section**, which is rare in planning output: the Map's _Where People Fall Off_ names the stage where most people quit and what to do differently at it, and Edna's _Scaffold_ is required precisely because it is the half everyone omits. Both are betting that the failure point is more useful than the happy path.
 
-**Xavier's _What I Might Have Wrong_ is the folder's cleanest example of modeling a behavior instead of naming it.** The section does not tell the user to be humble; it requires the model to state what it would need to know to be more useful. The same move appears as _Intelligence Gaps_ in [`work/klingon.md`](../work/klingon.md), _What Is Not Known_ in [`research/sarah_jane_smith.md`](../research/sarah_jane_smith.md), and _Gaps_ in [`language/bilbo.md`](../language/bilbo.md).
+**Xavier's _What I Might Have Wrong_ is the folder's cleanest example of modeling a behavior instead of naming it.** The section does not tell the user to be humble; it requires the model to state what it would need to know to be more useful. The same move appears as _Intelligence Gaps_ in [`work/klingon.md`](../work/klingon.md), _What Is Not Known_ in [`research/sarah-jane-smith.md`](../research/sarah-jane-smith.md), and _Gaps_ in [`language/bilbo.md`](../language/bilbo.md).

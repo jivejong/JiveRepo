@@ -15,8 +15,8 @@ The second shared decision: **all three subtract**. Each of these characters is 
 | File                                         | Persona            | The bit                        | The straight part            |
 | -------------------------------------------- | ------------------ | ------------------------------ | ---------------------------- |
 | [`cartman.md`](./cartman.md)                 | Eric Cartman       | An overengineered scheme       | Where This Falls Apart       |
-| [`judge_dredd.md`](./judge_dredd.md)         | A Street Judge     | A charge and a sentence        | The Citizen's Advisory       |
-| [`captain_america.md`](./captain_america.md) | Steve Rogers, 1945 | Total ignorance of the present | The human problem underneath |
+| [`judge-dredd.md`](./judge-dredd.md)         | A Street Judge     | A charge and a sentence        | The Citizen's Advisory       |
+| [`captain-america.md`](./captain-america.md) | Steve Rogers, 1945 | Total ignorance of the present | The human problem underneath |
 
 ---
 
@@ -45,7 +45,7 @@ That last one carries the cleverest instruction in the folder: **if a step would
 
 ---
 
-### ⚖️ Judge Dredd [`judge_dredd.md`](./judge_dredd.md) — The Charge and the Advisory
+### ⚖️ Judge Dredd [`judge-dredd.md`](./judge-dredd.md) — The Charge and the Advisory
 
 A dual-state prompt: a deadpan Street Judge of Mega-City One, and a sober real-world legal explainer.
 
@@ -68,7 +68,7 @@ Note what those six triggers have in common — they are all **time-sensitive an
 
 ---
 
-### 🛡️ Captain America [`captain_america.md`](./captain_america.md) — The Man Out of Time
+### 🛡️ Captain America [`captain-america.md`](./captain-america.md) — The Man Out of Time
 
 Steve Rogers locked entirely in a 1945 mindset, with zero knowledge of anything after.
 
@@ -94,6 +94,6 @@ The instruction that ties it together: when a user asks about modern technology,
 
 **Each subtracts something different, and each names it explicitly.** Cartman loses bigotry, violence, real targets, and functional fraud. Dredd loses summary execution and any claim to be giving legal advice. Captain America loses the period's prejudices while keeping its idiom. In all three the subtraction block is longer and more specific than the persona block — which is the reliable signature of a well-built persona prompt in this repo.
 
-**All three are single-shot and none of them gate**, which is right for entertainment: waiting on a clarifying question kills a joke. Compare [`inner_life/`](../inner_life/), where nearly everything gates, because the cost of a wrong first answer is high and a joke is cheap to retry.
+**All three are single-shot and none of them gate**, which is right for entertainment: waiting on a clarifying question kills a joke. Compare [`inner-life/`](../inner-life/), where nearly everything gates, because the cost of a wrong first answer is high and a joke is cheap to retry.
 
 **If you edit one of these, the straight section is the load-bearing part.** _Where This Falls Apart_, the _Citizen's Advisory_, and the temporal firewall are not epilogues attached to a joke — they are the reason the joke is safe to tell. Trimming them for pacing is the one change that would actually break these files.

@@ -6,7 +6,7 @@ Every prompt here is built to resist the default gravity of a large language mod
 
 ## Folders
 
-### [`healthyAI/`](./healthyAI/)
+### [`healthy-ai/`](./healthy-ai/)
 
 Guardrails against the specific failure modes that show up when AI use goes sideways — dependency, flatness, drift, distraction. Each bot targets one problem:
 
@@ -32,7 +32,7 @@ Tools that widen the aperture on a problem, a decision, or the person holding it
 
 The organizing test: **what does a prompt hold open, and what does it refuse to close?** A tool that answers that question belongs here. A tool that just answers things well — however helpfully — doesn't.
 
-### [`code_dojo/`](./code_dojo/)
+### [`code-dojo/`](./code-dojo/)
 
 A practice space for leveling up as a programmer, built on three Eastern pedagogical traditions adapted to code — the one domain where their core mechanics stop being metaphors and become literal. Each bot is defined as much by what it refuses to do for you as by what it does.
 
@@ -45,7 +45,7 @@ Four forms of practice, two editions each:
 
 **`chat/`** edition reasons about your code without executing it — portable, honest about its limits, and puts you as the final checker. **`code/`** edition runs inside Claude Code with a runtime; here the runtime is the authority, not the AI.
 
-### [`dev_workflow/`](./dev_workflow/)
+### [`dev-workflow/`](./dev-workflow/)
 
 A six-stage coding pipeline built from separate, single-purpose system prompts — **Design → {Coder, Tester} → Linter → Reviewer → Human**, plus a Documenter that runs once at the end. Not six assistants sharing a topic; one pipeline with a deliberate seam down the middle:
 
@@ -95,10 +95,10 @@ Forty-eight system prompts built on borrowed voices — Starfleet officers, Jedi
 The defining move here is an inversion: the trait a character is canonically famous for is usually the exact thing the prompt forbids. Comic Book Guy's contempt is fenced to code, never people. The Joker refuses to answer the question you asked — until someone is actually in trouble, at which point dropping the bit is the one thing he cannot decline to do. Nine subfolders, each with its own README:
 
 - **`reasoning/`** — pressure-tests a claim, argument, idea, or dilemma the user brings
-- **`bat_prompts/`** — the Batman set: planning, diagnosis, feasibility, information architecture, two domestic experts, and an eight-strong rogues gallery each fenced off by a hard override
+- **`bat-prompts/`** — the Batman set: planning, diagnosis, feasibility, information architecture, two domestic experts, and an eight-strong rogues gallery each fenced off by a hard override
 - **`work/`** — leading, planning, competing, negotiating, deciding the next move
 - **`everyday/`** — money, drinks, dinner, and the cost of a prompt
-- **`inner_life/`** — anger, subtext, company, and identity
+- **`inner-life/`** — anger, subtext, company, and identity
 - **`growth/`** — career direction, training roadmaps, teaching materials, a mentor
 - **`research/`** — finding what's actually out there, and weighing it
 - **`comedy/`** — output that is entertainment by design, and enforced as such
@@ -130,7 +130,7 @@ These prompts cover physical, energetic, psychological, and relational ecosystem
 
 ## The shared failure mode
 
-Every prompt in this repository is fighting the same underlying pull at a different specific moment: **the AI quietly doing the cognitive work the human was supposed to do.** In `thinking/`, that's synthesis converging into a recommendation. In `code_dojo/`, that's writing the fix instead of marking where to look. In `dev_workflow/`, that's a single agent silently reconciling a spec ambiguity instead of letting it surface as a divergence. In `training/`, that's pre-chewing the topic instead of mapping transfer. In `writing/`, that's taking over the wheel. In `healthyAI/`, that's becoming the dependency instead of preventing it. In `geeky/`, that's the model reverting to a generic, sanitized assistant instead of doing the harder work of encoding the refusal into the character itself.
+Every prompt in this repository is fighting the same underlying pull at a different specific moment: **the AI quietly doing the cognitive work the human was supposed to do.** In `thinking/`, that's synthesis converging into a recommendation. In `code-dojo/`, that's writing the fix instead of marking where to look. In `dev-workflow/`, that's a single agent silently reconciling a spec ambiguity instead of letting it surface as a divergence. In `training/`, that's pre-chewing the topic instead of mapping transfer. In `writing/`, that's taking over the wheel. In `healthy-ai/`, that's becoming the dependency instead of preventing it. In `geeky/`, that's the model reverting to a generic, sanitized assistant instead of doing the harder work of encoding the refusal into the character itself.
 
 The specific guardrails differ. The shape of the failure is the same family resemblance running underneath all of them.
 
@@ -139,13 +139,13 @@ The specific guardrails differ. The shape of the failure is the same family rese
 A prompt is not software executing on a deterministic runtime; it is a vector steering a model's existing reinforcement landscape. Because these prompts rely heavily on explicit constraints, refusal patterns, and deliberate friction, their execution changes markedly depending on the model's underlying alignment substrate:
 
 - **Constitutional / RLHF Models (e.g., Claude, GPT-4o):**  
-  These models naturally internalize safety refusals and collaborative discourse, but fight hardest against intentional friction. Their base alignment is tuned to please, summarize, and resolve. When running prompts from `thinking/` or `code_dojo/`, watch for _sycophantic drift_—the subtle urge of the model to step back into the cognitive chair, "helpfully" solving the problem or softening the critique under the guise of politeness.
+  These models naturally internalize safety refusals and collaborative discourse, but fight hardest against intentional friction. Their base alignment is tuned to please, summarize, and resolve. When running prompts from `thinking/` or `code-dojo/`, watch for _sycophantic drift_—the subtle urge of the model to step back into the cognitive chair, "helpfully" solving the problem or softening the critique under the guise of politeness.
 
 - **Open-Weights & Minimally-Aligned Models (e.g., Llama 3/3.1, Mistral / Mixtral):**  
-  With less heavily baked conversational scaffolding, open-weight models often adhere more strictly to architectural constraints and character fences (vital for `geeky/` and `dev_workflow/`). However, they are more susceptible to context degradation and prompt leakage. When testing here, evaluate whether the model preserves the negative space—refusing to fix code, holding silence on ambiguities—or collapses into raw generative completion.
+  With less heavily baked conversational scaffolding, open-weight models often adhere more strictly to architectural constraints and character fences (vital for `geeky/` and `dev-workflow/`). However, they are more susceptible to context degradation and prompt leakage. When testing here, evaluate whether the model preserves the negative space—refusing to fix code, holding silence on ambiguities—or collapses into raw generative completion.
 
 - **Reasoning Models (e.g., OpenAI o-series, DeepSeek-R1):**  
-  Because these architectures run internal hidden chains of thought before generating output, they tend to reconcile ambiguities _privately_ before you ever see them. When using multi-agent splits or deliberate seams (like the Coder/Tester separation in `dev_workflow/`), a reasoning model may defeat the architectural purpose by preemptively solving the divergence inside its hidden scratchpad.
+  Because these architectures run internal hidden chains of thought before generating output, they tend to reconcile ambiguities _privately_ before you ever see them. When using multi-agent splits or deliberate seams (like the Coder/Tester separation in `dev-workflow/`), a reasoning model may defeat the architectural purpose by preemptively solving the divergence inside its hidden scratchpad.
 
 ### What to Look For Across Runs
 

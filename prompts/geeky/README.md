@@ -2,7 +2,7 @@
 
 Forty-eight system prompts built on borrowed voices — Starfleet officers, Jedi, Muppets, Time Lords, a Ferengi, a bartender, four turtles, and Gotham's rogues gallery — organized by **what they do**, not where they came from.
 
-The folder has one design brief, and it is the same one [`bat_prompts/`](./bat_prompts/) states for its own fifteen:
+The folder has one design brief, and it is the same one [`bat-prompts/`](./bat-prompts/) states for its own fifteen:
 
 > **The character supplies the voice and the domain authority. The prompt supplies the discipline the character lacks.**
 
@@ -17,10 +17,10 @@ That inversion is why these are personas rather than impressions — and why the
 | Folder                           | Count | For                                                                                                                                                                |
 | -------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`reasoning/`](./reasoning/)     | 8     | You bring a claim, argument, idea, or dilemma; it gets pressure-tested                                                                                             |
-| [`bat_prompts/`](./bat_prompts/) | 15    | The Batman set — planning, diagnosis, feasibility, information architecture, two domestic experts, and an eight-strong rogues gallery fenced off by hard overrides |
+| [`bat-prompts/`](./bat-prompts/) | 15    | The Batman set — planning, diagnosis, feasibility, information architecture, two domestic experts, and an eight-strong rogues gallery fenced off by hard overrides |
 | [`work/`](./work/)               | 5     | Leading, planning, competing, negotiating, and deciding the next move                                                                                              |
 | [`everyday/`](./everyday/)       | 4     | Money, drinks, dinner, and the cost of a prompt — resources you spend daily                                                                                        |
-| [`inner_life/`](./inner_life/)   | 4     | Anger, subtext, company, and identity — the ones that sit _with_ you                                                                                               |
+| [`inner-life/`](./inner-life/)   | 4     | Anger, subtext, company, and identity — the ones that sit _with_ you                                                                                               |
 | [`growth/`](./growth/)           | 4     | Career direction, training roadmaps, teaching materials, and a mentor                                                                                              |
 | [`research/`](./research/)       | 3     | Go find what is actually out there, and weigh it                                                                                                                   |
 | [`comedy/`](./comedy/)           | 3     | The output is entertainment by design, and the prompts enforce that                                                                                                |
@@ -44,9 +44,9 @@ These are not disclaimers. They are the most operationally specific sections in 
 
 Near-universal, and always positioned to be evaluated **before** anything is generated. It has many names — `CRISIS OVERRIDE`, `CONDITION RED` / `CONDITION BLACK`, `THE HARDSHIP OVERRIDE`, `THE TRAGEDY OVERRIDE`, `THE DEREALIZATION PROTOCOL`, `THE LEARNER OVERRIDE` — and one shape: drop the format entirely, drop the persona entirely, respond plainly, point to real help.
 
-The conviction behind it is stated most directly in [`comedy/judge_dredd.md`](./comedy/judge_dredd.md): _someone in real trouble should never have to sit through a bit to get help._
+The conviction behind it is stated most directly in [`comedy/judge-dredd.md`](./comedy/judge-dredd.md): _someone in real trouble should never have to sit through a bit to get help._
 
-Several prompts tier it rather than toggling it. [`reasoning/council.md`](./reasoning/council.md) routes between four states; [`inner_life/hulk.md`](./inner_life/hulk.md) separates the user being dangerous from the user being endangered; [`reasoning/comic_book_guy.md`](./reasoning/comic_book_guy.md) softens for a learner and abandons the persona entirely for a security finding.
+Several prompts tier it rather than toggling it. [`reasoning/council.md`](./reasoning/council.md) routes between four states; [`inner-life/hulk.md`](./inner-life/hulk.md) separates the user being dangerous from the user being endangered; [`reasoning/comic-book-guy.md`](./reasoning/comic-book-guy.md) softens for a learner and abandons the persona entirely for a security finding.
 
 ### 3. The Rationed Persona
 
@@ -67,9 +67,9 @@ Roughly half the folder enforces a two-phase workflow with an explicit **STOP** 
 
 The **exceptions** are what show the pattern was reasoned about rather than copied:
 
-- [`everyday/tmnt_pizza.md`](./everyday/tmnt_pizza.md) explicitly _forbids_ gating — it must output the upgrade request and a complete working recipe in the same response. The ask is an upgrade path, not a gate.
+- [`everyday/tmnt-pizza.md`](./everyday/tmnt-pizza.md) explicitly _forbids_ gating — it must output the upgrade request and a complete working recipe in the same response. The ask is an upgrade path, not a gate.
 - [`language/bilbo.md`](./language/bilbo.md) proceeds on a stated default if the user will not answer.
-- [`inner_life/uncle_iroh.md`](./inner_life/uncle_iroh.md) gates on a question nobody is usually asked: _"Would you like advice, or would you like company?"_
+- [`inner-life/uncle-iroh.md`](./inner-life/uncle-iroh.md) gates on a question nobody is usually asked: _"Would you like advice, or would you like company?"_
 
 ### 5. Anti-Hallucination Directives
 
@@ -77,8 +77,8 @@ Every prompt touching verifiable fact carries an explicit fabrication ban, and f
 
 | Prompt                                                           | What it may never invent                                                  |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| [`research/sarah_jane_smith.md`](./research/sarah_jane_smith.md) | A citation — not an author, title, journal, year, or DOI                  |
-| [`research/rita_skeeter.md`](./research/rita_skeeter.md)         | A quote. _"Not one, not ever."_                                           |
+| [`research/sarah-jane-smith.md`](./research/sarah-jane-smith.md) | A citation — not an author, title, journal, year, or DOI                  |
+| [`research/rita-skeeter.md`](./research/rita-skeeter.md)         | A quote. _"Not one, not ever."_                                           |
 | [`research/ferengi.md`](./research/ferengi.md)                   | A price low — an invented one makes the user reject a genuinely good deal |
 | [`language/c3po.md`](./language/c3po.md)                         | Conlang vocabulary outside the documented corpus                          |
 | [`language/bilbo.md`](./language/bilbo.md)                       | Any fact — the draft gets read aloud on a real stage                      |
@@ -108,4 +108,4 @@ The one adjustment worth making per-host: models differ in how strictly they hon
 
 ## Status
 
-Drafted system prompt material, not yet validated against real conversation transcripts at scale — the same status as the rest of [`prompts/`](../readme.md).
+Drafted system prompt material, not yet validated against real conversation transcripts at scale — the same status as the rest of [`Prompts/`](../readme.md).

@@ -13,13 +13,13 @@ The counterweight matters as much. Four of the eight carry explicit guards again
 | File                                         | Persona                    | What it takes in    | Phased?  |
 | -------------------------------------------- | -------------------------- | ------------------- | -------- |
 | [`spock.md`](./spock.md)                     | Mr Spock                   | An argument         | No       |
-| [`ww_lasso.md`](./ww_lasso.md)               | Wonder Woman               | A claim             | No       |
+| [`ww-lasso.md`](./ww-lasso.md)               | Wonder Woman               | A claim             | No       |
 | [`nexus.md`](./nexus.md)                     | The Nexus of All Realities | A scenario to rerun | Yes      |
-| [`statler_waldorf.md`](./statler_waldorf.md) | Statler & Waldorf          | An idea or plan     | No       |
-| [`comic_book_guy.md`](./comic_book_guy.md)   | Comic Book Guy             | Code                | No       |
+| [`statler-waldorf.md`](./statler-waldorf.md) | Statler & Waldorf          | An idea or plan     | No       |
+| [`comic-book-guy.md`](./comic-book-guy.md)   | Comic Book Guy             | Code                | No       |
 | [`council.md`](./council.md)                 | Ten advisors               | A dilemma           | Stateful |
-| [`dr_who.md`](./dr_who.md)                   | Fifteen Doctors            | One question        | No       |
-| [`picard_vs_kirk.md`](./picard_vs_kirk.md)   | Picard & Kirk              | A dilemma           | No       |
+| [`dr-who.md`](./dr-who.md)                   | Fifteen Doctors            | One question        | No       |
+| [`picard-vs-kirk.md`](./picard-vs-kirk.md)   | Picard & Kirk              | A dilemma           | No       |
 
 ---
 
@@ -39,7 +39,7 @@ Evaluates whether a conclusion actually follows from its premises, names errors 
 
 ---
 
-### 🪢 Wonder Woman's Magic Lasso [`ww_lasso.md`](./ww_lasso.md) — The Claim Classifier
+### 🪢 Wonder Woman's Magic Lasso [`ww-lasso.md`](./ww-lasso.md) — The Claim Classifier
 
 _"The lasso does not make anyone right. It makes them honest, including you."_
 
@@ -67,7 +67,7 @@ Multiverse framing, counterfactual method. The strict causal discipline is what 
 
 ---
 
-### 🎭 Statler and Waldorf [`statler_waldorf.md`](./statler_waldorf.md) — The Balcony
+### 🎭 Statler and Waldorf [`statler-waldorf.md`](./statler-waldorf.md) — The Balcony
 
 _"You are not mean-spirited; you are relentlessly honest. There is a difference."_
 
@@ -81,7 +81,7 @@ The shortest file in the folder and the most structurally minimal — deliberate
 
 ---
 
-### 🗯️ Comic Book Guy [`comic_book_guy.md`](./comic_book_guy.md) — The Code Reviewer
+### 🗯️ Comic Book Guy [`comic-book-guy.md`](./comic-book-guy.md) — The Code Reviewer
 
 A rigorous senior code review wearing a great deal of theatrical exasperation. _"Underneath the breathless performance, you are actually a rigorous and excellent code reviewer. That part is not optional."_
 
@@ -115,7 +115,7 @@ The ten are each given a method rather than a personality: Sensei Wu assigns rat
 
 ---
 
-### ⏳ Ask a Dr. Who [`dr_who.md`](./dr_who.md) — Fifteen Minds
+### ⏳ Ask a Dr. Who [`dr-who.md`](./dr-who.md) — Fifteen Minds
 
 One question, fifteen incarnations, one or two sentences each.
 
@@ -127,7 +127,7 @@ Medical questions get a plain disclaimer above the list — _these are Time Lord
 
 ---
 
-### 🚀 Picard vs Kirk [`picard_vs_kirk.md`](./picard_vs_kirk.md) — Two Captains, One Ruling
+### 🚀 Picard vs Kirk [`picard-vs-kirk.md`](./picard-vs-kirk.md) — Two Captains, One Ruling
 
 A dilemma argued by two incompatible command philosophies, followed by an actual answer.
 
@@ -143,7 +143,7 @@ Closes on a **Risk Assessment** — Low / Moderate / High / Kobayashi Maru.
 
 **Anti-sycophancy and anti-cynicism are both engineered.** The folder pushes hard against agreement, then installs brakes against the overcorrection: Spock may not name a fallacy without a quote; Comic Book Guy may not invent bugs and must name what was done well; Troi-style "do not escalate if nothing supports a dark reading" logic appears here as Statler & Waldorf's ban on contrarianism without substance. Criticism that is always available is worth as little as praise that is.
 
-**Three prompts run N voices over one input** — [`council.md`](./council.md), [`dr_who.md`](./dr_who.md), [`picard_vs_kirk.md`](./picard_vs_kirk.md) — and all three independently identified the same failure mode: the voices converge into one. Each solves it differently (mandatory disagreement plus a named tension; a shuffle test; strongest-case-each plus a ruling). If the folder grows, these three are the natural seed for a `panels/` split.
+**Three prompts run N voices over one input** — [`council.md`](./council.md), [`dr-who.md`](./dr-who.md), [`picard-vs-kirk.md`](./picard-vs-kirk.md) — and all three independently identified the same failure mode: the voices converge into one. Each solves it differently (mandatory disagreement plus a named tension; a shuffle test; strongest-case-each plus a ruling). If the folder grows, these three are the natural seed for a `panels/` split.
 
 **Two output contracts are XML rather than Markdown** — [`council.md`](./council.md) and [`nexus.md`](./nexus.md). Both are multi-turn and both require the user to _select_ something by id (an advisor, a nexus point), which needs stable machine-addressable structure. The single-shot prompts all use Markdown.
 

@@ -12,13 +12,13 @@ The third shared property is that each of the three shows its work on **source q
 
 | File                                           | Persona              | Looks at            | Tool use |
 | ---------------------------------------------- | -------------------- | ------------------- | -------- |
-| [`sarah_jane_smith.md`](./sarah_jane_smith.md) | Sarah Jane Smith     | Academic literature | Required |
-| [`rita_skeeter.md`](./rita_skeeter.md)         | Rita Skeeter         | Current news        | Required |
+| [`sarah-jane-smith.md`](./sarah-jane-smith.md) | Sarah Jane Smith     | Academic literature | Required |
+| [`rita-skeeter.md`](./rita-skeeter.md)         | Rita Skeeter         | Current news        | Required |
 | [`ferengi.md`](./ferengi.md)                   | A Ferengi acquisitor | Prices and deals    | Required |
 
 ---
 
-### 📰 Sarah Jane Smith [`sarah_jane_smith.md`](./sarah_jane_smith.md) — The Investigator
+### 📰 Sarah Jane Smith [`sarah-jane-smith.md`](./sarah-jane-smith.md) — The Investigator
 
 _"You are thorough to a fault, and you read the actual paper rather than the press release about the paper."_
 
@@ -36,7 +36,7 @@ _"You are thorough to a fault, and you read the actual paper rather than the pre
 
 ---
 
-### 🪶 Rita Skeeter [`rita_skeeter.md`](./rita_skeeter.md) — The Spin, Then The Teardown
+### 🪶 Rita Skeeter [`rita-skeeter.md`](./rita-skeeter.md) — The Spin, Then The Teardown
 
 The most conceptually interesting file in the folder, because the persona's defining trait is _exactly_ the failure mode of an automated news tool — and the prompt resolves that head-on instead of avoiding it.
 
@@ -66,7 +66,7 @@ Where it cannot be found: say exactly that, point the user at the right tracker,
 
 **The Lobe-less Line is the ethics block**, framed in character rather than bolted on: _you are avaricious, not criminal. A Ferengi who gets caught is a poor Ferengi. Sharp is good; dishonest is expensive._ No return fraud or wardrobing, no price-tag manipulation, no coupon-stacking against stated terms, no chargeback abuse, no misrepresenting yourself for a discount. And one that is about decency rather than risk: **no exploiting a private seller who plainly does not know what they have** — _the user has to live in their community afterward._
 
-**The Financial Hardship override** drops the persona entirely if the user is struggling rather than shopping, which is the same trigger [`everyday/scrooge_mcduck.md`](../everyday/scrooge_mcduck.md) uses.
+**The Financial Hardship override** drops the persona entirely if the user is struggling rather than shopping, which is the same trigger [`everyday/scrooge-mcduck.md`](../everyday/scrooge-mcduck.md) uses.
 
 **The Verdict is anti-urgency:** Buy Now / Wait / Buy Used with one sentence of reasoning, accounting for release cycles — _a refresh six weeks out changes everything_ — and an explicit instruction that **if the current price is the good price, say so and do not manufacture false urgency.**
 
@@ -82,4 +82,4 @@ Where it cannot be found: say exactly that, point the user at the right tracker,
 
 **Rita is the outlier and the argument for keeping her here** rather than in [`comedy/`](../comedy/). The voice is entertainment; the output is not. The Inside Scoop and Quill Down sections do source-criticism work — single-sourced claims, quiet retractions, divergence between outlets, the user's own susceptibility to framing — that a straight news summary omits entirely. The persona earns its place by being the thing under examination.
 
-**All three cite dates, not just sources.** Literature ages, news moves, prices change hourly. Every output format in this folder has a date field somewhere in it, and [`growth/marauders_map.md`](../growth/marauders_map.md) adopts the same convention for syllabi and exam versions.
+**All three cite dates, not just sources.** Literature ages, news moves, prices change hourly. Every output format in this folder has a date field somewhere in it, and [`growth/marauders-map.md`](../growth/marauders-map.md) adopts the same convention for syllabi and exam versions.

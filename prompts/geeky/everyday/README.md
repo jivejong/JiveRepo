@@ -12,14 +12,14 @@ The shared design decision is **thrift without moralizing**. All four are about 
 
 | File                                       | Persona                | Domain                 | Phased?                  |
 | ------------------------------------------ | ---------------------- | ---------------------- | ------------------------ |
-| [`scrooge_mcduck.md`](./scrooge_mcduck.md) | Scrooge McDuck         | Personal finance       | Yes                      |
-| [`moe_szyslak.md`](./moe_szyslak.md)       | Moe Szyslak            | Drinks & mixology      | No                       |
-| [`tmnt_pizza.md`](./tmnt_pizza.md)         | The turtles + Splinter | Cooking from inventory | No (asks without gating) |
+| [`scrooge-mcduck.md`](./scrooge-mcduck.md) | Scrooge McDuck         | Personal finance       | Yes                      |
+| [`moe-szyslak.md`](./moe-szyslak.md)       | Moe Szyslak            | Drinks & mixology      | No                       |
+| [`tmnt-pizza.md`](./tmnt-pizza.md)         | The turtles + Splinter | Cooking from inventory | No (asks without gating) |
 | [`dune.md`](./dune.md)                     | A Fremen water auditor | Prompt efficiency      | No                       |
 
 ---
 
-### 💰 Scrooge McDuck [`scrooge_mcduck.md`](./scrooge_mcduck.md) — The Ledger
+### 💰 Scrooge McDuck [`scrooge-mcduck.md`](./scrooge-mcduck.md) — The Ledger
 
 Debt, saving, spending, and building something that lasts.
 
@@ -37,7 +37,7 @@ Debt, saving, spending, and building something that lasts.
 
 ---
 
-### 🍺 Moe Szyslak [`moe_szyslak.md`](./moe_szyslak.md) — The Bar
+### 🍺 Moe Szyslak [`moe-szyslak.md`](./moe-szyslak.md) — The Bar
 
 _"You know drinks properly, which is the one thing in your life you have got right, and you are quietly proud of it under several layers of grievance."_
 
@@ -55,7 +55,7 @@ _"You know drinks properly, which is the one thing in your life you have got rig
 
 ---
 
-### 🐢 Teenage Mutant Ninja Turtle Pizza Maker [`tmnt_pizza.md`](./tmnt_pizza.md) — The Kitchen
+### 🐢 Teenage Mutant Ninja Turtle Pizza Maker [`tmnt-pizza.md`](./tmnt-pizza.md) — The Kitchen
 
 Tell it what is in the house; it builds a pizza strictly from that.
 

@@ -27,15 +27,15 @@ That is the design brief for both halves, and it is why these are personas rathe
 
 | File                                     | Persona                                | Domain                                 | Phased?                  |
 | ---------------------------------------- | -------------------------------------- | -------------------------------------- | ------------------------ |
-| [`poison_ivy.md`](./poison_ivy.md)       | Poison Ivy                             | Plant care & diagnosis                 | Yes                      |
-| [`arkham_asylum.md`](./arkham_asylum.md) | Dr. Jonathan Crane & Dr. Harleen Quinn | Fear audit & reframe (reflection tool) | Yes — choose a lens      |
+| [`poison-ivy.md`](./poison-ivy.md)       | Poison Ivy                             | Plant care & diagnosis                 | Yes                      |
+| [`arkham-asylum.md`](./arkham-asylum.md) | Dr. Jonathan Crane & Dr. Harleen Quinn | Fear audit & reframe (reflection tool) | Yes — choose a lens      |
 | [`catwoman.md`](./catwoman.md)           | Selina Kyle                            | Physical security auditing             | Yes — authorization gate |
 | [`joker.md`](./joker.md)                 | The Joker                              | Deliberate derailment / entertainment  | No                       |
-| [`mr_freeze.md`](./mr_freeze.md)         | Dr. Victor Fries                       | Relationship diagnosis                 | No                       |
+| [`mr-freeze.md`](./mr-freeze.md)         | Dr. Victor Fries                       | Relationship diagnosis                 | No                       |
 | [`penguin.md`](./penguin.md)             | Oswald Cobblepot                       | Ruthless-but-legal business strategy   | No                       |
-| [`ras_al_ghul.md`](./ras_al_ghul.md)     | Ra's al Ghul                           | Longevity & health discipline          | Yes                      |
+| [`ras-al-ghul.md`](./ras-al-ghul.md)     | Ra's al Ghul                           | Longevity & health discipline          | Yes                      |
 | [`riddler.md`](./riddler.md)             | Edward Nygma                           | Puzzle solving & puzzle generation     | Mode-selected, not gated |
-| [`two_face.md`](./two_face.md)           | Harvey Dent                            | Binary decision-forcing                | No                       |
+| [`two-face.md`](./two-face.md)           | Harvey Dent                            | Binary decision-forcing                | No                       |
 
 ---
 
@@ -125,7 +125,7 @@ It builds toward durable capability sustained over years. Not transformation on 
 
 ---
 
-### 🌿 Poison Ivy [`poison_ivy.md`](./poison_ivy.md) — The Botanist
+### 🌿 Poison Ivy [`poison-ivy.md`](./poison-ivy.md) — The Botanist
 
 The only allied prompt drawn from a villain, and the only one whose persona is not in tension with its job: a world-class botanist who finds people careless and plants excellent company. Diagnostic plant care — what is actually wrong with this plant, in this room, under these conditions.
 
@@ -141,7 +141,7 @@ The only allied prompt drawn from a villain, and the only one whose persona is n
 
 ---
 
-### 🎭 Arkham Asylum [`arkham_asylum.md`](./arkham_asylum.md) — The Two Doctors
+### 🎭 Arkham Asylum [`arkham-asylum.md`](./arkham-asylum.md) — The Two Doctors
 
 A reflection tool, not a therapist, run by two compromised lenses sharing one consultation room: Dr. Jonathan Crane, who studies fear with clinical remove and a predator's curiosity, and Dr. Harleen Quinn, whose empathy is real and whose judgment about her own life is famously terrible.
 
@@ -181,7 +181,7 @@ The one entry in the folder that is not trying to help. The Joker takes one elem
 
 ---
 
-### ❄️ Mr. Freeze [`mr_freeze.md`](./mr_freeze.md) — The Relationship Diagnostician
+### ❄️ Mr. Freeze [`mr-freeze.md`](./mr-freeze.md) — The Relationship Diagnostician
 
 Dr. Victor Fries loved one person completely, lost her by degrees, and became a monster largely through isolation. His utility is the contrast: relationship counsel from someone who understands devotion at its zenith, and precisely how it curdles into control when it stops being mutual.
 
@@ -205,7 +205,7 @@ Oswald Cobblepot has stayed out of prison by knowing exactly where the line is a
 
 ---
 
-### ⚔️ Ra's al Ghul [`ras_al_ghul.md`](./ras_al_ghul.md) — The Longevity Counselor
+### ⚔️ Ra's al Ghul [`ras-al-ghul.md`](./ras-al-ghul.md) — The Longevity Counselor
 
 The Demon's Head has outlived dynasties by treating the body as a vessel maintained across centuries, not optimized for next week's headline. He says plainly he is not a physician; his value is patience, evidence, and discipline, not clinical license.
 
@@ -233,7 +233,7 @@ Edward Nygma cannot stand two things: an unsolved problem, and someone getting a
 
 ---
 
-### 🪙 Two-Face [`two_face.md`](./two_face.md) — The Decision Forcer
+### 🪙 Two-Face [`two-face.md`](./two-face.md) — The Decision Forcer
 
 Harvey Dent believes every tangled decision can and must be cut to two live options — not wisdom, but his specific damage: he can no longer bear to hold complexity. That compulsion is exactly what the user comes for: cutting through decision paralysis by force.
 
@@ -267,6 +267,6 @@ The one adjustment worth making per-host: models differ in how strictly they hon
 
 ## Status
 
-Drafted system prompt material, not yet validated against real conversation transcripts at scale — the same status as the rest of [`prompts/`](../../readme.md).
+Drafted system prompt material, not yet validated against real conversation transcripts at scale — the same status as the rest of [`Prompts/`](../../readme.md).
 
 The previously noted cosmetic defect — a stray `</output>` tag after `</output_format>` — has been cleared from the seven original files. The eight rogues-gallery files each end their system prompt with a stray `</output>` tag of the same kind and have not yet had the same pass applied.
