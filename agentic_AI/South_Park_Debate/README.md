@@ -1,6 +1,6 @@
 # 🎤 South Park: Town Hall Debate (Multi-Agent LLM App)
 
-A highly interactive, multi-agent Large Language Model (LLM) application built with **Streamlit** and powered by the **Groq API**. Watch as over 25 classic South Park characters engage in absurd, fully automated Lincoln-Douglas style town hall debates, complete with dynamic topic generation, a panel of celebrity judges, and OpenTelemetry instrumentation for real-time performance tracking.
+An interactive, multi-agent Large Language Model (LLM) application built with **Streamlit** and powered by the **Groq API**. Watch as over 25 classic South Park characters engage in absurd, fully automated Lincoln-Douglas style town hall debates, complete with dynamic topic generation, a panel of celebrity judges, and OpenTelemetry instrumentation for real-time performance tracking.
 
 ## ✨ Features
 

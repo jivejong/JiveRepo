@@ -7,7 +7,7 @@ Working code — things built to be used, not to demonstrate a pattern. Each pro
 | Project                              | What it is                                    | Stack                             | State                    |
 | ------------------------------------ | --------------------------------------------- | --------------------------------- | ------------------------ |
 | [`Chord_Charts/`](./Chord_Charts/)   | Chord chart manager for live performance      | Node + Express + SQLite, React PWA | Built, needs assembly    |
-| [`BBS_Website/`](./BBS_Website/)     | Buffer Overflow landing site as a 1980s BBS   | Single HTML file, zero deps        | Runs as-is, menu is stubbed |
+| [`BBS_Website/`](./BBS_Website/)     | Interactive portfolio site as a 1980s BBS     | Vanilla HTML/CSS/JS, zero deps     | Runs as-is               |
 
 ---
 
@@ -40,7 +40,7 @@ The project README also flags two known migrations: swapping `sql.js` for `bette
 
 ## 📟 [`BBS_Website/`](./BBS_Website/) — Buffer Overflow BBS v2.0.26
 
-The landing site for the [Buffer Overflow](https://www.youtube.com/@BufferOverflow-v2j) channel, built as a Commodore 64 bulletin board. One 39 KB HTML file — no build step, no dependencies, no framework. Open it in a browser and it runs.
+The landing site for the [Buffer Overflow](https://www.youtube.com/@BufferOverflow-v2j) channel, built as a Commodore 64 bulletin board. The complete core shell is 46 KB of handwritten HTML, CSS, and JavaScript—no build step, runtime dependencies, or framework. See the [project README](./BBS_Website/README.md) for the architecture and size breakdown.
 
 It is a scripted sequence rather than a page, and it commits to the bit:
 
@@ -48,17 +48,13 @@ It is a scripted sequence rather than a page, and it commits to the bit:
 2. **Input selection** — keyboard or mouse. Moving the mouse triggers a `MOUSE INPUT DETECTED` interstitial: *"This is a BBS. We use keyboards here. Mouse support indicates you may have joined computing after 1995. We don't judge. Much."*
 3. **Crack intro** — a full demoscene tribute: rainbow raster bars, star field, scroller, and SID-style music synthesized live through the Web Audio API.
 4. **The `SYS 64738` puzzle** — a gate before the menu. The answer is the C64 warm-reset command; the site accepts `SYS 64738`, `SYS64738`, or `64738`, cycles through dismissive responses on wrong guesses, and relents with the answer after three attempts.
-5. **Main menu** — Videos, Research / White Papers, LinkedIn, Contact the SYSOP, plus a beep toggle and a Goodbye that hangs up the modem.
+5. **Main menu** — live portfolio links, a Pine-inspired contact composer, an embedded seven-game arcade, sound controls, and a Goodbye command that hangs up the modem.
 
-The white papers section renders as an Apache `Index of /papers` directory listing, and Contact is a `COMPOSE MAIL` screen that reports the SYSOP is *"still wiring up SMTP"* — then asks you to verify you're human by typing `SYS ___738`.
+The Pine-style contact screen is intentionally front-end only. SMTP is deliberately not configured on this static portfolio site; Send falls back to the public LinkedIn contact channel.
 
-**Everything is CSS and Web Audio.** The C64 palette, scanlines, CRT curvature, phosphor glow, and the flicker-on are hand-written custom properties; every beep and the entire SID loop are generated at runtime with oscillators. No images, no audio files, no fonts fetched.
+**The interface is CSS, browser APIs, and one small media asset.** The C64 palette, scanlines, CRT curvature, phosphor glow, and flicker-on are handwritten; beeps and the SID-style loop are synthesized through Web Audio, while the opening modem handshake uses a dedicated MP3 recording.
 
-### Before you ship it
-
-- **The menu destinations are placeholders.** Videos, Research, LinkedIn, and Contact are wired to `#videos`, `#papers`, `#linkedin`, and `#contact` — internal anchors, not URLs. The file contains no external links at all, so the channel, Zenodo, and LinkedIn destinations still need filling in.
-- **The Apache listing is fiction.** The file names and dates in `/papers` are invented set dressing, not the real [`/docs/white_papers`](../docs/) inventory. Worth reconciling before this is public, since it reads as a real directory index.
-- **Desktop only by design.** A `#mobile-block` intercepts small screens, and the whole interaction is keyboard-driven.
+The full terminal experience is desktop-first by design. Small screens receive a compact set of real portfolio links rather than a compromised version of the keyboard-driven BBS sequence.
 
 ---
 
@@ -66,6 +62,6 @@ The white papers section renders as an Apache `Index of /papers` directory listi
 
 **Self-contained.** No shared build, no workspace root, no cross-project imports. Each project stands alone and is copied out intact.
 
-**Documented where it's non-obvious.** [`Chord_Charts/`](./Chord_Charts/README.md) carries a full setup README because assembling it is genuinely multi-step; `BBS_Website/` does not, because opening the file is the whole procedure.
+**Documented where it adds context.** [`Chord_Charts/`](./Chord_Charts/README.md) covers assembly and setup; [`BBS_Website/`](./BBS_Website/README.md) explains the deliberately small architecture, interaction model, and design decisions.
 
 **Secrets stay out.** The chart tagger reads `ANTHROPIC_API_KEY` from the environment at invocation — never committed, never in a config file.

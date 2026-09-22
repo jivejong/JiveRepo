@@ -22,7 +22,9 @@ A local, streaming intrusion-detection pipeline: a simulated five-stage attack l
 
 ### [`/agentic_AI`](./agentic_AI)
 
-Four self-contained [Streamlit](https://streamlit.io/) apps, each demonstrating a distinct agentic AI pattern: a compound multimodal pipeline (Agentic Poet), an adversarial multi-agent negotiation with RAG (Agentic Snacks), a single-agent classifier (NoCap), and a voice-driven state machine with OpenTelemetry observability (Spouse Approval). See the [agentic_AI README](./agentic_AI/README.md).
+This collection features five agentic AI projects exploring multi-agent dynamics, multimodal pipelines, and interactive workflows. **Agentic Poet** turns images into audio-visual poetry performances via six coordinated agents and closed-loop validation. **Agentic Snacks** models adversarial negotiations over dietary choices using three-tier RAG across thousands of food items. **Spouse Approval** acts as an escalating state machine that transcribes bad ideas and scores marital risk with multi-voice neural TTS and full telemetry. **South Park Town Hall Debate** runs automated, Lincoln-Douglas style character debates with dynamic topics and celebrity judges, while **NoCap** uses strict prompt engineering to evaluate Gen Z slang into structured cultural verdicts.
+
+Across the suite, the projects share a unified foundation built on Streamlit interfaces, Groq-powered inference (Llama 3.3 and Qwen models), and Streamlit secrets management. Each application augments this core with specialized capabilities, incorporating tools such as Gemini vision analysis, Whisper speech-to-text, Chroma vector storage, edge-tts narration, and OpenTelemetry instrumentation to support diverse agent behaviors. See the [agentic_AI README](./agentic_AI/README.md).
 
 ### [`/data_engineering`](./data_engineering)
 

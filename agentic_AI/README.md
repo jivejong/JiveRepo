@@ -24,6 +24,10 @@ The user speaks a potentially bad idea; the app transcribes it (Whisper), scores
 
 **Highlights:** explicit agentic state machine with guarded transitions · speech-to-text and multi-voice neural TTS · production-grade OpenTelemetry observability (GenAI semantic conventions) exportable to any OTLP backend.
 
+### 🎤 [South Park Town Hall Debate](South_Park_Debate/)
+
+An interactive, multi-agent Large Language Model (LLM) application built with **Streamlit** and powered by the **Groq API**. Watch as over 25 classic South Park characters engage in absurd, fully automated Lincoln-Douglas style town hall debates, complete with dynamic topic generation, a panel of celebrity judges, and OpenTelemetry instrumentation for real-time performance tracking.
+
 ### 🔥 [NoCap](NoCap/)
 
 A single-agent app that evaluates a Gen Z slang term's current cultural relevance, returning a structured verdict (`bussin` / `mid` / `unc`), a relevance score, origin, example usage, and a cringe warning.
