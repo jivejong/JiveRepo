@@ -1,0 +1,68 @@
+# docker-compose.yml — LOCAL DEVELOPMENT
+#
+#   docker compose up
+#
+# Brings up Postgres (schema auto-applied from db/init on first run) and the
+# Node app serving the client build baked into its image. Values come from
+# .env (copy .env.example -> .env first).
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chords}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chords}
+      POSTGRES_DB: ${POSTGRES_DB:-chords}
+    ports:
+      # exposed on localhost so you can run the Python loader against it
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # *.sql here runs once, only when the data volume is first created
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chords}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-chords}:${POSTGRES_PASSWORD:-chords}@db:5432/${POSTGRES_DB:-chords}
+      PORT: "3000"
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Server edits can be picked up by restarting the container. React/Vite
+    # client edits live in the baked dist/ and require an image rebuild.
+    # public/ is retained as the API-only fallback when dist/ is unavailable.
+    volumes:
+      - ./server:/app/server
+      - ./public:/app/public
+
+  # One-shot Python ETL environment. It stays out of ordinary `compose up`
+  # unless explicitly targeted with `docker compose run --rm pipeline ...`.
+  pipeline:
+    profiles: ["pipeline"]
+    build:
+      context: ../pipeline
+      dockerfile: Dockerfile
+    working_dir: /pipeline
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-chords}:${POSTGRES_PASSWORD:-chords}@db:5432/${POSTGRES_DB:-chords}
+      MUSICBRAINZ_CONTACT: ${MUSICBRAINZ_CONTACT:-}
+      GETSONGBPM_API_KEY: ${GETSONGBPM_API_KEY:-}
+    volumes:
+      - ../pipeline/docs:/pipeline/docs
+      - ../pipeline/parsed_out:/pipeline/parsed_out
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

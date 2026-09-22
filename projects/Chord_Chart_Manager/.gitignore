@@ -1,0 +1,39 @@
+# --- secrets & env ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- Node ---
+node_modules/
+npm-debug.log*
+dist/
+coverage/
+test-results/
+playwright-report/
+blob-report/
+
+# --- pipeline artifacts (contain copyrighted chart content — do NOT commit) ---
+# Your real 30 genre docs and everything derived from them.
+pipeline/docs/*.docx
+!pipeline/docs/Sample.docx          # keep only the sanitized sample, if desired
+parsed_out/
+songs.json
+songs.enriched.json
+enrich_cache.json
+*.dump
+
+# --- OS / editor ---
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+HANDOFF.md
+INFRA_HANDOFF.md
+infra/

@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+docs/
+parsed_out/
+.env
+.env.*
+*.dump

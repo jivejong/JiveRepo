@@ -1,0 +1,43 @@
+# docker-compose.prod.yml — PRODUCTION (GCP e2-micro Always Free)
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Overrides the dev file: no source bind-mounts (runs the baked image),
+# always-restart, no host-exposed DB port (only the app is reachable), and
+# memory caps + Postgres tuning appropriate for the e2-micro's ~1 GB RAM.
+
+services:
+  db:
+    # Do NOT publish the DB port in prod — the app reaches it over the
+    # internal compose network only.
+    ports: !reset []
+    restart: always
+    # Modest settings for a 1 GB box with a ~2000-row dataset. Postgres
+    # defaults assume more RAM; these keep it comfortable alongside Node.
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=128MB"
+      - "-c"
+      - "effective_cache_size=256MB"
+      - "-c"
+      - "max_connections=20"
+      - "-c"
+      - "work_mem=8MB"
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+  app:
+    restart: always
+    # no bind mounts in prod — the image is the source of truth
+    volumes: !reset []
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-chords}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-chords}
+      PORT: "3000"
+    deploy:
+      resources:
+        limits:
+          memory: 256M

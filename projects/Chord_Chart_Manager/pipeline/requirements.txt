@@ -1,0 +1,10 @@
+# Pipeline runtime dependencies.
+#
+# Note what's NOT here on purpose:
+#   - chart_parser.py and batch_parse.py use only the Python standard library
+#     (they read the .docx zip directly — no python-docx needed).
+#   - enrich_songs.py uses only the standard library too (urllib) to call
+#     MusicBrainz and GetSongBPM — no requests/SDK needed.
+#   - pglast was only used to validate schema.sql during design; not a runtime dep.
+
+psycopg[binary]>=3.2      # load_songs.py -> Postgres
