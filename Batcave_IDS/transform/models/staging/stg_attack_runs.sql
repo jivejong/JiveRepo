@@ -47,11 +47,11 @@ select
     run_outcome,
     pathologies_enabled,
     timing_compression_factor,
-    coalesce(session_source, 'headless') as session_source,
     kafka_partition,
     kafka_offset,
     landed_at,
     dt,
-    cast(hour as integer) as hour
+    cast(hour as integer) as hour,
+    coalesce(session_source, 'headless') as session_source
 from deduplicated
 where _delivery_seq = 1
