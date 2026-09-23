@@ -9,7 +9,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Persistence for mock interviews, kept separate from {@link MockInterviewService} so the Groq call
+ * Persistence for mock interviews, kept separate from {@link MockInterviewService} so the Gemini call
  * happens outside a transaction while the writes still get one.
  *
  * <p>{@link #saveFailed} commits in its own transaction ({@code REQUIRES_NEW}) because it is called

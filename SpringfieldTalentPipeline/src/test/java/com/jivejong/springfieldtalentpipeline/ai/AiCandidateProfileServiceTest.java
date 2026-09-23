@@ -51,7 +51,7 @@ class AiCandidateProfileServiceTest {
 
         Candidate candidate = new Candidate(16, "Moe Szyslak");
         candidate.setOccupation("Bartender and Owner of Moe's Tavern");
-        // The service fetches phrases eagerly, since the Groq call runs outside a transaction.
+        // The service fetches phrases eagerly, since the Gemini call runs outside a transaction.
         when(candidates.findWithPhrasesById(CANDIDATE_ID)).thenReturn(Optional.of(candidate));
 
         requisition = new Requisition(
@@ -74,11 +74,11 @@ class AiCandidateProfileServiceTest {
             return stored;
         });
         when(generator.generate(any(), any()))
-                .thenReturn(new GroqClient.StructuredResult<>(
+                .thenReturn(new GeminiClient.StructuredResult<>(
                         new CandidateProfileGenerator.ProfileGeneration(
                                 "Runs his own tavern.", 88, "Direct match on bartending."),
-                        "openai/gpt-oss-20b",
-                        new GroqClient.TokenUsage(300, 200, 500)));
+                        "gemini-3.1-flash-lite",
+                        new GeminiClient.TokenUsage(300, 200, 500)));
 
         service = new AiCandidateProfileService(
                 profiles, applications, candidates, requisitions, generator);
@@ -86,7 +86,7 @@ class AiCandidateProfileServiceTest {
 
     private AiCandidateProfile cachedProfile(Instant generatedAt) {
         AiCandidateProfile profile = new AiCandidateProfile(APPLICATION_ID);
-        profile.apply("Cached bio.", 70, "Cached rationale.", "openai/gpt-oss-20b", generatedAt);
+        profile.apply("Cached bio.", 70, "Cached rationale.", "gemini-3.1-flash-lite", generatedAt);
         return profile;
     }
 
@@ -205,10 +205,10 @@ class AiCandidateProfileServiceTest {
     void aScoreOutsideTheDocumentedRangeIsClamped() {
         when(profiles.find(APPLICATION_ID)).thenReturn(Optional.empty());
         when(generator.generate(any(), any()))
-                .thenReturn(new GroqClient.StructuredResult<>(
+                .thenReturn(new GeminiClient.StructuredResult<>(
                         new CandidateProfileGenerator.ProfileGeneration("Bio.", 140, "Rationale."),
-                        "openai/gpt-oss-20b",
-                        new GroqClient.TokenUsage(1, 1, 2)));
+                        "gemini-3.1-flash-lite",
+                        new GeminiClient.TokenUsage(1, 1, 2)));
 
         AiCandidateProfileService.ProfileResult result = service.generateOrGet(APPLICATION_ID, false);
 

@@ -5,7 +5,7 @@
  * `waitForSelector` matching the *previous* render's list, so assertions read stale DOM. Here each
  * step waits for the API response that step triggers and then for its loading indicator to detach.
  *
- * The AI steps get long timeouts on purpose: they are real Groq generations, not mocked.
+ * The AI steps get long timeouts on purpose: they are real Gemini generations, not mocked.
  *
  * Usage: node scripts/verify-stage-b.mjs [baseUrl]
  */
@@ -106,8 +106,8 @@ await moeRow.getByRole('button', { name: 'Apply' }).click();
 const appliedRes = await applied;
 check('POST /api/applications -> 201', appliedRes.status() === 201, `HTTP ${appliedRes.status()}`);
 
-// --- 4. Fit score (real Groq call) -------------------------------------------------------
-console.log('\n4. Fit score (live Groq generation)');
+// --- 4. Fit score (real Gemini call) -------------------------------------------------------
+console.log('\n4. Fit score (live Gemini generation)');
 const generating = await page
   .waitForSelector('[data-testid="fit-loading"]', { timeout: 15000 })
   .then((el) => el.innerText())
@@ -126,8 +126,8 @@ check(
 );
 await page.screenshot({ path: `${SHOTS}3-fit-score.png`, fullPage: true });
 
-// --- 5. Mock interview (real Groq call) --------------------------------------------------
-console.log('\n5. Mock interview (live Groq generation)');
+// --- 5. Mock interview (real Gemini call) --------------------------------------------------
+console.log('\n5. Mock interview (live Gemini generation)');
 await page.getByTestId('interview-run').click();
 const interviewLoading = await page
   .waitForSelector('[data-testid="interview-loading"]', { timeout: 15000 })

@@ -7,17 +7,17 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
 
-/** Binding checks for the Groq config. Deliberately context-light: no database required. */
-class GroqPropertiesTest {
+/** Binding checks for the Gemini config. Deliberately context-light: no database required. */
+class GeminiPropertiesTest {
 
     private final ApplicationContextRunner runner =
             new ApplicationContextRunner().withUserConfiguration(TestConfig.class);
 
     @Test
     void bindsApiKeyFromConfiguration() {
-        runner.withPropertyValues("groq.api-key=key-from-environment")
+        runner.withPropertyValues("gemini.api-key=key-from-environment")
                 .run(context -> {
-                    GroqProperties properties = context.getBean(GroqProperties.class);
+                    GeminiProperties properties = context.getBean(GeminiProperties.class);
                     assertThat(properties.getApiKey()).isEqualTo("key-from-environment");
                     assertThat(properties.isConfigured()).isTrue();
                 });
@@ -26,20 +26,20 @@ class GroqPropertiesTest {
     @Test
     void reportsNotConfiguredWhenKeyIsAbsent() {
         runner.run(context ->
-                assertThat(context.getBean(GroqProperties.class).isConfigured()).isFalse());
+                assertThat(context.getBean(GeminiProperties.class).isConfigured()).isFalse());
     }
 
     @Test
     void defaultsToTheModelsChosenInAiFeaturesDoc() {
         runner.run(context -> {
-            GroqProperties properties = context.getBean(GroqProperties.class);
-            assertThat(properties.getBaseUrl()).isEqualTo("https://api.groq.com/openai/v1");
-            assertThat(properties.getModels().getProfile()).isEqualTo("openai/gpt-oss-20b");
-            assertThat(properties.getModels().getInterview()).isEqualTo("openai/gpt-oss-120b");
+            GeminiProperties properties = context.getBean(GeminiProperties.class);
+            assertThat(properties.getBaseUrl()).isEqualTo("https://generativelanguage.googleapis.com/v1beta/openai");
+            assertThat(properties.getModels().getProfile()).isEqualTo("gemini-3.1-flash-lite");
+            assertThat(properties.getModels().getInterview()).isEqualTo("gemini-3.1-flash-lite");
         });
     }
 
     @Configuration(proxyBeanMethods = false)
-    @EnableConfigurationProperties(GroqProperties.class)
+    @EnableConfigurationProperties(GeminiProperties.class)
     static class TestConfig {}
 }

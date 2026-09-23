@@ -1,6 +1,6 @@
 package com.jivejong.springfieldtalentpipeline.web;
 
-import com.jivejong.springfieldtalentpipeline.ai.GroqException;
+import com.jivejong.springfieldtalentpipeline.ai.GeminiException;
 import com.jivejong.springfieldtalentpipeline.pipeline.DuplicateApplicationException;
 import com.jivejong.springfieldtalentpipeline.pipeline.InvalidTransitionException;
 import com.jivejong.springfieldtalentpipeline.pipeline.PipelineStage;
@@ -49,9 +49,9 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ErrorResponse(e.getMessage()));
     }
 
-    /** An upstream model failure is a 502 - the fault is Groq's or the network's, not the caller's. */
-    @ExceptionHandler(GroqException.class)
-    public ResponseEntity<ErrorResponse> handleGroqFailure(GroqException e) {
+    /** An upstream model failure is a 502 - the fault is Gemini's or the network's, not the caller's. */
+    @ExceptionHandler(GeminiException.class)
+    public ResponseEntity<ErrorResponse> handleGeminiFailure(GeminiException e) {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(new ErrorResponse(e.getMessage()));
     }
 

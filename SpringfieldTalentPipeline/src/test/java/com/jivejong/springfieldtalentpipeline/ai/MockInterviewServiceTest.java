@@ -13,7 +13,7 @@ import static org.mockito.Mockito.when;
 
 import com.jivejong.springfieldtalentpipeline.candidate.Candidate;
 import com.jivejong.springfieldtalentpipeline.candidate.CandidateRepository;
-import com.jivejong.springfieldtalentpipeline.config.GroqProperties;
+import com.jivejong.springfieldtalentpipeline.config.GeminiProperties;
 import com.jivejong.springfieldtalentpipeline.pipeline.JobApplication;
 import com.jivejong.springfieldtalentpipeline.pipeline.JobApplicationRepository;
 import com.jivejong.springfieldtalentpipeline.requisition.Requisition;
@@ -77,7 +77,7 @@ class MockInterviewServiceTest {
                 });
 
         service = new MockInterviewService(
-                store, generator, applications, candidates, requisitions, new GroqProperties());
+                store, generator, applications, candidates, requisitions, new GeminiProperties());
     }
 
     private static MockInterviewGenerator.InterviewTurn turn(int n) {
@@ -86,10 +86,10 @@ class MockInterviewServiceTest {
 
     private void generatorReturns(MockInterviewGenerator.InterviewGeneration generation) {
         when(generator.generate(any(), any()))
-                .thenReturn(new GroqClient.StructuredResult<>(
+                .thenReturn(new GeminiClient.StructuredResult<>(
                         generation,
-                        "openai/gpt-oss-120b",
-                        new GroqClient.TokenUsage(600, 1400, 2000)));
+                        "gemini-3.1-flash-lite",
+                        new GeminiClient.TokenUsage(600, 1400, 2000)));
     }
 
     @Test
@@ -149,13 +149,13 @@ class MockInterviewServiceTest {
 
     @Test
     void aFailedGenerationIsRecordedRatherThanVanishing() {
-        when(generator.generate(any(), any())).thenThrow(new GroqException("upstream exploded"));
+        when(generator.generate(any(), any())).thenThrow(new GeminiException("upstream exploded"));
 
         assertThatThrownBy(() -> service.generate(APPLICATION_ID))
-                .isInstanceOf(GroqException.class);
+                .isInstanceOf(GeminiException.class);
 
         verify(store, times(1))
-                .saveFailed(eq(APPLICATION_ID), anyString(), eq("openai/gpt-oss-120b"));
+                .saveFailed(eq(APPLICATION_ID), anyString(), eq("gemini-3.1-flash-lite"));
         verify(store, never()).saveGenerated(any(), any(), any(), any(), any(), any());
     }
 
@@ -164,7 +164,7 @@ class MockInterviewServiceTest {
         generatorReturns(new MockInterviewGenerator.InterviewGeneration(List.of(), "Nothing.", 3));
 
         assertThatThrownBy(() -> service.generate(APPLICATION_ID))
-                .isInstanceOf(GroqException.class)
+                .isInstanceOf(GeminiException.class)
                 .hasMessageContaining("no usable turns");
 
         verify(store, times(1)).saveFailed(eq(APPLICATION_ID), anyString(), anyString());

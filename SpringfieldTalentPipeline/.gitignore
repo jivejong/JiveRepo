@@ -3,7 +3,7 @@
 build/
 !gradle/wrapper/gradle-wrapper.jar
 
-# Secrets and local environment overrides — the Groq API key lives here, never in a committed file
+# Secrets and local environment overrides — the Gemini API key lives here, never in a committed file
 .env
 .env.local
 *.env

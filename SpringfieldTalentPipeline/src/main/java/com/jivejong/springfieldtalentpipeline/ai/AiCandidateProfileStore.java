@@ -8,7 +8,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Persistence for AI profiles, separated from {@link AiCandidateProfileService} so the Groq call
+ * Persistence for AI profiles, separated from {@link AiCandidateProfileService} so the Gemini call
  * happens outside any transaction rather than holding a database connection open for the several
  * seconds a generation takes.
  *
@@ -36,7 +36,7 @@ public class AiCandidateProfileStore {
      * Creates or updates the single profile for an application.
      *
      * <p>The read happens inside this transaction rather than being passed in from the caller's
-     * earlier lookup. A concurrent request that inserted while this one was still talking to Groq
+     * earlier lookup. A concurrent request that inserted while this one was still talking to Gemini
      * is therefore seen here, and this becomes an update instead of a colliding insert - which
      * closes most of the race on its own. The remaining window, where both transactions read before
      * either writes, is what the caller's constraint-violation recovery is for.

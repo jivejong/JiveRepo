@@ -4,7 +4,7 @@
  * `empty` is deliberately separate from `error`: the API answers a no-match search with 200 and an
  * empty array, so "found nothing" is a valid outcome and must never render as a failure.
  *
- * `generating` exists because the AI calls take seconds against Groq. A spinner identical to a
+ * `generating` exists because the AI calls take seconds against Gemini. A spinner identical to a
  * 20ms fetch reads as a hang, so those two panels say what is happening and roughly how long it
  * takes.
  */

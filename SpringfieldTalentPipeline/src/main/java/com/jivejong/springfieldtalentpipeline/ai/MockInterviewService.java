@@ -2,7 +2,7 @@ package com.jivejong.springfieldtalentpipeline.ai;
 
 import com.jivejong.springfieldtalentpipeline.candidate.Candidate;
 import com.jivejong.springfieldtalentpipeline.candidate.CandidateRepository;
-import com.jivejong.springfieldtalentpipeline.config.GroqProperties;
+import com.jivejong.springfieldtalentpipeline.config.GeminiProperties;
 import com.jivejong.springfieldtalentpipeline.pipeline.JobApplication;
 import com.jivejong.springfieldtalentpipeline.pipeline.JobApplicationRepository;
 import com.jivejong.springfieldtalentpipeline.requisition.Requisition;
@@ -23,7 +23,7 @@ import org.springframework.stereotype.Service;
  * being able to compare attempts is the point (docs/AI_FEATURES.md). Reading existing sessions never
  * calls the model.
  *
- * <p>The Groq call deliberately happens outside any transaction. It takes seconds, and holding a
+ * <p>The Gemini call deliberately happens outside any transaction. It takes seconds, and holding a
  * database connection open across it would tie up the pool for no reason; persistence happens
  * afterwards in {@link MockInterviewStore}, which is also why a failed attempt can be recorded even
  * though the request goes on to fail.
@@ -38,7 +38,7 @@ public class MockInterviewService {
     private final JobApplicationRepository applications;
     private final CandidateRepository candidates;
     private final RequisitionRepository requisitions;
-    private final GroqProperties properties;
+    private final GeminiProperties properties;
 
     public MockInterviewService(
             MockInterviewStore store,
@@ -46,7 +46,7 @@ public class MockInterviewService {
             JobApplicationRepository applications,
             CandidateRepository candidates,
             RequisitionRepository requisitions,
-            GroqProperties properties) {
+            GeminiProperties properties) {
         this.store = store;
         this.generator = generator;
         this.applications = applications;
@@ -55,14 +55,14 @@ public class MockInterviewService {
         this.properties = properties;
     }
 
-    public record InterviewResult(MockInterviewSession session, GroqClient.TokenUsage usage) {}
+    public record InterviewResult(MockInterviewSession session, GeminiClient.TokenUsage usage) {}
 
     public InterviewResult generate(UUID applicationId) {
         JobApplication application = applications
                 .findById(applicationId)
                 .orElseThrow(() -> new NoSuchElementException("No application " + applicationId));
         // Fetches the phrase collection in the same query: the prompt needs it, and there is no
-        // transaction open around the Groq call to load it lazily later.
+        // transaction open around the Gemini call to load it lazily later.
         Candidate candidate = candidates
                 .findWithPhrasesById(application.getCandidateId())
                 .orElseThrow(() -> new NoSuchElementException(
@@ -72,14 +72,14 @@ public class MockInterviewService {
                 .orElseThrow(() -> new NoSuchElementException(
                         "No requisition " + application.getRequisitionId()));
 
-        GroqClient.StructuredResult<MockInterviewGenerator.InterviewGeneration> result;
+        GeminiClient.StructuredResult<MockInterviewGenerator.InterviewGeneration> result;
         try {
             log.info(
                     "Generating mock interview: {} for '{}'",
                     candidate.getName(),
                     requisition.getTitle());
             result = generator.generate(candidate, requisition);
-        } catch (GroqException e) {
+        } catch (GeminiException e) {
             // Record the attempt before rethrowing, so a run of failures is visible rather than
             // looking like nobody ever tried.
             store.saveFailed(applicationId, e.getMessage(), properties.getModels().getInterview());
@@ -88,9 +88,9 @@ public class MockInterviewService {
 
         List<MockInterviewGenerator.InterviewTurn> turns = usableTurns(result.value());
         if (turns.isEmpty()) {
-            String reason = "Groq returned an interview with no usable turns";
+            String reason = "Gemini returned an interview with no usable turns";
             store.saveFailed(applicationId, reason, result.modelUsed());
-            throw new GroqException(reason);
+            throw new GeminiException(reason);
         }
 
         MockInterviewSession session = store.saveGenerated(

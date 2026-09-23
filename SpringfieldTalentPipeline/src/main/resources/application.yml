@@ -3,7 +3,7 @@ spring:
     name: springfield-talent-pipeline
 
   config:
-    # Local developer overrides (DB password, Groq key) live in a gitignored file so nothing
+    # Local developer overrides (DB password, Gemini key) live in a gitignored file so nothing
     # secret is committed. "optional:" means the app starts normally when it is absent, so CI
     # and a fresh clone work with environment variables alone.
     # Copy config/local.yml.example to config/local.yml to use it.
@@ -58,17 +58,17 @@ simpsons:
   connect-timeout: 10s
   read-timeout: 30s
 
-# Groq API — key comes from the GROQ_API_KEY environment variable, never from this file.
-# See docs/AI_FEATURES.md for the model choices and the Aug 2026 migration notes.
-groq:
-  api-key: ${GROQ_API_KEY:}
-  base-url: https://api.groq.com/openai/v1
+# Gemini API (via its OpenAI-compatible endpoint) — key comes from the GEMINI_API_KEY environment
+# variable or config/local.yml, never from this file. See docs/AI_FEATURES.md for the model choices.
+gemini:
+  api-key: ${GEMINI_API_KEY:}
+  base-url: https://generativelanguage.googleapis.com/v1beta/openai
   models:
-    profile: openai/gpt-oss-20b
-    interview: openai/gpt-oss-120b
-  # GPT-OSS models emit internal reasoning tokens separate from the visible reply; left at the
-  # default of "medium" that blows past the token estimates in docs/AI_FEATURES.md for reasoning
-  # neither feature surfaces. A switch to qwen would need "none"/"default" here instead.
+    profile: gemini-3.1-flash-lite
+    interview: gemini-3.1-flash-lite
+  # Gemini 3 models think before replying and thinking tokens count against max-completion-tokens;
+  # left at the default that blows past the token estimates in docs/AI_FEATURES.md for reasoning
+  # neither feature surfaces.
   reasoning-effort: low
   temperature:
     # Measured: at 0.4 the same candidate/role scored anywhere from 20 to 70 across repeated runs.

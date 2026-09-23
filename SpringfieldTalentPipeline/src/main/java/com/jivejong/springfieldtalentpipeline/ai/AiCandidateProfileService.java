@@ -56,7 +56,7 @@ public class AiCandidateProfileService {
     }
 
     public record ProfileResult(
-            AiCandidateProfile profile, Origin origin, GroqClient.TokenUsage usage) {
+            AiCandidateProfile profile, Origin origin, GeminiClient.TokenUsage usage) {
 
         public boolean wasCached() {
             return origin == Origin.CACHED;
@@ -66,7 +66,7 @@ public class AiCandidateProfileService {
     /**
      * Cache-aside, and safe to call twice for the same application.
      *
-     * <p>Deliberately not {@code @Transactional}: the Groq call in the middle takes seconds, and
+     * <p>Deliberately not {@code @Transactional}: the Gemini call in the middle takes seconds, and
      * wrapping the whole method would pin a database connection for its duration. Reads and the
      * write each get their own short transaction instead.
      *
@@ -105,7 +105,7 @@ public class AiCandidateProfileService {
         }
 
         // Fetches the phrase collection in the same query. The prompt reads it, and with no
-        // transaction open around the Groq call there is no session left to load it lazily - the
+        // transaction open around the Gemini call there is no session left to load it lazily - the
         // same reason MockInterviewService uses this method rather than findById.
         Candidate candidate = candidates
                 .findWithPhrasesById(application.getCandidateId())
@@ -117,12 +117,12 @@ public class AiCandidateProfileService {
                 candidate.getName(),
                 requisition.getTitle(),
                 origin);
-        GroqClient.StructuredResult<CandidateProfileGenerator.ProfileGeneration> result =
+        GeminiClient.StructuredResult<CandidateProfileGenerator.ProfileGeneration> result =
                 generator.generate(candidate, requisition);
         CandidateProfileGenerator.ProfileGeneration generated = result.value();
 
         if (generated.fitScore() == null) {
-            throw new GroqException("Groq returned a profile with no fitScore");
+            throw new GeminiException("Gemini returned a profile with no fitScore");
         }
 
         try {

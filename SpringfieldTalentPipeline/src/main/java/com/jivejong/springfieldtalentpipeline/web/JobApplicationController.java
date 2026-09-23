@@ -2,7 +2,7 @@ package com.jivejong.springfieldtalentpipeline.web;
 
 import com.jivejong.springfieldtalentpipeline.ai.AiCandidateProfile;
 import com.jivejong.springfieldtalentpipeline.ai.AiCandidateProfileService;
-import com.jivejong.springfieldtalentpipeline.ai.GroqClient;
+import com.jivejong.springfieldtalentpipeline.ai.GeminiClient;
 import com.jivejong.springfieldtalentpipeline.ai.MockInterviewService;
 import com.jivejong.springfieldtalentpipeline.ai.MockInterviewSession;
 import com.jivejong.springfieldtalentpipeline.ai.MockInterviewStatus;
@@ -133,7 +133,7 @@ public class JobApplicationController {
             Instant generatedAt,
             boolean cached,
             AiCandidateProfileService.Origin origin,
-            GroqClient.TokenUsage tokens) {
+            GeminiClient.TokenUsage tokens) {
 
         static AiProfileResponse of(AiCandidateProfileService.ProfileResult result) {
             AiCandidateProfile profile = result.profile();
@@ -189,9 +189,9 @@ public class JobApplicationController {
             Integer overallRating,
             String modelUsed,
             Instant generatedAt,
-            GroqClient.TokenUsage tokens) {
+            GeminiClient.TokenUsage tokens) {
 
-        static InterviewResponse of(MockInterviewSession session, GroqClient.TokenUsage tokens) {
+        static InterviewResponse of(MockInterviewSession session, GeminiClient.TokenUsage tokens) {
             return new InterviewResponse(
                     session.getId(),
                     session.getApplicationId(),

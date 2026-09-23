@@ -5,7 +5,7 @@ import { Status } from './Status.jsx';
 /**
  * Steps 3-4. The application exists by the time this mounts; this fires the fit score immediately.
  *
- * This is a real Groq call taking seconds, so the loading copy says "generating" and names the
+ * This is a real Gemini call taking seconds, so the loading copy says "generating" and names the
  * model. A generic spinner here is indistinguishable from a hung request.
  */
 export default function FitScore({ application, candidate }) {
@@ -60,7 +60,7 @@ export default function FitScore({ application, candidate }) {
       <Status
         state={state}
         error={error}
-        generating="Generating profile with openai/gpt-oss-20b — a few seconds…"
+        generating="Generating profile with gemini-3.1-flash-lite — a few seconds…"
         testId="fit"
       />
 

@@ -50,7 +50,7 @@ async function runOffer({ keywords, candidateName, amount, label }) {
   }
   await row.first().getByRole('button', { name: 'Apply' }).click();
 
-  // The fit score fires automatically and is a real Groq call; wait it out before continuing.
+  // The fit score fires automatically and is a real Gemini call; wait it out before continuing.
   await page.waitForSelector('[data-testid="fit-result"], [data-testid="fit-error"]', { timeout: AI_TIMEOUT });
 
   await page.getByTestId('hire').click();

@@ -6,16 +6,16 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Wire types for Groq's OpenAI-compatible chat completions API.
+ * Wire types for Gemini's OpenAI-compatible chat completions API.
  *
- * <p>Both AI features use structured JSON output, which constrains two fields together:
- * {@code reasoning_format} must be {@code parsed} or {@code hidden} when JSON mode is in use -
- * {@code raw} is rejected in that combination - and {@code reasoning_effort} is set low so the
- * GPT-OSS models do not burn output tokens on reasoning nobody reads. See docs/AI_FEATURES.md.
+ * <p>Both AI features use structured JSON output, and {@code reasoning_effort} is set low so the
+ * model does not burn output tokens on thinking nobody reads. Gemini has no equivalent of Groq's
+ * {@code reasoning_format}: thinking is never returned in the reply unless asked for. See
+ * docs/AI_FEATURES.md.
  */
-final class GroqChat {
+final class GeminiChat {
 
-    private GroqChat() {}
+    private GeminiChat() {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record Request(
@@ -23,7 +23,6 @@ final class GroqChat {
             List<Message> messages,
             @JsonProperty("response_format") ResponseFormat responseFormat,
             @JsonProperty("reasoning_effort") String reasoningEffort,
-            @JsonProperty("reasoning_format") String reasoningFormat,
             Double temperature,
             @JsonProperty("max_completion_tokens") Integer maxCompletionTokens) {}
 

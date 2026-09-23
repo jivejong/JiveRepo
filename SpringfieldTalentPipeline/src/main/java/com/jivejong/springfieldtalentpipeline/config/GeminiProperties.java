@@ -4,31 +4,29 @@ import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Groq API configuration. The key itself is supplied by the {@code GROQ_API_KEY} environment
+ * Gemini API configuration. The key itself is supplied by the {@code GEMINI_API_KEY} environment
  * variable and is never committed — {@code application.yml} only references the variable.
  *
  * <p>Model choices follow {@code docs/AI_FEATURES.md}: the smaller, faster model scores candidate
  * profiles, the larger one generates mock interviews, where response quality actually matters.
  */
-@ConfigurationProperties(prefix = "groq")
-public class GroqProperties {
+@ConfigurationProperties(prefix = "gemini")
+public class GeminiProperties {
 
-    /** Groq API key, from the GROQ_API_KEY environment variable. Empty until one is supplied. */
+    /** Gemini API key, from the GEMINI_API_KEY environment variable. Empty until one is supplied. */
     private String apiKey = "";
 
-    /** OpenAI-compatible Groq endpoint base URL. */
-    private String baseUrl = "https://api.groq.com/openai/v1";
+    /** OpenAI-compatible Gemini endpoint base URL. */
+    private String baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai";
 
     private final Models models = new Models();
 
     /**
-     * GPT-OSS models can emit internal reasoning tokens separate from the visible reply. Left at the
-     * default of "medium" that inflates output-token usage well past the estimates in
-     * docs/AI_FEATURES.md, for reasoning neither feature ever surfaces.
+     * Gemini 3 models think before replying, and thinking tokens count against
+     * {@code max_completion_tokens}. Left at the default that inflates output-token usage well past
+     * the estimates in docs/AI_FEATURES.md, for reasoning neither feature ever surfaces.
      *
-     * <p>Accepts "low" / "medium" / "high" on gpt-oss models. Note that a switch to
-     * {@code qwen/qwen3.6-27b} would need "none" or "default" here instead - a value swap, not just
-     * a model-name swap.
+     * <p>Gemini accepts "minimal" / "low" / "medium" / "high" here.
      */
     private String reasoningEffort = "low";
 
@@ -139,10 +137,10 @@ public class GroqProperties {
     public static class Models {
 
         /** Feature 1: candidate profile + fit score. */
-        private String profile = "openai/gpt-oss-20b";
+        private String profile = "gemini-3.1-flash-lite";
 
         /** Feature 2: single-shot structured mock interview. */
-        private String interview = "openai/gpt-oss-120b";
+        private String interview = "gemini-3.1-flash-lite";
 
         public String getProfile() {
             return profile;

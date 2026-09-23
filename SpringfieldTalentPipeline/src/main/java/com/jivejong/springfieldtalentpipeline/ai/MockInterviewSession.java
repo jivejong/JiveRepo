@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * One structured mock interview. Generated in a single Groq call, not a live back-and-forth - see
+ * One structured mock interview. Generated in a single Gemini call, not a live back-and-forth - see
  * docs/AI_FEATURES.md.
  *
  * <p>Unlike {@link AiCandidateProfile}, which is overwritten on refresh, regenerating an interview

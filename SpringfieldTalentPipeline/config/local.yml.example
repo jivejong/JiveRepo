@@ -8,5 +8,5 @@ spring:
   datasource:
     password: your-postgres-password
 
-groq:
-  api-key: gsk_your_key_here
+gemini:
+  api-key: your-gemini-api-key

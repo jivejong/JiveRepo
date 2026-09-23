@@ -70,14 +70,14 @@ export const api = {
       signal,
     }),
 
-  /** Real Groq call. Seconds, not milliseconds. */
+  /** Real Gemini call. Seconds, not milliseconds. */
   aiProfile: (applicationId, { refresh = false } = {}, signal) =>
     request(`/api/applications/${applicationId}/ai-profile?refresh=${refresh}`, {
       method: 'POST',
       signal,
     }),
 
-  /** Real Groq call, and the slower of the two - a whole interview in one generation. */
+  /** Real Gemini call, and the slower of the two - a whole interview in one generation. */
   mockInterview: (applicationId, signal) =>
     request(`/api/applications/${applicationId}/mock-interview`, { method: 'POST', signal }),
 

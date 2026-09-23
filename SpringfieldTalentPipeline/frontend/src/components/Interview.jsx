@@ -39,7 +39,7 @@ export default function Interview({ application, candidate }) {
       <Status
         state={state}
         error={error}
-        generating={`Interviewing ${candidate.name} with openai/gpt-oss-120b — this takes several seconds…`}
+        generating={`Interviewing ${candidate.name} with gemini-3.1-flash-lite — this takes several seconds…`}
         testId="interview"
       />
 

@@ -1,7 +1,7 @@
 package com.jivejong.springfieldtalentpipeline.ai;
 
 import com.jivejong.springfieldtalentpipeline.candidate.Candidate;
-import com.jivejong.springfieldtalentpipeline.config.GroqProperties;
+import com.jivejong.springfieldtalentpipeline.config.GeminiProperties;
 import com.jivejong.springfieldtalentpipeline.requisition.Requisition;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -23,7 +23,7 @@ public class CandidateProfileGenerator {
 
     /**
      * Kept free of per-candidate detail so it stays byte-identical across calls, which is what makes
-     * it eligible for Groq's prompt caching (docs/AI_FEATURES.md).
+     * it eligible for Gemini's prompt caching (docs/AI_FEATURES.md).
      */
     private static final String SYSTEM_PROMPT =
             """
@@ -63,20 +63,20 @@ public class CandidateProfileGenerator {
             qualification.
             """;
 
-    private final GroqClient groqClient;
-    private final GroqProperties properties;
+    private final GeminiClient geminiClient;
+    private final GeminiProperties properties;
 
-    public CandidateProfileGenerator(GroqClient groqClient, GroqProperties properties) {
-        this.groqClient = groqClient;
+    public CandidateProfileGenerator(GeminiClient geminiClient, GeminiProperties properties) {
+        this.geminiClient = geminiClient;
         this.properties = properties;
     }
 
     /** Structured reply - parsed straight into {@link AiCandidateProfile}. */
     public record ProfileGeneration(String bio, Integer fitScore, String fitRationale) {}
 
-    public GroqClient.StructuredResult<ProfileGeneration> generate(
+    public GeminiClient.StructuredResult<ProfileGeneration> generate(
             Candidate candidate, Requisition requisition) {
-        return groqClient.completeStructured(
+        return geminiClient.completeStructured(
                 properties.getModels().getProfile(),
                 SYSTEM_PROMPT,
                 userPrompt(candidate, requisition),

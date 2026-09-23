@@ -1,7 +1,7 @@
 package com.jivejong.springfieldtalentpipeline.ai;
 
 import com.jivejong.springfieldtalentpipeline.candidate.Candidate;
-import com.jivejong.springfieldtalentpipeline.config.GroqProperties;
+import com.jivejong.springfieldtalentpipeline.config.GeminiProperties;
 import com.jivejong.springfieldtalentpipeline.requisition.Requisition;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -28,7 +28,7 @@ public class MockInterviewGenerator {
 
     /**
      * Free of per-candidate detail so it stays byte-identical across calls, which is what makes it
-     * eligible for Groq's prompt caching.
+     * eligible for Gemini's prompt caching.
      */
     private static final String SYSTEM_PROMPT =
             """
@@ -74,11 +74,11 @@ public class MockInterviewGenerator {
             the lower one.
             """;
 
-    private final GroqClient groqClient;
-    private final GroqProperties properties;
+    private final GeminiClient geminiClient;
+    private final GeminiProperties properties;
 
-    public MockInterviewGenerator(GroqClient groqClient, GroqProperties properties) {
-        this.groqClient = groqClient;
+    public MockInterviewGenerator(GeminiClient geminiClient, GeminiProperties properties) {
+        this.geminiClient = geminiClient;
         this.properties = properties;
     }
 
@@ -87,9 +87,9 @@ public class MockInterviewGenerator {
     public record InterviewGeneration(
             List<InterviewTurn> turns, String overallAssessment, Integer overallRating) {}
 
-    public GroqClient.StructuredResult<InterviewGeneration> generate(
+    public GeminiClient.StructuredResult<InterviewGeneration> generate(
             Candidate candidate, Requisition requisition) {
-        return groqClient.completeStructured(
+        return geminiClient.completeStructured(
                 properties.getModels().getInterview(),
                 SYSTEM_PROMPT,
                 userPrompt(candidate, requisition),
