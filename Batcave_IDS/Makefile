@@ -1,6 +1,6 @@
 .PHONY: dev-up dev-down dev-reset attack attack-all separability pathology-check landing-check \
         transform lint-sql feature-crosscheck sample-partition triage triage-eval-sample eval \
-        reconcile coverage dagster docs fmt test console console-web
+        reconcile coverage dashboard dagster docs fmt test console console-web
 
 TOPIC := attack.events
 
@@ -49,8 +49,17 @@ attack-all:
 # simplification, services/honeypot/session.py) but not any landed data, and
 # doesn't affect headless session separation - see docs/02's session-gap
 # note for why. Port :8090 (docs/01).
+#
+# Also recreates the consumer with a 3s flush interval (default 30s): the
+# finale (docs/08) can't start until the run's attack_run event has landed as
+# Parquet, and the time-based flush was ~30s of a ~45s wait. Scoped to console
+# mode the same way SESSION_GAP_SECONDS is - an empty buffer never flushes, so
+# this only writes extra small files while someone is actually playing. Run
+# `make dev-up` to put the consumer back on the 30s default before a headless
+# corpus run.
 console:
 	SESSION_GAP_SECONDS=900 docker compose up -d --no-deps --force-recreate honeypot
+	CONSUMER_FLUSH_INTERVAL_S=3 docker compose up -d --no-deps --force-recreate consumer
 	uv run python -m services.console
 
 # The static SPA (console/) needs a server only because `fetch` from a
@@ -137,6 +146,13 @@ reconcile:
 # table plus recall by source, once orders exist.
 coverage:
 	uv run python -m services.triage coverage
+
+# Batanalytics (Phase 10, docs/08): Streamlit over the dbt marts, on :8501.
+# Opens data/warehouse.duckdb read-only and retries briefly if a console
+# session's finale is mid-`dbt run` (docs/05 - DuckDB's cross-process lock is an
+# immediate failure, not a wait). Requires `make transform` first.
+dashboard:
+	uv run streamlit run dashboard/app.py --server.port 8501
 
 # DAGSTER_HOME must be set or dagster.yaml (concurrency limits, run
 # coordinator) is silently ignored. UI on :3000; screenshot the asset graph.

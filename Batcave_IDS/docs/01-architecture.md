@@ -147,6 +147,16 @@ autopilot (`services/simulator/session.py`) drives, and exposes it over a small 
 calls. Port `:8090`, run via `make console` (needs `make dev-up` and the honeypot already up, same
 as `make attack`). No new compose service in Phase 8.
 
+**Phase 10 adds the console's first `data/warehouse.duckdb` coupling.** The finale needs a real
+triage prediction, which means the console backend opens the warehouse directly (a single-session
+triage path, not the batch `services/triage/__main__.py` CLI) — the first code path outside dbt/
+`services/triage/` to touch it. The Batanalytics dashboard (Streamlit, port `:8501`, no new compose
+service) opens the same file read-only. **Tested directly, not assumed:** on this platform, DuckDB's
+cross-process file locking is a hard, immediate failure, not graceful queuing — a second process
+opening the file while another holds it open (even read-only) raises an `IOException` at once rather
+than blocking. docs/05 has the real mitigation (the dashboard retries with bounded backoff) and why a
+"briefly blocks" framing would have been wrong.
+
 ---
 
 ## Data flow

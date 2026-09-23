@@ -112,6 +112,17 @@ KIND_FIELDS: dict[str, list[tuple[str, pa.DataType]]] = {
         ("input_tokens", pa.int64()),
         ("output_tokens", pa.int64()),
     ],
+    # services/console/counterstrike.py :: CounterstrikeEvent (Phase 10,
+    # docs/06 Track B). One row per readout line: attributed_villain_slug/
+    # attributed_confidence populated only on the SUSPECT line, attack_id
+    # only on the wiper/shutdown lines, null everywhere else on all three.
+    "counterstrike": [
+        ("sequence", pa.int32()),
+        ("readout_line", pa.string()),
+        ("attributed_villain_slug", pa.string()),
+        ("attributed_confidence", pa.float64()),
+        ("attack_id", pa.string()),
+    ],
 }
 
 # Event fields that arrive as JSON objects and land as JSON-encoded strings.
@@ -126,12 +137,12 @@ def landed_schema(event_kind: str) -> pa.Schema:
     """The full landed schema for one event_kind: envelope + kind-specific +
     consumer-added columns.
 
-    An unknown kind (`counterstrike` exists in the contract but nothing
-    produces it yet; Phase 10 adds it — `chat_turn` got its own declared
-    schema in Phase 9) gets envelope + consumer columns only, and its other
-    fields ride along as drift strings. That keeps a new kind from halting the
-    consumer — the same reason undeserializable messages are quarantined
-    rather than raised.
+    An unknown kind (there is no such kind left in the contract as of
+    Phase 10 — `chat_turn` got its schema in Phase 9, `counterstrike` here)
+    gets envelope + consumer columns only, and its other fields ride along
+    as drift strings. That keeps a new kind from halting the consumer —
+    the same reason undeserializable messages are quarantined rather than
+    raised.
     """
     fields = ENVELOPE_FIELDS + KIND_FIELDS.get(event_kind, []) + CONSUMER_FIELDS
     return pa.schema([pa.field(name, dtype) for name, dtype in fields])

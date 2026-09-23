@@ -124,6 +124,31 @@ data/
   warehouse.duckdb                   # gitignored
 ```
 
+**Phase 10: `warehouse.duckdb` gets its first concurrent readers.** DuckDB is single-writer. Before
+Phase 10 only `dbt`/`services/triage/` ever opened it, one process at a time by construction (nothing
+else ran concurrently with a `make transform` or `make triage`). Phase 10 adds two processes that can
+now genuinely overlap: the console backend's background finale pipeline (a `dbt build` subprocess
+plus a single-session triage write) and the Batanalytics dashboard (Streamlit, opened
+`read_only=True`).
+
+**The actual failure mode, confirmed by a direct cross-process test before writing this, not
+assumed:** on this platform, DuckDB's file lock is exclusive and immediate — a second process
+opening the database file while another process holds it open, even just idly connected with no
+query running, fails at once with `duckdb.IOException` ("the process cannot access the file because
+it is being used by another process"). There is no graceful queuing; an unhandled version of this
+would be a hard, instant crash on the unlucky dashboard load that overlaps a console write.
+
+**Mitigation:** the dashboard's own query helper (`dashboard/app.py`) catches `duckdb.IOException`
+specifically — not a bare `except Exception`, so an unrelated error is never mistaken for a lock
+collision — and retries with a short, bounded backoff (a fixed attempt count and interval, stated in
+the code) before giving up and showing a clear "warehouse busy, try again" message rather than
+crashing or hanging indefinitely. The console's own write window is kept as short as the pipeline
+allows — it opens and closes a connection per pipeline phase rather than holding one for the whole
+finale, specifically so a real collision stays brief and rare, which is what makes a short bounded
+retry a reasonable mitigation rather than papering over a long one. Verified by hand, both orderings
+(dashboard opened while a finale's background `dbt build` is in flight, and the reverse), per Phase
+10's checkpoint — a retry that only ever ran in isolation wouldn't prove the real collision resolves.
+
 This resolves Conflict C (open since Phase 0): `data/raw/<event_kind>/dt=/hour=/` — one directory
 per `event_kind`, not the single `attack_events/` directory with a separate unpartitioned
 `attack_runs/` this section used to show. `attack_run` (Phase 3's fifth `event_kind`) lands the same

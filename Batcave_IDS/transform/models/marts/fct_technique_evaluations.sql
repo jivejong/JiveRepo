@@ -11,17 +11,23 @@ the order's identified_techniques JSON array names this technique's attack_id.
 
 GROUND TRUTH by construction: reads the attempt log directly. Never reachable
 from a triage_input model.
+
+Filtered to `session_source = 'headless'` (Phase 10), the same exclusion and
+for the same reason as `fct_triage_evaluations.sql` - see that model's header
+for the full rationale and the visibility-counter pointer.
 */
 
 with orders as (
     select
-        order_id,
-        session_id,
-        run_id,
-        source,
-        parse_failed,
-        identified_techniques
-    from {{ ref('fct_intervention_orders') }}
+        o.order_id,
+        o.session_id,
+        o.run_id,
+        o.source,
+        o.parse_failed,
+        o.identified_techniques
+    from {{ ref('fct_intervention_orders') }} as o
+    inner join {{ ref('fct_attack_runs') }} as r on o.run_id = r.run_id
+    where r.session_source = 'headless'
 ),
 
 predicted_attack_ids as (

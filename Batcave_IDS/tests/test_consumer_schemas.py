@@ -9,6 +9,7 @@ import pytest
 
 from services.common.envelope import EventEnvelope
 from services.console.batbot import ChatTurnEvent
+from services.console.counterstrike import CounterstrikeEvent
 from services.consumer.schemas import (
     CONSUMER_FIELDS,
     ENVELOPE_FIELDS,
@@ -24,6 +25,7 @@ MODELS = {
     "attempt": AttemptEvent,
     "attack_run": AttackRunEvent,
     "chat_turn": ChatTurnEvent,
+    "counterstrike": CounterstrikeEvent,
 }
 
 
@@ -48,18 +50,20 @@ def test_landed_schema_appends_the_three_consumer_columns(event_kind):
 
 
 def test_unknown_kind_still_gets_a_usable_schema():
-    """counterstrike isn't produced yet (Phase 10). An unknown kind must not
-    halt the consumer - it lands envelope + consumer columns and its own fields
-    ride along as drift strings. chat_turn got its own declared schema in
-    Phase 9, so it no longer exercises this path - see the MODELS-based tests
-    above for its coverage instead."""
-    schema = landed_schema("counterstrike")
+    """Every real kind in the contract now has a declared schema
+    (counterstrike got its own in Phase 10, the last one) - so this
+    exercises the fallback path with a kind that doesn't exist at all,
+    standing in for whatever kind a future phase adds before its schema is
+    declared here. An unknown kind must not halt the consumer - it lands
+    envelope + consumer columns and its own fields ride along as drift
+    strings."""
+    schema = landed_schema("some_future_kind_not_yet_declared")
     assert schema.names == [name for name, _ in ENVELOPE_FIELDS + CONSUMER_FIELDS]
 
 
 def test_no_column_is_null_typed():
     """A null-typed column is exactly the inference failure this module exists
     to prevent - it can't merge with a real type in a sibling file."""
-    for event_kind in list(KIND_FIELDS) + ["counterstrike"]:
+    for event_kind in [*KIND_FIELDS, "some_future_kind_not_yet_declared"]:
         for field in landed_schema(event_kind):
             assert field.type != pa.null(), f"{event_kind}.{field.name} is null-typed"

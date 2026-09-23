@@ -647,3 +647,139 @@ dormant code - written once, correct-looking, never run against real data until 
 first real chat_turn events and the first real committed sample containing one. None would have been
 caught by a schema test or a type check; all five needed an actual conversation, actually landed,
 actually sampled, actually reconciled by hand against what was actually typed and clicked.
+
+---
+
+## `raw_triage_predictions`'s snapshot-identity gap bit a fourth time, and this time it made a published table unreproducible
+
+**What was found, at the start of Phase 10.** Querying the built warehouse directly:
+`raw_triage_predictions` holds 72 orders across 36 sessions, but 16 of those orders (8 distinct
+`session_id`s) are orphans - their `run_id` and `session_id` are absent from `fct_attack_runs` and
+`mart_threat_scores` entirely. `fct_triage_evaluations` inner-joins `fct_intervention_orders`
+against truth, which drops all 16 silently - no row, no warning, no changed row count anywhere the
+pipeline itself surfaces.
+
+**Is a published number wrong? No - checked directly, not assumed.** The model-swap comparison's
+own eval query is `_print_attribution_table` (`services/triage/__main__.py:194-208`):
+`from fct_triage_evaluations e inner join fct_intervention_orders o` - the exact vulnerable path,
+not a query against the pinned 36 session_ids directly. But the timing clears it: the predictions
+behind docs/04's numbers were written 2026-09-22 13:40-13:41 (`issued_at`, queried straight from
+the table); the orphaning happened at Phase 9's checkpoint-7 sample-partition regeneration,
+committed as `48e7b04` at 2026-09-23 00:53 - nine hours later. At measurement time all 36 sessions
+still joined, so the eval printed n=36, which is exactly what docs/04 records. Corroborating
+evidence: the entry above ("has bitten twice") shows this project already reads that same `n` value
+closely enough to have caught a 38-vs-36 mismatch by eye; nothing like that was flagged for the
+gemini-3.1-flash-lite chapter.
+
+**What is broken: reproducibility, not correctness.** Running the identical published query against
+today's warehouse:
+
+| source | n | exact | top_3 | archetype |
+|---|---|---|---|---|
+| baseline (today) | 28 | 32.1% | 78.6% | 42.9% |
+| baseline (docs/04, published) | 36 | 36.1% | 77.8% | 44.4% |
+| llm (today) | 28 | 32.1% | 50.0% | 50.0% |
+| llm 3.1 (docs/04, published) | 36 | 27.8% | 50.0% | 44.4% |
+
+`make eval` today silently reports n=28 and materially different rates, with no error and no
+indication anything changed. A reader following docs/04 and re-running `make triage && make eval`
+today would not reproduce the published table, with nothing in the tool's own output explaining why.
+
+**Root cause - confirmed by `git log`, not hypothesised.** `git log --diff-filter=D` on
+`data/raw/*/dt=2026-09-16/*` names exactly one commit: `48e7b04`, Phase 9's own. `dt=2026-09-16` no
+longer exists locally for any event kind - not even the gitignored `part-*.parquet` landing files.
+For those 8 sessions, the committed sample partition was the *only* surviving copy of their raw
+data anywhere; Phase 9's sample regeneration (choosing a different set of sessions to sample, per
+that phase's own `choose_sessions()` fix) removed them from the corpus entirely, taking their
+`stg_attack_runs`/`mart_threat_scores` rows with them while leaving their now-orphaned
+`raw_triage_predictions` rows behind untouched.
+
+**This will recur, and Phase 9 made it more likely, not less.** The condition is structural: any
+session whose only surviving raw data lives in the committed sample, plus any later
+`make sample-partition` run that selects a different session for that slot. `choose_sessions()`
+gained a new highest-priority sort key in Phase 9 specifically to prefer sessions with chat_turn
+coverage - a deliberate, correct change for Phase 9's own purpose, which also means future sample
+regenerations are now *more* likely to swap out whichever session previously held a villain's slot.
+
+**Disposition.** This is the same snapshot-identity gap already tracked as Phase 12 - a fourth
+instance of one structural cause, not a new class of bug - and is not fixed here. What changed as a
+result: docs/04 gained a reproducibility note beside the Results tables (the published numbers were
+correct as measured; a fresh `make eval` today reports n=28 and why), and docs/06's Phase 12 entry
+was bumped from "worth doing if this bites a third time, not before" to reflect that it has now
+bitten a fourth time, through a new and confirmed-recurring trigger (sample-partition regeneration,
+not just a triage re-run), with no code change required to reproduce it again.
+
+---
+
+## `sample_partition.py`'s coverage gap, found again for a new kind the same way it was for chat_turn
+
+**What happened.** After building Phase 10's counterstrike pipeline, `make sample-partition` was
+re-run to regenerate the committed sample with a real counterstrike sequence attached - and copied
+zero counterstrike rows, despite real counterstrike data already sitting in the corpus from live
+finale-pipeline verification. `choose_sessions()`'s scoring had a preference for chat_turn coverage
+(Phase 9's own fix, for exactly this reason) but no idea whether a chosen session also carried a
+counterstrike sequence - "some session finished" said nothing about which one, if any, actually had
+one attached, the identical shape as chat_turn's original gap.
+
+**This wasn't scoped in the approved Phase 10 plan** - the architecture and work-breakdown sections
+never listed `sample_partition.py` as a file Phase 10 would touch, and the checkpoint list assumed
+counterstrike would already coexist with real landed data in the sample without saying how. Closing
+it was a small, mechanical fix, consistent with the project's own stated purpose for a committed
+sample ("a reader can inspect actual output" - docs/01) - a kind the project produces that could
+never appear in that sample would defeat that purpose for good, not just until the next phase - so
+it was fixed rather than left as a known gap the checkpoint list couldn't actually be run against.
+
+**The fix**: `EVENT_KINDS` gained `"counterstrike"` (no `_EXCLUDED_COLUMNS` entry needed - unlike
+`chat_turn`, nothing about a counterstrike row is sensitive), and `choose_sessions()`'s score tuple
+gained a second tiebreak, one priority level below chat_turn coverage: `sessions_with_counterstrike`,
+read from `stg_counterstrike_events` the same way `sessions_with_chat_turns` already reads from
+`stg_botchat_turns`. Two fresh console sessions were played through `deploy_batbot` to a real bat bot
+conversation and a real completed finale (Ras al Ghul, Poison Ivy) specifically so at least one
+villain's sample slot would have both a real conversation and a real counterstrike sequence to show,
+not just one or the other.
+
+**Verified against the rebuilt warehouse, the same way chat_turn's dedup was in Phase 9**: the raw
+`counterstrike` glob (real + committed sample) holds 44 rows; `stg_counterstrike_events` returns
+exactly 33 - one per distinct `event_id`, the 11-row sample's duplicate copies of an already-landed
+sequence correctly collapsed. `assert_no_user_text_in_sample` and the eval-boundary counts
+(`services/triage eval`) were both re-run after this regeneration and are unaffected - the published
+n=28 headless numbers stayed exactly as they were before this fix.
+
+---
+
+## `stg_attack_runs.sql`'s ST06 reorder left a same-list forward-reference trap, and it fired non-deterministically in CI
+
+**What happened.** A prior commit (`53be19a`, "Fix dbt error during CI/CD pipeline execution...",
+made outside this session) moved `coalesce(session_source, 'headless') as session_source` from its
+original position to the end of the model's SELECT list, to satisfy sqlfluff's ST06 rule (calculated
+columns must follow simple passthrough ones). Locally, this compiled and ran clean - confirmed
+directly: `dbt build` against the unmodified committed file, 82/82, no error, and the file has no
+second expression anywhere that references `session_source` as an alias. Diagnosing this by reading
+the file alone found nothing wrong with it.
+
+**Reported independently: the identical committed SQL, unchanged since that commit (confirmed via
+`git log`), produced a hard `Binder Error: Column "session_source" referenced that exists in the
+SELECT clause - but this column cannot be referenced before it is defined` on one CI run, and built
+cleanly on a later CI run of the same commit.** dbt/duckdb versions were checked and matched exactly
+across both runs (`dbt=1.12.4`/`duckdb=1.11.0`), ruling out version drift as the cause. That leaves
+the failure as genuinely non-deterministic against one fixed, unchanged file - worse than a plain
+bug, since it means the same commit could pass or fail Phase 10's own CI with no code change
+involved, and no root cause was ever fully pinned down beyond "the ST06 reorder created a shape
+DuckDB's binder is not reliably consistent about."
+
+**Fixed structurally, not by reordering again.** Reordering the coalesce back would only reintroduce
+the ST06 violation the prior commit was fixing in the first place - the same trap, one move away.
+Instead, `session_source`'s definition was split into its own CTE (`typed`): the inner SELECT
+computes `coalesce(session_source, 'headless') as session_source` (satisfying ST06 by keeping it last
+in *that* list), and the outer SELECT consumes `session_source` as an ordinary passthrough column
+from `typed`, never as a same-list forward alias reference. This removes the ambiguous pattern
+entirely rather than depending on the binder being lenient about it, whatever caused that leniency to
+vary between the two CI runs - and it means any future column that needs to reference
+`session_source` can be placed anywhere in the outer SELECT without reintroducing this fragility for
+someone else to hit later.
+
+**Verified, not assumed clean:** `dbt build` (82/82, no errors); `session_source` distribution
+byte-identical before and after (`console: 13, headless: 397`, 410 total rows, queried directly
+against the rebuilt `stg_attack_runs` both times) - confirming this is a pure structural change with
+zero semantic effect; `sqlfluff lint` clean on the model and the full `models/` tree, confirming the
+CTE split doesn't reintroduce ST06 or trip any other rule; full pytest suite (281) green throughout.

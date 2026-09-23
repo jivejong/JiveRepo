@@ -13,9 +13,9 @@ Three properties the selection has to preserve, none of which a random slice
 gives you:
 
 - **Self-consistency.** Whole sessions, never loose rows. The sample carries
-  every request, attempt, attack_run, and chat_turn row for each chosen
-  session, so the marts join and `mart_killchain_funnel` is meaningful rather
-  than empty.
+  every request, attempt, attack_run, chat_turn, and counterstrike row for
+  each chosen session, so the marts join and `mart_killchain_funnel` is
+  meaningful rather than empty.
 - **Raw, not staged — with one deliberate exception.** Copied from the landed
   Parquet, so the committed sample still contains the duplicate-delivery
   copies, the null paths and the clock skew. A sample taken from
@@ -36,7 +36,11 @@ gives you:
   session says nothing about which one, if any, has an actual bat bot
   conversation attached, and once real testing has run the technique dozens
   of times, leaving that to the pathology/row-count tiebreak was verified
-  (against real output) to pick the wrong session more often than not.
+  (against real output) to pick the wrong session more often than not. A real
+  counterstrike sequence (Phase 10, docs/08) gets the same treatment one
+  priority level down, found the identical way: regenerating the sample
+  copied zero counterstrike rows despite real counterstrike data already in
+  the corpus, because no session-selection preference knew to look for it.
 """
 
 from __future__ import annotations
@@ -46,7 +50,7 @@ from pathlib import Path
 
 import duckdb
 
-EVENT_KINDS = ("request", "attempt", "attack_run", "chat_turn")
+EVENT_KINDS = ("request", "attempt", "attack_run", "chat_turn", "counterstrike")
 SAMPLE_NAME = "sample-0.parquet"
 
 # The one kind-specific exception to "raw, not staged" (module docstring
@@ -127,6 +131,17 @@ def choose_sessions(con: duckdb.DuckDBPyConnection, data_root: Path) -> list[str
         r[0] for r in con.sql("select distinct session_id from stg_botchat_turns").fetchall()
     }
 
+    # Same reasoning, same fix, one phase later (Phase 10, docs/08): a
+    # session's finale/counterstrike sequence is real data the committed
+    # sample should be able to demonstrate too, and "some session finished"
+    # says nothing about which one, if any, actually has counterstrike rows
+    # attached - discovered the exact same way chat_turn's gap was, by
+    # regenerating the sample and finding zero counterstrike rows copied
+    # despite real counterstrike data existing in the corpus.
+    sessions_with_counterstrike = {
+        r[0] for r in con.sql("select distinct session_id from stg_counterstrike_events").fetchall()
+    }
+
     chosen: list[str] = []
     covered: set[str] = set()
     villains = [
@@ -159,8 +174,12 @@ def choose_sessions(con: duckdb.DuckDBPyConnection, data_root: Path) -> list[str
             # conversation always wins its villain's slot when one exists,
             # so the committed sample can actually demonstrate one rather
             # than leaving it to how the other tiebreaks happen to fall.
+            # Counterstrike coverage is the next tiebreak, same reasoning -
+            # a villain with no chat_turn session at all can still surface a
+            # real counterstrike sequence if one of its sessions has one.
             no_chat_turns = session_id not in sessions_with_chat_turns
-            return (no_chat_turns, -len(new), rarity, -variety, row_count)
+            no_counterstrike = session_id not in sessions_with_counterstrike
+            return (no_chat_turns, no_counterstrike, -len(new), rarity, -variety, row_count)
 
         best = sorted(candidates, key=score)[0]
         chosen.append(best[0])

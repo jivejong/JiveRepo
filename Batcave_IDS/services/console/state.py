@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from services.console.batbot import BatBotConversation
+from services.console.finale import FinaleResult, run_finale_pipeline
 from services.simulator.catalog import (
     Technique,
     Villain,
@@ -67,6 +68,17 @@ class ConsoleSession:
     # completion happens when the bat bot conversation reaches reveal.
     batbot_pending: bool = False
     batbot: BatBotConversation | None = None
+    # Set once the session finishes, by whichever endpoint sets `finished`
+    # (docs/08's finale, Phase 10). `finale_started` guards against
+    # spawning the background pipeline twice - /attempt, /batbot/reply, and
+    # /finish all can be the one that flips `finished`, and only one of
+    # them should ever start it. `finale_result` is written by the
+    # background thread itself (a plain attribute write under the GIL is
+    # enough here - no lock - the same simplification this module's own
+    # docstring already makes for session state generally); the status
+    # endpoint just reads whatever is there.
+    finale_started: bool = False
+    finale_result: FinaleResult | None = None
 
 
 class SessionRegistry:
@@ -81,6 +93,7 @@ class SessionRegistry:
         self,
         kafka_producer,
         http_client_factory: Callable[[], httpx.Client] | None = None,
+        finale_runner: Callable[..., None] = run_finale_pipeline,
     ) -> None:
         self._kafka_producer = kafka_producer
         # None (the default) means "let StageMachine build its own real
@@ -90,6 +103,11 @@ class SessionRegistry:
         # HONEYPOT_DISABLE_KAFKA / _NullProducer gives the honeypot's own
         # Kafka dependency.
         self._http_client_factory = http_client_factory
+        # Defaults to the real pipeline; services/console/app.py's own
+        # `finale_runner` seam overrides this to a no-op in tests, so a
+        # test that finishes a session never opens the real warehouse or
+        # spawns a real `dbt build` subprocess.
+        self._finale_runner = finale_runner
         self._sessions: dict[str, ConsoleSession] = {}
         self._lock = threading.Lock()
 
@@ -130,6 +148,35 @@ class SessionRegistry:
         )
         session.batbot = convo
         return convo
+
+    def start_finale(self, session: ConsoleSession, llm_client) -> None:
+        """Spawns the finale's background pipeline (services/console/
+        finale.py) the instant a session finishes - a daemon thread, not a
+        blocking call, so whichever endpoint just set `session.finished`
+        returns immediately. Idempotent via `finale_started`: /attempt,
+        /batbot/reply, and /finish each can be the call site that finishes
+        a session, and the pipeline must run exactly once regardless of
+        which one it was."""
+        if session.finale_started:
+            return
+        session.finale_started = True
+
+        def _on_state_change(result) -> None:
+            session.finale_result = result
+
+        thread = threading.Thread(
+            target=self._finale_runner,
+            kwargs={
+                "session_id": session.machine.session_id,
+                "run_id": session.machine.run_id,
+                "kafka_producer": self._kafka_producer,
+                "kafka_topic": KAFKA_TOPIC,
+                "llm_client": llm_client,
+                "on_state_change": _on_state_change,
+            },
+            daemon=True,
+        )
+        thread.start()
 
     def get(self, console_session_id: str) -> ConsoleSession:
         with self._lock:

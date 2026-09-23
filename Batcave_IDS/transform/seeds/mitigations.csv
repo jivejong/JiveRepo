@@ -1,0 +1,24 @@
+attack_id,mitigation_id,mitigation_name
+T1005,M1057,Data Loss Prevention
+T1021,M1032,Multi-factor Authentication
+T1041,M1057,Data Loss Prevention
+T1046,M1030,Network Segmentation
+T1056,,
+T1068,M1051,Update Software
+T1070,M1022,Restrict File and Directory Permissions
+T1071,M1037,Filter Network Traffic
+T1078,M1032,Multi-factor Authentication
+T1087,M1028,Operating System Configuration
+T1110,M1032,Multi-factor Authentication
+T1113,,
+T1123,,
+T1125,,
+T1133,M1032,Multi-factor Authentication
+T1190,M1051,Update Software
+T1210,M1051,Update Software
+T1550,M1026,Privileged Account Management
+T1566,M1017,User Training
+T1589,M1056,Pre-compromise
+T1590,M1056,Pre-compromise
+T1593,M1047,Audit
+T1595,M1056,Pre-compromise

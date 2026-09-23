@@ -453,3 +453,30 @@ h3 {
 #chat-reply-input:focus {
   outline: 1px solid var(--accent);
 }
+
+/* --- Counterstrike finale (Phase 10) --- */
+/* A second machine's voice, never addressed to the reader (docs/08) - the
+   BATCOMPUTER prefix is baked into the line text itself by the backend
+   (services/console/counterstrike.py), not styled in here as if it were a
+   label; this is presentation only, same terminal-black background as the
+   attempt log and the bat bot transcript above. */
+
+.batcomputer-line {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+#finale-progress-line {
+  color: var(--dim);
+  margin-top: 14px;
+}
+
+.counterstrike-panel #counterstrike-readout {
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  color: var(--accent);
+}

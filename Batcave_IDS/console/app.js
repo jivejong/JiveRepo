@@ -485,10 +485,67 @@ function renderRunComplete(session) {
         `${session.villain_slug} reached stage ${session.max_stage_reached} of 4.`,
       ]),
       renderCounters(session.counters),
-      el("p", {}, [
-        "The Batcomputer's counterstrike readout (Phase 10) lands later in Track B. This build " +
-          "ends the interactive run here.",
+      el("div", { class: "batcomputer-line", id: "finale-progress-line" }, [
+        "[BATCOMPUTER → LUTHOR-RELAY-07]  AWAITING TELEMETRY...",
       ]),
+    ])
+  );
+  pollFinale(session);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Screen: Counterstrike finale — the background pipeline (services/       */
+/* console/finale.py) that turns a finished run into a real triage         */
+/* prediction runs the instant the session finishes; this polls its        */
+/* status and renders each stage as its own BATCOMPUTER line before the    */
+/* readout itself (docs/08). Never a spinner and never a stack trace on    */
+/* failure — `failed` renders the same in-fiction degraded script the      */
+/* backend already built, inside this same SIMULATION-framed panel.        */
+/* ---------------------------------------------------------------------- */
+
+const FINALE_POLL_INTERVAL_MS = 1000;
+
+const FINALE_STATE_LABELS = {
+  pending: "AWAITING TELEMETRY...",
+  ingesting: "INGESTING TELEMETRY...",
+  transforming: "TRANSFORMING...",
+  scoring: "SCORING...",
+  attributing: "ATTRIBUTING SUSPECT...",
+};
+
+async function pollFinale(session) {
+  let status;
+  try {
+    status = await api(`/api/session/${session.console_session_id}/finale/status`);
+  } catch (err) {
+    // A network hiccup mid-poll isn't a finale failure - the backend's own
+    // pipeline has its own bounded timeouts and reports `failed` explicitly
+    // when something really is wrong; a transient fetch error just retries.
+    setTimeout(() => pollFinale(session), FINALE_POLL_INTERVAL_MS);
+    return;
+  }
+
+  const progressLine = document.getElementById("finale-progress-line");
+  if (progressLine) {
+    const label = FINALE_STATE_LABELS[status.state] || status.state.toUpperCase();
+    progressLine.textContent = `[BATCOMPUTER → LUTHOR-RELAY-07]  ${label}`;
+  }
+
+  if (status.terminal) {
+    renderCounterstrike(session, status);
+  } else {
+    setTimeout(() => pollFinale(session), FINALE_POLL_INTERVAL_MS);
+  }
+}
+
+function renderCounterstrike(session, status) {
+  mount(
+    el("div", { class: "panel counterstrike-panel" }, [
+      el(
+        "div",
+        { id: "counterstrike-readout" },
+        status.lines.map((line) => el("div", { class: "batcomputer-line" }, [line.readout_line]))
+      ),
       el("button", { class: "btn", onclick: renderVillainSelect }, ["Play again"]),
     ])
   );

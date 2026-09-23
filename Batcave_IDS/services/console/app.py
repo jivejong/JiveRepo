@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from services.console.batbot import ChatTurnEvent
+from services.console.finale import run_finale_pipeline
 from services.console.state import (
     ConsoleSession,
     SessionRegistry,
@@ -63,10 +64,18 @@ def _default_llm_client():
 # / _NullProducer pattern: tests/test_console_api.py monkeypatches these
 # before constructing a TestClient (which runs `lifespan` on entry), so the
 # API is exercised without a live broker, honeypot, or Gemini key. Production
-# leaves all three at their defaults.
+# leaves all four at their defaults.
 kafka_producer_factory: Callable[[], object] = _default_kafka_producer
 http_client_factory: Callable[[], httpx.Client] | None = None
 llm_client_factory: Callable[[], object | None] = _default_llm_client
+# The finale pipeline (services/console/finale.py) opens the REAL
+# data/warehouse.duckdb and spawns a REAL `dbt build` subprocess - neither
+# of which any of the three seams above touches, so a test that finishes a
+# session would otherwise start a genuine background pipeline against
+# production data on every run. This seam is what tests/test_console_api.py
+# overrides to a no-op, the same way the other three exist so tests never
+# reach a real broker, honeypot, or Gemini key.
+finale_runner: Callable[..., None] = run_finale_pipeline
 
 
 @asynccontextmanager
@@ -77,7 +86,7 @@ async def lifespan(app: FastAPI):
     # per player.
     app.state.producer = kafka_producer_factory()
     app.state.registry = SessionRegistry(
-        app.state.producer, http_client_factory=http_client_factory
+        app.state.producer, http_client_factory=http_client_factory, finale_runner=finale_runner
     )
     # One Gemini client for the process lifetime, shared across every bat
     # bot conversation - genai.Client is stateless per call, so there is no
@@ -331,6 +340,7 @@ def attempt(console_session_id: str, req: AttemptRequest) -> dict:
     if run_finished:
         session.finished = True
         session.machine.finish()
+        app.state.registry.start_finale(session, app.state.llm_client)
 
     return {
         "event": {
@@ -389,6 +399,7 @@ def batbot_reply(console_session_id: str, req: BatBotReplyRequest) -> dict:
         session.finished = True
         session.run_outcome = "cleared"
         session.machine.finish()
+        app.state.registry.start_finale(session, app.state.llm_client)
 
     return {
         "user_event": _chat_event_dict(user_event),
@@ -410,7 +421,44 @@ def finish(console_session_id: str) -> dict:
         session.finished = True
         session.batbot_pending = False
         session.machine.finish()
+        app.state.registry.start_finale(session, app.state.llm_client)
     return _session_payload(session)
+
+
+@app.get("/api/session/{console_session_id}/finale/status")
+def finale_status(console_session_id: str) -> dict:
+    """Polled by the frontend once a run finishes (docs/08's "Getting from
+    a finished run to a prediction"). `terminal=True` on `ready` or
+    `failed` is what tells the poll loop to stop - never inferred from a
+    client-side timeout, since the pipeline enforces its own bounds
+    (services/console/finale.py) and reports failure explicitly rather
+    than leaving the frontend to guess "not ready yet" from "will never be
+    ready\""""
+    session = _get_session(console_session_id)
+    result = session.finale_result
+    if result is None:
+        return {
+            "state": "pending",
+            "reason": None,
+            "terminal": False,
+            "prediction": None,
+            "lines": [],
+        }
+    prediction = None
+    if result.prediction is not None:
+        prediction = {
+            "source": result.prediction.source,
+            "suspected_villain": result.prediction.suspected_villain,
+            "confidence": result.prediction.confidence,
+            "identified_attack_ids": result.prediction.identified_attack_ids,
+        }
+    return {
+        "state": result.state,
+        "reason": result.reason,
+        "terminal": result.terminal,
+        "prediction": prediction,
+        "lines": result.lines,
+    }
 
 
 @app.get("/healthz")

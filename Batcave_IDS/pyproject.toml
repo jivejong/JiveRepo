@@ -26,6 +26,9 @@ dependencies = [
     "pydantic>=2.9",
     "pyyaml>=6.0",
     "google-genai==2.24.0",
+    # Batanalytics dashboard (Phase 10, docs/08) - presentation over models
+    # that already exist, reading data/warehouse.duckdb read-only.
+    "streamlit>=1.38",
 ]
 
 [dependency-groups]

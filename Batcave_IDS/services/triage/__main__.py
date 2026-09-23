@@ -188,6 +188,45 @@ def run_triage(
     print(f"\nwrote orders for {len(sessions)} sessions")
 
 
+def _print_eval_boundary_counts(con: duckdb.DuckDBPyConnection) -> None:
+    """Phase 10: fct_triage_evaluations/fct_technique_evaluations filter to
+    session_source='headless' now, so a console session's finale prediction
+    never shifts these numbers - a deliberate exclusion. That inner join to
+    fct_attack_runs also silently drops any order whose run_id has no
+    matching row at all - an accidental lineage gap (docs/09,
+    "raw_triage_predictions's snapshot-identity gap bit a fourth time"),
+    unrelated to session_source. Printed as three separate counts precisely
+    so a future silent drop is caught by eye the way this one wasn't -
+    "deliberately excluded" and "unexpectedly dropped" must never look the
+    same from the outside."""
+    total = con.execute("select count(*) from fct_intervention_orders").fetchone()[0]
+    excluded_console = con.execute(
+        """
+        select count(*)
+        from fct_intervention_orders as o
+        inner join fct_attack_runs as r on o.run_id = r.run_id
+        where r.session_source != 'headless'
+        """
+    ).fetchone()[0]
+    orphaned = con.execute(
+        """
+        select count(*)
+        from fct_intervention_orders as o
+        where not exists (select 1 from fct_attack_runs as r where r.run_id = o.run_id)
+        """
+    ).fetchone()[0]
+    print(
+        f"\n=== Eval boundary: {total} orders total, "
+        f"{excluded_console} deliberately excluded (non-headless session_source), "
+        f"{orphaned} unexpectedly dropped (no matching fct_attack_runs row) ==="
+    )
+    if orphaned:
+        print(
+            "  orphaned orders found - see docs/09-engineering-log.md, "
+            '"raw_triage_predictions\'s snapshot-identity gap bit a fourth time"'
+        )
+
+
 def _print_attribution_table(con: duckdb.DuckDBPyConnection) -> None:
     print("\n=== Task 1: Attribution ===")
     print(f"{'source':10} {'n':>5} {'exact':>8} {'top_3':>8} {'archetype':>10} {'parse_fail':>11}")
@@ -280,6 +319,7 @@ def run_eval(con: duckdb.DuckDBPyConnection) -> None:
     if n_orders == 0:
         print("no intervention orders - run `make triage` first")
         return
+    _print_eval_boundary_counts(con)
     _print_attribution_table(con)
     for source in ("baseline", "llm"):
         exists = con.execute(

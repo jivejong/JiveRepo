@@ -322,6 +322,18 @@ corpus-wide reference, and its numbers below are **byte-identical** to the `gemi
 chapter's baseline row; `classify_villain` is the one that moved (30.6% → 36.1% exact, same 36
 sessions). Full account: docs/09.
 
+**A reproducibility note, added at Phase 10.** The tables below were correct as measured — but
+running the identical eval query against the warehouse today no longer reproduces them: it reports
+n=28, not n=36, at different rates. Between this measurement and Phase 10, a later phase's sample-
+partition regeneration removed 8 of the original 36 sessions' raw data from the corpus entirely
+(their only surviving copy was the committed sample, and a later run selected different sessions to
+sample), orphaning their `raw_triage_predictions` rows — the eval query's join silently drops rows
+with no matching truth, so the table shrank with no error and no changed output from any tool short
+of comparing `n` to what was published. This is `raw_triage_predictions`'s known snapshot-identity
+gap (docs/06's maintenance backlog, docs/09's engineering log) surfacing through a new trigger. The
+numbers below stand as a record of that measurement; they are not currently reproducible by re-
+running `make triage && make eval` against the live warehouse, and won't be until that gap is fixed.
+
 ### Attribution
 
 | source | n | exact | top_3 | archetype | parse_fail |

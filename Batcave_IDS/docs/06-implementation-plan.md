@@ -286,14 +286,29 @@ headless path did not, and that divergence should be resolved in favor of the he
 - Counterstrike sequence rendered inside the simulated terminal panel, prefixed
   `[BATCOMPUTER → LUTHOR-RELAY-07]`, never taking over the viewport
 - Suspect attributed from the **triage model's prediction**, so a wrong prediction accuses the wrong
-  villain
-- Batanalytics dashboard: Streamlit or Evidence over DuckDB — kill chain funnel, technique efficacy,
-  retry/pivot by archetype, suspect ranking, ATT&CK-mapped remediation
+  villain — fetched via a single-session triage path gated on `session_source='console'`, since no
+  console session clears the production threshold (docs/08)
+- The pipeline wait (flush → dbt → LLM) runs as a background pre-warm with an in-fiction
+  analyzing beat; bounded per stage, with an explicit terminal failure state rendered as a
+  degraded finale rather than an infinite poll
+- Console predictions land in `raw_triage_predictions` normally but are excluded from eval-facing
+  marts by `session_source`, with before/after row counts printed at that boundary
+- `sample_partition.py`'s `EVENT_KINDS` gains `counterstrike`, with the identical session-coverage
+  preference chat_turn already needed (Phase 9) — a session merely existing that used a technique
+  says nothing about which one, if any, actually has the new kind's data attached (docs/09)
+- Batanalytics dashboard: Streamlit, port 8501, reading the warehouse read-only — kill chain
+  funnel, technique efficacy, retry/pivot by archetype (labelled ground truth in the UI), detection
+  coverage, suspect ranking, reconstruction comparison, ATT&CK-mapped remediation scoped to the 23
+  reachable techniques
 - Dashboard screenshot in the README
 
 **Checkpoint:** run a session where the triage model guesses wrong and confirm the Batcomputer
 accuses the wrong villain. That is the intended behavior and the best demo of the evaluation being
-real.
+real. Also: force each finale failure mode (missing row, dbt failure, LLM failure) and confirm the
+poll terminates rather than hanging; confirm the eval-boundary filter is a no-op today; open the
+dashboard while a finale's background dbt run is in flight and confirm it doesn't hang, error, or
+show stale data as current — the first time these two processes ever touch the warehouse
+concurrently, so this gets a real check rather than resting on the read-only mitigation alone.
 
 ---
 
@@ -339,12 +354,22 @@ sequence and not gated behind any track; pick up whenever it's next convenient.
 
 ## Phase 12 — `raw_triage_predictions` snapshot identity
 
+**Priority note, added at Phase 10:** this was scheduled below under "worth doing if this bites a
+third time, not before." It has now bitten a **fourth** time — through a new trigger (a sample-
+partition regeneration removing sessions' raw data, not just a triage re-run) that Phase 9's own
+`choose_sessions()` change makes *more* likely to recur, not less, and this instance made a
+published evaluation table (docs/04) silently unreproducible, not just an in-progress verification
+step. The recurrence is confirmed structural, not a string of unrelated operational slips. This
+doesn't change the fix's shape, but it changes when "next convenient" should be — treat this as due,
+not backlog.
+
 **The gap:** `raw_triage_predictions` (`services/triage/store.py`) has no run or snapshot identity —
 rows are keyed only on `(session_id, source)`. Re-running triage selection against a corpus that has
 grown or changed since a prior run silently conflates old and new predictions in whatever a later
-`eval` reads, with no error and no warning. **Confirmed three times now**, most recently self-inflicted
+`eval` reads, with no error and no warning. **Confirmed four times now** — most recently self-inflicted
 mid-verification, caught only by row-count discipline (baseline and `llm` reporting different `n` for
-what should have been one evaluation) rather than by any check the system provides on its own.
+what should have been one evaluation) rather than by any check the system provides on its own; the
+fourth time was caught by deliberately checking, not by any count mismatch surfacing on its own.
 
 Evidence, not restated here — read these in order:
 - `docs/09-engineering-log.md`, "`raw_triage_predictions` has no snapshot identity, and it's bitten
@@ -355,9 +380,14 @@ Evidence, not restated here — read these in order:
   picked 34 of the same 36 sessions plus 2 different ones, leaving stale rows from a superseded
   selection sitting alongside the new ones until caught by a mismatched `n` between `baseline` and
   `llm`.
+- `docs/09-engineering-log.md`, "`raw_triage_predictions`'s snapshot-identity gap bit a fourth time,
+  and this time it made a published table unreproducible" — a Phase 9 sample-partition regeneration
+  (unrelated to triage entirely) removed 8 sessions' raw data from the corpus, orphaning their
+  prediction rows and silently shrinking `make eval`'s reported `n` from 36 to 28 against the
+  warehouse a reader would actually run it against today.
 
 **Not scoped here on purpose** — this phase exists to put the fix on the board with enough context
-that whoever picks it up doesn't have to re-derive the problem from three scattered log entries, not
+that whoever picks it up doesn't have to re-derive the problem from four scattered log entries, not
 to pre-decide the shape of the fix (a `run_id`/snapshot column, a separate table, something else).
 
 ---

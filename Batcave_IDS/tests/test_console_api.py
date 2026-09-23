@@ -59,6 +59,13 @@ def client(monkeypatch):
     # tests locally with GEMINI_API_KEY genuinely exported still gets the
     # deterministic zero-credential path, not a flaky real-network test.
     monkeypatch.setattr(console_app, "llm_client_factory", lambda: None)
+    # The finale pipeline (services/console/finale.py) opens the real
+    # data/warehouse.duckdb and spawns a real `dbt build` subprocess -
+    # neither of which the three seams above touch. Without this, every
+    # test that finishes a session would start a genuine background
+    # pipeline against production data. A no-op stands in, the same way
+    # the other three seams keep this suite off real infrastructure.
+    monkeypatch.setattr(console_app, "finale_runner", lambda **kwargs: None)
     with TestClient(console_app.app) as c:
         yield c
 

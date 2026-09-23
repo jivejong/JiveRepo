@@ -38,6 +38,17 @@ consumer that needs faithful villain behavior can filter on it without guessing 
 10's counterstrike attributes the villain from the triage model's prediction on a console session,
 so console sessions must read identically to headless ones in `int_session_features_observed`.
 
+**"Eligible for triage exactly like a headless session" is true of the feature vector, not of the
+production selector.** `make triage`'s trigger (`_select_sessions`, `services/triage/__main__.py`)
+takes sessions at or above `mart_threat_scores`'s threshold (60) — and every console session
+observed so far scores well under it (max 50.16), because the threshold was calibrated against
+`BehaviorProfile`-paced traffic and human pacing doesn't produce that shape. No console session
+can clear it structurally, so the finale uses a separate, single-session path
+(`services/triage/console_triage.py`) gated on `session_source = 'console'`, deliberately bypassing
+the threshold for exactly one session at a time rather than lowering it for everyone. It writes into
+`raw_triage_predictions` the same as any other prediction; those rows are excluded from eval-facing
+marts by `session_source`, the same filter this section already asks a behavioral rerun to apply.
+
 ---
 
 ## Welcome — Lex Luthor
@@ -237,8 +248,13 @@ avoids tripping endpoint security products that treat fullscreen wiper mimicry u
                         — press any key —
 ```
 
-Emits `counterstrike` events: `sequence`, `readout_line`, `attributed_villain_slug`,
-`attributed_confidence`, `attack_id` for the wiper and shutdown lines.
+Emits `counterstrike` events: one row per readout line (`sequence`, `readout_line`), never
+denormalized. `attributed_villain_slug`/`attributed_confidence` are populated **only on the
+SUSPECT line**, null everywhere else — nulls mean "not applicable to this row," the same
+convention the bat bot's two-rows-per-round `chat_turn` grain established (docs/02). The fact was
+decided once, by the triage model; repeating it across all ~11 rows would be the same decorative-
+row shape rejected for Luthor's stage-0 welcome bullets. `attack_id` is populated only on the wiper
+and shutdown lines, null elsewhere.
 
 ### The suspect comes from the model, not from ground truth
 
@@ -249,27 +265,63 @@ That is the intended behavior and the best demo in the project. It puts the eval
 the experience instead of burying it in a table. Phase 10's checkpoint is to deliberately produce a
 wrong-accusation run and confirm it renders correctly.
 
+### Getting from a finished run to a prediction
+
+The prediction isn't available the instant a run ends: the consumer flush interval (default 30s),
+a dbt run, and the LLM call itself all sit between "the player finished" and "a row exists in
+`mart_threat_scores` for this session." The flush was ~30s of a measured ~45s wait, so `make console`
+recreates the consumer with a 3s interval (the same console-mode scoping as its session-gap override;
+an empty buffer never flushes, so it only writes extra small files while someone is playing), and the
+pipeline runs only the 17-model slice of the dbt graph that triage reads, without tests (those belong
+to `make transform`/CI). Measured end to end: ~10s, down from ~40–50s. Rather than a dead stall, this wait is driven in the
+background from the moment the run ends and rendered as its own in-fiction sequence —
+`[BATCOMPUTER] INGESTING TELEMETRY... / TRANSFORMING... / SCORING... / ATTRIBUTING SUSPECT...` —
+which the frontend polls for. Every stage is bounded (an overall deadline, comfortably past the
+flush interval plus a `dbt build` plus one LLM call); a stage that doesn't complete in time, or an
+error at any stage (the expected row never lands, `dbt build` fails, the LLM call fails), ends the
+wait in a **failed** state rather than continuing to poll — the poll response distinguishes "not
+ready yet" from "will never be ready" explicitly, so the frontend never has to guess from a timeout
+on its own. A failed pipeline still renders a finale: `ATTRIBUTION INCONCLUSIVE — INSUFFICIENT
+TELEMETRY`, in the same BATCOMPUTER voice, not a spinner or an error page. No `GEMINI_API_KEY` is
+not a failure — the rule-based baseline attributes the finale the same way it stands in for the LLM
+everywhere else in this project.
+
 ---
 
 ## Batanalytics dashboard
 
-Streamlit or Evidence reading DuckDB directly. Presentation over models that already exist, so it
-should be cheap to build.
+Streamlit, port 8501, reading `data/warehouse.duckdb` directly and read-only. Presentation over
+models that already exist, so it should be cheap to build. On a clean clone, before `make attack-
+all`/`make transform` have run, panels are sparse — only the committed sample partition backs
+them — and the dashboard says so rather than leaving a reviewer to infer it from empty charts.
+
+The console backend also opens this warehouse (Phase 10's finale triage), the first time two
+processes touch it concurrently. DuckDB's cross-process file lock on this platform is immediate and
+exclusive, not a graceful queue — confirmed by a direct test, not assumed — so an unmitigated
+collision with a console session's background `dbt build` would be a hard `IOException`, not a
+brief wait. The dashboard's own query helper retries on that specific exception with a short bounded
+backoff before showing a clear "warehouse busy" message (docs/05 has the full mechanism and the
+verification). A real mitigation, not an accepted crash.
 
 Panels:
 
 - **Kill chain funnel** — sessions entering and clearing each stage, conversion by villain and
   archetype
 - **Technique efficacy** — observed versus computed success rates per technique per villain
-- **Retry versus pivot** by archetype
+- **Retry versus pivot** by archetype — reads `int_session_features_truth`, and is labelled
+  **(ground truth)** directly in the panel, not only in the model's own tag, since a dashboard
+  viewer has no other way to see that convention
 - **Detection coverage** — technique recall grouped by observability tier. This is the headline
   chart and the most substantive thing the project produces.
 - **Suspect ranking** — model prediction with confidence, beside the true villain
 - **Reconstruction comparison** — techniques the model identified beside the techniques actually
   used, colour-coded true positive, false positive, missed
-- **Remediation** — ATT&CK mitigation IDs for the techniques the model identified
+- **Remediation** — ATT&CK mitigation IDs for the techniques the model identified, scoped to the
+  **23 techniques actually reachable in the game** (`dim_techniques`), not an exhaustive ATT&CK
+  mitigation catalog — enough to demonstrate the mechanism, the same scoping the bat bot's
+  flag-word list already used, not an open-ended curation effort.
 
-The remediation panel is worth doing properly. Mapping to real mitigation IDs makes the output read
-as a detection-engineering deliverable rather than flavor text.
+The remediation panel is worth doing properly within that scope. Mapping to real mitigation IDs
+makes the output read as a detection-engineering deliverable rather than flavor text.
 
 Screenshot the detection coverage chart for the README.
