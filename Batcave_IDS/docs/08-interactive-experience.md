@@ -11,12 +11,32 @@ that divergence gets resolved in favor of the headless contract.
 
 ## Console shell
 
-Static SPA. No framework required.
+Static SPA. No framework required — for the *frontend*. A backend is mandatory and was left
+unnamed in the original draft of this section: a browser cannot reach Kafka, cannot hold the
+honeypot's session cookie (the mechanism that mints `session_id` — docs/02's "Session derivation"),
+and cannot set `X-Forwarded-For` (server-side only, docs/01's control-channel table). `services/
+console/` (FastAPI, already a dependency) is that backend; it holds one `StageMachine`
+(`services/simulator/machine.py`) per browser session and exposes it over a small HTTP API. See
+docs/01's Architecture section for the component boundary.
 
 **The `SIMULATION` frame is present from the first screen and never removed.** It wraps every view
 including the finale. This is not a disclaimer shown at the end; it is persistent chrome.
 
 Screens: welcome → villain select → stage 1 → 2 → 3 → 4 → bat bot → counterstrike → dashboard link.
+
+### Console session data provenance
+
+A console session is human-paced, not `BehaviorProfile`-paced: `requests_per_min` and
+`inter_request_stddev_ms` describe the player's reading and clicking speed, not a villain's
+signature. It is real data — landed, staged, and eligible for triage exactly like a headless
+session — but it is not corpus-grade *behavioral* data, and any future rerun of the separability
+harness or the calibration checks must exclude it. The `attack_run` event carries `session_source`
+(`headless` | `console`, docs/02) for exactly this: a ground-truth field, record-only, so a
+consumer that needs faithful villain behavior can filter on it without guessing from
+`pathologies_enabled` or `timing_compression_factor`, either of which a `--no-pathologies
+--time-scale 1.0` headless run could also show. It stays off the observed side on purpose — Phase
+10's counterstrike attributes the villain from the triage model's prediction on a console session,
+so console sessions must read identically to headless ones in `int_session_features_observed`.
 
 ---
 
@@ -55,8 +75,13 @@ Stage 0 in fiction. The recon is already done, which starts the app at intrusion
 >
 > — L.L.
 
-Each bullet should map to a real technique ID so the stage-0 row in `fct_stage_progression` is
-honest rather than decorative.
+Each bullet should cite a real ATT&CK technique ID in its prose — **narrative only.** There is no
+stage-0 row: `techniques.csv` has zero stage-0 entries (the catalog starts at stage 1, docs/07), and
+`assert_stage_monotonic`'s own comment confirms this was verified against real data — "the attempt
+log contains stages 1-4 only, and all 144 sessions start at stage 1." Seeding a stage-0 fact just to
+back Luthor's monologue would be exactly the decorative row this line originally warned against, not
+an escape from it: the row would exist but nothing would have happened to populate it honestly.
+Cite the IDs in text; do not add a stage or emit stage-0 attempt events.
 
 ---
 
@@ -77,11 +102,29 @@ One view per stage, four stages.
 
 - Technique menu, gated by the villain's stats. Locked techniques shown greyed with the stat
   requirement visible, so the player understands what they cannot reach and why.
-- Parameter controls per technique, feeding `parameters` on the attempt event
+- Parameter controls per technique, writing the player's choices into `parameters` on the attempt
+  event **as descriptive metadata, record-only.** They have no effect on `computed_probability` or
+  the traffic a technique generates — `parameters` was never wired into the probability model in
+  either Track (docs/07's field table has the correction), and Phase 8 doesn't change that. The
+  control exists so the player's choice is visible in the log line and preserved in the data, not
+  because it changes the odds.
 - Attempt streams as terminal log lines: the technique running, the roll, the outcome
-- On failure: retry with different parameters, or pivot to another technique
-- Stage clears on success; stalls when no viable technique remains
-- Running counters: attempts, noise generated, elapsed time
+- On failure: retry with different parameters, or pivot to another technique — the player's choice
+  is free, but `failure_tolerance` (the villain's durability-derived stall threshold, docs/03) still
+  governs when the run ends. Show the player their remaining tolerance so a stall reads as the
+  villain's own signature (Two-Face and Riddler give up almost immediately; Killer Croc grinds for
+  dozens of failures) rather than as the UI refusing to let them keep trying.
+- Stage clears on success; stalls when no viable technique remains, or when `failure_tolerance` is
+  exhausted
+- Running counters: attempts, noise generated, elapsed time, remaining failure tolerance, and two
+  more for the `detected` outcome specifically. `detected` is neither success nor failure in the
+  stage machine — it doesn't clear the stage and doesn't count against `failure_tolerance` — so a
+  run of bad luck can draw it repeatedly with nothing else visibly changing, up to the `MAX_ATTEMPTS`
+  safety cap (400). Headlessly that's invisible; a human clicking toward 400 with no counter moving
+  reads as the UI being broken. Show a running `detected` tally and an attempts-toward-400 counter
+  so a stuck run reads as "getting caught, not making progress." (Whether `detected` *should* count
+  against tolerance is a separate, later question about the truth model — not decided here, and not
+  changed by adding the counter.)
 
 The terminal emits exactly the events the headless simulator emits. The console is an input device
 for the stage machine, not a reimplementation of it.

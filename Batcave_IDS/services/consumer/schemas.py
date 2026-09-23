@@ -76,7 +76,7 @@ KIND_FIELDS: dict[str, list[tuple[str, pa.DataType]]] = {
         ("stage_entered_at", TIMESTAMP),
         ("attempt_at", TIMESTAMP),
     ],
-    # services/simulator/session.py :: AttackRunEvent  (GROUND TRUTH)
+    # services/simulator/machine.py :: AttackRunEvent  (GROUND TRUTH)
     "attack_run": [
         ("villain_slug", pa.string()),
         ("started_at", TIMESTAMP),
@@ -88,6 +88,13 @@ KIND_FIELDS: dict[str, list[tuple[str, pa.DataType]]] = {
         ("run_outcome", pa.string()),
         ("pathologies_enabled", pa.list_(pa.string())),
         ("timing_compression_factor", pa.float64()),
+        # Phase 8 (docs/06 Track B): "headless" (make attack/attack-all) or
+        # "console" (services/console/). Record-only, same precedent as
+        # timing_compression_factor - lets a reader (or a dbt model) tell a
+        # human-paced console run from a corpus-grade headless one without
+        # guessing from pathologies_enabled/timing_compression_factor, which
+        # a `--no-pathologies --time-scale 1.0` headless run could also show.
+        ("session_source", pa.string()),
     ],
 }
 

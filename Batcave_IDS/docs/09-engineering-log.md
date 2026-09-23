@@ -357,3 +357,151 @@ not a code defect to patch. A one-line pointer to this entry is left at the poin
 future run is most likely to trigger it again; a real fix, if one is ever wanted, would mean giving
 evaluation snapshots their own identity (a `run_id` or a separate table) rather than sharing the one
 live table production writes to — worth doing if this bites a third time, not before.
+
+---
+
+## Extracting `StageMachine` reordered two `rng` calls for six of twelve villains
+
+**What broke:** Phase 8 pulled the Phase 2/3 stage machine out of one blocking function
+(`run_scripted_session`) into a resumable `StageMachine` so the console could pause where a human
+decides something instead of reimplementing the stage machine. The extraction was meant to be pure
+code motion — same statements, same order — because every seeded number this project has measured
+(separability effect sizes, the detection-probability calibration, the pathology counts) depends on
+the exact sequence `rng` is called in. It wasn't quite pure: the request budget and the per-run
+pathology draws (`burst_window`, `schema_drift_at`) landed in `StageMachine.__init__`, which runs
+*before* the warm-up HTTP call — but the original computed them *after* the warm-up, inside its
+`try:` block. `RunIdentity.headers()` draws its own `rng` call during that warm-up for any villain
+whose intelligence rotates its user agent (`>= 80` — six of the twelve), so the two orderings only
+disagree for exactly that half of the roster.
+
+**How it was caught:** a characterization test (`tests/test_simulator_machine.py`) written and pinned
+*before* the refactor touched anything — a SHA-256 digest of the full seeded attempt sequence
+(stage, technique, decision, `computed_probability`, `roll`, `outcome`, `noise_generated`) across all
+twelve villains at five fixed seeds, with the pathology injector sharing the session's own `rng`
+exactly as `make attack` does. The digest changed after the extraction. A call-site–tagged `Random`
+subclass (wrapping `random()`/`randint()`/`choice()`/`shuffle()` to log every draw with its caller's
+`file:line`) diffed against the pre-refactor code found the exact divergence: call index 5 was
+`identity.headers()` in the original, `StageMachine.__init__`'s burst-window `randint` in the new
+code.
+
+**What changed:** moved the request-budget/burst-window/schema-drift computation out of `__init__`
+and into `start()`, immediately after the warm-up call — the same relative position the original had
+them in. Re-running the same digest afterward matched *without needing to regenerate it* — the
+strongest form of "this refactor changed nothing observable." Confirmed independently on real
+consumed data too: a fresh `make attack` run landed and compared field-for-field against the
+pre-extraction behavior with zero mismatches. The lesson generalizes past this one bug: a resumable
+class boundary drawn around a function that used to run start-to-finish will, by default, put
+"setup work" in `__init__` — and any of that setup which draws from a shared `rng` has to go exactly
+where the original computed it, not wherever construction happens to occur.
+
+---
+
+## A new ground-truth column landing on an already-populated corpus doesn't just read back `NULL` — it doesn't exist at all
+
+**What broke:** Phase 8 added `session_source` (`headless` | `console`) to the `attack_run` event so
+a reader could tell a human-paced console session from a corpus-grade headless one — the same
+precedent as `timing_compression_factor`. The plan's assumption, by analogy with the schema-drift
+pathology's `tls_fingerprint` column, was that `union_by_name = true` would read old rows back with
+the new column `NULL`. Running `dbt build` against the real, already-landed corpus instead failed to
+compile at all: `Binder Error: Column "session_source" referenced that exists in the SELECT clause -
+but this column cannot be referenced before it is defined`.
+
+**How it was caught:** running the actual build against real landed Parquet rather than trusting the
+analogy — the project's own working principle ("verify against real output before building the next
+layer") catching exactly the case it exists for.
+
+**What changed the understanding, not the code:** the `tls_fingerprint` precedent and this one aren't
+the same situation. Schema drift's pathology guarantees at least one landed batch *within the same
+corpus* carries the new column, so `union_by_name` has something to project the others against as
+null. A column added to the *code* has no such guarantee — every file landed before the change simply
+lacks it, and if *none* of them have it yet, `read_parquet`'s unioned relation doesn't expose the
+column at all, so `coalesce(session_source, 'headless') as session_source` fails to resolve rather
+than evaluating to `'headless'`. The fix wasn't a SQL change: running one real `make attack` (a normal
+`services.simulator` invocation, nothing special) landed the first row carrying the column, at which
+point `union_by_name` behaved exactly as expected — 408 pre-existing rows read back `NULL` and
+`coalesce`d to `'headless'`, the one new row read back `'console'`/`'headless'` as written, zero
+`NULL`s in the built mart. Worth remembering for the next additive ground-truth field: the transition
+corpus needs at least one real row with the new column before a coalesce over it will even compile,
+not just before it will read correctly.
+
+---
+
+## Swapping to `gemini-3.1-flash-lite`: a deliberate change, verified with the same rigor as every
+## forced one — and `raw_triage_predictions`'s missing snapshot identity bit a third time, self-inflicted
+
+**The swap itself.** Every prior model change in this project (Llama → `gpt-oss-20b` → qwen → Gemini
+3.5) was forced by an operational failure - a model pulled from serving, a reasoning-token budget
+blowout, a rate limit, a 404. This one wasn't: `gemini-3.1-flash-lite` was a deliberate choice, made
+before starting the Phase 8 commit. `services/triage/llm.py`'s own docstring already said what to do
+about that: *"If the model changes, re-verify: this is a real, tested API quirk, not documented
+behavior taken on faith."* Followed literally, in two parts.
+
+**Part 1 — the `thinking_config` quirk did not carry over, in the good direction.** The isolated
+per-parameter test that found `gemini-3.5-flash-lite` rejecting `thinking_budget=0` with an opaque
+`400 INVALID_ARGUMENT` was re-run verbatim against `gemini-3.1-flash-lite`. This time it was
+**accepted**, producing zero thinking tokens - the same result omitting the field already gives on
+this model, so the two are equivalent and the field still isn't set. `thinking_budget=-1` (306
+tokens) and `thinking_level="low"` (120 tokens) both still induce real thinking, closer to 3.5's own
+132/67 than the *rejection* was - the one behavior that changed is that an explicit zero stopped
+being a hard error. A model swap that goes smoothly can still hide a real behavioral difference if
+nobody re-tests the exact thing the docstring flagged as environment-specific; this one happened to
+land on the safe side, but that was found out, not assumed.
+
+**Part 2 — the accuracy re-verification, and `raw_triage_predictions`'s snapshot-identity gap biting a
+third time.** This entry names it because the entry that first found it said exactly when the fix
+would become worth doing: *"a real fix ... worth doing if this bites a third time, not before"*
+(see "`raw_triage_predictions` has no snapshot identity" above). It just did, during the very
+verification meant to be careful about this.
+
+Sequence: (1) confirmed the live `gemini-3.5-flash-lite` numbers matched the published ones exactly
+(13.9%/41.7%/30.6% attribution, 71.4%/29.7%/0.42 technique) before touching anything, and separately
+snapshotted the 36 `llm`-source rows to Parquet as a manual backup - the table itself carries no such
+guarantee. (2) Ran `--stratified-per-villain 3` with the new model. **Without `GEMINI_API_KEY`
+actually exported into the shell** (nothing in this project's Python path loads `.env` - only
+docker-compose's own built-in support does, and that only reaches containers, never a bare host CLI
+invocation), the run silently fell back to the zero-credential baseline-only path and printed a
+plausible-looking "wrote orders for 36 sessions" - the eval that followed was unknowingly reading 36
+untouched, stale `gemini-3.5-flash-lite` rows and matched the old numbers to the decimal place,
+which is what made it noticeable rather than just quietly wrong. (3) Re-ran with the key genuinely
+exported - real API calls this time - and the stratified selector, run against a corpus that had
+grown by three sessions since the original evaluation (this same Phase 8 verification landed two
+console sessions and one headless run earlier), picked 36 sessions that weren't quite the same 36:
+34 shared, 2 different. `write_llm_order`/`write_baseline_order` key on `(session_id, source)` alone,
+so the two dropped-then-reselected-elsewhere sessions left stale rows sitting in the table alongside
+the 36 fresh ones - `baseline` read `n=38`, `llm` read `n=36`, and the two counts not even matching
+each other was the tell. (4) Deleted the orphans, confirmed both sources back to a clean 36, re-ran
+eval - and the numbers were **still** a controlled comparison against a moving target, because a
+fresh stratified sample answers "36 sessions from today's corpus," not "the same 36 sessions as
+before." **Fixed by pinning to the exact 36 `session_id`s from the step-1 snapshot** and re-triaging
+baseline + LLM against exactly those - the only way to hold the sample constant while only the model
+changes.
+
+**Even the pinned comparison surfaced a real, disclosed confound, not a clean result.** Baseline's own
+numbers on the identical 36 sessions moved (30.6% → 36.1% exact) between the two measurements, because
+`classify_villain`'s nearest-centroid reference profiles are computed fresh over *every labeled
+session currently in the warehouse* - by design, and correct - and this project's own Phase 8 testing
+grew that warehouse by three sessions in between. Confirmed as corpus drift and not a scoring change
+by a control that was already available: `classify_techniques` (technique reconstruction) takes only
+a session's own features, no corpus-wide reference, and its baseline numbers were byte-identical
+across both measurements. Recorded as a disclosed confound in docs/04 rather than hidden or re-run
+against a frozen historical snapshot - freezing the corpus for one comparison would have meant
+un-counting real data that's about to be committed, which is a worse distortion than stating the
+confound plainly.
+
+**The result, once clean: a genuine trade, not an upgrade.** `gemini-3.1-flash-lite` improves villain
+attribution across every metric (exact 13.9%→27.8%, top_3 41.7%→50.0%, archetype 30.6%→44.4%) and
+regresses on every technique-reconstruction metric and high-tier detection coverage (precision
+71.4%→60.9%, recall 29.7%→25.6%, high-tier recall 66.0%→55.7%). Ra's al Ghul broke from 0/3 to 1/3
+across all three LLM chapters combined - the first hit on that villain under any model - while Killer
+Croc stayed 0/3 under both Gemini versions, same wrong villain (Bane) both times. The malformed-slug
+hallucination (a real villain guess missing its numeric prefix, first seen under qwen and 3.5) also
+got more frequent under this swap: 6 of 36 versus 3.5's 2 of 36. Full numbers: docs/04, README.
+
+**The snapshot-identity gap is now a confirmed three-for-three, not a hypothetical.** All three bites
+share the same shape - a selector or a manual pin runs against a `raw_triage_predictions` table that
+has no idea which rows back which previously-reported evaluation, and something silently extends,
+overwrites, or contaminates it. The two Dagster/CI incidents were caught by a row-count check; this
+one was caught by the same discipline applied deliberately rather than by accident. Still not fixing
+the underlying gap now - that's unrelated to a model swap and deserves its own scoping - but the
+"worth doing if this bites a third time" condition from the original entry is now satisfied, and
+whoever picks it up next doesn't need to go looking for justification.

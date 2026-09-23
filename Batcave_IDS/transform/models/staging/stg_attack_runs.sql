@@ -7,7 +7,12 @@ triage_input model with this anywhere in its ancestry invalidates every
 attribution number in the repository.
 
 Also carries `timing_compression_factor` (Phase 3) so a reader can tell from
-the data alone whether a run's timing was faithful or compressed.
+the data alone whether a run's timing was faithful or compressed, and
+`session_source` (Phase 8, docs/06 Track B) so a reader can tell a human-paced
+console run from a corpus-grade headless one - `coalesce`d to 'headless' here
+because every row landed before Phase 8 predates the column: `union_by_name`
+reads those back with `session_source` null, and null is a run this project
+generated before the console existed, which is a headless run by definition.
 */
 
 with raw_events as (
@@ -42,6 +47,7 @@ select
     run_outcome,
     pathologies_enabled,
     timing_compression_factor,
+    coalesce(session_source, 'headless') as session_source,
     kafka_partition,
     kafka_offset,
     landed_at,

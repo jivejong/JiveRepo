@@ -14,30 +14,30 @@
 <text x="50" y="64.0" text-anchor="end" font-size="11" fill="#a0aec0">100%</text>
 <rect x="69.5" y="85.8" width="44.1" height="224.2" fill="#4a5568" rx="2"/>
 <text x="91.5" y="79.8" text-anchor="middle" font-size="11" font-weight="600" fill="#4a5568">89.7%</text>
-<rect x="123.0" y="145.0" width="44.1" height="165.0" fill="#dd6b20" rx="2"/>
-<text x="145.1" y="139.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dd6b20">66%</text>
+<rect x="123.0" y="170.8" width="44.1" height="139.2" fill="#dd6b20" rx="2"/>
+<text x="145.1" y="164.8" text-anchor="middle" font-size="11" font-weight="600" fill="#dd6b20">55.7%</text>
 <text x="138.8" y="330.0" text-anchor="middle" font-size="12" fill="#2d3748">high</text>
-<text x="138.8" y="356.0" text-anchor="middle" font-size="10" fill="#a0aec0">7 techniques, 2690 attempts</text>
+<text x="138.8" y="356.0" text-anchor="middle" font-size="10" fill="#a0aec0">7 techniques, 2783 attempts</text>
 <rect x="226.9" y="310.0" width="44.1" height="0.0" fill="#4a5568" rx="2"/>
 <text x="249.0" y="304.0" text-anchor="middle" font-size="11" font-weight="600" fill="#4a5568">0%</text>
-<rect x="280.5" y="310.0" width="44.1" height="0.0" fill="#dd6b20" rx="2"/>
-<text x="302.6" y="304.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dd6b20">0%</text>
+<rect x="280.5" y="301.2" width="44.1" height="8.8" fill="#dd6b20" rx="2"/>
+<text x="302.6" y="295.2" text-anchor="middle" font-size="11" font-weight="600" fill="#dd6b20">3.5%</text>
 <text x="296.2" y="330.0" text-anchor="middle" font-size="12" fill="#2d3748">partial</text>
-<text x="296.2" y="356.0" text-anchor="middle" font-size="10" fill="#a0aec0">7 techniques, 1108 attempts</text>
+<text x="296.2" y="356.0" text-anchor="middle" font-size="10" fill="#a0aec0">7 techniques, 1149 attempts</text>
 <rect x="384.4" y="310.0" width="44.1" height="0.0" fill="#4a5568" rx="2"/>
 <text x="406.5" y="304.0" text-anchor="middle" font-size="11" font-weight="600" fill="#4a5568">0%</text>
-<rect x="438.0" y="296.0" width="44.1" height="14.0" fill="#dd6b20" rx="2"/>
-<text x="460.1" y="290.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dd6b20">5.6%</text>
+<rect x="438.0" y="310.0" width="44.1" height="0.0" fill="#dd6b20" rx="2"/>
+<text x="460.1" y="304.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dd6b20">0%</text>
 <text x="453.8" y="330.0" text-anchor="middle" font-size="12" fill="#2d3748">low</text>
 <text x="453.8" y="344.0" text-anchor="middle" font-size="12" fill="#2d3748">(camouflaged)</text>
-<text x="453.8" y="370.0" text-anchor="middle" font-size="10" fill="#a0aec0">1 techniques, 241 attempts</text>
+<text x="453.8" y="370.0" text-anchor="middle" font-size="10" fill="#a0aec0">1 techniques, 246 attempts</text>
 <rect x="542.0" y="310.0" width="44.1" height="0.0" fill="#4a5568" rx="2"/>
 <text x="564.0" y="304.0" text-anchor="middle" font-size="11" font-weight="600" fill="#4a5568">0%</text>
 <rect x="595.5" y="310.0" width="44.1" height="0.0" fill="#dd6b20" rx="2"/>
 <text x="617.5" y="304.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dd6b20">0%</text>
 <text x="611.2" y="330.0" text-anchor="middle" font-size="12" fill="#2d3748">low</text>
 <text x="611.2" y="344.0" text-anchor="middle" font-size="12" fill="#2d3748">(no evidence)</text>
-<text x="611.2" y="370.0" text-anchor="middle" font-size="10" fill="#a0aec0">8 techniques, 1761 attempts</text>
+<text x="611.2" y="370.0" text-anchor="middle" font-size="10" fill="#a0aec0">8 techniques, 1826 attempts</text>
 <line x1="60" y1="310" x2="690" y2="310" stroke="#cbd5e0" stroke-width="1.5"/>
 <rect x="470" y="46" width="12" height="12" fill="#4a5568" rx="2"/>
 <text x="487" y="56" font-size="11" fill="#2d3748">rule-based baseline</text>

@@ -299,6 +299,36 @@ Cheaper and simpler, and it shares the provider with `k8s-data-platform`.
 
 ---
 
+# Maintenance — scheduled fixes, no track
+
+Work discovered after the fact rather than planned in advance. Not part of the original phase
+sequence and not gated behind any track; pick up whenever it's next convenient.
+
+## Phase 12 — `raw_triage_predictions` snapshot identity
+
+**The gap:** `raw_triage_predictions` (`services/triage/store.py`) has no run or snapshot identity —
+rows are keyed only on `(session_id, source)`. Re-running triage selection against a corpus that has
+grown or changed since a prior run silently conflates old and new predictions in whatever a later
+`eval` reads, with no error and no warning. **Confirmed three times now**, most recently self-inflicted
+mid-verification, caught only by row-count discipline (baseline and `llm` reporting different `n` for
+what should have been one evaluation) rather than by any check the system provides on its own.
+
+Evidence, not restated here — read these in order:
+- `docs/09-engineering-log.md`, "`raw_triage_predictions` has no snapshot identity, and it's bitten
+  the same evaluation twice" — the first two instances (a Dagster zero-credential check, then a
+  Gemini-provider-swap re-verification), both silently extending a pinned 36-session snapshot.
+- `docs/09-engineering-log.md`, "Swapping to `gemini-3.1-flash-lite`..." — the third instance, during
+  this model swap's own re-verification, where a fresh stratified selection against a grown corpus
+  picked 34 of the same 36 sessions plus 2 different ones, leaving stale rows from a superseded
+  selection sitting alongside the new ones until caught by a mismatched `n` between `baseline` and
+  `llm`.
+
+**Not scoped here on purpose** — this phase exists to put the fix on the board with enough context
+that whoever picks it up doesn't have to re-derive the problem from three scattered log entries, not
+to pre-decide the shape of the fix (a `run_id`/snapshot column, a separate table, something else).
+
+---
+
 ## Sequencing note
 
 Track A is the substance. If time runs short, a complete Track A with a strong Phase 7 is a far

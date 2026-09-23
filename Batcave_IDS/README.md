@@ -131,25 +131,32 @@ claim before seeing what they say.
   produces a chat turn — the endpoint it targets 404s until Track B's bat bot exists. It's attempted
   like any other technique (technique selection doesn't know this), but no amount of data will ever
   produce recall on it until Track B lands.
-- **Two LLM providers have been run through this pipeline, and neither result should stand in for
-  "what LLM triage does" in general.** The first chapter ran on Groq's free tier against
-  `qwen/qwen3.8-27b` (a substitute for the originally planned model, which Groq removed from serving
-  entirely); free-tier rate limits contributed to roughly a third of that chapter's parse failures.
-  Groq was dropped afterward for an operational reason, not a quality one — it doesn't cooperate with
-  the maintainer's VPN. The current default, Gemini's `gemini-3.5-flash-lite`, is not rate-limited the
-  same way and uses schema-constrained structured output instead of plain JSON mode. The two chapters
+- **Three models across two providers have been run through this pipeline, and none of the three
+  results should stand in for "what LLM triage does" in general.** The first chapter ran on Groq's
+  free tier against `qwen/qwen3.8-27b` (a substitute for the originally planned model, which Groq
+  removed from serving entirely); free-tier rate limits contributed to roughly a third of that
+  chapter's parse failures. Groq was dropped afterward for an operational reason, not a quality one —
+  it doesn't cooperate with the maintainer's VPN. `gemini-3.5-flash-lite` on Gemini is not rate-limited
+  the same way and uses schema-constrained structured output instead of plain JSON mode. The current
+  default, `gemini-3.1-flash-lite`, was a deliberate swap re-verified the same way every forced swap
+  was — and turned out to be a genuine trade, not an upgrade: measurably better at villain attribution,
+  measurably worse at technique reconstruction and detection coverage than 3.5. All three chapters
   measure genuinely different things; full comparison in `docs/04-llm-triage.md`.
-- **The Killer Croc / Ra's al Ghul finding was qwen-specific and did not replicate under Gemini.**
-  Under qwen it was the project's most interesting result — real signal on two villains the baseline
-  scored 0/3 on, at an n of 2 real responses each. Under Gemini, on the same 36 sessions, both villains
-  are 0/3 again — no better than baseline. Treat the original finding as a property of one model on a
+- **The Killer Croc / Ra's al Ghul finding was qwen-specific and mostly did not replicate under
+  either Gemini version.** Under qwen it was the project's most interesting result — real signal on
+  two villains the baseline scored 0/3 on, at an n of 2 real responses each. Killer Croc stayed 0/3
+  under both Gemini chapters — the same wrong villain (Bane) called all three times, under both
+  versions. Ra's al Ghul stayed 0/3 under 3.5 but broke to 1/3 under 3.1 — one genuine hit, not
+  enough to call the signal reliably recoverable, but enough to soften "did not replicate" to "mostly
+  did not replicate." Treat the original finding as a property of one model on a
   small sample, not a settled claim about LLM triage.
 - **Calibrated uncertainty ("I don't know" instead of a confident wrong guess) was observed under
-  qwen and is absent under Gemini.** qwen answered `"unknown"` on 8 of 36 sessions; Gemini answered
-  `"unknown"` on 0 of 36, at a flat ~0.84 mean confidence including on wrong answers. This is the other
-  half of a real trade: Gemini's schema-constrained output drove parse failures to 0.0% (from qwen's
-  27.8%), a genuine reliability win, but the model that never fails to produce valid JSON is also the
-  one that never declines to answer. Neither property is free.
+  qwen and is absent under both Gemini versions.** qwen answered `"unknown"` on 8 of 36 sessions;
+  Gemini 3.5 and Gemini 3.1 both answered `"unknown"` on 0 of 36, at a flat ~0.83 mean confidence
+  including on wrong answers, for both. This is the other half of a real trade: Gemini's
+  schema-constrained output drove parse failures to 0.0% (from qwen's 27.8%), a genuine reliability
+  win, but the model that never fails to produce valid JSON is also the one that never declines to
+  answer — stable across both Gemini generations, not a one-version quirk. Neither property is free.
 
 ---
 
@@ -188,53 +195,60 @@ team would actually produce — including being explicit about what the corpus c
 Both tasks are also run by a rule-based baseline. If the LLM does not beat a regex on
 high-observability techniques, the README says so.
 
-### Results (real run, 36 sessions across all twelve villains, two model chapters)
+### Results (real run, 36 sessions across all twelve villains, three model chapters)
 
-| | baseline | qwen (Groq) | gemini-3.5-flash-lite | random |
-|---|---|---|---|---|
-| Attribution — exact | 30.6% | 16.7% | 13.9% | 8.3% |
-| Attribution — top-3 | 77.8% | 36.1% | 41.7% | 25.0% |
-| Attribution — archetype | 41.7%¹ | 36.1% | 30.6% | ~20% |
-| Technique — precision / recall / F1 | 65.4% / 39.7% / 0.49 | 57.0% / 20.5% / 0.30 | 71.4% / 29.7% / 0.42 | — |
-| Coverage — high tier recall | 89.7% | 44.3% | 66.0% | — |
-| Coverage — partial tier recall | 0.0% | 0.0% | 0.0% | — |
-| **Parse-failure rate** | 0.0% | **27.8%** | **0.0%** | — |
+| | baseline | qwen (Groq) | gemini-3.5-flash-lite | gemini-3.1-flash-lite (current) | random |
+|---|---|---|---|---|---|
+| Attribution — exact | 30.6% | 16.7% | 13.9% | 27.8% | 8.3% |
+| Attribution — top-3 | 77.8% | 36.1% | 41.7% | 50.0% | 25.0% |
+| Attribution — archetype | 41.7%¹ | 36.1% | 30.6% | 44.4% | ~20% |
+| Technique — precision / recall / F1 | 65.4% / 39.7% / 0.49 | 57.0% / 20.5% / 0.30 | 71.4% / 29.7% / 0.42 | 60.9% / 25.6% / 0.36 | — |
+| Coverage — high tier recall | 89.7% | 44.3% | 66.0% | 55.7% | — |
+| Coverage — partial tier recall | 0.0% | 0.0% | 0.0% | 3.5% | — |
+| **Parse-failure rate** | 0.0% | **27.8%** | **0.0%** | **0.0%** | — |
 
-![Bar chart of technique recall by observability tier: baseline reaches 89.7% on high-observability techniques and 0% elsewhere; the LLM reaches 44.3% on high, 11.1% on camouflaged low-observability techniques, and 0% on partial and no-evidence tiers](docs/images/detection-coverage.svg)
+![Bar chart of technique recall by observability tier: baseline reaches 89.7% on high-observability techniques and 0% elsewhere; the current default model (gemini-3.1-flash-lite) reaches 55.7% on high, 3.5% on the partial tier, and 0% on camouflaged and no-evidence tiers](docs/images/detection-coverage.svg)
 
 *Generated from `mart_detection_coverage` by `docs/images/generate_coverage_chart.py` — hand-written
 SVG, regenerates whenever the numbers do, no plotting dependency. Reflects whichever model most
-recently ran (currently Gemini) — the underlying table holds one live `llm` row per session, not a
-per-chapter history, so the chart is always a snapshot of the current default, not a qwen-vs-Gemini
-comparison. The table above it is the durable record of both chapters.*
+recently ran (currently `gemini-3.1-flash-lite`) — the underlying table holds one live `llm` row per
+session, not a per-chapter history, so the chart is always a snapshot of the current default, not a
+cross-model comparison. The table above it is the durable record of all three chapters.*
 
-¹ Not apples-to-apples with either LLM chapter: the baseline's archetype guess is a mechanical lookup
+¹ Not apples-to-apples with any LLM chapter: the baseline's archetype guess is a mechanical lookup
 on its own villain guess (right villain ⇒ right archetype, for free), and 11 of its 15 archetype
-matches are exactly that — only 4 are genuine wrong-villain-same-family hits. Both LLMs' archetype
-fields are independently predicted, asked for separately from the villain guess, so qwen's 36.1% and
-Gemini's 30.6% are both real family-level recognition. Full breakdown: `docs/04-llm-triage.md`.
+matches are exactly that — only 4 are genuine wrong-villain-same-family hits. Every LLM's archetype
+field is independently predicted, asked for separately from the villain guess, so qwen's 36.1%,
+gemini-3.5's 30.6%, and gemini-3.1's 44.4% are all real family-level recognition. Full breakdown:
+`docs/04-llm-triage.md`.
 
-**Baseline still wins on pattern-matchable evidence, under both LLM chapters — neither has beaten it
-on the partial tier.** Beyond that, this is a trade, not a ranking, and the two chapters tell different
-stories:
+**Baseline still wins on pattern-matchable evidence, under all three LLM chapters.** Beyond that, this
+is a trade, not a ranking, and the three chapters tell different stories:
 
 - **qwen** found real signal on Killer Croc and Ra's al Ghul — two villains the baseline scored 0/3
   on — including a calibrated `"unknown"` on Ra's al Ghul (confidence dropping to 0.45) rather than a
   confident wrong guess. That result came at a real cost: a 27.8% parse-failure rate, partly caused by
   Groq's free-tier rate limits.
-- **Gemini** is dramatically more reliable — **0.0% parse failures** across all 36 sessions, a real,
-  mechanism-explained improvement from schema-constrained structured output rather than plain JSON
-  mode — and improves technique reconstruction and high-tier coverage over qwen. But it does not
-  reproduce the Killer Croc / Ra's al Ghul result (both 0/3 again), and it never answered `"unknown"`
-  — 0 of 36, at a flat ~0.84 mean confidence including on wrong answers. The model that never fails to
-  produce valid JSON is also the model that never declines to guess.
+- **gemini-3.5-flash-lite** was dramatically more reliable — **0.0% parse failures** across all 36
+  sessions, a real, mechanism-explained improvement from schema-constrained structured output rather
+  than plain JSON mode — and improved technique reconstruction and high-tier coverage over qwen. But
+  it did not reproduce the Killer Croc / Ra's al Ghul result (both 0/3 again), and it never answered
+  `"unknown"` — 0 of 36, at a flat ~0.84 mean confidence including on wrong answers.
+- **gemini-3.1-flash-lite (current)** is not a strict upgrade over 3.5 — it's a different point on the
+  same trade. Attribution improves across the board (exact nearly doubles, 13.9% → 27.8%), but
+  technique reconstruction and high-tier coverage both fall (precision 71.4% → 60.9%, high-tier
+  recall 66.0% → 55.7%). Killer Croc is still 0/3, same wrong villain (Bane) both Gemini versions;
+  Ra's al Ghul breaks to 1/3, one genuine hit not seen under either prior chapter. Parse failures stay
+  at 0.0%, and it still never answers `"unknown"`. The malformed-slug hallucination pattern (a real
+  villain guess missing its numeric prefix) also got more frequent under this swap — 6 of 36 versus
+  3.5's 2 of 36 — worth a validation-layer fix sooner rather than later given the trend.
 
 Which trade a deployment should want — an answer that's sometimes missing versus an answer that's
-always present but sometimes confidently wrong — is a real operational question this project measures
-rather than resolves. Full results including the villain-slug hallucination pattern (recurring under
-both models, same root cause), the Two-Face/Killer-Croc confusion (a related but distinct fourth data
-point, not a third confirmation), and a hand spot-check of both models' evidence fields:
-`docs/04-llm-triage.md`.
+always present but sometimes confidently wrong, or technique-reconstruction precision versus villain-
+attribution accuracy — is a real operational question this project measures rather than resolves.
+Full results including the villain-slug hallucination pattern (recurring, worsening, same root cause
+across all three models), the Two-Face/Killer-Croc confusion (a related but distinct data point, not
+a confirmation), and a hand spot-check of every model's evidence fields: `docs/04-llm-triage.md`.
 
 ### One deliberate simplification, stated up front
 
@@ -360,6 +374,19 @@ make dev-down
 
 See [Prerequisites](#prerequisites) above. `GEMINI_API_KEY` is optional — without it, triage runs the
 rule-based baseline and every metric still reports.
+
+**Track B, in progress: interactive console.** With the stack up (`make dev-up`), `make console`
+runs a small FastAPI backend on `:8090` that lets a person play a villain through the same
+`StageMachine` the headless simulator drives — same event envelope, same gating and probability
+model, just a human choosing the technique instead of the autopilot. `make console-web` serves the
+static frontend (`console/`, no framework, no build step) on `:8091`. Bat bot and the counterstrike
+finale (docs/08's remaining phases) aren't built yet — a console run currently ends once the fourth
+stage clears or the villain stalls.
+
+```bash
+make console       # backend on :8090 — needs make dev-up first
+make console-web   # static frontend on :8091, in a second terminal
+```
 
 ---
 

@@ -79,6 +79,16 @@ inter-request gaps. Now that the cookie carries identity through rotation, the g
 villain that genuinely goes quiet mid-run — so it's re-confirmed against real per-villain run
 durations in Phase 3, especially Mister Freeze (longest session) and Poison Ivy (slow drip).
 
+**Phase 8 raises it for the console stack, not for the default.** A human reading a technique
+menu routinely exceeds 120s of cookie inactivity, at which point the honeypot would mint a *fresh*
+`session_id` mid-run — the console's attempt events (carrying the session_id from warm-up) would
+stop matching the request events the player's own next click generates, breaking the
+session/attempt correlation the whole data model rests on. The fix is the existing
+`SESSION_GAP_SECONDS` env var, set to `900` for a console session (`docs/08`'s Makefile wiring),
+not a change to the honeypot's gap logic itself — a human reading a menu for fifteen minutes is
+still one session; longer than that and starting a fresh one is the right call. `make attack`/
+`make attack-all` keep the 120s default, since an autopilot run never idles.
+
 ---
 
 ## The observed / truth boundary
@@ -154,9 +164,10 @@ produces a wrong accusation.
 
 `run_id`, `villain_slug`, `started_at`, `ended_at`, `duration_s`, `requests_sent`, `attempts_made`,
 `max_stage_reached`, `run_outcome`, `pathologies_enabled`, `timing_compression_factor` (Phase 3 —
-1.0 = faithful pacing, smaller = idle gaps compressed for speed; see docs/05 "Timing model").
-Published as `event_kind = 'attack_run'`, keyed by `run_id`, which the run's request and attempt
-events also carry so the observed session joins to its ground truth.
+1.0 = faithful pacing, smaller = idle gaps compressed for speed; see docs/05 "Timing model"),
+`session_source` (Phase 8 — `headless` | `console`; see docs/08's "Console session data
+provenance"). Published as `event_kind = 'attack_run'`, keyed by `run_id`, which the run's request
+and attempt events also carry so the observed session joins to its ground truth.
 
 ---
 

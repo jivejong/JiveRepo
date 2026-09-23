@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Batcave Console</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!--
+    The persistent SIMULATION frame (docs/08). Present on first paint and
+    never removed by app.js - every screen mounts inside #screen-root, which
+    is the ONLY thing app.js ever replaces. This is deliberate, portfolio-
+    safety chrome (CLAUDE.md hard constraint): the console never takes over
+    the browser viewport, never requests fullscreen, and this banner stays
+    visible including through Phase 10's finale.
+  -->
+  <div id="simulation-frame">
+    <header id="sim-banner">
+      <span class="sim-tag">SIMULATION</span>
+      <span class="sim-desc">
+        Batcave IDS interactive demo. No real system, network, or account is affected by anything
+        on this screen.
+      </span>
+    </header>
+
+    <main id="screen-root" aria-live="polite"></main>
+
+    <footer id="sim-footer">
+      This is a portfolio data-engineering project. Play data is recorded for this demo's own
+      analytics; nothing here reaches any real device.
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

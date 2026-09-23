@@ -1,0 +1,371 @@
+/* Batcave console (Phase 8, docs/08). Terminal aesthetic: dark background,
+   monospace, a persistent amber/green SIMULATION banner that never scrolls
+   out of frame. No framework, no build step. */
+
+:root {
+  --bg: #05070a;
+  --panel: #0c1016;
+  --border: #1e2a33;
+  --text: #c9d6d9;
+  --dim: #5c6b70;
+  --accent: #3ddc84;
+  --accent-dim: #1f6b45;
+  --danger: #ff5c5c;
+  --warn: #ffb454;
+  --sim-bg: #221a05;
+  --sim-border: #7a5b16;
+  --sim-tag: #ffb454;
+  font-size: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Consolas", "SFMono-Regular", "Menlo", "Courier New", monospace;
+  min-height: 100vh;
+}
+
+#simulation-frame {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+#sim-banner {
+  background: var(--sim-bg);
+  border-bottom: 2px solid var(--sim-border);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.sim-tag {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--sim-tag);
+  border: 1px solid var(--sim-tag);
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 0.85rem;
+}
+
+.sim-desc {
+  color: #cbb489;
+  font-size: 0.85rem;
+}
+
+#screen-root {
+  flex: 1;
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+#sim-footer {
+  border-top: 1px solid var(--border);
+  padding: 10px 16px;
+  font-size: 0.75rem;
+  color: var(--dim);
+  text-align: center;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.btn {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 0.95rem;
+  padding: 10px 18px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--accent-dim);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn.secondary {
+  border-color: var(--dim);
+  color: var(--dim);
+}
+
+/* --- Welcome --- */
+
+.luthor-signature {
+  margin-top: 60px;
+  text-align: right;
+  color: var(--dim);
+}
+
+.luthor-note {
+  color: var(--dim);
+  white-space: pre-line;
+}
+
+.recon-list {
+  list-style: none;
+  padding: 0;
+}
+
+.recon-list li {
+  border-left: 2px solid var(--accent-dim);
+  padding: 6px 0 6px 12px;
+  margin-bottom: 8px;
+}
+
+.recon-list .attid {
+  color: var(--dim);
+  font-size: 0.8rem;
+}
+
+/* --- Villain select --- */
+
+.villain-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.villain-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.villain-card:hover {
+  border-color: var(--accent);
+}
+
+.villain-card h3 {
+  margin: 0 0 4px;
+}
+
+.villain-card .archetype {
+  color: var(--dim);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.stat-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  margin-bottom: 3px;
+}
+
+.stat-row .label {
+  width: 26px;
+  color: var(--dim);
+}
+
+.stat-bar {
+  flex: 1;
+  height: 6px;
+  background: #1a2129;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.stat-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.stage-reach {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 0.7rem;
+}
+
+.stage-reach .cell {
+  flex: 1;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 0;
+  color: var(--dim);
+}
+
+.stage-reach .cell.locked {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.roster-note {
+  font-size: 0.75rem;
+  color: var(--dim);
+  margin-top: 12px;
+}
+
+/* --- Stage terminal --- */
+
+.stage-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.counters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  font-size: 0.78rem;
+  margin-bottom: 16px;
+}
+
+.counter {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.counter .value {
+  font-size: 1.1rem;
+  color: var(--accent);
+}
+
+.counter.warn .value {
+  color: var(--warn);
+}
+
+.counter.danger .value {
+  color: var(--danger);
+}
+
+.technique-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+}
+
+.technique-list li {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.technique-list li.locked {
+  opacity: 0.5;
+}
+
+.technique-list .name {
+  font-weight: 600;
+}
+
+.technique-list .meta {
+  color: var(--dim);
+  font-size: 0.72rem;
+}
+
+.technique-list .lock-reason {
+  color: var(--danger);
+  font-size: 0.72rem;
+}
+
+.param-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.param-row select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 0.75rem;
+  padding: 3px;
+}
+
+#log-panel {
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  height: 220px;
+  overflow-y: auto;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+#log-panel .line {
+  white-space: pre-wrap;
+}
+
+#log-panel .outcome-success {
+  color: var(--accent);
+}
+
+#log-panel .outcome-failure {
+  color: var(--warn);
+}
+
+#log-panel .outcome-detected {
+  color: var(--danger);
+}
+
+/* --- Run complete --- */
+
+.result-cleared {
+  color: var(--accent);
+}
+
+.result-stalled {
+  color: var(--warn);
+}
+
+.error-banner {
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 0.85rem;
+}

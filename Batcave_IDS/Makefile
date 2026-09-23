@@ -1,6 +1,6 @@
 .PHONY: dev-up dev-down dev-reset attack attack-all separability pathology-check landing-check \
         transform lint-sql feature-crosscheck sample-partition triage triage-eval-sample eval \
-        reconcile coverage dagster docs fmt test
+        reconcile coverage dagster docs fmt test console console-web
 
 TOPIC := attack.events
 
@@ -30,6 +30,34 @@ attack:
 
 attack-all:
 	uv run python -m services.simulator --all --time-scale $(or $(TIME_SCALE),0.05)
+
+# ── Track B (Phase 8) ────────────────────────────────────────────────────
+
+# The console backend: a StageMachine per browser session, driven by
+# services/console/. Requires `make dev-up` first (honeypot + Redpanda).
+#
+# SESSION_GAP_SECONDS is the HONEYPOT's env var, not this backend's - raising
+# it here (in this process's own environment) would do nothing, since the
+# honeypot already runs in its own container with its own environment fixed
+# at container-start time. So this recreates just the honeypot container
+# with the higher gap first (--no-deps leaves Redpanda/the consumer running;
+# --force-recreate is required or compose sees an unchanged image+config and
+# no-ops). 900s so a human reading a technique menu doesn't get split into a
+# fresh session mid-run (docs/02); `make dev-up` on its own keeps the 120s
+# default, which is what an idle-free headless run needs. Recreating the
+# honeypot drops its in-memory SessionTracker state (already a documented
+# simplification, services/honeypot/session.py) but not any landed data, and
+# doesn't affect headless session separation - see docs/02's session-gap
+# note for why. Port :8090 (docs/01).
+console:
+	SESSION_GAP_SECONDS=900 docker compose up -d --no-deps --force-recreate honeypot
+	uv run python -m services.console
+
+# The static SPA (console/) needs a server only because `fetch` from a
+# `file://` page is blocked by the browser in most setups - nothing here is a
+# build step. Port :8091.
+console-web:
+	cd console && uv run python -m http.server 8091
 
 # ── Stubs — arrive in the phase noted, not yet implemented ─────────────
 

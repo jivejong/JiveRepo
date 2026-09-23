@@ -248,20 +248,33 @@ definition pattern-matchable.
 
 ## Configuration
 
-**Current: Google Gemini, `gemini-3.5-flash-lite`.** Pinned via the `TRIAGE_MODEL` env var (default
-in `services/triage/llm.py`), `GEMINI_API_KEY` from environment, never committed. Swapped from Groq
-after this project's own use surfaced a real operational problem: Groq doesn't cooperate with the
-maintainer's VPN, and its free-tier rate limits were already the dominant cause of the prior chapter's
-parse failures (see Results below). This is the third model this project has run triage on, and the
-second provider — full chain: Llama on Groq (removed from serving) → `openai/gpt-oss-20b` on Groq
-(reasoning-token budget blowout) → `qwen/qwen3.8-27b` on Groq (worked, Phase 6's numbers) →
-**`gemini-3.5-flash-lite` on Gemini (current)**.
+**Current: Google Gemini, `gemini-3.1-flash-lite`.** Pinned via the `TRIAGE_MODEL` env var (default
+in `services/triage/llm.py`), `GEMINI_API_KEY` from environment, never committed. This is the fourth
+model this project has run triage on, and stays on the same provider as the third — full chain: Llama
+on Groq (removed from serving) → `openai/gpt-oss-20b` on Groq (reasoning-token budget blowout) →
+`qwen/qwen3.8-27b` on Groq (worked, Phase 6's numbers) → `gemini-3.5-flash-lite` on Gemini (worked,
+Track A's shipped numbers) → **`gemini-3.1-flash-lite` (current)**. Unlike every prior swap, this one
+was not forced by an operational failure (no 404, no rate limit, no VPN incompatibility) — it was a
+deliberate choice, re-verified the same way every forced swap was rather than assumed safe because
+nothing broke.
 
-The Groq→Gemini swap itself required two more real-corpus corrections, neither assumed from
-documentation:
+**Re-verifying `thinking_config` found a real behavioral difference between the two Gemini versions.**
+The Groq→Gemini swap discovered that `gemini-3.5-flash-lite` **rejects**
+`thinking_config=ThinkingConfig(thinking_budget=0)` with an opaque `400 INVALID_ARGUMENT` (isolated by
+testing each config parameter individually against the live API). Re-running that same isolated test
+against `gemini-3.1-flash-lite` found the opposite: `thinking_budget=0` is **accepted** and produces
+zero thinking tokens — the same zero-thinking-tokens result omitting the field entirely already gives
+on this model, so the two are equivalent and the field still isn't set, for the same reason as before
+(nothing to gain from setting it). `thinking_budget=-1` (AUTOMATIC) and `thinking_level="low"` both
+still induce real thinking tokens on a trivial prompt (306 and 120, versus 3.5's 132 and 67) — the
+one thing that changed is that the *rejection* of an explicit zero didn't carry over. Full account,
+including the raw API responses: docs/09.
+
+The original Groq→Gemini swap required two real-corpus corrections, preserved here unchanged since
+they still describe how `gemini-3.5-flash-lite` was chosen in the first place:
 - `gemini-2.5-flash-lite` — the more mature, longer-available tier, the reasonable first choice —
   returned a live `404`: *"This model models/gemini-2.5-flash-lite is no longer available to new
-  users."* Google's own error recommended `gemini-3.5-flash-lite`, which is what's pinned.
+  users."* Google's own error recommended `gemini-3.5-flash-lite`, which is what was pinned then.
 - `thinking_config=ThinkingConfig(thinking_budget=0)`, added to explicitly disable reasoning tokens
   (this project already lost `gpt-oss-20b` to exactly that failure mode), turned out to be **rejected**
   by `gemini-3.5-flash-lite` with an opaque `400 INVALID_ARGUMENT` — isolated by testing each config
@@ -288,14 +301,26 @@ provider-agnostic by construction and was re-verified after the swap.
 
 36 sessions, 3 per villain across all twelve, stratified rather than threshold-selected (the
 threshold alone only ever reaches 7 of 12 villains — docs/02's Catwoman calibration finding). All
-three LLM chapters below were scored against the **same 36 sessions** through the same evaluation
+four LLM chapters below were scored against the **same 36 sessions** through the same evaluation
 marts, so the numbers are directly comparable across models, not just against the baseline.
 
 **Read the qwen numbers below against the constraint that produced them: that chapter ran on Groq's
 free tier against a substituted model, under real rate limits.** Treat that chapter's numbers as a
 lower bound on what a better-resourced run of *that model* would show, not as its ceiling. The Gemini
-chapter that follows is not similarly rate-limited — a genuinely different measurement, not a rerun
+chapters that follow are not similarly rate-limited — a genuinely different measurement, not a rerun
 under the same constraint.
+
+**The `gemini-3.1-flash-lite` chapter carries one disclosed confound the first three don't: the
+reference corpus grew between measurements.** `classify_villain`'s nearest-centroid baseline computes
+its per-villain centroids fresh, over every labeled session currently in the warehouse
+(`build_reference_profiles`, `services/triage/baseline.py`) — by design, not a bug. Track B's Phase 8
+verification work landed 3 new labeled sessions (2 console, 1 headless) between the `gemini-3.5-
+flash-lite` measurement and this one, which shifts those centroids slightly even though the same
+exact 36 session_ids were re-scored. The evidence this is corpus drift, not a scoring change:
+`classify_techniques` (the technique-reconstruction baseline) takes only a session's own features, no
+corpus-wide reference, and its numbers below are **byte-identical** to the `gemini-3.5-flash-lite`
+chapter's baseline row; `classify_villain` is the one that moved (30.6% → 36.1% exact, same 36
+sessions). Full account: docs/09.
 
 ### Attribution
 
@@ -304,6 +329,8 @@ under the same constraint.
 | baseline | 36 | 30.6% | 77.8% | 41.7% | 0.0% |
 | qwen (Groq) | 36 | 16.7% | 36.1% | 36.1% | 27.8% |
 | gemini-3.5-flash-lite | 36 | 13.9% | 41.7% | 30.6% | **0.0%** |
+| baseline (re-scored, grown corpus — see confound note above) | 36 | 36.1% | 77.8% | 44.4% | 0.0% |
+| gemini-3.1-flash-lite | 36 | 27.8% | 50.0% | 44.4% | **0.0%** |
 | random | — | 8.3% | 25.0% | ~20% | — |
 
 **The archetype column is not apples-to-apples with baseline, for either LLM chapter, and reading it
@@ -326,38 +353,57 @@ mechanism to produce at all, tautological or otherwise, and it holds under both 
 | baseline | 65.4% | 39.7% | 0.49 | 0.00 |
 | qwen (Groq) | 57.0% | 20.5% | 0.30 | 0.00 |
 | gemini-3.5-flash-lite | 71.4% | 29.7% | 0.42 | 0.00 |
+| baseline (re-scored, grown corpus) | 65.4% | 39.7% | 0.49 | 0.00 |
+| gemini-3.1-flash-lite | 60.9% | 25.6% | 0.36 | 0.00 |
 
-Gemini improves on qwen across all three technique-reconstruction metrics, and edges out baseline on
-precision specifically (71.4% vs 65.4%) while still trailing on recall. Zero hallucinated technique
+Gemini 3.5 improved on qwen across all three technique-reconstruction metrics, and edged out baseline
+on precision specifically (71.4% vs 65.4%) while still trailing on recall. Zero hallucinated technique
 IDs under either model, both runs.
 
-**Villain-slug hallucination — a recurring property of the validation layer, not either model.** Both
-LLM chapters produced a malformed-but-substantively-correct villain slug: qwen returned `killer-croc`
-(missing the `386-` prefix) on a real Killer Croc session; Gemini returned `scarecrow` (missing the
-`576-` prefix, twice, in this run) on real Scarecrow sessions. Same failure shape, same root cause
-(a plain string field with no format constraint, deliberately — see Configuration above), under two
-unrelated models. Worth treating as a property of the schema, not a model-specific quirk, if a future
+**Gemini 3.1 does not repeat that result — it trails 3.5 on every technique-reconstruction metric**
+(precision 60.9% vs 71.4%, recall 25.6% vs 29.7%, f1 0.36 vs 0.42), and now trails baseline on
+precision too, not just recall. Read together with the Attribution table above, this is the headline
+finding of the swap: **`gemini-3.1-flash-lite` is a mixed result against `gemini-3.5-flash-lite`, not
+a strict upgrade or downgrade** — measurably better at *who did this* (exact villain attribution
+nearly doubles, 13.9% → 27.8%; top_3 rises 41.7% → 50.0%; archetype rises 30.6% → 44.4%) and
+measurably worse at *what did they do* (every technique-reconstruction metric down, and detection
+coverage on the high-observability tier down from 66.0% to 55.7% — see Coverage by tier below). Zero
+hallucinated technique IDs holds for both Gemini versions.
+
+**Villain-slug hallucination — a recurring property of the validation layer, not any one model, and
+it got more frequent, not less, on the newer model.** All three LLM chapters produced a
+malformed-but-substantively-correct villain slug: qwen returned `killer-croc` (missing the `386-`
+prefix) on a real Killer Croc session; `gemini-3.5-flash-lite` returned `scarecrow` (missing the
+`576-` prefix, twice) on real Scarecrow sessions; **`gemini-3.1-flash-lite` returned an unprefixed
+slug 6 times in 36** (`bane` ×3, `scarecrow` ×2, `ras-al-ghul` ×1) — three times 3.5's rate. Same
+failure shape, same root cause (a plain string field with no format constraint, deliberately — see
+Configuration above), across three unrelated models, with a clear escalation on the model this project
+now defaults to. Worth treating as a property of the schema, not a model-specific quirk, if a future
 pass wants to close it — a regex/enum check on the slug format at the validation layer would catch
-both without touching either model.
+all three without touching any model. Given the rate increase, this is worth prioritizing sooner
+rather than "if a future pass wants to."
 
 ### Coverage by tier
 
-| tier | techniques | reachable | attempts | baseline recall | qwen recall | gemini recall |
-|---|---|---|---|---|---|---|
-| high | 7 | 7 | 2,690 | 89.7% | 44.3% | **66.0%** |
-| partial | 7 | 7 | 1,108 | 0.0% | 0.0% | 0.0% |
-| low_camouflaged | 1 | 1 | 241 | 0.0% | 11.1% | 5.6% |
-| low_no_evidence | 8 | 8 | 1,761 | 0.0% | 0.0% | 0.0% |
+| tier | techniques | reachable | attempts | baseline recall | qwen recall | gemini-3.5 recall | gemini-3.1 recall |
+|---|---|---|---|---|---|---|---|
+| high | 7 | 7 | 2,690 | 89.7% | 44.3% | 66.0% | **55.7%** |
+| partial | 7 | 7 | 1,108 | 0.0% | 0.0% | 0.0% | 3.5% |
+| low_camouflaged | 1 | 1 | 241 | 0.0% | 11.1% | 5.6% | 0.0% |
+| low_no_evidence | 8 | 8 | 1,761 | 0.0% | 0.0% | 0.0% | 0.0% |
 
 **Baseline still wins high-tier decisively** — pattern matching against signatures that are
 pattern-matchable by definition is a hard bar, and the baseline clears it regardless of which LLM it's
-compared against. Gemini closes real ground on high-tier versus qwen (66.0% vs 44.3%), consistent with
-schema-constrained output producing more usable technique lists. **Partial tier: zero movement across
-all three sources, all three measurements.** The hope that LLM inference would beat keyword matching
-on ambiguous evidence has now failed to materialize twice, under two different models — that's a
-sturdier negative result than either measurement alone.
+compared against. Gemini 3.5 closed real ground on high-tier versus qwen (66.0% vs 44.3%), consistent
+with schema-constrained output producing more usable technique lists; **Gemini 3.1 gives some of that
+ground back** (55.7%), consistent with the technique-reconstruction table above — the attribution
+gain and the technique-coverage loss are the same trade showing up in two different marts, not two
+unrelated findings. **Partial tier: three of four measurements show zero movement**, with gemini-3.1
+the first source of any four to register a non-zero partial-tier recall at all (3.5%, one session) —
+too small a sample (1 of ~1,108 attempts) to call a trend reversed, but worth flagging as the first
+crack in what had been a clean negative result across two full model generations.
 
-### Killer Croc and Ra's al Ghul: qwen's strongest result did not replicate under Gemini
+### Killer Croc and Ra's al Ghul: qwen's strongest result did not replicate under either Gemini version
 
 Both villains were flagged in earlier phases as structurally hard, for different reasons — Killer
 Croc because gating gives him only loud, high-observability techniques and his real discriminator
@@ -384,22 +430,39 @@ real generations (no rate-limit exclusions this chapter). One example: *"The ses
 heavy sequence of login endpoint attempts generating numerous 401 errors with large payloads and
 persistence despite errors, matching the signature of a brute-force attack"* (0.90 confidence) — a
 real, grounded description of Killer Croc's actual behavior, misattributed to the wrong brute-archetype
-villain. Ra's al Ghul: also 0/3 under Gemini (2 called Harley Quinn, 1 called Bane), none as
-`"unknown"`. **The information genuinely isn't reliably recoverable from the observed features for
-either villain** — that conclusion gets *stronger*, not weaker, when a second, differently-behaved
-model also fails to find it, even though the specific "LLM beats baseline here" finding from the qwen
-chapter does not stand as a general claim about LLM triage. It was true of one model, not of "the
-LLM" as a category, and reporting that qualification is the point of running a second model at all.
+villain. Ra's al Ghul: also 0/3 under Gemini 3.5 (2 called Harley Quinn, 1 called Bane), none as
+`"unknown"`.
 
-**The calibrated-uncertainty claim from the qwen chapter does not hold for the current default model,
+**Killer Croc: 0/3 again under Gemini 3.1** — all three still called Bane, the identical wrong answer
+3.5 gave, with similarly grounded brute-force reasoning (quoted above in the Coverage section's
+lead-in data). Three models, three chapters, one consistent wrong answer for every real Killer Croc
+session. **Ra's al Ghul: 1/3 under Gemini 3.1** — the first genuine hit on this villain across all
+three LLM chapters (*"high-speed, methodical traversal of sensitive endpoints with significant
+user-agent rotation, characteristic of Ra's Al Ghul's efficient, goal-oriented reconnaissance"*, 0.85
+confidence), against 2 misses (both called Harley Quinn). One hit in nine attempts across three model
+generations is not evidence the signal is reliably recoverable, but it means "genuinely unrecoverable"
+should soften to "very hard to recover" — the honest update given a third data point that doesn't
+match the first two.
+
+**The overall conclusion holds regardless: the information isn't reliably recoverable from the
+observed features for either villain, especially Killer Croc**, and that conclusion gets *stronger*,
+not weaker, each time a differently-behaved model mostly fails to find it too, even though the specific
+"LLM beats baseline here" finding from the qwen chapter does not stand as a general claim about LLM
+triage. It was true of one model, not of "the LLM" as a category, and reporting that qualification is
+the point of running more than one model at all.
+
+**The calibrated-uncertainty claim from the qwen chapter does not hold for either Gemini version,
 stated plainly rather than left standing.** qwen answered `"unknown"` on 8 of 36 sessions, including
 2 of Ra's al Ghul's 3, with confidence dropping to 0.45 on those — a real, measured instance of a model
-recognizing absent signal and saying so rather than guessing. **Gemini answered `"unknown"` on 0 of 36
-sessions**, at a flat 0.84 mean confidence *including on wrong answers* (0.90 confidence on the Killer
-Croc misattribution quoted above). This looks like a real behavioral difference between the two models,
-not sampling noise: qwen showed calibrated uncertainty as a real capability; `gemini-3.5-flash-lite`,
-at least at `temperature=0` with this prompt, does not exhibit it at all in this sample. A reader
-should take "the model can express calibrated uncertainty" as a qwen-era finding, not a property of
+recognizing absent signal and saying so rather than guessing. **Neither Gemini version ever answers
+`"unknown"`**: 3.5 was 0 of 36 at a flat 0.84 mean confidence *including on wrong answers* (0.90
+confidence on the Killer Croc misattribution quoted above); 3.1 is also 0 of 36, mean confidence 0.82,
+range a narrow 0.75–0.85 (versus 3.5's flatter-still 0.84 point estimate) — including 0.85 confidence
+on all three of the identical wrong Killer Croc answers. This looks like a stable behavioral property
+of the Gemini family at `temperature=0` with this prompt, not a one-model quirk or sampling noise:
+qwen showed calibrated uncertainty as a real capability across two model generations of Gemini now,
+neither exhibits it at all in this sample. A reader should take "the model can express calibrated
+uncertainty" as a qwen-era finding, not a property of
 LLM triage in general, and not a property of the pipeline's current default.
 
 ### Two-Face / Killer Croc: a related but distinct third data point, not a third confirmation
@@ -475,3 +538,25 @@ not a ranking: more reliable structured output, less legible uncertainty. Which 
 should want depends on what happens downstream of a wrong-but-confident answer versus a right-but-
 occasionally-silent one — a question this project surfaces rather than answers, since it's a real
 operational tradeoff, not a bug in either model.
+
+### Why `gemini-3.1-flash-lite` is the default, stated explicitly
+
+**`gemini-3.1-flash-lite` is the default model as of this phase, and the reason is cost — not
+accuracy.** Say that plainly rather than leaving it for a reader to infer from two tables sitting side
+by side: this project chose the model that performs worse on part of its own evaluation, on purpose,
+because the two result tables above are not the whole decision. A deployment (or a portfolio project)
+weighs price against measured accuracy, and here the cheaper model was judged worth its accuracy cost.
+
+**The accepted cost, restated plainly rather than left implicit in the tables above:** switching from
+`gemini-3.5-flash-lite` to `gemini-3.1-flash-lite` improves villain attribution (exact 13.9% → 27.8%,
+archetype 30.6% → 44.4%) but regresses technique-reconstruction precision (71.4% → 60.9%), regresses
+high-tier detection-coverage recall (66.0% → 55.7%), and increases the malformed-slug hallucination
+rate (2 of 36 → 6 of 36). That is the full price of the swap, not a subset of it — attribution
+improving does not offset the technique-reconstruction and coverage regressions; they are three
+separate, independently real findings, and all three were known before the model shipped as the
+default, not discovered afterward by a reader comparing columns.
+
+This is a deliberate, disclosed choice, made with the trade already measured — not an oversight to be
+found later. If a future phase's priorities shift toward technique-reconstruction accuracy over cost,
+this section is where to start: the `gemini-3.5-flash-lite` numbers above are the ceiling this project
+already knows is available at a higher price.

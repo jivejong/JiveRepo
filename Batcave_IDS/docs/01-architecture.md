@@ -138,6 +138,15 @@ meaningful. Re-verified after the Groq→Gemini provider swap, not assumed to ca
 Presentation over models that already exist. Specification: `docs/08-interactive-experience.md`.
 Not built until Track A is complete and pushed.
 
+**Two pieces, not one.** `console/` is a static SPA (no framework) — but a browser cannot reach
+Kafka, cannot hold the honeypot's session cookie, and cannot set the identity headers docs/01's
+control-channel table above marks server-side-only. `services/console/` (Phase 8, FastAPI) is the
+backend that actually drives the stage machine: it holds one `StageMachine`
+(`services/simulator/machine.py`) per browser session, calling the same resumable core the headless
+autopilot (`services/simulator/session.py`) drives, and exposes it over a small HTTP API the SPA
+calls. Port `:8090`, run via `make console` (needs `make dev-up` and the honeypot already up, same
+as `make attack`). No new compose service in Phase 8.
+
 ---
 
 ## Data flow

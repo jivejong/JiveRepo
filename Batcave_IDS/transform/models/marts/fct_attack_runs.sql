@@ -17,6 +17,7 @@ select
     r.run_outcome,
     r.pathologies_enabled,
     r.timing_compression_factor,
+    r.session_source,
     r.dt,
     r.hour
 from {{ ref('stg_attack_runs') }} as r

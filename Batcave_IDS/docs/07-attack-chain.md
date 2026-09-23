@@ -327,7 +327,7 @@ Beyond the shared envelope in `docs/02-data-model.md`:
 | `attempt_seq` | sequence within the session |
 | `technique_attempt_seq` | sequence within this technique |
 | `decision` | `initial` / `retry` / `pivot` |
-| `parameters` | JSON of whatever was tuned. Always `{}` in Phase 2 — there's nothing to tune yet without per-villain behavioral richness; Phase 3 populates it. |
+| `parameters` | JSON, record-only. `{}` through Track A — Phase 3 never populated it (this line previously said it would; it didn't, and nothing read it). Phase 8's console writes the player's per-technique choices here as descriptive metadata about what was sent. It has no effect on `computed_probability` or the traffic a technique generates in either driver — see docs/08's "Parameter controls." |
 | `computed_probability`, `roll` | float |
 | `outcome` | `success` / `failure` / `detected` |
 | `noise_generated` | int |

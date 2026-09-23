@@ -21,17 +21,23 @@ No `thinking_config` is set. This project already lost one model
 (`openai/gpt-oss-20b`, Phase 6) to reasoning-token overhead blowing a token
 budget and producing malformed JSON under a naive JSON-mode request, so
 disabling thinking here was the original intent - via
-`ThinkingConfig(thinking_budget=0)`. Verified empirically against the real
-API that `gemini-3.5-flash-lite` **rejects** `thinking_budget=0` with an
-opaque `400 INVALID_ARGUMENT` (isolated by testing each config parameter
-individually against the live API, since the error carries no detail on
-which field was wrong), while `thinking_budget=-1` (AUTOMATIC) and
-`thinking_level="low"` both work but induce real thinking tokens on a
-trivial prompt (132 and 67 respectively). Omitting `thinking_config`
-entirely produces zero thinking tokens by default and works - the model
-just doesn't think unless explicitly told to, so the field this project
-needed doesn't need to be set at all. If the model changes, re-verify: this
-is a real, tested API quirk, not documented behavior taken on faith.
+`ThinkingConfig(thinking_budget=0)`. That field's own behavior is
+model-specific and was re-verified here, not assumed to carry over, per this
+docstring's own standing instruction below: `gemini-3.5-flash-lite`
+**rejected** `thinking_budget=0` with an opaque `400 INVALID_ARGUMENT`
+(isolated by testing each config parameter individually against the live
+API, since the error carried no field-level detail), while the current
+model, `gemini-3.1-flash-lite`, **accepts** `thinking_budget=0` outright and
+produces zero thinking tokens - the same zero-thinking-tokens result
+omitting the field entirely already gives on this model, so the two are
+equivalent here and the field still isn't set, for the same reason (nothing
+to gain from setting it). `thinking_budget=-1` (AUTOMATIC) and
+`thinking_level="low"` both induce real thinking tokens on a trivial prompt
+on `gemini-3.1-flash-lite` too (306 and 120 respectively) - closer to the
+3.5-era numbers (132, 67) than the field's *rejection* behavior was, which
+was the one part of this that didn't carry over. If the model changes
+again, re-verify: this is a real, tested API quirk, not documented behavior
+taken on faith - docs/09's engineering log has the full before/after.
 """
 
 from __future__ import annotations
@@ -52,7 +58,7 @@ from pydantic import BaseModel
 
 log = logging.getLogger("triage.llm")
 
-MODEL = os.environ.get("TRIAGE_MODEL", "gemini-3.5-flash-lite")
+MODEL = os.environ.get("TRIAGE_MODEL", "gemini-3.1-flash-lite")
 TIMEOUT_S = float(os.environ.get("TRIAGE_TIMEOUT_S", "30"))
 TRANSPORT_RETRIES = 1
 TRANSPORT_BACKOFF_S = 2.0

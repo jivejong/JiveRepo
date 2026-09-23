@@ -93,6 +93,16 @@ models:
           - accepted_values:
               arguments:
                 values: ["cleared", "stalled"]
+      - name: session_source
+        description: >
+          "headless" (make attack/attack-all) or "console" (Phase 8's
+          services/console/). Record-only - never null after staging's
+          coalesce, since every landed row predates the column or carries it.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["headless", "console"]
+          - not_null
 
   - name: stg_villains
     description: Shared dimension - the roster is public; which villain ran a session is not.
