@@ -42,21 +42,21 @@ Centipede was designed by **Ed Logg** and **Dona Bailey** and released by **Atar
 
 ### Origins
 
-The game concept began with Ed Logg's idea of a multi-segmented creature that would split when shot. Dona Bailey, one of Atari's few female engineers at the time, was attracted to the project partly because of its pastel color palette — unusual for the era's mostly dark-toned games. The trackball controller was chosen to give players precise 4-directional movement in the confined bottom area, differentiating Centipede from the left-right-only shooters that dominated arcades.
+The game concept began with Ed Logg's idea of a multi-segmented creature that would split when shot. Dona Bailey, one of Atari's few female engineers at the time, was attracted to the project partly because of its pastel color palette: unusual for the era's mostly dark-toned games. The trackball controller was chosen to give players precise 4-directional movement in the confined bottom area, differentiating Centipede from the left-right-only shooters that dominated arcades.
 
 ### The Hardware
 
-The game ran on a **MOS 6502 processor** at 1.512 MHz — the same CPU family used in the Apple II and Atari 2600. The display was a **256x240 raster** in portrait orientation, with a tile-based rendering system using an **8x8 pixel grid** (30 columns x 32 rows). Sound came from Atari's custom **POKEY chip**, providing 4 channels of distinctive synthesized audio. The graphics used a 2-bits-per-pixel color system allowing 4 colors per tile from a palette of 16.
+The game ran on a **MOS 6502 processor** at 1.512 MHz: the same CPU family used in the Apple II and Atari 2600. The display was a **256x240 raster** in portrait orientation, with a tile-based rendering system using an **8x8 pixel grid** (30 columns x 32 rows). Sound came from Atari's custom **POKEY chip**, providing 4 channels of distinctive synthesized audio. The graphics used a 2-bits-per-pixel color system allowing 4 colors per tile from a palette of 16.
 
 ### Arcade Phenomenon
 
-Centipede was a massive commercial success, earning over **$115 million** in its first year. It was one of the top-grossing arcade games of 1981-1982 and became Atari's best-selling coin-op game. The game's appeal was remarkably broad — surveys at the time found that roughly **60% of Centipede players were female**, a dramatic contrast to the heavily male-skewed demographics of other arcade games. This crossover appeal was attributed to the game's colorful aesthetics, the satisfying feel of the trackball controls, and the strategic (rather than twitch-reflex) gameplay.
+Centipede was a massive commercial success, earning over **$115 million** in its first year. It was one of the top-grossing arcade games of 1981-1982 and became Atari's best-selling coin-op game. The game's appeal was remarkably broad: surveys at the time found that roughly **60% of Centipede players were female**, a dramatic contrast to the heavily male-skewed demographics of other arcade games. This crossover appeal was attributed to the game's colorful aesthetics, the satisfying feel of the trackball controls, and the strategic (rather than twitch-reflex) gameplay.
 
 The game established several design innovations:
-- **Persistent battlefield** — mushrooms accumulate across play, creating an evolving obstacle landscape
-- **Enemy ecology** — four distinct enemy types (centipede, spider, flea, scorpion) that interact with the environment differently
-- **Risk/reward positioning** — closer proximity to enemies means higher scores but greater danger
-- **Wave structure** — the 12-wave cycle created natural difficulty progression without simply making things faster
+- **Persistent battlefield**: mushrooms accumulate across play, creating an evolving obstacle landscape
+- **Enemy ecology**: four distinct enemy types (centipede, spider, flea, scorpion) that interact with the environment differently
+- **Risk/reward positioning**: closer proximity to enemies means higher scores but greater danger
+- **Wave structure**: the 12-wave cycle created natural difficulty progression without simply making things faster
 
 ### Legacy
 
@@ -66,16 +66,16 @@ Centipede spawned a sequel, *Millipede* (1982), and has been ported to dozens of
 
 This implementation is a single-file JavaScript game (`game.js`, ~2340 lines) organized into clearly separated sections:
 
-1. **CONFIG** — All tunable constants (display, grid, scoring, timing, colors)
-2. **Math Utilities** — AABB collision, clamping, and grid/pixel conversion helpers
-3. **Sprite Data** — Pixel-accurate 2D arrays for all game sprites, mushroom damage states, and bitmap font
-4. **Sound Engine** — Procedural audio via Web Audio API (POKEY-style synthesis)
-5. **Input Handler** — Keyboard state management with buffered just-pressed tracking
-6. **Entity Classes** — CentipedeSegment, Spider, Flea, Scorpion, Player, Bullet
-7. **Collision System** — AABB detection with grid-based mushroom checks and centipede splitting
-8. **Renderer** — Scaled pixel-art rendering in 240x256 logical space at 3x magnification
-9. **Game State Machine** — Attract, playing, death, wave complete, and game-over states with 12-wave cycle
-10. **Main Loop** — Fixed 60Hz timestep with accumulator pattern
+1. **CONFIG**: All tunable constants (display, grid, scoring, timing, colors)
+2. **Math Utilities**: AABB collision, clamping, and grid/pixel conversion helpers
+3. **Sprite Data**: Pixel-accurate 2D arrays for all game sprites, mushroom damage states, and bitmap font
+4. **Sound Engine**: Procedural audio via Web Audio API (POKEY-style synthesis)
+5. **Input Handler**: Keyboard state management with buffered just-pressed tracking
+6. **Entity Classes**: CentipedeSegment, Spider, Flea, Scorpion, Player, Bullet
+7. **Collision System**: AABB detection with grid-based mushroom checks and centipede splitting
+8. **Renderer**: Scaled pixel-art rendering in 240x256 logical space at 3x magnification
+9. **Game State Machine**: Attract, playing, death, wave complete, and game-over states with 12-wave cycle
+10. **Main Loop**: Fixed 60Hz timestep with accumulator pattern
 
 No external libraries or frameworks. Just HTML, CSS, JavaScript, and the Canvas and Web Audio APIs.
 

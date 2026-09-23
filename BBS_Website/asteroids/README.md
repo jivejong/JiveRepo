@@ -36,7 +36,7 @@ Asteroids was created by **Lyle Rains** and **Ed Logg** and released by **Atari,
 
 ### Origins
 
-The game drew inspiration from earlier titles: *Spacewar!* (1962), one of the earliest video games ever made, and Atari's own *Space Invaders* competitor ambitions. Ed Logg, who had previously worked on *Super Breakout*, developed the core gameplay around a simple concept — a lone ship surrounded by tumbling rocks in deep space.
+The game drew inspiration from earlier titles: *Spacewar!* (1962), one of the earliest video games ever made, and Atari's own *Space Invaders* competitor ambitions. Ed Logg, who had previously worked on *Super Breakout*, developed the core gameplay around a simple concept: a lone ship surrounded by tumbling rocks in deep space.
 
 ### The Hardware
 
@@ -47,9 +47,9 @@ Asteroids ran on custom hardware built around a **MOS 6502 processor** (the same
 Asteroids was a massive hit. It **overtook Space Invaders** as the highest-grossing arcade game in the United States and became Atari's best-selling coin-op of all time, with over **70,000 cabinets** produced. Arcade operators reportedly had to install larger coin boxes to keep up with demand.
 
 The game introduced several mechanics that became genre staples:
-- **Screen wrapping** — objects leaving one edge reappear on the opposite side
-- **Inertial physics** — the ship drifts realistically in zero gravity
-- **Risk/reward mechanics** — smaller asteroids are worth more points but are harder to hit; hyperspace can save you or kill you
+- **Screen wrapping**: objects leaving one edge reappear on the opposite side
+- **Inertial physics**: the ship drifts realistically in zero gravity
+- **Risk/reward mechanics**: smaller asteroids are worth more points but are harder to hit; hyperspace can save you or kill you
 
 ### Legacy
 
@@ -61,14 +61,14 @@ Ed Logg went on to create *Centipede* (1981) and *Gauntlet* (1985), cementing hi
 
 This implementation is a single-file JavaScript game (`game.js`, ~1500 lines) organized into clearly separated sections:
 
-1. **CONFIG** — All tunable constants (physics, scoring, timing)
-2. **Math Utilities** — Vector math and collision helpers
-3. **Entity Classes** — Ship, Asteroid, Bullet, UFO, Particle
-4. **Input Handling** — Keyboard state management
-5. **Collision System** — Circle-based hit detection with screen wrapping
-6. **Audio Engine** — Procedural sound effects using the Web Audio API
-7. **Renderer** — Vector-style drawing with glow/phosphor post-processing
-8. **Game State Machine** — Attract, playing, respawn, and game-over states
+1. **CONFIG**: All tunable constants (physics, scoring, timing)
+2. **Math Utilities**: Vector math and collision helpers
+3. **Entity Classes**: Ship, Asteroid, Bullet, UFO, Particle
+4. **Input Handling**: Keyboard state management
+5. **Collision System**: Circle-based hit detection with screen wrapping
+6. **Audio Engine**: Procedural sound effects using the Web Audio API
+7. **Renderer**: Vector-style drawing with glow/phosphor post-processing
+8. **Game State Machine**: Attract, playing, respawn, and game-over states
 
 No external libraries or frameworks. Just HTML, CSS, JavaScript, and the Canvas and Web Audio APIs.
 

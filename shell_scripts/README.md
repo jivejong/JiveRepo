@@ -4,10 +4,10 @@ A small cross-platform operations toolkit: Bash utilities for backup, database o
 
 ## Highlights
 
-- **Security-conscious database automation** — `db_orchestrator.sh` supports the same CRUD workflow across Oracle, Teradata, and SQL Server without putting passwords in command-line arguments.
-- **Safe cleanup patterns** — duplicate-file tools verify content with hashes and quarantine files for review instead of permanently deleting them.
-- **Practical AI tooling** — `scan_injections.sh` provides a simple pre-ingestion screening step, while `dir-lens.ps1` produces a local-LLM directory audit through Ollama.
-- **Defensive defaults** — Bash scripts use `set -euo pipefail`; PowerShell cleanup scripts support previewing work with `-WhatIf`.
+- **Security-conscious database automation**: `db_orchestrator.sh` supports the same CRUD workflow across Oracle, Teradata, and SQL Server without putting passwords in command-line arguments.
+- **Safe cleanup patterns**: duplicate-file tools verify content with hashes and quarantine files for review instead of permanently deleting them.
+- **Practical AI tooling**: `scan_injections.sh` provides a simple pre-ingestion screening step, while `dir-lens.ps1` produces a local-LLM directory audit through Ollama.
+- **Defensive defaults**: Bash scripts use `set -euo pipefail`; PowerShell cleanup scripts support previewing work with `-WhatIf`.
 
 ## Requirements
 
@@ -80,7 +80,7 @@ SQLSERVER_DB=...
 SQLCMDPASSWORD=...
 ```
 
-Oracle and Teradata credentials are sent through standard input; SQL Server reads `SQLCMDPASSWORD` from the environment. This avoids password exposure in process arguments. The script interpolates username and email values into SQL, so it is a trusted-operator utility—not a public-facing API.
+Oracle and Teradata credentials are sent through standard input; SQL Server reads `SQLCMDPASSWORD` from the environment. This avoids password exposure in process arguments. The script interpolates username and email values into SQL, so it is a trusted-operator utility, not a public-facing API.
 
 ## Safety Notes
 

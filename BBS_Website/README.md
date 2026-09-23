@@ -2,7 +2,7 @@
 
 An interactive portfolio site disguised as a late-1980s bulletin board system.
 
-The core experience—layout, styling, state management, animation, keyboard and mouse interaction, synthesized audio, a puzzle, navigation, and a Pine-inspired mail composer—lives in a **46,991-byte HTML file** with no framework, package manager, build step, or runtime dependency.
+The core experience, including layout, styling, state management, animation, keyboard and mouse interaction, synthesized audio, a puzzle, navigation, and a Pine-inspired mail composer, lives in a **46,991-byte HTML file** with no framework, package manager, build step, or runtime dependency.
 
 > A complete interactive website experience in less source code than many individual modules in a React application.
 
@@ -70,7 +70,7 @@ Contact the SYSOP opens a compose screen modeled after the Pine email client. It
 
 **SMTP is intentionally not configured.** This is a static portfolio site, and adding a mail server would introduce credentials, abuse handling, spam controls, data retention, and operational infrastructure that do not improve the interface demonstration. When no contact email is configured, Send directs the visitor to the public LinkedIn contact channel instead.
 
-The empty `contactEmail` setting is therefore deliberate—not an unfinished integration. If an email address is supplied later, the site delegates composition to the visitor's local mail client with a `mailto:` URL; it still does not operate an SMTP service.
+The empty `contactEmail` setting is therefore deliberate, not an unfinished integration. If an email address is supplied later, the site delegates composition to the visitor's local mail client with a `mailto:` URL; it still does not operate an SMTP service.
 
 ## Run Locally
 

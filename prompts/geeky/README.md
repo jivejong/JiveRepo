@@ -1,6 +1,6 @@
 # 🛸 Geeky Prompts
 
-Forty-eight system prompts built on borrowed voices — Starfleet officers, Jedi, Muppets, Time Lords, a Ferengi, a bartender, four turtles, and Gotham's rogues gallery — organized by **what they do**, not where they came from.
+Forty-eight system prompts built on borrowed voices: Starfleet officers, Jedi, Muppets, Time Lords, a Ferengi, a bartender, four turtles, and Gotham's rogues gallery: organized by **what they do**, not where they came from.
 
 The folder has one design brief, and it is the same one [`bat-prompts/`](./bat-prompts/) states for its own fifteen:
 
@@ -8,7 +8,7 @@ The folder has one design brief, and it is the same one [`bat-prompts/`](./bat-p
 
 This is not a costume box. In almost every file, the trait the character is _canonically famous for_ is the exact thing the prompt forbids. Comic Book Guy is contemptuous of people; the prompt lets him be contemptuous only of code. Rita Skeeter invents quotes; the prompt makes fabrication the one unbreakable line and then asks her to expose her own spin. Bruce Banner smashes things; the prompt makes him the voice that debunks catharsis, precisely because the reader expects the opposite from him. Scrooge McDuck hoards; the prompt has him attack waste and defend joy. Cartman schemes; the prompt is engineered so the schemes _cannot function_. The Joker's entire nature is not answering the question; the prompt's one non-negotiable line is dropping the bit the instant someone is actually in trouble.
 
-That inversion is why these are personas rather than impressions — and why the voice is load-bearing rather than decorative. A person hears "do not vent your anger" differently from the Hulk.
+That inversion is why these are personas rather than impressions: and why the voice is load-bearing rather than decorative. A person hears "do not vent your anger" differently from the Hulk.
 
 ---
 
@@ -17,14 +17,14 @@ That inversion is why these are personas rather than impressions — and why the
 | Folder                           | Count | For                                                                                                                                                                |
 | -------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`reasoning/`](./reasoning/)     | 8     | You bring a claim, argument, idea, or dilemma; it gets pressure-tested                                                                                             |
-| [`bat-prompts/`](./bat-prompts/) | 15    | The Batman set — planning, diagnosis, feasibility, information architecture, two domestic experts, and an eight-strong rogues gallery fenced off by hard overrides |
+| [`bat-prompts/`](./bat-prompts/) | 15    | The Batman set: planning, diagnosis, feasibility, information architecture, two domestic experts, and an eight-strong rogues gallery fenced off by hard overrides |
 | [`work/`](./work/)               | 5     | Leading, planning, competing, negotiating, and deciding the next move                                                                                              |
-| [`everyday/`](./everyday/)       | 4     | Money, drinks, dinner, and the cost of a prompt — resources you spend daily                                                                                        |
-| [`inner-life/`](./inner-life/)   | 4     | Anger, subtext, company, and identity — the ones that sit _with_ you                                                                                               |
+| [`everyday/`](./everyday/)       | 4     | Money, drinks, dinner, and the cost of a prompt: resources you spend daily                                                                                        |
+| [`inner-life/`](./inner-life/)   | 4     | Anger, subtext, company, and identity: the ones that sit _with_ you                                                                                               |
 | [`growth/`](./growth/)           | 4     | Career direction, training roadmaps, teaching materials, and a mentor                                                                                              |
 | [`research/`](./research/)       | 3     | Go find what is actually out there, and weigh it                                                                                                                   |
 | [`comedy/`](./comedy/)           | 3     | The output is entertainment by design, and the prompts enforce that                                                                                                |
-| [`language/`](./language/)       | 2     | Shaping words — story and social register                                                                                                                          |
+| [`language/`](./language/)       | 2     | Shaping words: story and social register                                                                                                                          |
 
 Each subfolder has its own README with the per-prompt detail and the design decisions specific to that group.
 
@@ -36,13 +36,13 @@ Six mechanics recur across the folder. They are worth knowing because they are t
 
 ### 1. The Named Flaw
 
-The most consistent invention here. Most files contain an explicitly named block identifying the source character's defining weakness and forbidding the model from reproducing it — `<the_xavier_flaw>`, `<the_knope_flaw>`, `<the_mcduck_principle>`, `<the_subtraction_protocol>`, `<the_krabappel_split>`, `<the_moral_compass>`, `<the_anti_persona>`, `<the_hard_split_protocol>`.
+The most consistent invention here. Most files contain an explicitly named block identifying the source character's defining weakness and forbidding the model from reproducing it: `<the_xavier_flaw>`, `<the_knope_flaw>`, `<the_mcduck_principle>`, `<the_subtraction_protocol>`, `<the_krabappel_split>`, `<the_moral_compass>`, `<the_anti_persona>`, `<the_hard_split_protocol>`.
 
 These are not disclaimers. They are the most operationally specific sections in each file, and each names a failure the _default assistant_ would also commit: a career bot that pushes the impressive path, a project bot that plans for heroes, a leadership bot that romanticizes martyrdom, a finance bot that treats poverty as a discipline problem.
 
 ### 2. The Break-Character Override
 
-Near-universal, and always positioned to be evaluated **before** anything is generated. It has many names — `CRISIS OVERRIDE`, `CONDITION RED` / `CONDITION BLACK`, `THE HARDSHIP OVERRIDE`, `THE TRAGEDY OVERRIDE`, `THE DEREALIZATION PROTOCOL`, `THE LEARNER OVERRIDE` — and one shape: drop the format entirely, drop the persona entirely, respond plainly, point to real help.
+Near-universal, and always positioned to be evaluated **before** anything is generated. It has many names: `CRISIS OVERRIDE`, `CONDITION RED` / `CONDITION BLACK`, `THE HARDSHIP OVERRIDE`, `THE TRAGEDY OVERRIDE`, `THE DEREALIZATION PROTOCOL`, `THE LEARNER OVERRIDE`: and one shape: drop the format entirely, drop the persona entirely, respond plainly, point to real help.
 
 The conviction behind it is stated most directly in [`comedy/judge-dredd.md`](./comedy/judge-dredd.md): _someone in real trouble should never have to sit through a bit to get help._
 
@@ -52,12 +52,12 @@ Several prompts tier it rather than toggling it. [`reasoning/council.md`](./reas
 
 The voice is capped by explicit numeric limits, because an unbounded bit buries the answer:
 
-- **One** Klingon term per response — _"a strategist who spends the briefing on theater is not briefing."_
+- **One** Klingon term per response: _"a strategist who spends the briefing on theater is not briefing."_
 - **One** Fremen term, and never explained.
 - **One** enthusiastic line, at the top (Leslie Knope); **one** elevated sentence, at the end (Optimus Prime).
 - **One** clause of fretting (C-3PO).
-- Roughly **two in three** sentences inverted (Yoda) — the straight ones are what keep it readable rather than broken.
-- 1940s slang used _lightly_ — _"a little is characterful; a lot is a costume."_
+- Roughly **two in three** sentences inverted (Yoda): the straight ones are what keep it readable rather than broken.
+- 1940s slang used _lightly_: _"a little is characterful; a lot is a costume."_
 
 Optimus Prime carries the sharpest version: **do not reach for the catchphrase every time; automatic sign-offs stop meaning anything.**
 
@@ -67,7 +67,7 @@ Roughly half the folder enforces a two-phase workflow with an explicit **STOP** 
 
 The **exceptions** are what show the pattern was reasoned about rather than copied:
 
-- [`everyday/tmnt-pizza.md`](./everyday/tmnt-pizza.md) explicitly _forbids_ gating — it must output the upgrade request and a complete working recipe in the same response. The ask is an upgrade path, not a gate.
+- [`everyday/tmnt-pizza.md`](./everyday/tmnt-pizza.md) explicitly _forbids_ gating: it must output the upgrade request and a complete working recipe in the same response. The ask is an upgrade path, not a gate.
 - [`language/bilbo.md`](./language/bilbo.md) proceeds on a stated default if the user will not answer.
 - [`inner-life/uncle-iroh.md`](./inner-life/uncle-iroh.md) gates on a question nobody is usually asked: _"Would you like advice, or would you like company?"_
 
@@ -77,14 +77,14 @@ Every prompt touching verifiable fact carries an explicit fabrication ban, and f
 
 | Prompt                                                           | What it may never invent                                                  |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| [`research/sarah-jane-smith.md`](./research/sarah-jane-smith.md) | A citation — not an author, title, journal, year, or DOI                  |
+| [`research/sarah-jane-smith.md`](./research/sarah-jane-smith.md) | A citation: not an author, title, journal, year, or DOI                  |
 | [`research/rita-skeeter.md`](./research/rita-skeeter.md)         | A quote. _"Not one, not ever."_                                           |
-| [`research/ferengi.md`](./research/ferengi.md)                   | A price low — an invented one makes the user reject a genuinely good deal |
+| [`research/ferengi.md`](./research/ferengi.md)                   | A price low: an invented one makes the user reject a genuinely good deal |
 | [`language/c3po.md`](./language/c3po.md)                         | Conlang vocabulary outside the documented corpus                          |
-| [`language/bilbo.md`](./language/bilbo.md)                       | Any fact — the draft gets read aloud on a real stage                      |
+| [`language/bilbo.md`](./language/bilbo.md)                       | Any fact: the draft gets read aloud on a real stage                      |
 | [`reasoning/spock.md`](./reasoning/spock.md)                     | A fallacy name                                                            |
 | [`work/klingon.md`](./work/klingon.md)                           | A fact about a real company                                               |
-| [`everyday/dune.md`](./everyday/dune.md)                         | Precision — the figure must be labeled an estimate and carry its source   |
+| [`everyday/dune.md`](./everyday/dune.md)                         | Precision: the figure must be labeled an estimate and carry its source   |
 
 ### 6. The Mandatory Uncomfortable Section
 
@@ -94,7 +94,7 @@ Every output format reserves a slot for the thing the user did not want to hear,
 
 ## Two Conventions Worth Noting
 
-**XML tags structure the file; the output format is usually Markdown.** Every prompt uses the same internal tag vocabulary — `<role>`, a voice block, `<hard_overrides>`, `<workflow>`, `<output_format>` — so the boundaries and the response shape stay separable from the character. Only three specify _XML output contracts_: [`reasoning/council.md`](./reasoning/council.md), [`reasoning/nexus.md`](./reasoning/nexus.md), and [`language/c3po.md`](./language/c3po.md). All three do it for the same reason — their output is a menu the user selects from across turns, so it needs stable, machine-addressable ids.
+**XML tags structure the file; the output format is usually Markdown.** Every prompt uses the same internal tag vocabulary: `<role>`, a voice block, `<hard_overrides>`, `<workflow>`, `<output_format>`: so the boundaries and the response shape stay separable from the character. Only three specify _XML output contracts_: [`reasoning/council.md`](./reasoning/council.md), [`reasoning/nexus.md`](./reasoning/nexus.md), and [`language/c3po.md`](./language/c3po.md). All three do it for the same reason: their output is a menu the user selects from across turns, so it needs stable, machine-addressable ids.
 
 **No quoting the source works.** Council, Spock, and the Ferengi each carry an explicit ban on reciting canonical dialogue or catchphrases; write original lines in the voice instead. Restraint reads as in-character. A greatest-hits reel reads as an impression.
 
@@ -102,10 +102,10 @@ Every output format reserves a slot for the thing the user did not want to hear,
 
 ## Using These
 
-Each file is a complete, standalone system prompt. Drop one into a Gem, a Claude Project, or a Custom GPT — copy, paste, customize. The personas are independent; there is no shared preamble and no intended ordering.
+Each file is a complete, standalone system prompt. Drop one into a Gem, a Claude Project, or a Custom GPT: copy, paste, customize. The personas are independent; there is no shared preamble and no intended ordering.
 
 The one adjustment worth making per-host: models differ in how strictly they honor a mid-conversation stop, so if a phased prompt runs ahead and generates before the user answers Phase 1, strengthen the stop instruction rather than the persona.
 
 ## Status
 
-Drafted system prompt material, not yet validated against real conversation transcripts at scale — the same status as the rest of [`Prompts/`](../readme.md).
+Drafted system prompt material, not yet validated against real conversation transcripts at scale: the same status as the rest of [`Prompts/`](../readme.md).
