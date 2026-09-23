@@ -15,6 +15,3 @@ data/
 # OS-specific junk
 .DS_Store
 Thumbs.db
-
-#temporary
-Force_Balance_Pipeline/
