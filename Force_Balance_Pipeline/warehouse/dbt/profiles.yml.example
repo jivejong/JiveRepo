@@ -1,0 +1,30 @@
+# Copy to a real profiles.yml (gitignored at warehouse/dbt/profiles.yml, or ~/.dbt/)
+# and replace <yourname>. All credentials come from environment variables.
+force_balance:
+  target: dev
+  outputs:
+    dev:
+      type: databricks
+      catalog: force
+      schema: dev_<yourname>
+      host: "{{ env_var('DATABRICKS_HOST') }}"
+      http_path: "{{ env_var('DATABRICKS_HTTP_PATH') }}"
+      token: "{{ env_var('DATABRICKS_TOKEN') }}"
+      threads: 4
+    prod:
+      type: databricks
+      catalog: force
+      schema: gold
+      host: "{{ env_var('DATABRICKS_HOST') }}"
+      http_path: "{{ env_var('DATABRICKS_HTTP_PATH') }}"
+      token: "{{ env_var('DATABRICKS_TOKEN') }}"
+      threads: 4
+    local:
+      type: postgres
+      host: localhost
+      port: 5432
+      user: force
+      password: "{{ env_var('POSTGRES_PASSWORD') }}"
+      dbname: force
+      schema: gold
+      threads: 4
