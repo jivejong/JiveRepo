@@ -1,0 +1,35 @@
+# Secrets and local config
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+build/
+npm-debug.log*
+
+# dbt
+warehouse/dbt/target/
+warehouse/dbt/dbt_packages/
+warehouse/dbt/logs/
+warehouse/dbt/profiles.yml
+logs/
+
+# Phase 0 scratch state written by scripts/check_platform.py
+.phase0_state.json
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
