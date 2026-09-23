@@ -152,7 +152,37 @@ deliberately.
 `turn_number`, `speaker`, `objective`, `bot_text`, `user_text`, `extracted_intent_flags`, `refused`,
 `latency_ms`, `input_tokens`, `output_tokens`.
 
-`user_text` is **excluded from the committed sample partition without exception.**
+**Two rows per round, not one.** A round of the bat bot conversation (docs/08) produces two events
+sharing one `turn_number`: a `speaker = 'bot'` row (`bot_text`, `latency_ms`, `input_tokens`,
+`output_tokens` populated; `user_text`, `refused`, `extracted_intent_flags` null) and a
+`speaker = 'user'` row (`user_text`, `refused`, `extracted_intent_flags` populated; `bot_text` and
+the token/latency fields null). Same discriminator-column shape `raw_triage_predictions` already
+uses for `baseline`/`llm` (docs/04) — nulls here mean "not applicable to this row," not missing
+data.
+
+**`user_text` is excluded from the mart layer and the committed sample partition, without
+exception — stated precisely, since "without exception" previously read broader than the actual
+guarantee.** `fct_botchat_turns` does not select it, and neither does
+`int_session_features_observed`'s chat aggregation; the sample-partition generator copies every
+other `chat_turn` field raw and nulls this one specifically (`services/consumer/sample_partition.py`).
+It is **not** excluded from the warehouse entirely: `stg_botchat_turns` — the one staging model, by
+design — does retain it, because it is what those three chat features are computed from and what a
+local operator can inspect directly. That table lives only in `data/warehouse.duckdb`, gitignored
+and never committed, so this is a scope statement, not a gap: raw player-typed text can exist
+locally in one named place, and is guaranteed absent from every mart and from anything that leaves
+this machine.
+
+**The guarantee is about the `user_text` column specifically, not about the conversation as a
+whole.** `bot_text` is never redacted, and a stateful, context-aware bot naturally echoes back
+whatever the player just told it — confirmed on a real committed sample: a reply mentioning a name
+and a location produced a following bot turn that repeated both back ("Got it, sub-level maintenance
+near the vehicle bay..."). If a player enters something real despite the consent notice's
+instruction not to, that detail can reach the committed sample through `bot_text` even though
+`user_text` itself is genuinely null. The consent notice (docs/08) is the actual mitigation — it's
+the one point in the flow where a player decides what to type — not a code-level redaction of
+`bot_text`, which would be an unreliable NLP problem symmetric to none of this project's other
+guarantees. `make sample-partition`'s checkpoint includes reading the committed sample's `bot_text`
+values by hand for exactly this reason (docs/06).
 
 ### `counterstrike_events` (`event_kind = 'counterstrike'`)
 
@@ -470,7 +500,12 @@ fall below threshold, that is a real detector failure mode worth writing up, not
 - `assert_high_observability_techniques_leave_evidence.sql` — every technique marked `high` produces
   a non-zero evidence feature in the sessions that used it. If it does not, either the tier is wrong
   or the detection signature is not being emitted.
-- `assert_no_user_text_in_sample.sql` — committed sample partition contains no `user_text`
+- `assert_no_user_text_in_sample.sql` — reads the committed sample partition's `chat_turn` Parquet
+  directly (not `information_schema`) and fails on any non-null `user_text` row. Phase 8 built this
+  as a schema-only check because no `chat_turn` data existed yet to test against; Phase 9 upgraded it
+  in place once real data made the real check possible, and a hand grep against a real bat bot
+  conversation's landed sample is recorded in docs/09 as the one-time proof the automated check
+  agrees with
 - `assert_twelve_villains_seeded.sql`, `assert_no_future_timestamps.sql`,
   `assert_no_negative_durations.sql`, `assert_threat_score_bounds.sql`,
   `assert_session_ordering_preserved.sql`

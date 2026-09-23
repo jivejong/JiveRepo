@@ -147,11 +147,22 @@ Not dismissible by clicking away. Requires an explicit acknowledge.
 > analytics this demo is built to show. Do not enter anything real — no names, locations, employers,
 > credentials, or anything you would not publish. Made-up answers work fine and are more fun.
 >
+> **The assistant may repeat back what you tell it** — that's part of how it tries to sound
+> convincing — so anything real you type could resurface in what it says next, not just in what
+> you typed.
+>
 > Nothing on your computer or your devices is affected by any part of this.
 
 ### Turn contract
 
-3–5 turns, hard capped in code, not in the prompt.
+**3–5 turns, hard capped in code, not in the prompt — and the length is earned, not fixed.** The
+objective sequence is rapport → up to three of {probe identity, probe location, probe a secondary
+detail} → reveal. After each probe turn, the engine checks whether the player actually engaged with
+the last one; if so it may probe again (up to the third probe), and if not it moves straight to
+reveal. A conversation can therefore end at 3 turns (rapport, one probe, reveal), 4, or 5 (all three
+probes used) — never fewer than 3, never more than 5, and the 5-turn ceiling holds regardless of how
+engaged the player is: engagement only chooses *when* reveal happens inside that window, it never
+extends the window itself.
 
 | Turn | Objective | Cover |
 |---|---|---|
@@ -161,15 +172,36 @@ Not dismissible by clicking away. Requires an explicit acknowledge.
 | 4 | Probe a secondary detail | "One more thing to confirm" |
 | 5 | Reveal | — |
 
-Emits `chat_turn` events: `turn_number`, `speaker`, `objective`, `bot_text`, `user_text`,
-`extracted_intent_flags`, `refused`, `latency_ms`, `input_tokens`, `output_tokens`.
+Turns 2–4 are candidates, drawn in order, not guaranteed slots — a short conversation uses only the
+first one or two before jumping to turn 5's reveal.
 
-**`user_text` never enters the committed sample partition.** Enforced by
-`assert_no_user_text_in_sample`, and verified by grepping the committed Parquet rather than trusting
-the code.
+**One shared, deterministic, versioned module decides both what the player's reply means and whether
+it counts as engagement — never two separate heuristics answering related questions.** Given the
+player's typed reply, it returns `extracted_intent_flags`, `refused`, and `engaged`, where
+`engaged = (not refused) and bool(extracted_intent_flags)` — a reply that neither refuses nor
+produces a recognizable flag (a vague non-answer) does not count as engagement, the same way a
+merely non-refusing reply shouldn't inflate `probe_engagement_ratio` for free. The turn-continuation
+decision above reads only `engaged` from this module; nothing else computes it. This holds in both
+the real-LLM and zero-credential paths (below) — the module's output is identical either way, only
+who writes `bot_text` differs.
 
-Same Gemini model as triage, separate prompt file. Scripted fallback without an API key so the finale
-still runs with zero credentials.
+Emits `chat_turn` events, **two rows per round**: a `speaker = 'bot'` row (`bot_text`, `latency_ms`,
+`input_tokens`, `output_tokens`) and a `speaker = 'user'` row (`user_text`, `extracted_intent_flags`,
+`refused`), sharing one `turn_number`. Full field list and the discriminator-column precedent this
+follows: docs/02.
+
+**`user_text` never enters the mart layer or the committed sample partition.** Enforced by
+`assert_no_user_text_in_sample`, which reads the committed sample's `chat_turn` Parquet directly, and
+verified by a real hand grep against a real conversation's landed data rather than trusting the code
+— docs/09 has that run recorded. (It does persist locally in the staging table inside the gitignored
+warehouse, by design — docs/02's scope note.)
+
+Same Gemini model as triage, separate prompt file. **Zero-credential fallback scripts only
+`bot_text`** (fixed dialogue per turn, no LLM call) — `extracted_intent_flags`, `refused`, and
+`engaged` still come from the same shared keyword module reacting to the player's real typed reply,
+so the fallback conversation is deterministic but not inert: what the player types still matters,
+the same way the rule-based triage baseline (`services/triage/baseline.py`) stands in for the LLM
+without going non-interactive.
 
 ---
 

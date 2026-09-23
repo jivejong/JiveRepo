@@ -239,14 +239,47 @@ headless path did not, and that divergence should be resolved in favor of the he
 
 - Blocking consent notice before the chat opens, including the warehouse-storage disclosure
   (exact text in `docs/08-interactive-experience.md`)
-- 3–5 turn cap, hard enforced
+- 3–5 turn cap, hard enforced, engagement-driven within that window (docs/08)
+- One shared, versioned keyword module producing `extracted_intent_flags`/`refused`/`engaged` for
+  both the real-LLM and zero-credential paths — not two separate heuristics
 - Separate prompt file, same Gemini model as triage; scripted fallback without an API key
-- `botchat_turns` events with intent flags
-- `assert_no_user_text_in_sample` passing
+- `botchat_turns` events, two rows per round (docs/02)
+- **No new dbt models** — `stg_botchat_turns`, `fct_botchat_turns`, and
+  `int_session_features_observed`'s chat features were pre-built dormant in Phase 5. This phase
+  lands the first real data through them.
+- `assert_no_user_text_in_sample.sql` **upgraded in place** to read the committed sample's
+  `chat_turn` Parquet directly, replacing the schema-only check Phase 8 shipped before any
+  `chat_turn` data existed to test against
 
-**Checkpoint:** the consent notice cannot be bypassed. The turn cap holds. The sample partition
-contains no `user_text`. Verify that last one by grepping the committed Parquet, not by trusting the
-code.
+**Checkpoint, in parts:**
+
+- The consent notice cannot be bypassed, and the chat endpoint doesn't silently allow entry without
+  it either — checked directly, not assumed from the frontend gate.
+- A real conversation, played on purpose (`deploy_batbot` doesn't happen by chance — pick it
+  deliberately), with the turn count actually observed varying within `[3, 5]` across at least two
+  play-throughs with different engagement.
+- The turn cap holds two ways: a deterministic unit test pins `[3, 5]` on adversarial input
+  (always-engaged never exceeds 5; always-refused never goes below 3), and the same bound holds on
+  real consumed Kafka messages from the sessions just played. Neither substitutes for the other.
+- `make transform` green, with `int_session_features_observed`'s three chat features going non-zero
+  for the first time and reconciling against what was actually played — not just populating.
+- `user_text` containment re-checked against the real model definitions with real data landed: a
+  column-inventory query confirms it exists on `stg_botchat_turns` only, nowhere else in the
+  warehouse.
+- **The sample partition contains no `user_text` — verified two ways, not one.**
+  `assert_no_user_text_in_sample` now reads the committed Parquet directly and must pass for the
+  real reason (confirmed non-vacuous the way `assert_twoface_test_is_not_vacuous` already is: land a
+  test row with `user_text` somewhere *outside* the sample first, confirm the check would have
+  caught it). Separately, a one-time hand grep against the real committed sample file, recorded in
+  `docs/09-engineering-log.md` — the dbt test is the durable guard, the hand grep is the proof the
+  guard is checking the right thing.
+- **`bot_text` read by eye, every time the sample is regenerated — not covered by the `user_text`
+  check above, and not something a test can cover.** `user_text` redaction says nothing about
+  `bot_text`, which a stateful, context-aware bot will naturally echo the player's own words back
+  into (docs/02's scope note). Before treating a regenerated sample as final, read every `bot_text`
+  value in its committed `chat_turn` file and confirm nothing identifying got echoed back — the
+  same kind of hand-check this project already does for everything else that touches the committed
+  public artifact (the golden RNG diff, the `user_text` grep itself).
 
 ## Phase 10 — Finale and dashboard  (7–9h)
 

@@ -292,6 +292,13 @@ let logHistory = [];
 function renderStage(session, previousLog) {
   logHistory = previousLog;
 
+  // deploy_batbot succeeding sets this instead of finishing the run
+  // (services/console/app.py) - the player must go through the consent
+  // notice and the conversation before reaching "run complete." There is no
+  // decline path (docs/08: "not dismissible by clicking away").
+  if (session.batbot_pending) {
+    return renderBatBotConsent(session);
+  }
   if (session.finished) {
     return renderRunComplete(session);
   }
@@ -345,6 +352,125 @@ async function submitAttempt(session, techniqueId, aggression) {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Screen: Bat bot consent notice — blocking, not dismissible by clicking  */
+/* away (docs/08). The only way past this panel is the button; there is   */
+/* no click-outside or escape handler anywhere on it, on purpose.         */
+/* ---------------------------------------------------------------------- */
+
+function renderBatBotConsent(session) {
+  mount(
+    el("div", { class: "panel consent-panel" }, [
+      el("h2", {}, ["Before you continue"]),
+      el("p", {}, [
+        "This is a simulated attack. The assistant you are about to talk to is playing the " +
+          "role of a malicious payload: it will try to get you to reveal information while " +
+          "appearing helpful.",
+      ]),
+      el("p", { class: "consent-warning" }, [
+        "Everything you type here is stored in this project's data warehouse and used to " +
+          "generate the analytics this demo is built to show. Do not enter anything real — " +
+          "no names, locations, employers, credentials, or anything you would not publish. " +
+          "Made-up answers work fine and are more fun.",
+      ]),
+      el("p", { class: "consent-warning" }, [
+        "The assistant may repeat back what you tell it — that's part of how it tries to sound " +
+          "convincing — so anything real you type could resurface in what it says next, not just " +
+          "in what you typed.",
+      ]),
+      el("p", {}, ["Nothing on your computer or your devices is affected by any part of this."]),
+      el("button", { class: "btn", onclick: () => startBatBot(session) }, [
+        "I understand — continue",
+      ]),
+    ])
+  );
+}
+
+async function startBatBot(session) {
+  mount(el("div", { class: "panel" }, ["Connecting…"]));
+  let result;
+  try {
+    result = await api(`/api/session/${session.console_session_id}/batbot/start`, {
+      method: "POST",
+    });
+  } catch (err) {
+    return renderApiError(err, () => renderBatBotConsent(session));
+  }
+  renderBatBotChat(result.session, [result.event]);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Screen: Bat bot chat — entirely inside the persistent SIMULATION frame, */
+/* same as every other screen. Never a native browser dialog/prompt.      */
+/* ---------------------------------------------------------------------- */
+
+let batbotLog = [];
+
+function chatLine(event) {
+  const isBot = event.speaker === "bot";
+  return el("div", { class: `chat-line chat-${event.speaker}` }, [
+    el("span", { class: "chat-speaker" }, [isBot ? "SUPPORT: " : "YOU: "]),
+    el("span", {}, [isBot ? event.bot_text : event.user_text]),
+  ]);
+}
+
+function renderBatBotChat(session, chatLog) {
+  batbotLog = chatLog;
+  const finished = session.finished;
+
+  mount(
+    el("div", { class: "panel batbot-panel" }, [
+      el("h2", {}, ["Incoming chat — Batcave Support"]),
+      el("div", { id: "batbot-transcript" }, chatLog.map(chatLine)),
+      finished
+        ? el("button", { class: "btn", onclick: () => renderRunComplete(session) }, ["Continue"])
+        : el(
+            "form",
+            {
+              id: "chat-reply-form",
+              onsubmit: (ev) => {
+                ev.preventDefault();
+                submitBatBotReply(session);
+              },
+            },
+            [
+              el("input", {
+                id: "chat-reply-input",
+                type: "text",
+                autocomplete: "off",
+                placeholder: "Type your reply…",
+              }),
+              el("button", { class: "btn", type: "submit" }, ["Send"]),
+            ]
+          ),
+    ])
+  );
+
+  const transcript = document.getElementById("batbot-transcript");
+  if (transcript) transcript.scrollTop = transcript.scrollHeight;
+  const input = document.getElementById("chat-reply-input");
+  if (input) input.focus();
+}
+
+async function submitBatBotReply(session) {
+  const input = document.getElementById("chat-reply-input");
+  const userText = input ? input.value : "";
+  const form = document.getElementById("chat-reply-form");
+  if (form) form.querySelectorAll("input, button").forEach((node) => (node.disabled = true));
+
+  let result;
+  try {
+    result = await api(`/api/session/${session.console_session_id}/batbot/reply`, {
+      method: "POST",
+      body: JSON.stringify({ user_text: userText }),
+    });
+  } catch (err) {
+    return renderApiError(err, () => renderBatBotChat(session, batbotLog));
+  }
+  const nextLog = [...batbotLog, result.user_event, result.bot_event];
+  renderBatBotChat(result.session, nextLog);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Screen: Run complete                                                    */
 /* ---------------------------------------------------------------------- */
 
@@ -360,8 +486,8 @@ function renderRunComplete(session) {
       ]),
       renderCounters(session.counters),
       el("p", {}, [
-        "Bat bot's probing conversation (Phase 9) and the Batcomputer's counterstrike readout " +
-          "(Phase 10) land later in Track B. This build ends the interactive run here.",
+        "The Batcomputer's counterstrike readout (Phase 10) lands later in Track B. This build " +
+          "ends the interactive run here.",
       ]),
       el("button", { class: "btn", onclick: renderVillainSelect }, ["Play again"]),
     ])

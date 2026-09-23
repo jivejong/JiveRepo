@@ -96,25 +96,42 @@ KIND_FIELDS: dict[str, list[tuple[str, pa.DataType]]] = {
         # a `--no-pathologies --time-scale 1.0` headless run could also show.
         ("session_source", pa.string()),
     ],
+    # services/console/batbot.py :: ChatTurnEvent (Phase 9, docs/06 Track B)
+    # Two rows per round (docs/02): a speaker='bot' row leaves the
+    # user-side fields null; a speaker='user' row leaves bot_text and the
+    # token/latency fields null. Both share turn_number.
+    "chat_turn": [
+        ("turn_number", pa.int32()),
+        ("speaker", pa.string()),
+        ("objective", pa.string()),
+        ("bot_text", pa.string()),
+        ("user_text", pa.string()),
+        ("extracted_intent_flags", pa.string()),
+        ("refused", pa.bool_()),
+        ("latency_ms", pa.float64()),
+        ("input_tokens", pa.int64()),
+        ("output_tokens", pa.int64()),
+    ],
 }
 
 # Event fields that arrive as JSON objects and land as JSON-encoded strings.
 # `headers` is already a JSON string on the wire (RequestEvent encodes it);
-# `parameters` is a real dict. Both land as strings so the column has one stable
-# type — a struct would have to be re-inferred per batch, which is the problem
-# this module exists to avoid.
-JSON_ENCODED_FIELDS = frozenset({"headers", "parameters"})
+# `parameters` is a real dict; `extracted_intent_flags` is a real list. All
+# land as strings so the column has one stable type — a struct would have to
+# be re-inferred per batch, which is the problem this module exists to avoid.
+JSON_ENCODED_FIELDS = frozenset({"headers", "parameters", "extracted_intent_flags"})
 
 
 def landed_schema(event_kind: str) -> pa.Schema:
     """The full landed schema for one event_kind: envelope + kind-specific +
     consumer-added columns.
 
-    An unknown kind (`chat_turn` and `counterstrike` exist in the contract but
-    nothing produces them yet; Track B adds them) gets envelope + consumer
-    columns only, and its other fields ride along as drift strings. That keeps a
-    new kind from halting the consumer — the same reason undeserializable
-    messages are quarantined rather than raised.
+    An unknown kind (`counterstrike` exists in the contract but nothing
+    produces it yet; Phase 10 adds it — `chat_turn` got its own declared
+    schema in Phase 9) gets envelope + consumer columns only, and its other
+    fields ride along as drift strings. That keeps a new kind from halting the
+    consumer — the same reason undeserializable messages are quarantined
+    rather than raised.
     """
     fields = ENVELOPE_FIELDS + KIND_FIELDS.get(event_kind, []) + CONSUMER_FIELDS
     return pa.schema([pa.field(name, dtype) for name, dtype in fields])

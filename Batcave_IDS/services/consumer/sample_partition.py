@@ -13,22 +13,30 @@ Three properties the selection has to preserve, none of which a random slice
 gives you:
 
 - **Self-consistency.** Whole sessions, never loose rows. The sample carries
-  every request, attempt and attack_run for each chosen session, so the marts
-  join and `mart_killchain_funnel` is meaningful rather than empty.
-- **Raw, not staged.** Copied from the landed Parquet, so the committed sample
-  still contains the duplicate-delivery copies, the null paths and the clock
-  skew. A sample taken from `stg_attack_events` would already be deduplicated
-  and quarantined, and a clean clone would never exercise the handling those
-  models exist for.
+  every request, attempt, attack_run, and chat_turn row for each chosen
+  session, so the marts join and `mart_killchain_funnel` is meaningful rather
+  than empty.
+- **Raw, not staged — with one deliberate exception.** Copied from the landed
+  Parquet, so the committed sample still contains the duplicate-delivery
+  copies, the null paths and the clock skew. A sample taken from
+  `stg_attack_events` would already be deduplicated and quarantined, and a
+  clean clone would never exercise the handling those models exist for. The
+  one column this philosophy does not extend to is `chat_turn.user_text`
+  (`_EXCLUDED_COLUMNS` below): docs/02 excludes it from the committed sample
+  without exception, so it is redacted at the copy query itself rather than
+  copied raw and relying on every downstream model to keep dropping it.
 - **Coverage.** One session per villain (all twelve, so attribution has a full
   candidate set), preferring sessions that exercise a high-observability
   technique no other chosen session covers, then the widest pathology variety,
   then the smallest. Without the first preference the sample misses
   `exploit_remote_svc` entirely — it has only 6 attempts in a 2,102-attempt
-  corpus — and `injection_pattern_count` reads zero on a clean clone.
-
-`user_text` never appears: nothing produces chat_turn events in Track A, and
-docs/02 excludes it from the sample without exception.
+  corpus — and `injection_pattern_count` reads zero on a clean clone. A real
+  chat_turn conversation (Phase 9, docs/08) gets its own, higher-priority
+  preference ahead of this one: `deploy_batbot` merely being covered by *some*
+  session says nothing about which one, if any, has an actual bat bot
+  conversation attached, and once real testing has run the technique dozens
+  of times, leaving that to the pathology/row-count tiebreak was verified
+  (against real output) to pick the wrong session more often than not.
 """
 
 from __future__ import annotations
@@ -38,8 +46,15 @@ from pathlib import Path
 
 import duckdb
 
-EVENT_KINDS = ("request", "attempt", "attack_run")
+EVENT_KINDS = ("request", "attempt", "attack_run", "chat_turn")
 SAMPLE_NAME = "sample-0.parquet"
+
+# The one kind-specific exception to "raw, not staged" (module docstring
+# below): chat_turn's raw copy still excludes user_text, the same way every
+# other kind's copy preserves pathologies raw. docs/02's guarantee that
+# user_text never reaches the committed sample partition is enforced right
+# here, at the copy query itself, not filtered downstream.
+_EXCLUDED_COLUMNS = {"chat_turn": ("user_text",)}
 
 
 def _raw(data_root: Path, kind: str) -> str:
@@ -100,6 +115,18 @@ def choose_sessions(con: duckdb.DuckDBPyConnection, data_root: Path) -> list[str
         ).fetchall()
     ]
 
+    # Sessions carrying a real bat bot conversation (Phase 9, docs/08).
+    # `deploy_batbot` being covered (above) only means *some* session used
+    # the technique - once real testing has run it dozens of times, many
+    # sessions tie on that alone, and the existing tiebreak (pathology
+    # variety, row count) has no idea which of them, if any, actually has a
+    # chat_turn conversation attached. Read from stg_botchat_turns (already
+    # built, correctly empty pre-Phase-9) rather than a raw glob, so this
+    # doesn't need the same empty-glob guard write_sample() needs below.
+    sessions_with_chat_turns = {
+        r[0] for r in con.sql("select distinct session_id from stg_botchat_turns").fetchall()
+    }
+
     chosen: list[str] = []
     covered: set[str] = set()
     villains = [
@@ -120,7 +147,7 @@ def choose_sessions(con: duckdb.DuckDBPyConnection, data_root: Path) -> list[str
         ).fetchall()
 
         def score(row):
-            _session_id, variety, row_count, techniques = row
+            session_id, variety, row_count, techniques = row
             # The left join yields [None] for a session using no high-
             # observability technique, so filter before comparing.
             present = [t for t in techniques if t is not None]
@@ -128,7 +155,12 @@ def choose_sessions(con: duckdb.DuckDBPyConnection, data_root: Path) -> list[str
             # else has covered yet, rarest first.
             new = [t for t in present if t not in covered]
             rarity = min((rare.index(t) for t in new), default=len(rare))
-            return (-len(new), rarity, -variety, row_count)
+            # Ahead of all of that: a session with a real chat_turn
+            # conversation always wins its villain's slot when one exists,
+            # so the committed sample can actually demonstrate one rather
+            # than leaving it to how the other tiebreaks happen to fall.
+            no_chat_turns = session_id not in sessions_with_chat_turns
+            return (no_chat_turns, -len(new), rarity, -variety, row_count)
 
         best = sorted(candidates, key=score)[0]
         chosen.append(best[0])
@@ -140,10 +172,29 @@ def write_sample(con: duckdb.DuckDBPyConnection, data_root: Path, sessions: list
     ids = ", ".join(f"'{s}'" for s in sessions)
     total = 0
     for kind in EVENT_KINDS:
+        # request/attempt/attack_run have existed since Track A and are
+        # guaranteed present by the time this runs. chat_turn is new in
+        # Phase 9 and genuinely optional - nothing has landed for it until a
+        # real bat bot conversation has been played at least once.
+        # `read_parquet` on a glob matching zero files is a hard DuckDB
+        # error (the same reason `raw_events()` needs `raw_events_exist()`),
+        # so skip a kind with nothing landed yet rather than crash a sample
+        # regeneration that predates the first chat_turn data.
+        if not list((data_root / "raw" / kind).rglob("*.parquet")):
+            print(f"  (skipping {kind}: nothing landed for this kind yet)")
+            continue
         relation = _raw(data_root, kind)
         partitions = con.sql(
             f"select distinct dt, hour from {relation} where session_id in ({ids})"
         ).fetchall()
+        excluded = ("dt", "hour", *_EXCLUDED_COLUMNS.get(kind, ()))
+        select_list = f"* exclude ({', '.join(excluded)})"
+        # Every excluded column beyond dt/hour must still appear in the
+        # output, as an explicit null - the point is redacting the value,
+        # not dropping the column (a reader should see user_text is null,
+        # not see it silently missing from the schema).
+        select_list += "".join(f", null as {col}" for col in _EXCLUDED_COLUMNS.get(kind, ()))
+
         for dt, hour in partitions:
             directory = data_root / "raw" / kind / f"dt={dt}" / f"hour={hour}"
             directory.mkdir(parents=True, exist_ok=True)
@@ -151,7 +202,7 @@ def write_sample(con: duckdb.DuckDBPyConnection, data_root: Path, sessions: list
             con.execute(
                 f"""
                 copy (
-                    select * exclude (dt, hour) from {relation}
+                    select {select_list} from {relation}
                     where session_id in ({ids}) and dt = '{dt}' and hour = '{hour}'
                 ) to '{out}' (format parquet, compression snappy)
                 """

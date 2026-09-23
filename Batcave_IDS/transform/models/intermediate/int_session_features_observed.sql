@@ -180,9 +180,54 @@ streak_counts as (
 chat as (
     select
         session_id,
-        count(*) as chat_turns_completed,
-        coalesce(avg(case when refused then 0.0 else 1.0 end), 0.0) as probe_engagement_ratio,
-        count(extracted_intent_flags) as intent_flags_triggered
+        /* Distinct turn_number, not row count: docs/02's two-rows-per-round
+           shape (a speaker='bot' row and a speaker='user' row share one
+           turn_number) means count(*) silently doubles the docs/08 sense of
+           "turns" ("3-5 turns") - a real Phase 9 conversation of 4 rounds
+           landed as 7 rows (the reveal has no user reply), and count(*)
+           reported 7, not 4. Found live, against the first real chat_turn
+           data this dormant model ever saw - docs/09 has the full account. */
+        count(distinct turn_number) as chat_turns_completed,
+        /* Mirrors extract()'s `engaged` rule in services/console/batbot.py
+           exactly - (not refused) and a non-empty extracted_intent_flags -
+           not "didn't literally refuse" alone. `engaged` itself is never a
+           landed field (docs/08's ChatTurnEvent has refused and
+           extracted_intent_flags, not engaged), so this necessarily
+           duplicates the rule rather than reading it from one place; keep
+           this formula in sync with extract() by hand if that rule ever
+           changes, the same way EXTRACTION_VERSION exists so a silent
+           keyword-list change doesn't go unnoticed there.
+
+           Scoping to speaker = 'user' also fixes a real SQL trap the
+           original formula had: `refused` is structurally null on every bot
+           row, and `case when null then ... else ...` silently takes the
+           else branch - an unscoped avg() would count every bot row as a
+           non-refusal on its own. Confirmed on a real conversation: a reply
+           that wasn't caught by the refusal keyword list (refused=false)
+           but had zero flags correctly registered engaged=false in Python,
+           which is exactly why the conversation moved to reveal - a
+           refused-only SQL formula could not have reproduced that. */
+        coalesce(
+            avg(
+                case
+                    when (not refused) and json_array_length(extracted_intent_flags) > 0
+                        then 1.0
+                    else 0.0
+                end
+            ) filter (where speaker = 'user'),
+            0.0
+        ) as probe_engagement_ratio,
+        /* Total flag occurrences across the conversation, not a row/turn
+           count: extracted_intent_flags is JSON-encoded (docs/02), and a
+           bare count() of it counts every non-null value - every user row,
+           including one whose flags list is empty ('[]', still non-null) -
+           which measures "how many times the player replied," not "how much
+           the player actually revealed." It happened to equal the real
+           per-turn flag counts' sum on one specific conversation (coincidence,
+           not correctness - a different flag distribution would have shown
+           it). json_array_length() is null on bot rows (never populated,
+           sum() skips it) and 0 on a genuinely empty reply. */
+        coalesce(sum(json_array_length(extracted_intent_flags)), 0) as intent_flags_triggered
     from {{ ref('stg_botchat_turns') }}
     group by session_id
 ),

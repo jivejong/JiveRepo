@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from services.console.batbot import BatBotConversation
 from services.simulator.catalog import (
     Technique,
     Villain,
@@ -34,7 +35,7 @@ from services.simulator.catalog import (
     load_stages,
     load_techniques,
 )
-from services.simulator.machine import StageMachine
+from services.simulator.machine import KAFKA_TOPIC, StageMachine
 from services.simulator.pathologies import PathologyConfig, PathologyInjector
 
 # A session that outlives being useful (abandoned mid-play, browser closed)
@@ -57,6 +58,15 @@ class ConsoleSession:
     current_candidates: list[Technique] = field(default_factory=list)
     finished: bool = False
     run_outcome: str | None = None  # "cleared" | "stalled", set once finished
+    # Set the instant `deploy_batbot` succeeds at stage 4 (docs/08: the bat
+    # bot is "delivered by the deploy_batbot technique at stage 4"). This
+    # BLOCKS the run from finishing - the consent notice is "not dismissible
+    # by clicking away" (docs/08), so there is no decline path once this is
+    # set, only a conversation to complete. /attempt does not call
+    # machine.finish() when this is set, even though stage 4 cleared;
+    # completion happens when the bat bot conversation reaches reveal.
+    batbot_pending: bool = False
+    batbot: BatBotConversation | None = None
 
 
 class SessionRegistry:
@@ -101,6 +111,25 @@ class SessionRegistry:
         with self._lock:
             self._sessions[session.console_session_id] = session
         return session
+
+    def create_batbot(self, session: ConsoleSession, llm_client) -> BatBotConversation:
+        """One `BatBotConversation` for a session whose `deploy_batbot`
+        attempt just succeeded. Shares the registry's own Kafka producer -
+        `chat_turn` events are published the same way `attempt`/`attack_run`
+        already are, directly by the console backend (Phase 9 plan:
+        console-only architecture, honeypot untouched). `llm_client` is
+        `None` for the zero-credential fallback path (docs/08), threaded
+        through from `services/console/app.py`'s own startup the same way
+        `services/triage/__main__.py` conditionally builds one."""
+        convo = BatBotConversation(
+            session_id=session.machine.session_id,
+            run_id=session.machine.run_id,
+            kafka_producer=self._kafka_producer,
+            kafka_topic=KAFKA_TOPIC,
+            llm_client=llm_client,
+        )
+        session.batbot = convo
+        return convo
 
     def get(self, console_session_id: str) -> ConsoleSession:
         with self._lock:

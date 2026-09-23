@@ -505,3 +505,145 @@ one was caught by the same discipline applied deliberately rather than by accide
 the underlying gap now - that's unrelated to a model swap and deserves its own scoping - but the
 "worth doing if this bites a third time" condition from the original entry is now satisfied, and
 whoever picks it up next doesn't need to go looking for justification.
+
+---
+
+## Three chat features, dormant since Phase 5, were all wrong the first time real data touched them
+
+**What broke.** `int_session_features_observed`'s `chat` CTE (`chat_turns_completed`,
+`probe_engagement_ratio`, `intent_flags_triggered`) was written in Phase 5, before any `chat_turn`
+event had ever existed, against an assumed one-row-per-turn shape. Phase 9's actual event grain is two
+rows per round (docs/02) - a `speaker='bot'` row and a `speaker='user'` row sharing one `turn_number`
+- and the dormant SQL was never updated to match, because nothing had ever run through it to notice.
+The first real bat bot conversation (four rounds - `538-ras-al-ghul`, `deploy_batbot`, engaged on
+turns 1-2, disengaged on turn 3) found three independent bugs and a fourth definitional gap, all on
+the same seven landed rows, none related to each other except by unlucky proximity in one small CTE:
+
+- **`chat_turns_completed`: 7, not 4.** `count(*)` over the two-rows-per-round grain counts raw event
+  rows, silently doubling docs/08's own vocabulary ("3-5 turns"). Fixed to `count(distinct
+  turn_number)`.
+- **`probe_engagement_ratio`: a real SQL NULL-in-CASE trap.** The original formula was `avg(case when
+  refused then 0.0 else 1.0 end)` with no scope. `refused` is structurally null on every bot row (it's
+  never populated there), and `case when null then ... else ...` silently takes the `else` branch -
+  so every bot row counted as a non-refusal for free. Worth naming as its own pattern: this is a
+  correctness bug that produces no error, no warning, and a plausible-looking number (a ratio between
+  0 and 1) - the kind a reviewer skims past. Fixed by filtering the `avg()` to `speaker = 'user'` rows
+  only.
+- **`intent_flags_triggered`: coincidentally right, structurally wrong.** `count(extracted_intent_flags)`
+  counts non-null values, which for user rows is just "how many user turns happened" - even a reply
+  with zero flags lands as a non-null `'[]'`. Against this specific conversation (flag counts 2, 1, 0
+  across the three user turns) the row-count (3) and the true total (2+1+0=3) happened to match -
+  reconciliation would have passed by accident. Fixed to `sum(json_array_length(extracted_intent_flags))`.
+- **`probe_engagement_ratio`, second pass: right formula, wrong signal.** Even scoped correctly (fix
+  above), a `refused`-only formula measures a narrower thing than "engagement" means everywhere else
+  in this phase. `services/console/batbot.py`'s `extract_signals()` already defines `engaged = (not
+  refused) and bool(extracted_intent_flags)` as the one deterministic rule the turn-continuation
+  decision itself reads. Confirmed directly on the real data: turn 3's reply ("Actually I'd rather not
+  get into that over chat, sorry") wasn't caught by the refusal keyword list (`refused=false`) but
+  correctly produced `engaged=false` in Python (zero flags) - which is exactly why the conversation
+  moved to reveal at turn 4 instead of continuing to a fifth. A `refused`-only SQL formula cannot
+  reproduce that. Reformulated to mirror `engaged`'s exact rule over the two columns SQL already has
+  (`refused`, `extracted_intent_flags`) - a duplicated rule, not a shared one (`engaged` itself is
+  never a landed field), commented in place so the two don't silently drift apart.
+
+**Real numbers, before and after, same conversation:**
+
+| Feature | Before (buggy) | After (fixed) | Ground truth |
+|---|---|---|---|
+| `chat_turns_completed` | 7 | 4 | 4 rounds actually played |
+| `probe_engagement_ratio` | 1.0 | 0.667 | 2 of 3 user turns engaged |
+| `intent_flags_triggered` | 3 | 3 | 2+1+0=3 (unchanged; this one was coincidentally already right) |
+
+**Why this wasn't a Track A / Joker-bug situation, and got fixed in place rather than scheduled.**
+Unlike the Joker absurd-method finding (a real bug in an already-shipped, already-measured Track A
+corpus, deliberately left unfixed and scheduled separately), this model had never been exercised
+against real data before this exact checkpoint - there was no published number anywhere depending on
+the buggy formula, and reconciling "the real numbers match the real conversation" against corrected
+formulas *is* what Phase 9's own checkpoint 6 exists to do. Fixing dormant, never-verified code the
+first time real data reaches it is squarely in scope for the phase that produces that data, not a
+detour from it.
+
+---
+
+## The same checkpoint, a fifth bug: `stg_botchat_turns` had no deduplication, and the committed sample was the thing that finally exercised it
+
+**What broke.** Immediately after fixing the four bugs above, `make sample-partition` was re-run to
+pull the real bat bot conversation into the committed sample (docs/06 Phase 9 checkpoint 7) - and
+picked the *wrong* Ra's al Ghul session at first: `choose_sessions()`'s scoring only tracks whether
+*some* session covers a rare high-observability technique, with no idea whether that session also
+carries a real chat_turn conversation. A single afternoon of manual testing had produced 40 sessions
+with a real `deploy_batbot` success, so the existing tiebreak picked among all 40 with no signal
+telling it only one of them (`f5e822bc...`) had an actual conversation attached. Fixed by adding a
+higher-priority sort key to `services/consumer/sample_partition.py`'s `choose_sessions()`:
+`session_id in (sessions with chat_turn rows)` wins its villain's slot outright, ahead of the
+existing rarity/pathology/row-count tiebreak - harmless for the other eleven villains (no chat_turn
+data exists for any of their candidates, so the new key never differentiates among them), decisive
+for the one villain where a real conversation exists.
+
+**Once that was fixed, a second and more serious bug surfaced immediately.** `sample_partition.py`'s
+raw-copy philosophy (`services/consumer/sample_partition.py`'s own module docstring) copies a chosen
+session's rows verbatim into the *same* `dt=/hour=/` directory the real corpus file already lives in
+- same `event_id`, same `received_at`, same `kafka_offset`, redacting only `user_text`. Every other
+staging model that reads landed Parquet this way (`stg_attack_events_typed.sql`, `stg_attack_runs.sql`)
+already deduplicates on `event_id` for exactly this reason - Phase 4/5 built that pattern knowing the
+sample would eventually coexist with real corpus data in one committed session. `stg_botchat_turns.sql`
+never got that treatment, because until this exact checkpoint no chat_turn sample had ever existed
+to expose the gap. The moment it did: `stg_botchat_turns` returned 14 rows for 7 distinct `event_id`s,
+and `intent_flags_triggered` (a `sum()`, sensitive to duplicate rows) silently doubled to 6 - while
+`chat_turns_completed` (`count(distinct turn_number)`) and `probe_engagement_ratio` (an `avg()`) stayed
+correct by accident of their own arithmetic, not because anything caught the duplication. **A test
+that reconciles against real numbers only catches what it happens to check; the duplication was real
+whether or not a given aggregate's shape made it visible.**
+
+**Is this a new pattern, or a gap in an existing one?** The latter. `stg_attack_events_typed.sql` and
+`stg_attack_runs.sql` already run `row_number() over (partition by event_id order by received_at asc,
+kafka_offset asc) = 1` for exactly this coexistence - Phase 4/5 built it knowing the sample would
+eventually sit in the same `dt=/hour=/` directory as the real corpus file. `stg_botchat_turns.sql` was
+missing the pattern outright, not running a different version of it. But the two-column form is only
+*sufficient* for those two models because request/attempt/attack_run's sample copies have no
+`_EXCLUDED_COLUMNS` entry (`services/consumer/sample_partition.py`) - the sample row is a byte-for-byte
+duplicate of the real one, so `received_at`/`kafka_offset` tying and picking either copy is invisible;
+the two rows are identical. `chat_turn` is the *first* kind with a column exclusion, which is exactly
+why it's the first kind where a plain two-column tiebreak isn't enough: the real row and its sample
+twin are identical on `received_at` and `kafka_offset` (confirmed directly - the sample copy preserves
+both verbatim) but differ on the one column that was deliberately redacted, so an arbitrary tie-break
+would arbitrarily decide whether `stg_botchat_turns` shows real `user_text` or `NULL` for a sampled
+session. So the fix is the existing three-model-old pattern, extended by exactly one column, for the
+first kind where the existing two columns can't distinguish the copies.
+
+Fixed with `row_number() over (partition by event_id order by received_at asc, kafka_offset asc,
+(user_text is null) asc) = 1` - full ordering, three keys: `received_at asc`, `kafka_offset asc` (the
+existing two, both ties on this data - not a hedge, an observed fact, not "landing timestamp" or
+another simpler column would have worked, because `landed_at` is when *that physical file* was
+written to disk, which differs between the original landing and the later `make sample-partition`
+run for reasons that carry no meaning about which copy is "real" - it would break the tie, but
+arbitrarily, the same problem in a different column), then `(user_text is null) asc` as the
+deciding key - the one column whose difference between the two copies is the actual, documented
+fact that matters (docs/02: `stg_botchat_turns` is the one place `user_text` deliberately survives),
+so the row that has it wins deterministically rather than by which copy happened to land or get
+globbed first.
+
+**Verified against the built warehouse, not assumed from re-reading the SQL.** Querying
+`data/warehouse.duckdb` directly, post-fix: the raw `chat_turn` glob (every landed file plus the
+committed sample) currently holds 21 rows; grouping by `event_id` finds exactly 7 ids with 2 rows each
+- the 7 rows the committed sample carries, each paired with its real-corpus twin - and 14 distinct
+`event_id`s overall (7 duplicated + 7 that only ever landed once, from conversations not chosen for the
+sample). `stg_botchat_turns` holds exactly 14 rows post-dedup - one per distinct `event_id`, zero left
+duplicated - and for all 3 of the duplicated pairs where `user_text` actually differs between copies
+(the `speaker='user'` rows; the duplicated `speaker='bot'` pairs are null on both copies, so the tie
+never mattered for them), the surviving row in `stg_botchat_turns` is confirmed to be the one with
+`user_text is not null` - the tiebreak picked the real copy every time, not by luck. (Earlier in this
+same checkpoint, right after the fix, a smaller single-conversation snapshot verified the same thing at
+smaller scale: 7 rows for 7 event_ids, all three features back to 4 / 0.667 / 3. The corpus has grown
+since then from further live verification; the fix's correctness doesn't depend on which snapshot it's
+checked against, so both are recorded rather than treating the earlier number as stale.)
+
+Checkpoints 6a and 8 were re-run against this exact post-fix state as part of closing out the review:
+`information_schema.columns` shows `user_text` on `stg_botchat_turns` only, no other relation in the
+warehouse; the committed `sample-*.parquet` files hold 7 rows total, zero with a non-null `user_text`.
+
+**The pattern across all five bugs in this one checkpoint, worth naming once:** every one of them was
+dormant code - written once, correct-looking, never run against real data until Phase 9 produced the
+first real chat_turn events and the first real committed sample containing one. None would have been
+caught by a schema test or a type check; all five needed an actual conversation, actually landed,
+actually sampled, actually reconciled by hand against what was actually typed and clicked.

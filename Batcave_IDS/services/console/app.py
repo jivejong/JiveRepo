@@ -17,6 +17,7 @@ needs the honeypot and Redpanda already up (`make dev-up`), same as
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -27,6 +28,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from services.console.batbot import ChatTurnEvent
 from services.console.state import (
     ConsoleSession,
     SessionRegistry,
@@ -44,13 +46,27 @@ def _default_kafka_producer() -> Producer:
     )
 
 
+def _default_llm_client():
+    """`None` (zero-credential fallback, docs/08) unless `GEMINI_API_KEY` is
+    set - the same conditional-client pattern `services/triage/__main__.py`'s
+    `run_triage` already uses, and the same env var (docs/08: "same Gemini
+    model as triage"), not a separate one."""
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key:
+        return None
+    from google import genai
+
+    return genai.Client(api_key=key)
+
+
 # Testing seam, mirroring services/honeypot/app.py's own HONEYPOT_DISABLE_KAFKA
-# / _NullProducer pattern: tests/test_console_api.py monkeypatches both of
-# these before constructing a TestClient (which runs `lifespan` on entry), so
-# the API is exercised without a live broker or honeypot. Production leaves
-# both at their defaults.
+# / _NullProducer pattern: tests/test_console_api.py monkeypatches these
+# before constructing a TestClient (which runs `lifespan` on entry), so the
+# API is exercised without a live broker, honeypot, or Gemini key. Production
+# leaves all three at their defaults.
 kafka_producer_factory: Callable[[], object] = _default_kafka_producer
 http_client_factory: Callable[[], httpx.Client] | None = None
+llm_client_factory: Callable[[], object | None] = _default_llm_client
 
 
 @asynccontextmanager
@@ -63,6 +79,12 @@ async def lifespan(app: FastAPI):
     app.state.registry = SessionRegistry(
         app.state.producer, http_client_factory=http_client_factory
     )
+    # One Gemini client for the process lifetime, shared across every bat
+    # bot conversation - genai.Client is stateless per call, so there is no
+    # reason to build a fresh one per session the way each session gets its
+    # own httpx.Client (that one carries per-player cookie state; this one
+    # doesn't carry anything session-specific).
+    app.state.llm_client = llm_client_factory()
     yield
     app.state.registry.close_all()
     app.state.producer.flush(10)
@@ -151,6 +173,18 @@ def _counters(session: ConsoleSession) -> dict:
     }
 
 
+def _chat_event_dict(event: ChatTurnEvent) -> dict:
+    return {
+        "turn_number": event.turn_number,
+        "speaker": event.speaker,
+        "objective": event.objective,
+        "bot_text": event.bot_text,
+        "user_text": event.user_text,
+        "extracted_intent_flags": event.extracted_intent_flags,
+        "refused": event.refused,
+    }
+
+
 def _session_payload(session: ConsoleSession) -> dict:
     return {
         "console_session_id": session.console_session_id,
@@ -161,7 +195,12 @@ def _session_payload(session: ConsoleSession) -> dict:
         "finished": session.finished,
         "run_outcome": session.run_outcome,
         "counters": _counters(session),
-        "stage": None if session.finished else _stage_payload(session),
+        # deploy_batbot succeeding sets this instead of finishing the run
+        # immediately (services/console/state.py) - the stage-4 menu is
+        # stale once it's set (no further stage exists to show), so `stage`
+        # goes null here too, same as once the run is actually finished.
+        "batbot_pending": session.batbot_pending,
+        "stage": None if (session.finished or session.batbot_pending) else _stage_payload(session),
     }
 
 
@@ -254,8 +293,16 @@ def attempt(console_session_id: str, req: AttemptRequest) -> dict:
     run_finished = False
     if stage_cleared:
         if session.machine.current_stage_num >= 4:
-            run_finished = True
-            session.run_outcome = "cleared"
+            if technique.technique_id == "deploy_batbot":
+                # Delivers the bat bot (docs/08) instead of finishing the run
+                # outright - completion is gated on the conversation reaching
+                # reveal (services/console/app.py's /batbot/reply), not on
+                # this stage-4 success by itself. Every OTHER stage-4
+                # technique still finishes the run immediately, unchanged.
+                session.batbot_pending = True
+            else:
+                run_finished = True
+                session.run_outcome = "cleared"
         else:
             next_candidates = session.machine.enter_stage(session.machine.current_stage_num + 1)
             if next_candidates is None:
@@ -303,15 +350,65 @@ def attempt(console_session_id: str, req: AttemptRequest) -> dict:
     }
 
 
+@app.post("/api/session/{console_session_id}/batbot/start")
+def batbot_start(console_session_id: str) -> dict:
+    """Called once the player acknowledges the consent notice (docs/08 -
+    the notice itself is a frontend-only gate, same as Phase 8's precedent
+    for "nothing in the schema supports a consent event, so none is
+    emitted"; reaching this endpoint at all is what "acknowledged" means).
+    Emits the bat bot's turn-1 opening line."""
+    session = _get_session(console_session_id)
+    if not session.batbot_pending or session.batbot is not None:
+        raise HTTPException(409, "bat bot conversation is not available to start right now")
+    convo = app.state.registry.create_batbot(session, app.state.llm_client)
+    bot_event = convo.start()
+    return {"event": _chat_event_dict(bot_event), "session": _session_payload(session)}
+
+
+class BatBotReplyRequest(BaseModel):
+    user_text: str
+
+
+@app.post("/api/session/{console_session_id}/batbot/reply")
+def batbot_reply(console_session_id: str, req: BatBotReplyRequest) -> dict:
+    """The player's reply to the bat bot's most recent turn. Always returns
+    both the user's row and the next bot row (docs/08's turn contract -
+    `BatBotConversation.reply` never returns without the next turn, including
+    the reveal itself). Once the bot's turn is the reveal, the console
+    session finishes here - the bat bot conversation is what was gating
+    completion (services/console/state.py), not the stage-4 success that
+    started it."""
+    session = _get_session(console_session_id)
+    if session.batbot is None:
+        raise HTTPException(409, "bat bot conversation has not started")
+
+    user_event, bot_event = session.batbot.reply(req.user_text)
+
+    if session.batbot.finished:
+        session.batbot_pending = False
+        session.finished = True
+        session.run_outcome = "cleared"
+        session.machine.finish()
+
+    return {
+        "user_event": _chat_event_dict(user_event),
+        "bot_event": _chat_event_dict(bot_event),
+        "session": _session_payload(session),
+    }
+
+
 @app.post("/api/session/{console_session_id}/finish")
 def finish(console_session_id: str) -> dict:
-    """Explicit early end (the player quits mid-run). Idempotent: a session
-    already finished by /attempt reaching a terminal state just returns its
-    existing payload rather than publishing a second attack_run."""
+    """Explicit early end (the player quits mid-run, including mid-bat-bot-
+    conversation - there's no other way to bail out of it once started).
+    Idempotent: a session already finished by /attempt or /batbot/reply
+    reaching a terminal state just returns its existing payload rather than
+    publishing a second attack_run."""
     session = _get_session(console_session_id)
     if not session.finished:
         session.run_outcome = "cleared" if session.machine.max_stage_reached >= 4 else "stalled"
         session.finished = True
+        session.batbot_pending = False
         session.machine.finish()
     return _session_payload(session)
 

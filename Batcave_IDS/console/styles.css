@@ -369,3 +369,87 @@ h3 {
   margin-bottom: 12px;
   font-size: 0.85rem;
 }
+
+/* --- Bat bot consent notice --- */
+/* Blocking, not dismissible by clicking away (docs/08) - this is just a
+   panel inside #screen-root, same as every other screen. There is no
+   backdrop, no click-outside handler, no escape-key binding anywhere near
+   it; the only way past it is the button. */
+
+.consent-panel h2 {
+  color: var(--warn);
+}
+
+.consent-warning {
+  border-left: 2px solid var(--warn);
+  padding: 10px 12px;
+  background: rgba(255, 180, 84, 0.08);
+  font-size: 0.9rem;
+}
+
+/* --- Bat bot chat --- */
+
+.batbot-panel h2 {
+  color: var(--danger);
+}
+
+#batbot-transcript {
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  height: 320px;
+  overflow-y: auto;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-line {
+  max-width: 80%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.chat-line.chat-bot {
+  align-self: flex-start;
+  background: #1a1420;
+  border: 1px solid var(--danger);
+}
+
+.chat-line.chat-user {
+  align-self: flex-end;
+  background: #0f1a14;
+  border: 1px solid var(--accent-dim);
+}
+
+.chat-speaker {
+  display: block;
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  margin-bottom: 3px;
+}
+
+#chat-reply-form {
+  display: flex;
+  gap: 8px;
+}
+
+#chat-reply-input {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 8px 10px;
+}
+
+#chat-reply-input:focus {
+  outline: 1px solid var(--accent);
+}
