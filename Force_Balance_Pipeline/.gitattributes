@@ -1,0 +1,32 @@
+# Linguist configuration
+#
+# Without this, a docs-heavy data engineering repo reports as "Markdown" on the
+# GitHub language bar, which is the wrong signal. Verify the bar on the repo page
+# after the first push and adjust if needed.
+
+# Documentation should not count toward language statistics
+docs/**             linguist-documentation
+*.md                linguist-documentation
+LICENSE             linguist-documentation
+
+# Seeds and snapshots are data, not source
+warehouse/dbt/seeds/*.csv    linguist-generated
+data/swapi_snapshot/**       linguist-generated
+
+# Lockfiles and generated artifacts
+package-lock.json   linguist-generated
+yarn.lock           linguist-generated
+poetry.lock         linguist-generated
+warehouse/dbt/target/**      linguist-generated
+warehouse/dbt/dbt_packages/** linguist-vendored
+
+# Make sure these are counted
+*.sql               linguist-detectable
+*.py                linguist-detectable
+terraform/**        linguist-detectable
+
+# Line endings
+* text=auto eol=lf
+*.sh    text eol=lf
+*.png   binary
+*.gif   binary
