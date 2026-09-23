@@ -1,22 +1,26 @@
 # Portfolio Architecture
 
-This document specifies the architecture governing every system in this repository. It is written for
-engineers evaluating design judgment, not for users evaluating features. Every section states a
-trade-off explicitly and names what was rejected, because the rejection is the signal.
+This document is an architectural map of the portfolio, written for engineers evaluating design
+judgment rather than users evaluating features. It distinguishes implemented applications from
+design artifacts: `Force_Balance_Pipeline/` currently contains an intentionally detailed design and
+implementation plan rather than application source. The document labels that distinction where it
+matters rather than implying a planned component is already deployed.
+Every section names a material trade-off and what was rejected, because those choices are the signal.
 
-The repository is a monorepo of independently deployable systems unified by one non-negotiable
-architectural law, stated once here and enforced individually in every project below:
+The repository is a monorepo of independently deployable systems, small utilities, notebooks, and
+prompt artifacts. Its recurring design principle is narrower — and more accurate — than a universal
+ban on model decisions:
 
-> **A generative model never makes a decision that state, money, access, or a security verdict
-> depends on. It only produces language.** Routing, scoring, eligibility, stage transitions, and
-> classification are computed by deterministic code. Models write prose, interpret ambiguity, and
-> synthesize narrative — and nothing else. Where a model's output must influence downstream state, it
-> passes through a schema contract and a code-owned boundary first.
+> **When a decision changes durable state, money, access, safety, or a measured security outcome,
+> the rule that authorizes it is owned by deterministic code.** Models may interpret ambiguity,
+> generate language, or propose an action, but code retains the final eligibility, transition,
+> constraint, and audit boundary. Interactive demos may use free-form model dialogue where dialogue
+> is itself the product, provided it is not silently treated as a trusted system decision.
 
-This is not a stylistic preference. It is the load-bearing decision that makes every evaluation number,
-every audit trail, and every access decision in this portfolio reproducible and defensible. The
-sections below show the same law implemented seven different ways, under seven different sets of
-constraints, because a single example would read as coincidence.
+This is not a stylistic preference. It makes consequential outcomes reproducible and explainable
+without pretending that every application in a varied portfolio has the same architecture. The
+sections below show where that principle is enforced, where a looser interaction contract is
+appropriate, and what protects each boundary.
 
 ---
 
@@ -24,23 +28,27 @@ constraints, because a single example would read as coincidence.
 
 **Trade-off: Auditability vs. Fluency.** A deterministic state machine gives an identical answer to an
 identical input, forever, and that answer can be replayed and explained. A language model gives a
-plausible answer, with variance, and cannot fully explain itself. Every system in this repository
-routes decisions to the first kind and delegates only synthesis to the second, and each does so at a
-different layer of its stack:
+plausible answer, with variance, and cannot fully explain itself. The systems that make consequential
+decisions route the authorization rule to the first kind; interactive applications use the second for
+their experience while retaining explicit limits, session controls, or a human decision point.
 
 | System | What stays deterministic | What the model is allowed to touch |
 |---|---|---|
 | `SpringfieldTalentPipeline` | Pipeline stage legality (Spring Statemachine), offer accept/decline (arithmetic against BLS wage bands), full-text candidate ranking | Candidate fit narrative + score (parsed against a JSON schema), mock-interview dialogue |
 | `SuperHeroOps` | Intervention effect percentage (a pure function of powerstats, normalized against the seeded roster) | The prose report interpreting that number — never the number itself |
 | `Batcave_IDS` | Threat score, stage-gating, session correlation, technique catalog | Attacker attribution and technique reconstruction — and only as a *scored hypothesis*, graded against a rule-based baseline that the model has to beat |
-| `Force_Balance_Pipeline` | Disturbance signature classification (SQL pattern-matching on z-scores), the Yoda agent's deployment constraints | Report-to-sensor-value inference at intake time; planet/Jedi reference-data generation (offline, frozen) |
+| `Force_Balance_Pipeline` *(design artifact)* | Disturbance signature classification (SQL pattern-matching on z-scores) and the shared deployment constraint layer | Report-to-sensor-value inference; an agent may propose a deployment, but code validates it before recording it; planet/Jedi reference-data generation is offline and frozen |
 | Databricks notebook suite | Routing (`Issue → House` lookup table), composite scoring, dimensional pivoting | Sentiment, summarization, persona-driven writing, qualitative synthesis |
+| `Chord_Chart_Manager` | Sync ordering and same-song conflict resolution (server wins) | None in the running application; the primary trade-off is offline availability versus concurrent-edit consistency |
+| `Agentic_AI` | Access-code quota checks, call budgets, and the Approval app's escalation state | Deliberately interactive classification, debate, retrieval-grounded negotiation, and multimodal generation |
+| `BBS_Website` | Client-side interaction state, keyboard/mouse mode, and local navigation | No model calls; the deliberately dependency-free implementation is itself the architectural choice |
 
-The pattern generalizes: **wherever a number must be trusted, code produces the number. Wherever
-prose must be produced, and only there, a model is invoked.** A reviewer can locate the boundary in
-every one of these systems by asking "what would break if the model returned garbage?" — the answer is
-always "a report reads badly," never "the wrong person got hired" or "the wrong stage transition
-executed."
+The pattern generalizes: **wherever a value authorizes a consequential action or is presented as a
+measured result, code owns the rule and its audit trail.** In an interactive AI application, a bad
+model response can still make the experience poor; it must not bypass the quota, state, eligibility,
+or measurement boundary around that experience. A reviewer can locate the boundary by asking, "what
+would break if the model returned garbage?" The answer may be "the dialogue is poor," but not "an
+unauthorized transition, deployment, or security measurement was accepted."
 
 ### Why this beats the alternative
 
@@ -105,16 +113,26 @@ The same governance instinct recurs, differently shaped, across the portfolio:
   would quietly launder a generated opinion into a human one. `RecruiterFeedback` lives in the
   `pipeline` package rather than `ai`, on purpose: it is the one judgment in the system no model
   produced, and the module boundary says so.
-- `Force_Balance_Pipeline`'s AI-generated reference data (planet Force parameters, Jedi attributes) is
-  generated once, offline, at temperature zero, human-reviewed, and committed as version-controlled
-  seed data with recorded provenance — **never called at runtime.** This is load-bearing, not cosmetic:
-  90 days of rolling statistical baselines derive from that backfill, so silently regenerating the
-  enrichment would invalidate every downstream statistic without any visible failure. Freezing
-  generative output into reviewed, versioned artifacts is the only way to keep a statistical baseline
-  trustworthy when part of its input was once a model's guess.
-- `Force_Balance_Pipeline`'s intake layer explicitly documents that inferred sensor values "can
-  trigger emergencies but never enter baselines" — a probabilistic inference is allowed to raise an
-  alarm, and is never allowed to redefine what normal looks like.
+- `Force_Balance_Pipeline`'s **design** freezes AI-generated planet Force parameters and Jedi attributes
+  into human-reviewed, version-controlled seed data with recorded provenance; runtime generation is
+  excluded. The planned 90-day rolling baselines derive from that backfill, so silently regenerating
+  enrichment would invalidate downstream statistics without a visible failure. Freezing generative
+  output into reviewed artifacts is the only credible way to keep such a baseline trustworthy.
+- That design also specifies that inferred sensor values "can trigger emergencies but never enter
+  baselines" — a probabilistic inference may raise an alarm and must not redefine what normal looks
+  like.
+
+### Interactive telemetry: consent, minimization, and a separate decision seam
+
+`Batcave_IDS` also contains an intentionally adversarial Bat bot interaction delivered through the
+console experience. Its boundary is different from triage but just as explicit: the model may write a
+free-form dialogue turn, while a small, versioned deterministic extractor alone determines intent
+flags, refusal, and whether the conversation continues. A hard 3–5-turn cap cannot be extended by
+prompt behavior. The participant first acknowledges that the interaction is simulated and that typed
+content is retained locally; raw `user_text` remains out of marts and committed sample data. The
+`assert_no_user_text_in_sample` test checks the published sample partition directly. This lets the
+project demonstrate social-engineering telemetry without silently turning participant text into a
+portable dataset.
 
 ---
 
@@ -140,11 +158,11 @@ design decisions consistently trade convenience for guarantees that hold under f
   timestamp is treated as adversarial input from the moment it enters the schema — nullable, permitted
   to be wrong, and never used for anything that ordering or partitioning depends on.
 
-`Force_Balance_Pipeline` applies the same streaming discipline to a physically distributed edge system:
-idempotent ingestion via ULID-named immutable files and dedup on `event_id`, exactly-once semantics
-through Auto Loader, and explicit handling of event-time skew (`DISCONNECTED` buffering, `BURST`
-replay) rather than assuming clean, ordered delivery. **Both systems treat "the network will reorder,
-duplicate, and delay events" as the default case to design for, not an edge case to patch around later.**
+`Force_Balance_Pipeline`'s planned edge architecture applies the same discipline: ULID-named immutable
+files, deduplication on `event_id`, Auto Loader ingestion, and explicit handling of event-time skew
+(`DISCONNECTED` buffering and `BURST` replay) rather than assuming clean, ordered delivery. Both the
+implemented pipeline and this design treat "the network will reorder, duplicate, and delay events" as
+the default case to design for, not an edge case to patch later.
 
 ---
 
@@ -168,7 +186,7 @@ durability the repository does need.**
   first-class architectural constraint, not an afterthought — the deterministic pre-filtering layer
   exists specifically to shrink the problem before the metered resource is invoked at all, keeping cost
   and latency bounded and predictable by construction rather than by hoping the model stays cheap.
-- `Force_Balance_Pipeline` is scoped to run entirely inside free-tier infrastructure limits end to end,
+- `Force_Balance_Pipeline`'s planned architecture is scoped to free-tier infrastructure end to end,
   from the Raspberry Pi edge probe to the Databricks Free Edition lakehouse — a cost ceiling treated as
   an architectural input, not a budget to optimize after the fact.
 
@@ -179,9 +197,11 @@ and excluded — even when it would look more impressive — when it does not.
 
 ## 5. Structured Output as a Contract, Not a Convention
 
-Every model call in this portfolio that feeds a downstream system is bound to a schema, and the
-architecture treats "the model returned valid, well-typed output" as a property to engineer for, not
-assume:
+Model calls whose output is parsed, persisted as a typed record, or consumed by downstream code are
+bound to a schema. This is deliberately not imposed on dialogue-first experiences such as interviews,
+debates, or the Bat bot, where free-form text is the product and no generated field authorizes a system
+action. The architecture treats "the model returned valid, well-typed output" as a property to engineer
+for whenever a machine needs to consume it:
 
 - `SpringfieldTalentPipeline` parses LLM output against a JSON schema rather than scraping it from
   prose.
@@ -199,19 +219,24 @@ assume:
   built to measure both instead of assuming schema conformance implies correctness.
 - The Databricks suite locks every enrichment call to `responseMimeType: application/json` so
   downstream parsing is a contract the pipeline can rely on, not a best-effort string match.
+- `Agentic_AI/No_Cap` uses a constrained verdict vocabulary for a small classifier, while the other
+  interactive apps intentionally retain prose, audio, or debate output. The contract follows the
+  consumer, not a blanket preference for JSON.
 
 ---
 
 ## 6. Evaluation Against a Deterministic Baseline
 
-A model's output is a claim, and every system that lets a model's output influence a reported result
-in this portfolio also runs a non-generative baseline against the same input and reports both.
-`Batcave_IDS` states this as an explicit design rule: **if the LLM does not beat a regex on
+A model's output is a claim; the portfolio applies a deterministic baseline where it makes an
+empirical capability claim, rather than pretending that every creative or interactive demo has a
+meaningful regex alternative. `Batcave_IDS` states this as an explicit design rule: **if the LLM does not beat a regex on
 high-observability techniques, the README says so** — and, in the measured results, the rule-based
 baseline does in fact outperform both evaluated models on pattern-matchable evidence. This is not a
 failure the project hides; it is the finding the architecture was built to surface. A generative
-system that is never measured against a deterministic floor cannot be shown to be worth its cost, and
-this repository does not publish an LLM result without that comparison sitting next to it.
+system used for detection or classification cannot be shown to be worth its cost without a comparable
+floor. Conversational systems instead expose the controls that make their operation inspectable — for
+example, state transitions, quotas, call budgets, trace data, or stored results — and avoid presenting
+their prose quality as a benchmark claim.
 
 ---
 
@@ -239,17 +264,20 @@ where real Chicago crime data ends and a fictional scoring model begins with a v
 a code comment — because the boundary between real data and synthetic modeling is a claim the user
 needs to see, not an implementation detail.
 
-### `Force_Balance_Pipeline` — Agent action under a code-owned constraint layer
-**Trade-off: Agent autonomy vs. deployment safety.** The Yoda agent decides *whether* and *which* Jedi
-to deploy, but both automated and manual deployment paths run through the **identical constraint
-layer** — human/machine decision parity is architected in, not merely tested for. An agent is free to
-reason about which action to take; it is never free to redefine what actions are legal.
+### `Force_Balance_Pipeline` *(design artifact)* — Agent proposals under a code-owned constraint layer
+**Trade-off: Agent autonomy vs. deployment safety.** The planned Yoda agent can select and explain a
+proposed response, but both automated and manual paths run through the **identical constraint layer**
+before a deployment is recorded. Human/machine decision parity is therefore part of the design, not a
+claim about an implemented runtime. An agent may reason about a response; it is never free to redefine
+what actions are legal.
 
-### `agentic_AI` suite — Multi-agent orchestration with cost-aware gating
-**Trade-off: Responsiveness vs. spend.** Cheap, deterministic checks run before expensive model calls
-throughout the suite — a two-stage moderation pattern in Agentic Poet runs a Python check before ever
-invoking an LLM. Agent state (Spouse Approval's escalation pipeline) is an explicit, guarded state
-machine, not a sequence of ungated model calls.
+### `Agentic_AI` suite — Independent interactive agents with cost-aware controls
+**Trade-off: Expressiveness vs. operational control.** The five Streamlit apps deliberately keep their
+orchestration patterns independent rather than hiding them behind a shared framework: adversarial RAG,
+an explicit Approval escalation state machine, a multimodal collaborative pipeline, structured slang
+classification, and a debate with independent judges. Shared controls — user-triggered inference,
+per-session quotas, access gates, saved results, and (where relevant) tracing and call budgets — limit
+demo cost without presenting those controls as production authentication.
 
 ### `Chord_Chart_Manager` — Offline-first sync with a stated conflict policy
 **Trade-off: Availability vs. consistency.** The application is fully usable offline via IndexedDB, and
@@ -257,13 +285,27 @@ on reconnection pushes local changes before pulling a fresh server snapshot; a s
 resolves deterministically in the server's favor. The trade-off — a tablet's concurrent edit can lose —
 is stated plainly rather than left for a user to discover.
 
-### Databricks portfolio notebooks — Medallion governance as doctrine
-**Trade-off: Platform-specific convenience vs. portability.** Every notebook enforces Bronze→Silver→Gold
-separation, per-notebook Unity Catalog schema isolation for clean teardown, and the
+### `Data_Engineering` notebooks — Medallion governance and portable patterns
+**Trade-off: Platform-specific convenience vs. portability.** The four data-pipeline notebooks enforce
+Bronze→Silver→Gold separation, per-notebook Unity Catalog schema isolation for clean teardown, and the
 deterministic/LLM split as a repeated, independently-applied rule rather than a single shared library —
-proving the pattern is a transferable engineering discipline, not a framework dependency. Each notebook
-documents its own migration path to Snowflake, BigQuery, Fabric, and AWS, because an architecture that
-only works on one vendor's platform is not an architecture; it is a integration.
+proving the pattern is a transferable engineering discipline, not a framework dependency. The suite
+documents migration considerations for Snowflake, BigQuery, Fabric, and AWS, making its Databricks
+dependencies and their equivalents explicit rather than assuming they disappear.
+
+### `BBS_Website` — Dependency-free, stateful interaction
+**Trade-off: Framework convenience vs. a bounded delivery surface.** The BBS experience uses one
+compact HTML/CSS/JavaScript shell with a small client-side state machine, keyboard and mouse modes,
+Web Audio, and same-origin arcade frames. There is no bundler, router, server, or SMTP service: static
+hosting is sufficient, and the contact screen intentionally delegates to the visitor's mail client or
+public contact channel instead of creating an unneeded credentials-and-abuse boundary.
+
+### `SQL_Fun` and `Shell_Scripts` — Small tools with explicit operating boundaries
+**Trade-off: Generality vs. safe, inspectable scope.** The SQL experiments keep their state inside
+scratch-database scripts, while operations scripts target named engines or a user-supplied directory.
+The latter favor credential files, dry-run/`-WhatIf` modes, hashing, validation, and quarantine over
+opaque automation; the database orchestrator is explicitly a trusted-operator utility, not a public
+API.
 
 ---
 
@@ -341,15 +383,18 @@ judgment in the other. The discipline is identical. Only what it is protecting c
 Stated for the same reason each project states its own limitations: a claim is only credible next to
 what it excludes.
 
-- No system in this repository lets a model output alter a state machine's transition table, a
-  financial decision, or an access-control boundary at runtime.
+- No implemented system lets a model output alter a state machine's transition table, a financial
+  decision, or an access-control boundary at runtime. `Force_Balance_Pipeline` documents a proposed
+  agent workflow, but its design requires the same code-owned constraint layer for agent and manual
+  deployment requests.
 - No system trusts client-supplied timing, identity headers, or free-text input for anything a
   security or financial verdict depends on without first passing it through a deterministic, code-owned
   boundary.
 - No AI-generated reference data enters a statistical baseline without being frozen, reviewed, and
   version-controlled first.
-- No generative output is reported as a capability claim without a deterministic baseline measured
-  against the same input, alongside it, in the same table.
+- No generative detection or classification result is presented as a measured capability claim without
+  an appropriate comparator. Free-form interactive output is presented as an experience, with its
+  operational controls and limitations stated separately.
 
 This is the discipline the rest of the repository's projects were built to demonstrate, individually,
 under different constraints. It holds because it is enforced structurally — in lineage tests, in state
