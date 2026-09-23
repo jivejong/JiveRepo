@@ -2,7 +2,7 @@ namespace SuperHeroOps.Data.Configuration;
 
 // Loads KEY=VALUE pairs from a .env file at the repo root into the process
 // environment, without overwriting any variable already set externally (shell env
-// wins). Keeps secrets (SUPERHERO_API_TOKEN, GROQ_API_KEY, ...) out of the repo while
+// wins). Keeps secrets (SUPERHERO_API_TOKEN, GEMINI_API_KEY, ...) out of the repo while
 // every entry point still just reads them via plain Environment.GetEnvironmentVariable.
 public static class EnvFileLoader
 {

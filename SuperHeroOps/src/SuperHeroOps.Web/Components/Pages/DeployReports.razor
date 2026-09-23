@@ -5,7 +5,7 @@
 @using SuperHeroOps.Data
 @using SuperHeroOps.Web.Services
 @inject IDbContextFactory<SuperHeroOpsDbContext> DbFactory
-@inject GroqHeroReportService ReportService
+@inject GeminiHeroReportService ReportService
 
 <PageTitle>Hero Reports@(area is null ? "" : $" - {area.Name}") - SuperHeroOps</PageTitle>
 
@@ -29,9 +29,9 @@ else
     <h1>Deploy to @area.Name</h1>
     <p><em>Step 3 of 3: AI-Generated Reports</em></p>
 
-    @if (groqKeyMissing)
+    @if (geminiKeyMissing)
     {
-        <p class="text-danger"><em>GROQ_API_KEY is not set in the environment - cannot generate hero reports.</em></p>
+        <p class="text-danger"><em>GEMINI_API_KEY is not set in the environment - cannot generate hero reports.</em></p>
     }
     else if (!reportsRequested)
     {
@@ -83,7 +83,7 @@ else
     private bool found = true;
     private List<Hero>? selectedHeroes;
 
-    private bool groqKeyMissing;
+    private bool geminiKeyMissing;
     private bool reportsRequested;
     private bool generatingReports;
     private Dictionary<int, HeroReportContent?> reportResults = [];
@@ -94,7 +94,7 @@ else
     {
         reportsRequested = false;
         generatingReports = false;
-        groqKeyMissing = false;
+        geminiKeyMissing = false;
         reportResults = [];
 
         await using var db = await DbFactory.CreateDbContextAsync();
@@ -114,9 +114,9 @@ else
 
     private async Task GenerateReports()
     {
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GROQ_API_KEY")))
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GEMINI_API_KEY")))
         {
-            groqKeyMissing = true;
+            geminiKeyMissing = true;
             return;
         }
 

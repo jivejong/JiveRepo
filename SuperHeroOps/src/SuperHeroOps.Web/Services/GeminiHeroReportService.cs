@@ -8,31 +8,31 @@ namespace SuperHeroOps.Web.Services;
 
 public sealed record HeroReportContent(string RiskAssessment, string PredictedImpactNarrative, string Recommendation);
 
-// One Groq call per hero - never a single multi-hero call, so each report can be
+// One Gemini call per hero - never a single multi-hero call, so each report can be
 // judged (and can fail) independently. Structured JSON output, one-retry validation
 // on a malformed response, matching the pattern used elsewhere in this build for
 // external-call resilience (log and move on, don't take down the whole page over one
 // bad response).
-public sealed class GroqHeroReportService
+public sealed class GeminiHeroReportService
 {
-    private const string DefaultModel = "openai/gpt-oss-120b";
+    private const string DefaultModel = "gemini-3.1-flash-lite";
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
     private readonly HttpClient _http;
     private readonly string _model;
 
-    public GroqHeroReportService(HttpClient http)
+    public GeminiHeroReportService(HttpClient http)
     {
         _http = http;
-        _http.BaseAddress = new Uri("https://api.groq.com/openai/v1/");
+        _http.BaseAddress = new Uri("https://generativelanguage.googleapis.com/v1beta/openai/");
 
-        var apiKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
+        var apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY");
         if (!string.IsNullOrWhiteSpace(apiKey))
         {
             _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         }
 
-        _model = Environment.GetEnvironmentVariable("GROQ_MODEL") is { Length: > 0 } m ? m : DefaultModel;
+        _model = Environment.GetEnvironmentVariable("GEMINI_MODEL") is { Length: > 0 } m ? m : DefaultModel;
     }
 
     public async Task<HeroReportContent?> GenerateAsync(
@@ -71,15 +71,15 @@ public sealed class GroqHeroReportService
     private async Task<HeroReportJson?> CallModelAsync(
         string systemPrompt, string userPrompt, CancellationToken cancellationToken)
     {
-        var request = new GroqChatRequest
+        var request = new GeminiChatRequest
         {
             Model = _model,
             Messages =
             [
-                new GroqChatMessage { Role = "system", Content = systemPrompt },
-                new GroqChatMessage { Role = "user", Content = userPrompt },
+                new GeminiChatMessage { Role = "system", Content = systemPrompt },
+                new GeminiChatMessage { Role = "user", Content = userPrompt },
             ],
-            ResponseFormat = new GroqResponseFormat { Type = "json_object" },
+            ResponseFormat = new GeminiResponseFormat { Type = "json_object" },
         };
 
         try
@@ -90,7 +90,7 @@ public sealed class GroqHeroReportService
                 return null;
             }
 
-            var chatResponse = await response.Content.ReadFromJsonAsync<GroqChatResponse>(
+            var chatResponse = await response.Content.ReadFromJsonAsync<GeminiChatResponse>(
                 JsonOptions, cancellationToken);
             var content = chatResponse?.Choices?.FirstOrDefault()?.Message?.Content;
             if (string.IsNullOrWhiteSpace(content))

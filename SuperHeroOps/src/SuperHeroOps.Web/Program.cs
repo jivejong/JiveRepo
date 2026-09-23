@@ -13,7 +13,7 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 builder.Services.AddSuperHeroOpsDbContext();
-builder.Services.AddHttpClient<GroqHeroReportService>();
+builder.Services.AddHttpClient<GeminiHeroReportService>();
 
 var app = builder.Build();
 

@@ -2,38 +2,38 @@ using System.Text.Json.Serialization;
 
 namespace SuperHeroOps.Web.Services;
 
-// Minimal OpenAI-compatible chat-completions wire format for Groq's API
-// (https://api.groq.com/openai/v1/chat/completions).
-internal sealed class GroqChatRequest
+// Minimal OpenAI-compatible chat-completions wire format for the Gemini API
+// (https://generativelanguage.googleapis.com/v1beta/openai/chat/completions).
+internal sealed class GeminiChatRequest
 {
     public required string Model { get; set; }
-    public required List<GroqChatMessage> Messages { get; set; }
+    public required List<GeminiChatMessage> Messages { get; set; }
 
     [JsonPropertyName("response_format")]
-    public GroqResponseFormat? ResponseFormat { get; set; }
+    public GeminiResponseFormat? ResponseFormat { get; set; }
 
     public double Temperature { get; set; } = 0.7;
 }
 
-internal sealed class GroqChatMessage
+internal sealed class GeminiChatMessage
 {
     public required string Role { get; set; }
     public required string Content { get; set; }
 }
 
-internal sealed class GroqResponseFormat
+internal sealed class GeminiResponseFormat
 {
     public string Type { get; set; } = "json_object";
 }
 
-internal sealed class GroqChatResponse
+internal sealed class GeminiChatResponse
 {
-    public List<GroqChoice>? Choices { get; set; }
+    public List<GeminiChoice>? Choices { get; set; }
 }
 
-internal sealed class GroqChoice
+internal sealed class GeminiChoice
 {
-    public GroqChatMessage? Message { get; set; }
+    public GeminiChatMessage? Message { get; set; }
 }
 
 // The strict three-field JSON shape the model is asked to return.
