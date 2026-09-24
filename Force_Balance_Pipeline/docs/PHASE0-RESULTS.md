@@ -7,7 +7,7 @@ Commands: `python scripts/check_platform.py <preflight|q1|q2|q3|local|cleanup>`.
 
 | # | Question | Answer | Evidence | Fallback if no |
 |---|---|---|---|---|
-| 1 | Does the `dbt` job task type work on Free Edition, sourced from Git? | **Yes.** | Run 981893542841724: TERMINATED / SUCCESS in 124.9 s from commit `b49a953043e94cfbbda8743359cfb7549a8481e1`. `Running with dbt=1.10.13`, `Registered adapter: databricks=1.9.8`, `Done. PASS=9 TOTAL=9`. See Q1 detail. | Python task shelling out to dbt (doc 07, Phase 0) |
+| 1 | Does the `dbt` job task type work on Free Edition, sourced from Git? | **Yes.** | Run 1074650816698552 (pinned requirements): TERMINATED / SUCCESS in 89.7 s from commit `5cdcfc4abfdc9ac54ae17492fea0ecf4b0b51d6c`. `Running with dbt=1.10.13`, `Registered adapter: databricks=1.9.8`, `Done. PASS=9 TOTAL=9`. See Q1 detail. | Python task shelling out to dbt (doc 07, Phase 0) |
 | 2 | Are Unity Catalog external locations to GCS permitted? | **No.** | The Create credential dialog offers only "AWS IAM Role" and "Cloudflare API Token", with no Google Cloud option. Host cloud: aws. 0 `gs://` external locations. Nothing was created. See Q2 detail. | Bridge keeps writing to the UC volume through the Files API (docs 00 and 05) |
 | 3 | Does `streaming_table` build and refresh on this workspace with the pinned dbt-databricks? | **Yes, with a stability caveat.** | Build 2 (run 15527873087897) ended TERMINATED / SUCCESS in 772.1 s, but its first attempt failed after 622.42 s (Spark Connect session deleted) and the automatic retry succeeded in 25.84 s. Table type STREAMING_TABLE, last refresh INCREMENTAL, succeeded. Per-file rows: batch_1.ndjson 5, batch_2.ndjson 3. See Q3 detail. | Auto Loader stays as the `ingest_bronze` notebook task (doc 05, job topology) |
 
@@ -16,15 +16,18 @@ doc edit.
 
 ## Q1 detail: dbt task from Git
 
-Final run, from the script's evidence block:
+Final run, on the commit that carries the `dbt-core==1.10.13` pin, from the script's evidence
+block:
 
-- run_id 981893542841724, TERMINATED / SUCCESS, empty state message, duration 124.9 s.
-- Commit SHA `b49a953043e94cfbbda8743359cfb7549a8481e1`.
+- run_id 1074650816698552, TERMINATED / SUCCESS, empty state message, duration 89.7 s.
+- Commit SHA `5cdcfc4abfdc9ac54ae17492fea0ecf4b0b51d6c`.
 - `Running with dbt=1.10.13`, `Registered adapter: databricks=1.9.8`.
 - `Done. PASS=9 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=9`.
-- dbt-core was **not pinned** at that commit: `requirements.txt` pinned only `dbt-databricks`, so
-  `1.10.13` is what pip resolved, not a pin. The pin (doc 05) has not been exercised by a run yet.
-- The run page URL is left out on purpose: it contains the workspace host and org ID.
+- These log lines are identical to the earlier unpinned run below, because pip resolved the same
+  dbt-core version. The log alone cannot show which requirements were in effect; the pinned run is
+  identified by its commit.
+- The run page URL is left out on purpose: it contains the workspace host and org ID. The log
+  lines above are shown without the ANSI escape codes (`[0m`) the script printed.
 
 Earlier runs:
 
@@ -32,7 +35,8 @@ Earlier runs:
 |---|---|---|
 | 874059667196060, 77754742679338 | INTERNAL_ERROR | Task log: `No such file or directory: '/Workspace/Repos/.internal/.../5fc91b1d.../Force_Balance_Pipeline'`. Cause: local `main` was 6 commits ahead of origin, and commit `5fc91b1d` had no project folder. **Invalid runs**, not evidence against Q1. |
 | 846253185978169 | TERMINATED / SUCCESS, 112.9 s | Commit `3a444c98`, dbt 1.10.13, databricks 1.9.8, PASS=9 TOTAL=9. `SELECT count(*) FROM force.phase0.phase0_model_b` returned 5. |
-| 981893542841724 | TERMINATED / SUCCESS, 124.9 s | Final run above. |
+| 981893542841724 | TERMINATED / SUCCESS, 124.9 s | Commit `b49a953043e94cfbbda8743359cfb7549a8481e1`, dbt 1.10.13, databricks 1.9.8, PASS=9 TOTAL=9. dbt-core was **not pinned** at that commit: `requirements.txt` pinned only `dbt-databricks`, so `1.10.13` is what pip resolved. |
+| 1074650816698552 | TERMINATED / SUCCESS, 89.7 s | Final run above (pinned requirements). |
 
 ## Q2 detail: external locations to GCS
 
@@ -73,7 +77,7 @@ in the Q3 log.
 | `dbt --version` in a repo-local `.venv` | dbt=1.10.13, databricks=1.9.8 | Python 3.10.6 |
 | `dbt ls --resource-type model` (toggle off; expect 2 models) | 2 models | |
 | `dbt ls --resource-type model --vars ...` (toggle on; expect 3 models) | 3 models | The toggle works, so the streaming gate passed. |
-| `dbt debug --target dev` | | Not in the pasted output. |
+| `dbt debug --target dev --profiles-dir .` | All checks passed; connection test OK | dbt 1.10.13, adapter databricks 1.9.8, Python 3.10.6, catalog `force`, schema `dev_jivejong`. Host and HTTP path are left out of this file. |
 | `dbt build --target dev` | PASS=9 WARN=0 ERROR=0 in 26.75 s | 1 seed, 1 view, 1 table, 6 tests |
 
 Steps are printed by `python scripts/check_platform.py local`.
@@ -91,6 +95,12 @@ Steps are printed by `python scripts/check_platform.py local`.
   `--env-version`. Evidence from `.phase0_state.json` before cleanup: the saved `q1` entry for run
   846253185978169 has `"env_version": "5"`. `q3` reused the saved value, and later runs used the
   default `"5"`.
+- The `dbt debug` output showed a pydantic `UserWarning` ("`allow_population_by_field_name` has
+  been renamed to `validate_by_name`") from a dependency. It did not affect the result. The
+  `NativeCommandError` text around it came from Windows PowerShell 5.1 wrapping stderr when the
+  command was run with `2>&1`; it is not a dbt failure.
+- The local venv in that run lived at `warehouse/dbt/.venv`, not the repo root `.venv` the printed
+  steps assume. Both are covered by the `.venv/` rule in `.gitignore`.
 - **Operational lesson:** the dbt task pulls from GitHub, not the local checkout. Two Q1 runs failed
   because local `main` was ahead of origin. Push before running `q1` or `q3`.
 - **Script limitation:** for a run the platform retried (Q3 build 2), the evidence block printed
