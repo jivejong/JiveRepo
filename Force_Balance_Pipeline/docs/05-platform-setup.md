@@ -244,11 +244,11 @@ against that limit concurrently**, so a four-task linear job is well within budg
 
 ### Job 1 — `force_pipeline` (every 15 minutes, offset +3 from scan)
 
-| Task | Type | Depends on |
-|---|---|---|
-| `ingest_bronze` | Notebook (Auto Loader) | — |
-| `transform` | dbt (`dbt build --target prod`) | `ingest_bronze` |
-| `publish_serving` | Notebook | `transform` |
+| Task              | Type                            | Depends on      |
+| ----------------- | ------------------------------- | --------------- |
+| `ingest_bronze`   | Notebook (Auto Loader)          | —               |
+| `transform`       | dbt (`dbt build --target prod`) | `ingest_bronze` |
+| `publish_serving` | Notebook                        | `transform`     |
 
 Signature classification and detection live inside the dbt DAG as `gold_sector_reading` and
 `gold_disturbance`, so neither needs its own task.
@@ -262,8 +262,8 @@ schedule. The pull direction is preferred anyway — it keeps the work off the D
 
 ### Job 2 — `rebuild_baseline` (daily, 03:00 UTC)
 
-| Task | Type |
-|---|---|
+| Task               | Type                                                         |
+| ------------------ | ------------------------------------------------------------ |
 | `rebuild_baseline` | dbt — `dbt run --select gold_sector_baseline --full-refresh` |
 
 Rolling 90-day statistics per planet per channel. **Probe-only** — the model must filter
@@ -272,18 +272,18 @@ recomputing them every 15 minutes would make z-scores drift under the detector.
 
 ### Job 3 — `maintenance` (weekly)
 
-| Task | Type |
-|---|---|
+| Task              | Type                                             |
+| ----------------- | ------------------------------------------------ |
 | `optimize_vacuum` | SQL — `OPTIMIZE` + `VACUUM` on bronze and silver |
 
 Small-file compaction. Necessary because the bridge produces a file per minute.
 
 ### Job 4 — `refresh_dimensions` (manual trigger only)
 
-| Task | Type |
-|---|---|
+| Task          | Type                                                   |
+| ------------- | ------------------------------------------------------ |
 | `fetch_swapi` | Notebook — pull swapi.info with an explicit User-Agent |
-| `seed` | dbt (`dbt seed --full-refresh`) |
+| `seed`        | dbt (`dbt seed --full-refresh`)                        |
 
 Manual only, and rarely. SWAPI data doesn't change.
 
@@ -311,15 +311,15 @@ That's a deliberate property: someone reading the repo sees the actual productio
 
 `docker-compose.yml` brings up:
 
-| Service | Purpose |
-|---|---|
-| `mosquitto` | MQTT broker |
-| `postgres` | Stands in for the lakehouse and serves as the serving store |
-| `bridge` | Collector, configured to write to a local directory instead of the volume |
-| `loader` | Watches the local directory, loads NDJSON into `bronze.events` (Postgres JSONB) |
-| `probe-sim` | Probe simulator, compressed mode schedule and 1-minute scan cycle |
-| `intake` | Report inference endpoint (mockable with a stub model for offline demo) |
-| `dashboard` | Jedi Council |
+| Service     | Purpose                                                                         |
+| ----------- | ------------------------------------------------------------------------------- |
+| `mosquitto` | MQTT broker                                                                     |
+| `postgres`  | Stands in for the lakehouse and serves as the serving store                     |
+| `bridge`    | Collector, configured to write to a local directory instead of the volume       |
+| `loader`    | Watches the local directory, loads NDJSON into `bronze.events` (Postgres JSONB) |
+| `probe-sim` | Probe simulator, compressed mode schedule and 1-minute scan cycle               |
+| `intake`    | Report inference endpoint (mockable with a stub model for offline demo)         |
+| `dashboard` | Jedi Council                                                                    |
 
 `make demo` runs compose up, waits for health, runs `dbt build --target local`, and opens the
 dashboard. `make seed` regenerates SWAPI seeds. `make test` runs `dbt test --target local` plus

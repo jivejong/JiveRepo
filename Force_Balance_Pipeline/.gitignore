@@ -23,6 +23,7 @@ warehouse/dbt/target/
 warehouse/dbt/dbt_packages/
 warehouse/dbt/logs/
 warehouse/dbt/profiles.yml
+warehouse/dbt/.user.yml
 logs/
 
 # Phase 0 scratch state written by scripts/check_platform.py
