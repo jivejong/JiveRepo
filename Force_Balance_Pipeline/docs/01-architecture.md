@@ -223,12 +223,18 @@ depends on them.
   and egress works. Both `swapi.info` and `api.groq.com` return 200 from serverless compute.
   Requires an explicit User-Agent header — see doc 05. The `refresh_dimensions` job can run as a
   real Databricks job; the local-fetch fallback is not needed.
-- **Does Free Edition support the `dbt` job task type?** It is not on the unsupported-features
-  list and Jobs are supported, but it is not explicitly confirmed. Test with a two-model project.
-- **Does Free Edition permit Unity Catalog external locations pointing at GCS?** Custom
-  *workspace storage* locations are explicitly unsupported, but external locations are a
-  different feature. If they work, the bridge can write to a GCS bucket and Auto Loader can read
-  it directly — simpler than the Files API, and it keeps a GCP component in the stack.
-- **Are `streaming_table` and `materialized_view` materializations stable in the pinned
-  `dbt-databricks` version?** If so, Auto Loader can be pulled into the dbt DAG via `read_files`
-  and the entire pipeline becomes one `dbt build`.
+- ~~**Does Free Edition support the `dbt` job task type?**~~ **RESOLVED: yes.** A `dbt` job task
+  sourced from Git ran a two-model project, with its seed and tests, on serverless compute.
+  Evidence: `docs/PHASE0-RESULTS.md`, Q1.
+- ~~**Does Free Edition permit Unity Catalog external locations pointing at GCS?**~~ **RESOLVED:
+  no.** The workspace is on AWS and the Create credential dialog offers no Google Cloud
+  credential type, so a GCS external location cannot be created. The bridge keeps writing to the
+  UC volume through the Files API. Evidence: `docs/PHASE0-RESULTS.md`, Q2.
+- ~~**Is the `streaming_table` materialization stable in the pinned `dbt-databricks`
+  version?**~~ **RESOLVED: yes, with a stability caveat.** A `streaming_table` model over
+  `stream read_files(...)` built and refreshed incrementally, but the first attempt of the refresh
+  build failed (a Spark Connect session was deleted before it became ready) and only the automatic
+  retry succeeded. Whether Auto Loader moves into the dbt DAG is a separate decision. Evidence:
+  `docs/PHASE0-RESULTS.md`, Q3.
+- **Is the `materialized_view` materialization stable in the pinned `dbt-databricks`
+  version?** Not tested in Phase 0.

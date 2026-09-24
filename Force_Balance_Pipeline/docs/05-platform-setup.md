@@ -246,11 +246,11 @@ against that limit concurrently**, so a four-task linear job is well within budg
 
 ### Job 1 — `force_pipeline` (every 15 minutes, offset +3 from scan)
 
-| Task              | Type                            | Depends on      |
-| ----------------- | ------------------------------- | --------------- |
-| `ingest_bronze`   | Notebook (Auto Loader)          | —               |
-| `transform`       | dbt (`dbt build --target prod`) | `ingest_bronze` |
-| `publish_serving` | Notebook                        | `transform`     |
+| Task              | Type                                          | Depends on      |
+| ----------------- | --------------------------------------------- | --------------- |
+| `ingest_bronze`   | Notebook (Auto Loader)                        | —               |
+| `transform`       | dbt (`dbt build`, catalog=force, schema=gold) | `ingest_bronze` |
+| `publish_serving` | Notebook                                      | `transform`     |
 
 Signature classification and detection live inside the dbt DAG as `gold_sector_reading` and
 `gold_disturbance`, so neither needs its own task.
@@ -299,7 +299,11 @@ columns only, and should be run with care that it does not clobber enriched colu
 - **Source:** Git provider, pointed at `https://github.com/jivejong/JiveRepo`. This project lives in
   that repo as the top-level folder `Force_Balance_Pipeline/`. Not workspace files.
 - **Project directory:** `Force_Balance_Pipeline/warehouse/dbt`
-- **Commands:** `dbt deps`, `dbt seed`, `dbt build --target prod`
+- **Commands:** `dbt deps`, `dbt seed`, `dbt build` (no `--target`).
+- **Profile:** the task uses the profile Databricks generates, whose only target is
+  `databricks_cluster` (verified in the Phase 0 q3 run log). The task's `catalog` and
+  `schema` fields decide where models land. The `prod` target in `profiles.yml.example`
+  is only for running against prod from a local machine.
 - **Serverless environment:** `environment_version` `"5"` (Python 3.12). The packages pinned in
   `warehouse/dbt/requirements.txt` install into it.
 - **SQL warehouse:** select the 2X-Small warehouse
