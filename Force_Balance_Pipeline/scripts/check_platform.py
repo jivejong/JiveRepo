@@ -215,14 +215,20 @@ def print_cli_install_steps():
 
 # --- pinned version, cloud inference, state ---------------------------------------------
 
-def pinned_requirement():
+def pinned_requirements():
+    """Every non-comment requirements.txt line, in file order (the job environment's deps)."""
     if not REQUIREMENTS.exists():
         raise CheckError(f"{REQUIREMENTS} not found")
+    lines = []
     for line in REQUIREMENTS.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line.lower().startswith("dbt-databricks"):
-            return line
-    raise CheckError(f"no dbt-databricks line in {REQUIREMENTS}")
+        line = line.split("#", 1)[0].strip()
+        if line:
+            lines.append(line)
+    names = {re.split(r"[=<>~!\[ ]", l, maxsplit=1)[0].lower() for l in lines}
+    missing = {"dbt-databricks", "dbt-core"} - names
+    if missing:
+        raise CheckError(f"{REQUIREMENTS} must pin {', '.join(sorted(missing))}")
+    return lines
 
 
 def infer_cloud(host):
@@ -266,7 +272,7 @@ def find_key(obj, key):
 
 
 def build_submit_payload(cfg, run_name, commands, git_url, branch, env_version, project_dir):
-    spec = {"dependencies": [pinned_requirement()]}
+    spec = {"dependencies": pinned_requirements()}
     spec["environment_version"] = env_version
     return {
         "run_name": run_name,
@@ -405,7 +411,7 @@ def cmd_preflight(args):
     if have_cfg:
         check("host cloud (inference from hostname, not evidence of permissions)",
               lambda: infer_cloud(cfg["host"]))
-    check("pinned requirement", pinned_requirement)
+    check("pinned requirements", lambda: ", ".join(pinned_requirements()))
 
     if cli_path():
         check("databricks CLI installed", lambda: subprocess.run(

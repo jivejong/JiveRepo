@@ -111,12 +111,14 @@ Notes:
 ### Installation
 
 ```bash
-pip install "dbt-databricks==1.9.*"
+pip install -r warehouse/dbt/requirements.txt
 ```
 
-Pin the version. Databricks recommends 1.6.0 or greater and recommends pinning so development
-and production match. On serverless job compute, set the version through the **Environment and
-Libraries** field on the task, not the dependent-libraries field.
+`warehouse/dbt/requirements.txt` pins both `dbt-databricks==1.9.*` and `dbt-core==1.10.13`.
+Pin the versions. Databricks recommends 1.6.0 or greater and recommends pinning so development
+and production match. On serverless job compute, set the versions through the **Environment and
+Libraries** field on the task, not the dependent-libraries field; the job's serverless
+environment installs both pins.
 
 ### `profiles.yml`
 
