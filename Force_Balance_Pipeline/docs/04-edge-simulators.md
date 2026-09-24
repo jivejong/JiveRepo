@@ -152,6 +152,9 @@ sensor-equivalent values and a relevance score.
 **The model call must happen server-side**, not in the browser — an API key in client JS is not
 an option. Fold the endpoint into the collector bridge or run it as a small sidecar.
 
+**OPEN:** temperature and thinking level for report inference. Google's Gemini 3 guidance is to
+keep temperature at the default 1.0; decide both in Phase 5, with the intake fixture suite.
+
 ```
 POST /api/report
   { "sector_id": "coruscant", "description": "..." }
@@ -255,9 +258,9 @@ flush:
   max_seconds: 90
   on_complete_scan: true
 inference:
-  provider: groq
-  model: ${INFERENCE_MODEL}
-  api_key: ${GROQ_API_KEY}
+  provider: gemini
+  model: ${INFERENCE_MODEL}          # gemini-3.1-flash-lite
+  api_key: ${GEMINI_API_KEY}         # local .env; Secret Manager on the bridge
 databricks:
   host: ${DATABRICKS_HOST}
   token: ${DATABRICKS_TOKEN}

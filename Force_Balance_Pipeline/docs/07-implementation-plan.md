@@ -140,7 +140,7 @@ remain probe-only — re-run that test.
 
 1. Five tools against the SQL Statement Execution API.
 2. **Constraint layer first** — ordinary code, easier to test in isolation than through a model.
-3. Groq wiring with tool calling.
+3. Gemini wiring with function calling.
 4. ~24 fixtures from doc 06.
 5. `make test-agent`, 3 runs per fixture.
 6. Cloud Run job, scheduled 15 minutes offset 4.

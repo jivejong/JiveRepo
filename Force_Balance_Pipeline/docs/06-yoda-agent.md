@@ -19,7 +19,16 @@ Polls `gold.disturbance` for `agent_processed = false`, processes each, writes
 Reads and writes go through the **Databricks SQL Statement Execution API**. Running outside
 Databricks keeps inference off the compute quota.
 
-Model: Groq with tool calling, `temperature` 0.2. This is a decision task.
+Model: `gemini-3.1-flash-lite` with Gemini function calling, `temperature` 0.2. This is a
+decision task.
+
+**Constraint (Gemini 3):** function calling is strictly validated on the current turn, and a
+missing thought signature returns a 400 error. When the agent manages conversation history itself,
+it must return the model's thought blocks with their signatures, exactly as received and in the
+order received. Only the first `functionCall` part of a parallel call carries a signature. When the
+model calls a tool, gets the result, and calls another tool in the same turn, both calls carry
+signatures and all accumulated signatures go back in the history. Build the tool loop so
+signatures are never dropped or reordered (Gemini 3 developer guide, "Thought signatures").
 
 ---
 
@@ -211,7 +220,7 @@ time is doing something most don't.
 
 | Failure | Behavior |
 |---|---|
-| Groq unavailable | Leave `agent_processed = false`, retry next cycle. Write nothing |
+| Gemini API unavailable | Leave `agent_processed = false`, retry next cycle. Write nothing |
 | No tool call returned | Retry once with a nudge, then stand-down with `agent_no_decision` |
 | Nonexistent tool called | Reject, counts against retry budget |
 | Statement Execution API write fails | Backoff and retry; on final failure log and leave unprocessed |

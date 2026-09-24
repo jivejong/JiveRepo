@@ -8,6 +8,8 @@
 2. **Complete LinkedIn verification.** This unlocks outbound internet access from serverless
    compute. Without it the SWAPI dimension refresh cannot reach the API. Do this first.
 3. Generate a personal access token for local dbt development and for the collector bridge.
+4. Create a Gemini API key in Google AI Studio. Locally it lives in `.env` as `GEMINI_API_KEY`.
+   Cloud Run (Yoda agent) and the collector bridge read it from Secret Manager, not from a file.
 
 ### Outbound HTTP clients — set a User-Agent
 
@@ -25,10 +27,13 @@ Applies to `fetch_swapi.py` and any other outbound client. Identify the project 
 spoofing a browser — swapi.info is a free community service and a descriptive UA with a repo
 link is the correct way to consume it.
 
+**OPEN:** the Gemini SDK sets its own User-Agent. Decide whether to append the project UA through
+client options, or whether the SDK's own UA is enough for the Gemini API.
+
 **Verification test.** To confirm egress independently of this issue, request both
-`https://swapi.info/api/planets/1` and `https://api.groq.com/` with a real User-Agent. Do not
-test with `pypi.org` alone; it is on the trusted-domain allowlist so package installs work, and
-will succeed even when general egress does not.
+`https://swapi.info/api/planets/1` and `https://generativelanguage.googleapis.com/` with a real
+User-Agent. Do not test with `pypi.org` alone; it is on the trusted-domain allowlist so package
+installs work, and will succeed even when general egress does not.
 
 ### Unity Catalog objects
 

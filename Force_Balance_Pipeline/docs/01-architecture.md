@@ -14,7 +14,7 @@ lives elsewhere.
 | Intergalactic probe | Raspberry Pi 3 | Simulates Force readings, four operating modes, store-and-forward buffering |
 | Web intake | Any browser | Human reports; model infers sensor-equivalent values |
 | Collector bridge | GCP e2-micro (Always Free) | MQTT broker, batcher, **and the report inference endpoint**; writes NDJSON to the UC volume |
-| Yoda agent | Cloud Run (scheduled) | Reads incidents, calls Groq, writes decisions back |
+| Yoda agent | Cloud Run (scheduled) | Reads incidents, calls Gemini, writes decisions back |
 | Jedi Council dashboard | Cloud Run / Vercel | Reads Postgres serving store; manual deployment UI |
 | Postgres serving store | GCP e2-micro (same VM) | Gold aggregates, published from Databricks |
 
@@ -181,7 +181,7 @@ same schema with the same `context_snapshot`, which lets the dashboard show them
 
 **Decision.** All inference runs in the cloud. The Raspberry Pi 3 probe runs no model; it
 simulates readings and buffers them. Report inference runs on the collector bridge and the Yoda
-agent calls Groq from Cloud Run (see Component boundaries).
+agent calls Gemini from Cloud Run (see Component boundaries).
 
 **Why.** The Pi 3 has 1 GB of RAM and no accelerator, so it would be slow and memory-bound, and an
 on-device model would couple sensor reliability to the heaviest workload in the system. This is a

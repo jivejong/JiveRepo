@@ -117,7 +117,7 @@ Full detail: [`docs/01-architecture.md`](docs/01-architecture.md)
 | Lakehouse | Databricks Free Edition, Delta Lake, Unity Catalog, Auto Loader |
 | Transformation | dbt Core + `dbt-databricks`, orchestrated by Lakeflow Jobs |
 | Serving | PostgreSQL |
-| Inference | Groq — report intake and Yoda agent, each with its own fixture suite |
+| Inference | Gemini (`gemini-3.1-flash-lite`) — report intake and Yoda agent, each with its own fixture suite |
 | Dashboard | Node.js + React |
 | Reference data | SWAPI + governed AI enrichment layer |
 | Local development | Docker Compose |
