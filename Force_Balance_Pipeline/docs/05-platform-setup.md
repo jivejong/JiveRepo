@@ -17,7 +17,7 @@ looks like blocked egress but isn't — the request reaches the destination CDN 
 there on client fingerprint.
 
 ```python
-UA = "Force_Balance_Pipeline/0.1 (+https://github.com/<you>/Force_Balance_Pipeline)"
+UA = "Force_Balance_Pipeline/0.1 (+https://github.com/jivejong/JiveRepo/tree/main/Force_Balance_Pipeline)"
 req = urllib.request.Request(url, headers={"User-Agent": UA})
 ```
 
@@ -294,8 +294,9 @@ columns only, and should be run with care that it does not clobber enriched colu
 
 ### dbt task configuration
 
-- **Source:** Git provider, pointed at the repo. Not workspace files.
-- **Project directory:** `warehouse/dbt`
+- **Source:** Git provider, pointed at `https://github.com/jivejong/JiveRepo`. This project lives in
+  that repo as the top-level folder `Force_Balance_Pipeline/`. Not workspace files.
+- **Project directory:** `Force_Balance_Pipeline/warehouse/dbt`
 - **Commands:** `dbt deps`, `dbt seed`, `dbt build --target prod`
 - **SQL warehouse:** select the 2X-Small warehouse
 - Databricks injects `DBT_ACCESS_TOKEN` for the run-as principal, so no token in the repo.

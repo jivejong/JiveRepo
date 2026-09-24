@@ -16,8 +16,9 @@ phase begins. Do not build on an unverified layer.
 
 Outbound egress is already confirmed working — see doc 01.
 
-**Checkpoint:** a dbt job task runs from GitHub and materializes a table in `force.gold`. Record
-answers to 4 and 5 in doc 01 under "Open items."
+**Checkpoint:** A dbt job task sourced from Git materializes a table in `force.phase0` on Free
+Edition serverless, and the run records the commit SHA. Record answers to 4 and 5 in doc 01 under
+"Open items."
 
 If step 3 fails, fall back to a Python task shelling out to dbt. Note it and move on.
 

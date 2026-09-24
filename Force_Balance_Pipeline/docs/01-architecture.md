@@ -177,6 +177,17 @@ code as agent decisions. `decided_by` is the only difference in the record.
 already-assigned Jedi, exceeding the concurrent cap. It also means both decision types land in the
 same schema with the same `context_snapshot`, which lets the dashboard show them side by side.
 
+### D10 — No LLM on the probe
+
+**Decision.** All inference runs in the cloud. The Raspberry Pi 3 probe runs no model; it
+simulates readings and buffers them. Report inference runs on the collector bridge and the Yoda
+agent calls Groq from Cloud Run (see Component boundaries).
+
+**Why.** The Pi 3 has 1 GB of RAM and no accelerator, so it would be slow and memory-bound, and an
+on-device model would couple sensor reliability to the heaviest workload in the system. This is a
+key difference from the earlier Force Resonance Detection Network (FRDN) project this one
+replaces.
+
 ---
 
 ## Data flow, end to end

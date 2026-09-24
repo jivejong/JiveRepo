@@ -12,7 +12,8 @@ clean-targets: ["target", "dbt_packages"]
 
 # Phase 0 only. The streaming check is disabled unless explicitly switched on,
 # so a plain `dbt build` (Q1) never touches it:
-#   dbt build --select phase0_streaming_check --vars '{"enable_streaming_check": true}'
+#   dbt build --select phase0_streaming_check --vars "{enable_streaming_check: true}"
+# (YAML flow form; dbt reads --vars as YAML, and it survives PowerShell 5.1 quoting.)
 vars:
   enable_streaming_check: false
 

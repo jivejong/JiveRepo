@@ -527,8 +527,9 @@ def cmd_q3(args):
         say(f"  {VOLUME_DIR} is not empty. Run `cleanup --streaming-only` first.")
         return 2
 
-    build = ["dbt build", "--select", STREAM_MODEL, "--vars", f'\'{{"{STREAM_VAR}": true}}\'']
-    build_cmd = " ".join(build)  # a single command string; the var is quoted for dbt
+    # One command string. --vars is YAML flow (dbt parses it as YAML), double-quoted because
+    # it contains a space.
+    build_cmd = f'dbt build --select {STREAM_MODEL} --vars "{{{STREAM_VAR}: true}}"'
 
     def landing(name, rows):
         upload_file(cfg, f"{VOLUME_DIR}/{name}", "\n".join(json.dumps(r) for r in rows).encode() + b"\n")
@@ -544,6 +545,10 @@ def cmd_q3(args):
     print_run_evidence(ev1)
     if not ev1["ok"]:
         say("  RESULT: build 1 did NOT succeed; streaming_table not shown to work. Paste evidence.")
+        say("  If the error is about `_metadata` / `file_name`, it is a column issue, not a Q3")
+        say("  answer: remove the `_metadata.file_name as _source_file` line from")
+        say("  phase0_streaming_check.sql, push, run `cleanup --streaming-only`, rerun q3, and")
+        say("  record it in PHASE0-RESULTS.md as a column issue.")
         return 1
     results["count_after_build_1"] = count()
     say(f"  rows after build 1: {results['count_after_build_1']} (expect {len(BATCH_1)})")

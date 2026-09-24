@@ -130,8 +130,8 @@ Runs the full pipeline locally with no cloud account. Postgres stands in for the
 dbt models are the same ones that run on Databricks.
 
 ```bash
-git clone https://github.com/<you>/Force_Balance_Pipeline
-cd Force_Balance_Pipeline
+git clone https://github.com/jivejong/JiveRepo
+cd JiveRepo/Force_Balance_Pipeline
 make demo
 ```
 

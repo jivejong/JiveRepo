@@ -43,9 +43,10 @@ Steps are printed by `python scripts/check_platform.py local`.
 - The pinned version is `dbt-databricks==1.9.*` (doc 05). The wildcard resolves at install time,
   so the version that actually ran is the one in the `Running with dbt=` and
   `Registered adapter` lines above, not the pin.
-- This project lives in a subfolder of the `jivejong/JiveRepo` repo, so the dbt task's project
-  directory is `Force_Balance_Pipeline/warehouse/dbt`, not doc 05's `warehouse/dbt`. Doc 05's job
-  topology will need the same path when the real jobs are configured.
+- Git source and dbt project directory for the job runs: see doc 05, "dbt task configuration".
+- If `q3` build 1 fails on the `_metadata.file_name` column, drop that column from
+  `phase0_streaming_check.sql`, push, run `cleanup --streaming-only`, and rerun `q3`. Record that
+  here as a **column issue**, not as the Q3 answer.
 - The serverless `environment_version` is passed with `--env-version` and is omitted otherwise,
   because I could not confirm the accepted values from the docs I checked. Record the value used
   if one was needed.

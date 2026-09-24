@@ -262,5 +262,5 @@ databricks:
   host: ${DATABRICKS_HOST}
   token: ${DATABRICKS_TOKEN}
   volume_path: /Volumes/force/raw/telemetry
-  user_agent: "Force_Balance_Pipeline/0.1 (+https://github.com/<you>/Force_Balance_Pipeline)"
+  user_agent: "Force_Balance_Pipeline/0.1 (+https://github.com/jivejong/JiveRepo/tree/main/Force_Balance_Pipeline)"
 ```
