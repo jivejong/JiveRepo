@@ -298,6 +298,8 @@ columns only, and should be run with care that it does not clobber enriched colu
   that repo as the top-level folder `Force_Balance_Pipeline/`. Not workspace files.
 - **Project directory:** `Force_Balance_Pipeline/warehouse/dbt`
 - **Commands:** `dbt deps`, `dbt seed`, `dbt build --target prod`
+- **Serverless environment:** `environment_version` `"5"` (Python 3.12). The packages pinned in
+  `warehouse/dbt/requirements.txt` install into it.
 - **SQL warehouse:** select the 2X-Small warehouse
 - Databricks injects `DBT_ACCESS_TOKEN` for the run-as principal, so no token in the repo.
 - Run artifacts — logs, results, manifests, configuration — are archived automatically per run.

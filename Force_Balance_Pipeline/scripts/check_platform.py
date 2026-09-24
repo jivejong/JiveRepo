@@ -55,6 +55,8 @@ STREAM_VAR = "enable_streaming_check"
 # is relative to the Git repo root, not to Force_Balance_Pipeline/. Doc 05 assumes a standalone
 # repo and says `warehouse/dbt`; override with --project-dir if that ever changes.
 DEFAULT_PROJECT_DIR = "Force_Balance_Pipeline/warehouse/dbt"
+# Serverless environment version (Python 3.12). Override with --env-version.
+DEFAULT_ENV_VERSION = "5"
 ENV_KEY = "dbt_env"
 HTTP_PATH_RE = re.compile(r"^/sql/1\.0/warehouses/([0-9a-fA-F]+)$")
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -265,8 +267,7 @@ def find_key(obj, key):
 
 def build_submit_payload(cfg, run_name, commands, git_url, branch, env_version, project_dir):
     spec = {"dependencies": [pinned_requirement()]}
-    if env_version:
-        spec["environment_version"] = env_version
+    spec["environment_version"] = env_version
     return {
         "run_name": run_name,
         "git_source": {"git_url": git_url, "git_provider": "gitHub", "git_branch": branch},
@@ -444,13 +445,14 @@ def cmd_q1(args):
     cfg = config()
     say("  ensuring schema exists (the only pre-run workspace write)")
     sql(cfg, f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
+    env_version = args.env_version or DEFAULT_ENV_VERSION
     ev = run_dbt_task(cfg, "phase0-q1-dbt-from-git", ["dbt deps", "dbt build"],
-                      args.git_url, args.branch, args.env_version, args.project_dir)
+                      args.git_url, args.branch, env_version, args.project_dir)
     print_run_evidence(ev)
     say("  expected dbt summary if healthy: PASS=9 TOTAL=9 (1 seed + 2 models + 6 tests)")
     if ev["ok"]:
         write_state({"q1": {"run_id": ev["run_id"], "git_url": args.git_url, "branch": args.branch,
-                            "env_version": args.env_version, "project_dir": args.project_dir,
+                            "env_version": env_version, "project_dir": args.project_dir,
                             "commit_sha": ev["commit_sha"]}})
         say("  RESULT: run SUCCEEDED. q3 is now unlocked (state saved to .phase0_state.json).")
         say("  Verify independently:  SELECT count(*) FROM force.phase0.phase0_model_b;  -- expect 5")
@@ -514,7 +516,7 @@ def cmd_q3(args):
         return 2
     git_url = args.git_url or state["git_url"]
     branch = args.branch or state["branch"]
-    env_version = args.env_version or state.get("env_version")
+    env_version = args.env_version or state.get("env_version") or DEFAULT_ENV_VERSION
     project_dir = args.project_dir if args.project_dir != DEFAULT_PROJECT_DIR else \
         state.get("project_dir", DEFAULT_PROJECT_DIR)
     say(f"  source: {git_url} @ {branch}  (phase0_streaming_check.sql must already be pushed)")
@@ -669,8 +671,8 @@ def main():
         sp.add_argument("--project-dir", default=DEFAULT_PROJECT_DIR,
                         help="dbt project directory relative to the Git repo root "
                         f"(default: {DEFAULT_PROJECT_DIR})")
-        sp.add_argument("--env-version", help="serverless environment_version (not documented "
-                        "in the sources I checked; omitted if not given)")
+        sp.add_argument("--env-version", help="serverless environment_version override "
+                        f"(default: {DEFAULT_ENV_VERSION}; q3 reuses the value q1 saved)")
         sp.set_defaults(fn=fn)
     sp = sub.add_parser("q2")
     sp.add_argument("--verify", action="store_true")
