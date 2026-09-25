@@ -13,6 +13,8 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
+import gemini_client
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT_DIR = REPO_ROOT / "data" / "swapi_snapshot"
 SEEDS_DIR = REPO_ROOT / "warehouse" / "dbt" / "seeds"
@@ -115,6 +117,11 @@ def add_common_args(parser, seed_name):
                         help="Gemini thinking level; recorded in provenance. Required except with "
                              "--print-prompts (OPEN until the first review pass, doc 08)")
     parser.add_argument("--model", default=ENRICH_MODEL, help=f"default: {ENRICH_MODEL}")
+    parser.add_argument("--structured-output", choices=gemini_client.STRUCTURED_STYLES,
+                        default=gemini_client.DEFAULT_STRUCTURED_STYLE,
+                        help="how the JSON schema is sent: json_schema (responseMimeType + "
+                             "responseJsonSchema, default) or response_format (responseFormat.text). "
+                             "Switch if the API rejects the default")
     parser.add_argument("--snapshot-dir", type=Path, default=SNAPSHOT_DIR,
                         help="SWAPI snapshot to read (default: data/swapi_snapshot)")
     parser.add_argument("--out-dir", type=Path, default=SEEDS_DIR,
@@ -204,9 +211,11 @@ def sum_usage(usages):
     return total
 
 
-def print_request_settings(model, thinking_level, prompt_version, prompt_hash_):
+def print_request_settings(model, thinking_level, prompt_version, prompt_hash_,
+                           structured_style=gemini_client.DEFAULT_STRUCTURED_STYLE):
     print("--- request settings ---")
     print(f"endpoint:        generateContent (REST, via http_request; explicit User-Agent)")
+    print(f"structured out:  {structured_style}")
     print(f"model:           {model}")
     print(f"temperature:     not sent (model default 1.0)")
     print(f"thinking level:  {thinking_level or '<--thinking-level, required for a real run>'}")

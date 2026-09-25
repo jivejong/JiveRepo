@@ -33,9 +33,11 @@ Rules:
    `seeds/ENRICHMENT_PROVENANCE.md`.
 4. Regeneration is a **migration event**. It requires regenerating the backfill and truncating
    derived tables. Do not do it casually.
-5. Review anchors are never named in enrichment prompts. Every planet named in the doc 07 Phase 1
-   checkpoint or in the review checklist below, and its expected channel values, is an anchor.
-   Naming one in a prompt would turn the review into a check of the prompt, not of the model.
+5. Review anchors are never named in enrichment instruction text (system prompts, preambles,
+   hints). Every planet named in the doc 07 Phase 1 checkpoint or in the review checklist below,
+   and its expected channel values, is an anchor. Naming one in instruction text would turn the
+   review into a check of the prompt, not of the model. The per-planet data entries the model must
+   describe are inherent to the request and are not covered.
 
 This constraint is also what makes the layer defensible. AI-generated data entering a pipeline
 through a reviewed, version-controlled gate is a meaningfully different thing from a live API
@@ -57,8 +59,9 @@ Accurate, and the more honest claim than implying a sourced dataset.
 
 ### Script
 
-`scripts/enrich_planets.py` — reads `data/swapi_snapshot/planets.json`, calls the model once per
-planet (or in batches of 10 for consistency), writes `warehouse/dbt/seeds/dim_sector.csv`.
+`scripts/enrich_planets.py` — reads `data/swapi_snapshot/planets.json`, sends the 59 planets other
+than planets/28 to the model in one call (`--batch-size N` splits it if a response is truncated),
+writes `warehouse/dbt/seeds/dim_sector.csv`.
 
 ### Output schema
 
@@ -66,7 +69,7 @@ planet (or in batches of 10 for consistency), writes `warehouse/dbt/seeds/dim_se
 |---|---|---|
 | `sector_id` | string | slug of SWAPI `name` — PK, never model-generated. One exception: planets/28 maps to `uncharted` (see "The `unknown` planet") |
 | `sector_name` | string | from SWAPI (`unknown` for planets/28) |
-| `climate`, `terrain`, `population`, `diameter_km` | | from SWAPI, unchanged |
+| `climate`, `terrain`, `population`, `diameter_km` | | from SWAPI; `population` and `diameter_km` are blank when SWAPI's value is not a number, and `diameter_km` is also blank when it is 0 (see below) |
 | `system_name` | string | e.g. "Tatoo system" |
 | `region` | string | `Core Worlds` \| `Colonies` \| `Inner Rim` \| `Expansion Region` \| `Mid Rim` \| `Outer Rim` \| `Wild Space` \| `Unknown Regions` |
 | `midi_baseline` | float | 1000–25000 ppm |
@@ -81,10 +84,21 @@ planet (or in batches of 10 for consistency), writes `warehouse/dbt/seeds/dim_se
 | `canon_confidence` | float | 0.0–1.0, model's self-assessment |
 | `is_unknown` | boolean | true for planets/28 only (see "The `unknown` planet") |
 
+**Departure from passthrough.** `population` and `diameter_km` are SWAPI values passed through, with
+one exception: a value that is not a number (SWAPI's `"unknown"`) is written as empty (null), so
+the seed columns can be numeric. A `diameter_km` of `0` is treated the same way: SWAPI uses `0` for
+"unknown" diameters (six planets, including planets/28), and a 0 km planet is meaningless. Other
+numeric values are kept as given. Text fields (`climate`, `terrain`) keep `"unknown"`.
+
 `sigma` and `dark_spike_probability` are the columns that matter most and the ones easiest to
 forget. Without per-planet spread, every planet behaves identically around a different center.
 With it, Mustafar is dark-volatile, Coruscant is midi-high and steady, Dagobah is quietly
 anomalous — and the galaxy map has character.
+
+**Sigma is enforced per row.** Each sigma must be a fraction of that row's own baseline: midi
+2-5%, kyber 8-15%, dark 5-10%. The response schema can only bound values absolutely, so the script
+clamps an out-of-band sigma to the band and records every adjustment in the provenance sidecar
+(`--strict-sigma` fails instead). The `is_unknown` row is exempt: its values are medians.
 
 `canon_confidence` exists because the model will be certain about Tatooine and inventing things
 about Ojom. Sort by it during review and spot-check the bottom.
@@ -160,6 +174,8 @@ Before committing the CSV:
 - `midi_baseline` is high for Coruscant; low for gas giants and barren worlds
 - `kyber_baseline` is high for Utapau
 - Sort by `canon_confidence` ascending and read the bottom ten rows
+- No more than 10% of rows have a sigma clamped on any channel (`sigma_adjustments` in the
+  provenance sidecar). More than that is a prompt problem: regenerate, do not accept
 - Baselines are spread across the range, not clustered at the midpoint
 
 That last one is the most common failure. Models regress to the mean when generating numeric
@@ -203,7 +219,7 @@ An explicit, readable, version-controlled list is the correct answer.
 |---|---|---|
 | `jedi_id` | string | slug of SWAPI `name` — PK |
 | `jedi_name` | string | from SWAPI |
-| `species_id`, `homeworld_sector_id` | string | SWAPI FKs |
+| `species_id`, `homeworld_sector_id` | string | SWAPI FKs. `species_id` is the slug of the SWAPI species name; SWAPI leaves species empty for Humans, so an empty species means Human (species/1, `human`). `homeworld_sector_id` uses the `dim_sector` id mapping, so planets/28 is `uncharted` |
 | `rank` | string | `padawan` \| `knight` \| `master` \| `council_member` \| `grand_master` |
 | `primary_specialty` | string | `combat` \| `diplomacy` \| `investigation` \| `stealth` |
 | `secondary_specialty` | string | same set, nullable |

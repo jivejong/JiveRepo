@@ -32,6 +32,7 @@ import jedi_roster
 
 SEED = "dim_jedi"
 PROMPT_VERSION = "jedi-v1"
+HUMAN_SPECIES_ID = 1  # SWAPI species/1; an empty SWAPI species list means Human
 
 FIELDS = ["jedi_id", "jedi_name", "species_id", "homeworld_sector_id", "rank", "primary_specialty",
           "secondary_specialty", "power_rating", "lightsaber_form", "notable_for", "canon_confidence"]
@@ -99,13 +100,13 @@ def build_inputs(records, planets, species, sid_map):
     inputs = []
     for rec in records:
         home_id = ec.url_id(rec["homeworld"])
-        species_name = None
-        if rec.get("species"):
-            species_name = species_by_id[ec.url_id(rec["species"][0])]["name"]
+        # SWAPI leaves species empty for Humans, so an empty list means Human (species/1); doc 08.
+        species_key = ec.url_id(rec["species"][0]) if rec.get("species") else HUMAN_SPECIES_ID
+        species_name = species_by_id[species_key]["name"]
         inputs.append({
             "jedi_id": ec.slugify(rec["name"]),
             "jedi_name": rec["name"],
-            "species_id": ec.slugify(species_name) if species_name else "",
+            "species_id": ec.slugify(species_name),
             "homeworld_sector_id": sid_map[home_id],
             "_facts": {"jedi_id": ec.slugify(rec["name"]), "name": rec["name"],
                        "birth_year": rec["birth_year"], "species": species_name,
@@ -185,7 +186,8 @@ def main():
         print("\n=== RESPONSE SCHEMA ===")
         print(json.dumps(schema, indent=2))
         print()
-        ec.print_request_settings(args.model, args.thinking_level, PROMPT_VERSION, hash_)
+        ec.print_request_settings(args.model, args.thinking_level, PROMPT_VERSION, hash_,
+                                  args.structured_output)
         print(f"roster:          {len(inputs)} people, one call")
         return 0
 
@@ -194,9 +196,13 @@ def main():
         raise SystemExit(f"{out_csv} exists. Regeneration is a migration event (doc 08); use --force.")
 
     api_key = ec.get_api_key()
-    body = gemini_client.build_request(SYSTEM_PROMPT, user_prompt(inputs), schema, args.thinking_level)
+    body = gemini_client.build_request(SYSTEM_PROMPT, user_prompt(inputs), schema, args.thinking_level,
+                                       args.structured_output)
     print(f"calling the model for {len(inputs)} Jedi ...", flush=True)
-    parsed, usage = gemini_client.generate_json(api_key, args.model, body)
+    try:
+        parsed, usage = gemini_client.generate_json(api_key, args.model, body)
+    except gemini_client.GeminiError as e:
+        raise SystemExit(f"Gemini call failed: {e}\nNothing was written.")
     try:
         by_id, warnings = validate(parsed, ids)
     except ValueError as e:
@@ -230,7 +236,8 @@ def main():
     ec.write_csv(out_csv, FIELDS, rows)
     rec = ec.provenance_record(SEED, args.model, args.thinking_level, PROMPT_VERSION, hash_, cycles,
                                len(rows), usage, warnings,
-                               {"primary_specialty_counts": dict(dist)})
+                               {"primary_specialty_counts": dict(dist),
+                                "structured_output": args.structured_output})
     side = ec.write_sidecar(args.out_dir, SEED, rec)
 
     print(f"\nwrote {out_csv} ({len(rows)} rows) and {side.name}")

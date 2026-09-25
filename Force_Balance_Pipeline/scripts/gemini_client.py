@@ -40,15 +40,31 @@ def http_request(method, url, *, headers=None, data=None, timeout=180):
         return e.code, body
 
 
-def build_request(system_prompt, user_prompt, schema, thinking_level):
+# Two ways to ask for schema-constrained JSON on generateContent. Google's sources disagree on
+# which is current, so both are supported and the first --trial settles it:
+#   json_schema      generationConfig.responseMimeType + generationConfig.responseJsonSchema
+#                    (named in the public generative_service.proto)
+#   response_format  generationConfig.responseFormat.text.{mimeType, schema}
+#                    (shown on Google's current generate-content docs pages)
+STRUCTURED_STYLES = ("json_schema", "response_format")
+DEFAULT_STRUCTURED_STYLE = "json_schema"
+
+
+def build_request(system_prompt, user_prompt, schema, thinking_level,
+                  structured_style=DEFAULT_STRUCTURED_STYLE):
     """The generateContent request body. No temperature: the model default (1.0) applies."""
+    config = {"thinkingConfig": {"thinkingLevel": thinking_level}}
+    if structured_style == "json_schema":
+        config["responseMimeType"] = "application/json"
+        config["responseJsonSchema"] = schema
+    elif structured_style == "response_format":
+        config["responseFormat"] = {"text": {"mimeType": "application/json", "schema": schema}}
+    else:
+        raise ValueError(f"unknown structured style {structured_style!r}")
     return {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-        "generationConfig": {
-            "responseFormat": {"text": {"mimeType": "application/json", "schema": schema}},
-            "thinkingConfig": {"thinkingLevel": thinking_level},
-        },
+        "generationConfig": config,
     }
 
 
