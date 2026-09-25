@@ -1,0 +1,157 @@
+# Postgres types remain unverified until the local stack phase (requires dbt-postgres adapter); verify with --target dev (Databricks)
+
+seeds:
+  - name: dim_sector
+    description: "60 SWAPI planets enriched with static Force parameters, system, region, and narrative context."
+    config:
+      column_types:
+        midi_baseline: "{{ 'double' if target.type == 'databricks' else 'double precision' }}"
+        midi_sigma: "{{ 'double' if target.type == 'databricks' else 'double precision' }}"
+        kyber_baseline: "{{ 'double' if target.type == 'databricks' else 'double precision' }}"
+        kyber_sigma: "{{ 'double' if target.type == 'databricks' else 'double precision' }}"
+        dark_baseline: "{{ 'double' if target.type == 'databricks' else 'double precision' }}"
+        dark_sigma: "{{ 'double' if target.type == 'databricks' else 'double precision' }}"
+        dark_spike_probability: "{{ 'double' if target.type == 'databricks' else 'double precision' }}"
+        canon_confidence: "{{ 'double' if target.type == 'databricks' else 'double precision' }}"
+        diameter_km: "{{ 'double' if target.type == 'databricks' else 'double precision' }}"
+        population: "{{ 'double' if target.type == 'databricks' else 'double precision' }}"
+        is_unknown: boolean
+    columns:
+      - name: sector_id
+        description: "Primary key. Slug of SWAPI name, with 'uncharted' reserved for planets/28."
+        data_tests:
+          - unique
+          - not_null
+
+      - name: sector_name
+        description: "SWAPI planet name ('unknown' for planets/28 uncharted sector)."
+        data_tests:
+          - not_null
+
+      - name: system_name
+        description: "Star system name ('Unknown' for planets/28 uncharted sector)."
+        data_tests:
+          - not_null
+
+      - name: region
+        description: "Canonical galaxy region; controls dashboard grouping."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - "Core Worlds"
+                  - "Colonies"
+                  - "Inner Rim"
+                  - "Expansion Region"
+                  - "Mid Rim"
+                  - "Outer Rim"
+                  - "Wild Space"
+                  - "Unknown Regions"
+
+      - name: is_unknown
+        description: "Flag indicating the SWAPI uncharted planet (planets/28)."
+        data_tests:
+          - not_null
+
+      - name: midi_baseline
+        description: "Stable channel baseline (1000–25000 ppm)."
+        data_tests:
+          - not_null
+
+      - name: midi_sigma
+        description: "Standard deviation for midi channel (2–5% of baseline)."
+        data_tests:
+          - not_null
+
+      - name: kyber_baseline
+        description: "Variable channel baseline (0–100 resonance units)."
+        data_tests:
+          - not_null
+
+      - name: kyber_sigma
+        description: "Standard deviation for kyber channel (8–15%)."
+        data_tests:
+          - not_null
+
+      - name: dark_baseline
+        description: "Activity baseline for dark channel (0–100 activity units)."
+        data_tests:
+          - not_null
+
+      - name: dark_sigma
+        description: "Standard deviation for dark channel."
+        data_tests:
+          - not_null
+
+      - name: dark_spike_probability
+        description: "Per-scan probability of a spike event (0.0–0.05)."
+        data_tests:
+          - not_null
+
+  - name: dim_jedi
+    description: "17 prequel-era Jedi Order members from SWAPI, enriched with Force specialties and attributes."
+    config:
+      column_types:
+        power_rating: "{{ 'int' if target.type == 'databricks' else 'integer' }}"
+        canon_confidence: "{{ 'double' if target.type == 'databricks' else 'double precision' }}"
+    columns:
+      - name: jedi_id
+        description: "Primary key. Slug of SWAPI name."
+        data_tests:
+          - unique
+          - not_null
+
+      - name: homeworld_sector_id
+        description: "Foreign key referencing dim_sector. Catches broken mappings for unknown homeworlds (e.g., Yoda, Qui-Gon)."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_sector')
+                field: sector_id
+
+      - name: primary_specialty
+        description: "Core discipline used by the constraint layer for assignment."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - combat
+                  - diplomacy
+                  - investigation
+                  - stealth
+
+      - name: secondary_specialty
+        description: "Optional secondary discipline."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - combat
+                  - diplomacy
+                  - investigation
+                  - stealth
+
+      - name: rank
+        description: "Hierarchical rank in the Jedi Order."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - padawan
+                  - knight
+                  - master
+                  - council_member
+                  - grand_master
+
+      - name: power_rating
+        description: "Relative Force power rating between 1 and 10."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+                quote: false
