@@ -1,5 +1,6 @@
 {#
-  Phase 1 review check 1 (doc 08): are baselines spread across their documented ranges?
+  Phase 1 review check 1 (doc 08): do the baselines use their documented ranges, without
+  clustering at the middle?
 
   Run after `dbt seed`, once the Phase 1 seeds exist:
     dbt show --select phase1_check_1_spread --limit 100 --vars "{run_phase1_checks: true}" --profiles-dir .
@@ -10,8 +11,12 @@
   The `uncharted` row (planets/28) is excluded by its is_unknown flag, not by id or name.
 
   Pass criteria, per channel, on each baseline's position within its documented range (0..1):
-    p90 - p10 >= 0.50, stddev >= 0.20, share of rows in 0.40-0.60 <= 0.35,
-    at least 7 of 10 equal-width bins occupied.
+    min_pos <= 0.25, max_pos >= 0.75, share of rows in 0.40-0.60 <= 0.35.
+  These test range use, not even spread: the prompt's own lore (peaceful worlds low, crystal worlds
+  rare) makes the kyber and dark distributions right-skewed by design. p10/p50/p90 are shown for
+  context only and are not criteria.
+
+  Mirrored by scripts/enrich_planets.py (RANGE_USE); scripts/check_gate_parity.py verifies they match.
 #}
 {{ config(enabled=var('run_phase1_checks', false) | as_bool) }}
 
@@ -42,17 +47,16 @@ scaled as (
     join ranges r using (channel)
 ),
 
-spread as (
+use as (
     select
         channel,
         count(*) as n,
         min(pos) as min_pos,
         max(pos) as max_pos,
-        stddev_pop(pos) as sd_pos,
-        percentile(pos, 0.10) as p10,
-        percentile(pos, 0.90) as p90,
         avg(case when pos between 0.40 and 0.60 then 1.0 else 0.0 end) as share_in_middle,
-        count(distinct least(greatest(floor(pos * 10), 0), 9)) as bins_occupied
+        percentile(pos, 0.10) as p10,
+        percentile(pos, 0.50) as p50,
+        percentile(pos, 0.90) as p90
     from scaled
     group by channel
 )
@@ -62,15 +66,13 @@ select
     n,
     min_pos,
     max_pos,
-    sd_pos,
-    p10,
-    p90,
     share_in_middle,
-    bins_occupied,
-    (p90 - p10 >= 0.50) as span_ok,
-    (sd_pos >= 0.20) as sd_ok,
+    p10,
+    p50,
+    p90,
+    (min_pos <= 0.25) as min_ok,
+    (max_pos >= 0.75) as max_ok,
     (share_in_middle <= 0.35) as not_clustered,
-    (bins_occupied >= 7) as bins_ok,
-    (p90 - p10 >= 0.50 and sd_pos >= 0.20 and share_in_middle <= 0.35 and bins_occupied >= 7) as pass
-from spread
+    (min_pos <= 0.25 and max_pos >= 0.75 and share_in_middle <= 0.35) as pass
+from use
 order by channel

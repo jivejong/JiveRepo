@@ -4,27 +4,38 @@
 Build-time only. The reviewed output is committed and frozen; reruns do not reproduce it, and
 regeneration is a migration event (doc 08), so an existing seed is only overwritten with --force.
 
+A model call NEVER writes the seed (doc 08: seeds are written from the reviewed response, never from
+a fresh call). A call saves its raw response outside the repo and reports; only
+--from-response FILE --write produces dim_jedi.csv.
+
 Behavior:
   * The roster comes from scripts/jedi_roster.py, which is verified against people.json first.
     Nothing is invented: enrichment only adds attributes to existing SWAPI rows.
   * SWAPI fields (name, species, homeworld) are never model-generated. homeworld_sector_id uses the
-    same id mapping as dim_sector, so Yoda and Qui-Gon Jinn map to "uncharted".
-  * The response schema bounds rank, specialties, power_rating and canon_confidence.
+    same id mapping as dim_sector, so Yoda and Qui-Gon Jinn map to "uncharted". An empty SWAPI
+    species means Human (species/1).
+  * The response schema bounds rank, specialties, power_rating and canon_confidence; the exact
+    count and id set are enforced in code after the response.
   * Prompt text never names a review anchor (doc 08 rule 5).
-  * The thinking level is a required flag and is recorded in a provenance sidecar next to the CSV.
-  * The primary_specialty distribution is printed. Fewer than three per specialty is a warning:
-    adjust the prompt and regenerate (doc 08), because a lopsided roster leaves some signatures
-    without a valid responder.
+  * Refusal gate: --write refuses when the row count is not 17 or any primary_specialty has fewer
+    than 3 Jedi (a lopsided roster leaves some signatures without a valid responder).
+    --accept-failing-gate overrides and the override is recorded in the sidecar.
+  * Every call's raw response is saved outside the repo (--responses-dir) before it is parsed, with
+    a .meta.json. --from-response FILE reports offline; with --write it promotes that response,
+    taking provenance from the .meta.json and refusing a mismatched prompt hash or roster data.
+    The sidecar records the SHA-256 of people.json, planets.json and species.json. No API call.
 
 Usage:
-    python scripts/enrich_jedi.py --print-prompts             # no API call
-    python scripts/enrich_jedi.py --thinking-level low --trial      # calls the model, writes nothing
-    python scripts/enrich_jedi.py --thinking-level low
+    python scripts/enrich_jedi.py --print-prompts                        # no API call
+    python scripts/enrich_jedi.py --thinking-level low                   # one call; saves and reports
+    python scripts/enrich_jedi.py --from-response FILE                   # offline re-analysis
+    python scripts/enrich_jedi.py --from-response FILE --write           # promote to the seed
 """
 import argparse
 import json
 import sys
 from collections import Counter
+from pathlib import Path
 
 import enrich_common as ec
 import gemini_client
@@ -33,6 +44,8 @@ import jedi_roster
 SEED = "dim_jedi"
 PROMPT_VERSION = "jedi-v1"
 HUMAN_SPECIES_ID = 1  # SWAPI species/1; an empty SWAPI species list means Human
+# 17 entries are roughly 2-3k tokens of answer; thinking tokens count toward the cap too.
+MAX_OUTPUT_TOKENS = 16384
 
 FIELDS = ["jedi_id", "jedi_name", "species_id", "homeworld_sector_id", "rank", "primary_specialty",
           "secondary_specialty", "power_rating", "lightsaber_form", "notable_for", "canon_confidence"]
@@ -84,10 +97,11 @@ def batch_schema(ids):
     }
     item = {"type": "object", "properties": props, "required": list(props),
             "additionalProperties": False}
+    # No minItems/maxItems: Google rejects an exact array length together with the 17-value id enum
+    # (probe steps 14, 17, 18). validate() enforces the exact count and id set instead.
     return {
         "type": "object",
-        "properties": {"jedi": {"type": "array", "items": item,
-                                "minItems": len(ids), "maxItems": len(ids)}},
+        "properties": {"jedi": {"type": "array", "items": item}},
         "required": ["jedi"],
         "additionalProperties": False,
     }
@@ -127,9 +141,7 @@ def validate(parsed, expected_ids):
     rows = parsed.get("jedi") if isinstance(parsed, dict) else None
     if not isinstance(rows, list):
         raise ValueError("response has no `jedi` array")
-    got = [r.get("jedi_id") for r in rows]
-    if sorted(map(str, got)) != sorted(expected_ids):
-        raise ValueError(f"returned ids {got} do not match requested ids {list(expected_ids)}")
+    ec.check_exact_ids(rows, expected_ids, "jedi_id", "Jedi")
     warnings = []
     for r in rows:
         jid = r["jedi_id"]
@@ -158,11 +170,208 @@ def validate(parsed, expected_ids):
     return {r["jedi_id"]: r for r in rows}, warnings
 
 
+EXPECTED_ROWS = len(jedi_roster.ROSTER)  # 17
+MIN_PER_SPECIALTY = 3
+INPUT_FILES = ("people.json", "planets.json", "species.json")
+REQUIRED_META = ("model", "thinking_level", "max_output_tokens", "prompt_version", "prompt_hash",
+                 "requested_utc", "call", "calls", "jedi_ids")
+
+
+def build_rows(inputs, by_id):
+    rows = []
+    for inp in inputs:
+        m = by_id[inp["jedi_id"]]
+        rows.append({
+            "jedi_id": inp["jedi_id"], "jedi_name": inp["jedi_name"], "species_id": inp["species_id"],
+            "homeworld_sector_id": inp["homeworld_sector_id"], "rank": m["rank"],
+            "primary_specialty": m["primary_specialty"],
+            "secondary_specialty": m["secondary_specialty"] or "",
+            "power_rating": m["power_rating"], "lightsaber_form": m["lightsaber_form"].strip(),
+            "notable_for": m["notable_for"].strip(), "canon_confidence": round(float(m["canon_confidence"]), 2),
+        })
+    return rows
+
+
+def jedi_gate(rows):
+    """The refusal gate (doc 08 / analyses check 3): exactly 17 rows and at least 3 Jedi per
+    primary_specialty, or the seed is not written."""
+    counts = Counter(r["primary_specialty"] for r in rows)
+    failures = []
+    if len(rows) != EXPECTED_ROWS:
+        failures.append(f"row count is {len(rows)}, expected {EXPECTED_ROWS}")
+    for s in ec.SPECIALTIES:
+        if counts[s] < MIN_PER_SPECIALTY:
+            failures.append(f"primary_specialty {s!r} has {counts[s]} Jedi, needs at least {MIN_PER_SPECIALTY}")
+    return {"row_count": len(rows), "expected_rows": EXPECTED_ROWS, "min_per_specialty": MIN_PER_SPECIALTY,
+            "specialty_counts": {s: counts[s] for s in ec.SPECIALTIES}, "failures": failures,
+            "pass": not failures}
+
+
+def gate_report(gate):
+    lines = [f"review gate: {gate['row_count']} rows (must be {gate['expected_rows']}); primary_specialty "
+             f"counts (each must be at least {gate['min_per_specialty']}):"]
+    for s, n in gate["specialty_counts"].items():
+        lines.append(f"    {s:<14} {n:>2}  {'PASS' if n >= gate['min_per_specialty'] else 'FAIL'}")
+    lines.append("  OVERALL: PASS" if gate["pass"] else
+                 "  OVERALL: FAIL. " + "; ".join(gate["failures"]) + ". A failing gate refuses to write: "
+                 "regenerate, or --accept-failing-gate (recorded in the sidecar).")
+    return "\n".join(lines)
+
+
+def rows_table(rows):
+    lines = [f"  {'jedi_id':<18} {'rank':<13} {'primary':<14} {'secondary':<14} {'power':>5} {'conf':>4}"]
+    for r in rows:
+        lines.append(f"  {r['jedi_id']:<18} {r['rank']:<13} {r['primary_specialty']:<14} "
+                     f"{(r['secondary_specialty'] or '-'):<14} {r['power_rating']:>5} {r['canon_confidence']:>4.2f}")
+    return "\n".join(lines)
+
+
+def current_prompt_hash():
+    return ec.prompt_hash(SYSTEM_PROMPT, USER_PREAMBLE, json.dumps(batch_schema(["<jedi_id>"]), sort_keys=True))
+
+
+def load_saved_response(path, ids):
+    """One saved raw API response (or a plain {"jedi": [...]} file) -> (rows by jedi_id, warnings, usage)."""
+    raw = Path(path).read_bytes()
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        raise SystemExit(f"{path} is not JSON: {e}")
+    usage = {}
+    if isinstance(data, dict) and "candidates" in data:
+        try:
+            parsed, usage = gemini_client.parse_response(raw)
+        except gemini_client.GeminiError as e:
+            raise SystemExit(f"{path}: {e}")
+    elif isinstance(data, dict) and "jedi" in data:
+        parsed = data
+    else:
+        raise SystemExit(f"{path} is neither a raw generateContent response nor a {{\"jedi\": [...]}} file")
+    try:
+        by_id, warnings = validate(parsed, ids)
+    except ValueError as e:
+        raise SystemExit(f"{path} failed validation: {e}")
+    return by_id, warnings, usage
+
+
+def load_meta(raw_path):
+    path = ec.meta_path_for(raw_path)
+    if not path.exists():
+        raise SystemExit(f"{Path(raw_path).name}: there is no {path.name} next to it, so its provenance "
+                         "cannot be taken and it cannot be promoted")
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    missing = [k for k in REQUIRED_META if k not in meta]
+    if missing:
+        raise SystemExit(f"{path.name} is missing {missing}; it cannot be promoted")
+    return meta
+
+
+def promote(args, inputs, ids):
+    """--from-response --write: turn a reviewed saved response into dim_jedi.csv and its sidecar.
+
+    Provenance comes from the response's .meta.json. Refuses if the saved prompt hash or roster data
+    differs from what would be sent today, if the gate fails (row count != 17, or a primary_specialty
+    with fewer than 3 Jedi; --accept-failing-gate overrides and is recorded), or if the seed exists.
+    """
+    out_csv = args.out_dir / f"{SEED}.csv"
+    if out_csv.exists() and not args.force:
+        raise SystemExit(f"{out_csv} exists. Regeneration is a migration event (doc 08); use --force.")
+    if len(args.from_response) != 1:
+        raise SystemExit("Jedi enrichment is one call: give exactly one response file")
+    path = args.from_response[0]
+    meta = load_meta(path)
+    if meta["calls"] != 1 or meta["call"] != 1:
+        raise SystemExit("this response is not a single-call run")
+    if args.thinking_level and args.thinking_level != meta["thinking_level"]:
+        raise SystemExit(f"--thinking-level {args.thinking_level} conflicts with the saved response "
+                         f"({meta['thinking_level']}); provenance comes from the saved response")
+    if meta["prompt_version"] != PROMPT_VERSION:
+        raise SystemExit(f"the saved prompt version {meta['prompt_version']!r} is not this script's "
+                         f"{PROMPT_VERSION!r}")
+    expected = current_prompt_hash()
+    if meta["prompt_hash"] != expected:
+        raise SystemExit(f"the saved prompt hash {meta['prompt_hash']} does not match the current prompt "
+                         f"{expected}: the response came from a different prompt. Regenerate, then promote "
+                         "that response.")
+    data_checked = "user_prompt_hash" in meta
+    if data_checked:
+        if ec.prompt_hash(user_prompt(inputs)) != meta["user_prompt_hash"]:
+            raise SystemExit("the roster data the model saw differs from the current snapshot. Regenerate, "
+                             "then promote that response.")
+    else:
+        print("WARNING: the meta has no roster-data hash, so the data the model saw was not verified "
+              "against the snapshot. The input files' SHA-256 are recorded in the sidecar.")
+    by_id, warnings, usage = load_saved_response(path, ids)
+    rows = build_rows(inputs, by_id)
+    gate = jedi_gate(rows)
+    overridden = (not gate["pass"]) and args.accept_failing_gate
+    print(f"promoting {Path(path).name}: prompt hash {meta['prompt_hash']} matches the current prompt")
+    if not gate["pass"] and not args.accept_failing_gate:
+        print(gate_report(gate))
+        raise SystemExit("\nThe review gate failed, so nothing was written. Regenerate, or rerun with "
+                         "--accept-failing-gate to write anyway; the override is recorded in the sidecar.")
+
+    cycles = ec.regeneration_cycles(args.out_dir, SEED)
+    ec.write_csv(out_csv, FIELDS, rows)
+    snap = Path(args.snapshot_dir)
+    rec = ec.provenance_record(
+        SEED, meta["model"], meta["thinking_level"], meta["prompt_version"], meta["prompt_hash"], cycles,
+        len(rows), usage, warnings,
+        {"primary_specialty_counts": gate["specialty_counts"], "structured_output": ec.STRUCTURED_OUTPUT,
+         "max_output_tokens": meta["max_output_tokens"], "review_gate": gate,
+         "accepted_failing_gate": overridden,
+         "inputs_sha256": {name: ec.sha256_file(snap / name) for name in INPUT_FILES},
+         "written_from": "reviewed saved response", "promoted_from": [Path(path).name],
+         "promoted_from_sha256": {Path(path).name: ec.sha256_file(path)},
+         "promoted_utc": ec.utc_stamp(), "prompt_hash_matched_current_prompt": True,
+         "roster_data_matched_snapshot": data_checked,
+         "response_run_was_trial": bool(meta.get("trial"))},
+        generated_utc=ec.stamp_to_iso(meta["requested_utc"]))
+    side = ec.write_sidecar(args.out_dir, SEED, rec)
+
+    print(f"\nwrote {out_csv} ({len(rows)} rows) and {side.name}")
+    print()
+    print(gate_report(gate))
+    if warnings:
+        print(f"{len(warnings)} warning(s)")
+        for w in warnings:
+            print(f"  {w}")
+    if overridden:
+        print("\nWARNING: written despite a failing review gate (--accept-failing-gate). "
+              "The override is recorded in the sidecar; do not accept this output.")
+    print("\nprovenance row for seeds/ENRICHMENT_PROVENANCE.md:")
+    print(ec.provenance_table_row(rec))
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ec.add_common_args(parser, SEED)
+    parser.add_argument("--accept-failing-gate", action="store_true",
+                        help="with --write: write the seed even though the review gate failed; the "
+                             "override is recorded in the provenance sidecar")
+    parser.add_argument("--from-response", nargs="+", type=Path, metavar="FILE",
+                        help="validate a saved raw response and report the gate; no API call. With "
+                             "--write, promote it to the seed")
+    parser.add_argument("--write", action="store_true",
+                        help="with --from-response: write dim_jedi.csv and its sidecar from the reviewed "
+                             "saved response, taking provenance from its .meta.json")
+    parser.add_argument("--corrections", type=Path, default=ec.CORRECTIONS_FILE,
+                        help="the recorded-corrections file; dim_jedi corrections are not supported, so "
+                             "any row for dim_jedi is refused")
     args = parser.parse_args()
-    ec.require_thinking_level(args)
+
+    if args.write and not args.from_response:
+        raise SystemExit("--write needs --from-response: seeds are written from a reviewed saved "
+                         "response (doc 08), never from a fresh call")
+    if args.write and args.trial:
+        raise SystemExit("--write and --trial cannot be combined")
+    if not args.from_response:
+        ec.require_thinking_level(args)
+    args.max_output_tokens = args.max_output_tokens or MAX_OUTPUT_TOKENS
+    if any(r["seed"] == "dim_jedi" for r in ec.read_corrections_file(args.corrections)):
+        raise SystemExit("corrections to dim_jedi are not supported: the Jedi roster is checked by count "
+                         "and specialty, not corrected by value")
 
     people = ec.read_snapshot("people", args.snapshot_dir)
     records, problems = jedi_roster.verify(people)
@@ -176,7 +385,7 @@ def main():
 
     ec.assert_no_anchors(**{"system prompt": SYSTEM_PROMPT, "user preamble": USER_PREAMBLE})
     schema = batch_schema(ids)
-    hash_ = ec.prompt_hash(SYSTEM_PROMPT, USER_PREAMBLE, json.dumps(batch_schema(["<jedi_id>"]), sort_keys=True))
+    hash_ = current_prompt_hash()
 
     if args.print_prompts:
         print("=== SYSTEM PROMPT ===")
@@ -187,68 +396,64 @@ def main():
         print(json.dumps(schema, indent=2))
         print()
         ec.print_request_settings(args.model, args.thinking_level, PROMPT_VERSION, hash_,
-                                  args.structured_output)
+                                  args.max_output_tokens)
         print(f"roster:          {len(inputs)} people, one call")
         return 0
 
-    out_csv = args.out_dir / f"{SEED}.csv"
-    if out_csv.exists() and not args.force and not args.trial:
-        raise SystemExit(f"{out_csv} exists. Regeneration is a migration event (doc 08); use --force.")
+    if args.from_response and args.write:
+        return promote(args, inputs, ids)
 
-    api_key = ec.get_api_key()
-    body = gemini_client.build_request(SYSTEM_PROMPT, user_prompt(inputs), schema, args.thinking_level,
-                                       args.structured_output)
-    print(f"calling the model for {len(inputs)} Jedi ...", flush=True)
-    try:
-        parsed, usage = gemini_client.generate_json(api_key, args.model, body)
-    except gemini_client.GeminiError as e:
-        raise SystemExit(f"Gemini call failed: {e}\nNothing was written.")
-    try:
-        by_id, warnings = validate(parsed, ids)
-    except ValueError as e:
-        raise SystemExit(f"validation failed: {e}\nNothing was written.")
-
-    dist = Counter(by_id[i]["primary_specialty"] for i in ids)
-    for s in ec.SPECIALTIES:
-        if dist[s] < 3:
-            warnings.append(f"primary_specialty {s!r} has {dist[s]} Jedi; at least 3 are required (doc 08)")
-
-    if args.trial:
-        print(json.dumps(list(by_id.values()), indent=2))
-        print(f"\ntrial: {len(warnings)} warning(s); usage {usage}; nothing written")
+    if args.from_response:
+        if len(args.from_response) != 1:
+            raise SystemExit("Jedi enrichment is one call: give exactly one response file")
+        by_id, warnings, _usage = load_saved_response(args.from_response[0], ids)
+        rows = build_rows(inputs, by_id)
+        print(f"from {Path(args.from_response[0]).name} (no API call, nothing written)\n")
+        print(rows_table(rows))
+        print()
+        print(gate_report(jedi_gate(rows)))
         for w in warnings:
             print(f"  warning: {w}")
         return 0
 
-    rows = []
-    for inp in inputs:
-        m = by_id[inp["jedi_id"]]
-        rows.append({
-            "jedi_id": inp["jedi_id"], "jedi_name": inp["jedi_name"], "species_id": inp["species_id"],
-            "homeworld_sector_id": inp["homeworld_sector_id"], "rank": m["rank"],
-            "primary_specialty": m["primary_specialty"],
-            "secondary_specialty": m["secondary_specialty"] or "",
-            "power_rating": m["power_rating"], "lightsaber_form": m["lightsaber_form"].strip(),
-            "notable_for": m["notable_for"].strip(), "canon_confidence": round(float(m["canon_confidence"]), 2),
-        })
-
-    cycles = ec.regeneration_cycles(args.out_dir, SEED)
-    ec.write_csv(out_csv, FIELDS, rows)
-    rec = ec.provenance_record(SEED, args.model, args.thinking_level, PROMPT_VERSION, hash_, cycles,
-                               len(rows), usage, warnings,
-                               {"primary_specialty_counts": dict(dist),
-                                "structured_output": args.structured_output})
-    side = ec.write_sidecar(args.out_dir, SEED, rec)
-
-    print(f"\nwrote {out_csv} ({len(rows)} rows) and {side.name}")
-    print("primary_specialty distribution (at least 3 each is required):")
-    for s in ec.SPECIALTIES:
-        print(f"  {s:<14} {dist[s]}")
-    print(f"{len(warnings)} warning(s)")
+    api_key = ec.get_api_key()
+    responses_dir = ec.resolve_responses_dir(args.responses_dir)
+    stamp = ec.utc_stamp()
+    user_text = user_prompt(inputs)
+    body = gemini_client.build_request(SYSTEM_PROMPT, user_text, schema, args.thinking_level,
+                                       args.max_output_tokens)
+    raw_path, meta_path = ec.call_paths(responses_dir, "jedi", args.thinking_level, 1, 1, stamp)
+    ec.write_call_meta(meta_path, {
+        "script": "enrich_jedi.py", "call": 1, "calls": 1, "model": args.model,
+        "thinking_level": args.thinking_level, "max_output_tokens": args.max_output_tokens,
+        "prompt_version": PROMPT_VERSION, "prompt_hash": hash_, "user_prompt_hash": ec.prompt_hash(user_text),
+        "trial": args.trial, "jedi_ids": ids, "requested_utc": stamp,
+        "note": "the raw response is the sibling .json file; analyse it with enrich_jedi.py "
+                "--from-response, promote it with --from-response --write"})
+    print(f"calling the model for {len(inputs)} Jedi ...", flush=True)
+    try:
+        parsed, usage = gemini_client.generate_json(api_key, args.model, body, raw_path)
+    except gemini_client.GeminiError as e:
+        hint = (f"\nThe response hit the output limit (--max-output-tokens {args.max_output_tokens}), "
+                "and thinking tokens count toward it. Raise --max-output-tokens or lower "
+                "--thinking-level, then rerun." if "MAX_TOKENS" in str(e) else "")
+        saved = f"\nRaw response saved: {raw_path}" if raw_path.exists() else ""
+        raise SystemExit(f"Gemini call failed: {e}{hint}{saved}")
+    print(f"raw response saved: {raw_path}")
+    try:
+        by_id, warnings = validate(parsed, ids)
+    except ValueError as e:
+        raise SystemExit(f"validation failed: {e}\nRaw response saved: {raw_path}")
+    rows = build_rows(inputs, by_id)
+    print(f"\nusage {usage}\n")
+    print(rows_table(rows))
+    print()
+    print(gate_report(jedi_gate(rows)))
     for w in warnings:
-        print(f"  {w}")
-    print("\nprovenance row for seeds/ENRICHMENT_PROVENANCE.md:")
-    print(ec.provenance_table_row(rec))
+        print(f"  warning: {w}")
+    print("\nnothing was written to the repo: a call never writes the seed (doc 08).")
+    print(f're-analyse offline:  python scripts/enrich_jedi.py --from-response "{raw_path}"\n'
+          f'once reviewed, promote:  python scripts/enrich_jedi.py --from-response "{raw_path}" --write')
     return 0
 
 

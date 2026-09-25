@@ -13,8 +13,6 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
-import gemini_client
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT_DIR = REPO_ROOT / "data" / "swapi_snapshot"
 SEEDS_DIR = REPO_ROOT / "warehouse" / "dbt" / "seeds"
@@ -104,6 +102,103 @@ def assert_no_anchors(**texts):
                 raise SystemExit(f"anchor {name!r} is named in the {label}; doc 08 rule 5 forbids it")
 
 
+# Recorded human corrections (doc 08). A committed file OUTSIDE seeds/, because dbt loads every csv
+# in seeds/ as a seed. Applied at promote time, before the review gate.
+CORRECTIONS_FILE = REPO_ROOT / "data" / "enrichment_corrections.csv"
+CORRECTIONS_HEADER = ["seed", "key", "column", "corrected_value", "reason"]
+CORRECTABLE_SEEDS = ("dim_sector", "dim_jedi")
+
+
+def sha256_file(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def read_corrections_file(path):
+    """The rows of the corrections file, checked for shape only: header, known seed, every field
+    filled (a correction without a reason is refused), no duplicate (seed, key, column). Lines
+    starting with # and blank lines are ignored. A missing file means no corrections."""
+    path = Path(path)
+    if not path.exists():
+        return []
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines()
+             if ln.strip() and not ln.lstrip().startswith("#")]
+    if not lines:
+        return []
+    reader = csv.DictReader(lines)
+    if reader.fieldnames != CORRECTIONS_HEADER:
+        raise SystemExit(f"{path.name}: header must be exactly {','.join(CORRECTIONS_HEADER)}")
+    rows, seen = [], set()
+    for i, raw in enumerate(reader, 1):
+        row = {k: (v or "").strip() for k, v in raw.items() if k is not None}
+        if row["seed"] not in CORRECTABLE_SEEDS:
+            raise SystemExit(f"{path.name} row {i}: seed must be one of {CORRECTABLE_SEEDS}, got {row['seed']!r}")
+        blank = [k for k in CORRECTIONS_HEADER if not row.get(k)]
+        if blank:
+            raise SystemExit(f"{path.name} row {i}: empty {blank}; every field is required, including a reason")
+        ident = (row["seed"], row["key"], row["column"])
+        if ident in seen:
+            raise SystemExit(f"{path.name} row {i}: duplicate correction for {ident}")
+        seen.add(ident)
+        rows.append(row)
+    return rows
+
+
+# Raw model responses are unreviewed and large, so they are saved outside the repo. They let a trial
+# be re-analysed (enrich_planets.py --from-response) without calling the API again.
+DEFAULT_RESPONSES_DIR = Path.home() / ".force_balance_pipeline" / "responses"
+
+
+def resolve_responses_dir(path):
+    path = Path(path).expanduser().resolve()
+    try:
+        path.relative_to(REPO_ROOT.resolve())
+    except ValueError:
+        return path
+    raise SystemExit(f"--responses-dir {path} is inside the repo; raw responses are saved outside it")
+
+
+def utc_stamp():
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def call_paths(responses_dir, script, thinking_level, call, calls, stamp):
+    """(raw response path, metadata path) for one model call."""
+    base = f"{script}_{stamp}_{thinking_level}_call{call}of{calls}"
+    return Path(responses_dir) / f"{base}.json", Path(responses_dir) / f"{base}.meta.json"
+
+
+def write_call_meta(meta_path, meta):
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+
+def check_exact_ids(rows, expected_ids, id_key, label):
+    """Enforce the exact entry count and exact id set of a model response.
+
+    The response schema cannot pin the array length (Google rejects minItems/maxItems here, see
+    gemini_client.build_request), so this is where the count is enforced. Raises ValueError, naming
+    what is wrong, on any mismatch: wrong count, duplicates, missing ids, unexpected ids, or an
+    entry that is not an object.
+    """
+    if not all(isinstance(r, dict) for r in rows):
+        raise ValueError(f"every {label} entry must be an object")
+    got = [str(r.get(id_key)) for r in rows]
+    problems = []
+    if len(rows) != len(expected_ids):
+        problems.append(f"returned {len(rows)} {label} entries, expected {len(expected_ids)}")
+    dupes = sorted({g for g in got if got.count(g) > 1})
+    if dupes:
+        problems.append(f"duplicate {id_key}: {dupes}")
+    missing = sorted(set(expected_ids) - set(got))
+    if missing:
+        problems.append(f"missing {id_key}: {missing}")
+    extra = sorted(set(got) - set(expected_ids))
+    if extra:
+        problems.append(f"unexpected {id_key}: {extra}")
+    if problems:
+        raise ValueError("; ".join(problems))
+
+
 def prompt_hash(*parts):
     h = hashlib.sha256()
     for part in parts:
@@ -117,11 +212,13 @@ def add_common_args(parser, seed_name):
                         help="Gemini thinking level; recorded in provenance. Required except with "
                              "--print-prompts (OPEN until the first review pass, doc 08)")
     parser.add_argument("--model", default=ENRICH_MODEL, help=f"default: {ENRICH_MODEL}")
-    parser.add_argument("--structured-output", choices=gemini_client.STRUCTURED_STYLES,
-                        default=gemini_client.DEFAULT_STRUCTURED_STYLE,
-                        help="how the JSON schema is sent: json_schema (responseMimeType + "
-                             "responseJsonSchema, default) or response_format (responseFormat.text). "
-                             "Switch if the API rejects the default")
+    parser.add_argument("--max-output-tokens", type=int, default=None,
+                        help="generationConfig.maxOutputTokens, which counts thinking tokens too; "
+                             "default is set per script (planets 65536, Jedi 16384) and recorded in "
+                             "the provenance sidecar")
+    parser.add_argument("--responses-dir", type=Path, default=DEFAULT_RESPONSES_DIR,
+                        help="where each call's raw response (and a .meta.json) is saved; must be "
+                             f"outside the repo (default: {DEFAULT_RESPONSES_DIR})")
     parser.add_argument("--snapshot-dir", type=Path, default=SNAPSHOT_DIR,
                         help="SWAPI snapshot to read (default: data/swapi_snapshot)")
     parser.add_argument("--out-dir", type=Path, default=SEEDS_DIR,
@@ -170,8 +267,18 @@ def regeneration_cycles(out_dir, seed_name):
     return 1 if (Path(out_dir) / f"{seed_name}.csv").exists() else 0
 
 
+def stamp_to_iso(stamp):
+    """20260925T024007Z (as used in saved-response file names) -> 2026-09-25T02:40:07Z."""
+    return datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def meta_path_for(raw_path):
+    p = Path(raw_path)
+    return p.with_name(p.stem + ".meta.json")
+
+
 def provenance_record(seed, model, thinking_level, prompt_version, prompt_hash_, cycles, rows,
-                      usage, warnings, extra=None):
+                      usage, warnings, extra=None, generated_utc=None):
     rec = {
         "seed": f"{seed}.csv",
         "model_id": model,
@@ -179,7 +286,7 @@ def provenance_record(seed, model, thinking_level, prompt_version, prompt_hash_,
         "thinking_level": thinking_level,
         "prompt_version": prompt_version,
         "prompt_hash": prompt_hash_,
-        "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_utc": generated_utc or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "regeneration_cycles": cycles,
         "rows": rows,
         "usage_tokens": usage,
@@ -211,11 +318,14 @@ def sum_usage(usages):
     return total
 
 
-def print_request_settings(model, thinking_level, prompt_version, prompt_hash_,
-                           structured_style=gemini_client.DEFAULT_STRUCTURED_STYLE):
+STRUCTURED_OUTPUT = "responseMimeType + responseJsonSchema"
+
+
+def print_request_settings(model, thinking_level, prompt_version, prompt_hash_, max_output_tokens):
     print("--- request settings ---")
     print(f"endpoint:        generateContent (REST, via http_request; explicit User-Agent)")
-    print(f"structured out:  {structured_style}")
+    print(f"structured out:  {STRUCTURED_OUTPUT}")
+    print(f"max output:      {max_output_tokens} tokens (counts thinking tokens too)")
     print(f"model:           {model}")
     print(f"temperature:     not sent (model default 1.0)")
     print(f"thinking level:  {thinking_level or '<--thinking-level, required for a real run>'}")
