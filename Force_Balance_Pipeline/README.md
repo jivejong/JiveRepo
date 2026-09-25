@@ -48,7 +48,7 @@ The engineering problems are real ones:
 | **Dark side activity** (0–100) | Quiet with rare spikes | Sith history, atrocity, dark side nexuses |
 
 Per-planet baselines and spreads come from the AI enrichment layer, so Mustafar is dark-volatile,
-Coruscant is midichlorian-rich and steady, and Ilum's kyber readings run high.
+Coruscant is midichlorian-rich and steady, and Utapau's kyber readings run high.
 
 ## Signatures
 
@@ -166,9 +166,10 @@ To run against Databricks instead, see [`docs/05-platform-setup.md`](docs/05-pla
 
 ## A note on the AI enrichment layer
 
-Planet Force parameters and Jedi attributes are LLM-generated. This is done once, at temperature
-zero, human-reviewed, and committed as version-controlled seed CSVs with recorded provenance. It
-is never called at runtime.
+Planet Force parameters and Jedi attributes are LLM-generated. This is done once, with the model's
+default sampling settings, human-reviewed, and committed as version-controlled seed CSVs with
+recorded provenance. Reruns would not reproduce the committed values, which is why the reviewed
+CSVs, not the model, are the source of truth. It is never called at runtime.
 
 That constraint is load-bearing rather than cosmetic: the 90-day backfill derives from these
 parameters, and every rolling baseline derives from the backfill. Regenerating enrichment would

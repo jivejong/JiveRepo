@@ -73,11 +73,12 @@ what was decided and why.
 
 - LLM generates planet baselines/sigmas/spike probability, system, region, description, Force
   history; and Jedi rank/specialties/power/form.
-- **Build-time and frozen:** temperature 0, human-reviewed, committed as seed CSVs with a
-  provenance file. Regeneration is a migration event — it invalidates the backfill and baselines.
+- **Build-time and frozen:** `gemini-3.1-flash-lite` at default temperature 1.0, human-reviewed,
+  committed as seed CSVs with a provenance file. Reruns do not reproduce committed values.
+  Regeneration is a migration event — it invalidates the backfill and baselines.
 - Model knowledge only — **no Wookieepedia scraping** (CC BY-SA, ToS).
-- Jedi roster: **prequel era, ~18 SWAPI Force users, no invented Jedi.** At least three per
-  specialty.
+- Jedi roster: **17 Jedi Order members in Episodes I-III who appear in SWAPI (Anakin included), no
+  invented Jedi.** At least three per specialty.
 - Expect at least one regeneration: models cluster numeric output mid-range.
 
 ## Web intake

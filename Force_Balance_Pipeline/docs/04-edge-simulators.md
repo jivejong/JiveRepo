@@ -59,7 +59,8 @@ During `CONNECTED`, **2–3% of readings are deliberately faulty**:
 
 - ~1.2% — one channel null
 - ~1.0% — one channel outside its valid range (e.g. `kyber_resonance` of 140)
-- ~0.3% — `sector_id` not in `dim_sector`
+- ~0.3% — `sector_id` not in `dim_sector`. The injected id must never match any valid
+  `sector_id`, including `uncharted` (the SWAPI `unknown` planet)
 - ~0.2% — `event_time` in the future
 
 This is what feeds `silver.rejects`. Real sensors produce occasional bad readings regardless of

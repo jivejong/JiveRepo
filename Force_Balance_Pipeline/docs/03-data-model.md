@@ -13,6 +13,9 @@ doc 08. **Never fetched or regenerated at runtime.**
 
 SWAPI planets enriched with Force parameters, system, region, and narrative context.
 
+SWAPI passthroughs: `sector_id`, `sector_name`, `climate`, `terrain`, `population`,
+`diameter_km`. `sector_name` is the planet's own name; `system_name` (below) is its star system.
+
 Key columns beyond the SWAPI passthroughs:
 
 | Column | Notes |
@@ -23,14 +26,16 @@ Key columns beyond the SWAPI passthroughs:
 | `dark_baseline`, `dark_sigma`, `dark_spike_probability` | Quiet with rare spikes |
 | `description`, `force_history` | Shown in the dashboard planet detail |
 | `canon_confidence` | Review aid, retained for transparency |
+| `is_unknown` | True for the one SWAPI planet with no data (planets/28, `sector_id` `uncharted`, name `unknown`). Its baselines are the medians of the other 59 sectors. Excluded from spread and anchor checks (doc 08) |
 
 These baselines are the **static** parameters used by the generator. They are distinct from the
 **rolling** baselines in `gold.sector_baseline`, which are computed from observed data. The
 static values seed the simulation; the rolling values drive detection.
 
-### `dim_jedi` — ~18 rows, prequel era
+### `dim_jedi` — 17 rows, prequel era
 
-SWAPI people filtered to the prequel-era Force-user roster, enriched. No invented rows.
+SWAPI people filtered to the Jedi roster (Jedi Order members in Episodes I-III), enriched. No
+invented rows.
 
 | Column | Notes |
 |---|---|

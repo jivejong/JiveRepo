@@ -27,8 +27,10 @@ Applies to `fetch_swapi.py` and any other outbound client. Identify the project 
 spoofing a browser — swapi.info is a free community service and a descriptive UA with a repo
 link is the correct way to consume it.
 
-**OPEN:** the Gemini SDK sets its own User-Agent. Decide whether to append the project UA through
-client options, or whether the SDK's own UA is enough for the Gemini API.
+**Gemini calls.** Gemini is called over its REST API through `http_request()`, with structured
+output, and not through the Google SDK. The SDK sets its own User-Agent; going through
+`http_request()` keeps one explicit project User-Agent on every outbound call, the same code path
+as every other client in this repo.
 
 **Verification test.** To confirm egress independently of this issue, request both
 `https://swapi.info/api/planets/1` and `https://generativelanguage.googleapis.com/` with a real
@@ -152,7 +154,7 @@ force_balance:
       host: localhost
       port: 5432
       user: force
-      password: force
+      password: "{{ env_var('POSTGRES_PASSWORD') }}"
       dbname: force
       schema: gold
       threads: 4
@@ -160,6 +162,9 @@ force_balance:
 
 The `catalog` field enables Unity Catalog's three-level namespace, supported since
 `dbt-databricks` 1.1.1. The `local` target is what makes `make demo` work.
+
+The local Postgres password is read from `POSTGRES_PASSWORD` and has no default. Whatever starts
+the local Postgres container must use the same value.
 
 Develop against the SQL warehouse. **dbt Python models cannot run on a SQL warehouse** — stay in
 SQL and this never comes up.

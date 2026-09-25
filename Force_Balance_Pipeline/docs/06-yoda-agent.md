@@ -30,6 +30,8 @@ model calls a tool, gets the result, and calls another tool in the same turn, bo
 signatures and all accumulated signatures go back in the history. Build the tool loop so
 signatures are never dropped or reordered (Gemini 3 developer guide, "Thought signatures").
 
+**OPEN:** agent temperature 0.2 conflicts with Gemini 3 guidance; decide in the agent phase.
+
 ---
 
 ## Tools

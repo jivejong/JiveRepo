@@ -139,8 +139,8 @@ equivalent exists. Where a Databricks-specific feature is genuinely needed (`VAR
 ### D7 — AI enrichment is a build-time, frozen artifact
 
 **Decision.** Planet Force parameters, system and region assignments, and the Jedi attribute table
-are LLM-generated once at `temperature: 0`, human-reviewed, and committed as seed CSVs. Never
-called at runtime.
+are LLM-generated once (`gemini-3.1-flash-lite`, default temperature), human-reviewed, and
+committed as seed CSVs. Never called at runtime.
 
 **Why.** SWAPI's `residents` and `films` arrays are empty for most planets and `population` is
 often `"unknown"` — deriving baselines from them yields a galaxy where forty worlds are

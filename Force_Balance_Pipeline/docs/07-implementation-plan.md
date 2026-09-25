@@ -30,8 +30,11 @@ The generator depends on these parameters, so this comes first.
 
 1. `scripts/fetch_swapi.py` — pull planets, people, species, starships from `swapi.info` **with an
    explicit User-Agent**. Commit raw JSON to `data/swapi_snapshot/`.
-2. `scripts/jedi_roster.py` — hand-maintained list of prequel-era Force-user SWAPI URLs (~18).
-3. `scripts/enrich_planets.py` and `scripts/enrich_jedi.py` at `temperature: 0`.
+2. `scripts/jedi_roster.py` — hand-maintained list of the 17 Jedi Order (Episodes I-III) SWAPI
+   URLs (ids in doc 08).
+3. `scripts/enrich_planets.py` and `scripts/enrich_jedi.py` with `gemini-3.1-flash-lite` at its
+   default temperature of 1.0 (Google advises against lowering it for Gemini 3). Reruns do not
+   reproduce the committed values; the reviewed CSVs are the reproducible artifact.
 4. **Review the output.** Work the checklist in doc 08. Expect to regenerate at least once —
    models regress to the mean on numeric tables and you will likely see baselines clustered in
    the middle of each range.
@@ -41,8 +44,9 @@ The generator depends on these parameters, so this comes first.
 7. `dbt seed`.
 
 **Checkpoint:** `dim_sector` has 60 rows with non-null baselines and sigmas spread across their
-ranges. `dim_jedi` has ~18 rows covering all four specialties with at least three each. Mustafar's
-`dark_baseline` is high; Coruscant's `midi_baseline` is high; Ilum's `kyber_baseline` is high.
+ranges. `dim_jedi` has 17 rows covering all four specialties with at least three each. Mustafar's
+`dark_baseline` is high; Coruscant's `midi_baseline` is high; Utapau's `kyber_baseline` is high
+(the giant kyber crystal from the Clone Wars Utapau arc; Ilum is not in SWAPI).
 
 **Do not proceed until enrichment is reviewed and committed.** Everything downstream derives from
 these numbers, and regenerating later is a migration event.
