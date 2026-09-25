@@ -30,7 +30,10 @@ link is the correct way to consume it.
 **Gemini calls.** Gemini is called over its REST API through `http_request()`, with structured
 output, and not through the Google SDK. The SDK sets its own User-Agent; going through
 `http_request()` keeps one explicit project User-Agent on every outbound call, the same code path
-as every other client in this repo.
+as every other client in this repo. Structured output is `responseMimeType` +
+`responseJsonSchema`; the `responseFormat` shape was rejected by the API (probe, 2026-09-24).
+Exact item-count constraints (`minItems`/`maxItems`) are also rejected: at 59 items, and at 17 when
+combined with a 17-value enum. Counts are enforced in code instead (probe steps 12, 15-18).
 
 **Verification test.** To confirm egress independently of this issue, request both
 `https://swapi.info/api/planets/1` and `https://generativelanguage.googleapis.com/` with a real

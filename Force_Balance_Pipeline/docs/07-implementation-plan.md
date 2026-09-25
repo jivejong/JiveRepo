@@ -43,10 +43,13 @@ The generator depends on these parameters, so this comes first.
 6. Commit CSVs. Write `ENRICHMENT_PROVENANCE.md`.
 7. `dbt seed`.
 
-**Checkpoint:** `dim_sector` has 60 rows with non-null baselines and sigmas spread across their
-ranges. `dim_jedi` has 17 rows covering all four specialties with at least three each. Mustafar's
-`dark_baseline` is high; Coruscant's `midi_baseline` is high; Utapau's `kyber_baseline` is high
-(the giant kyber crystal from the Clone Wars Utapau arc; Ilum is not in SWAPI).
+**Checkpoint:** `dim_sector` has 60 rows with non-null baselines and sigmas, and each channel
+passes the doc 08 review gate: at most 10% of sigmas clamped, at most 35% of baselines in the middle
+0.40-0.60 of the range, the lowest baseline in the bottom quarter and the highest in the top quarter
+of the range, and every anchor passing (Mustafar, Dathomir and Geonosis high and Naboo and Alderaan
+low on dark; Coruscant high on midi; Utapau high on kyber, the giant kyber crystal from the Clone
+Wars Utapau arc; Ilum is not in SWAPI). `dim_jedi` has 17 rows covering all four specialties with
+at least three each.
 
 **Do not proceed until enrichment is reviewed and committed.** Everything downstream derives from
 these numbers, and regenerating later is a migration event.

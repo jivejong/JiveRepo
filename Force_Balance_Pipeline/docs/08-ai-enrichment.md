@@ -63,6 +63,29 @@ Accurate, and the more honest claim than implying a sourced dataset.
 than planets/28 to the model in one call (`--batch-size N` splits it if a response is truncated),
 writes `warehouse/dbt/seeds/dim_sector.csv`.
 
+**Seeds are written from the reviewed response, never from a fresh call.** A model call never
+writes a seed. It saves the raw response outside the repo and prints the review gate, the baseline
+distribution and every channel's baselines (`--trial` sends only the first call and cannot be
+promoted). Once that response has been reviewed, `--from-response <file> --write` turns exactly
+that response into the seed and its provenance sidecar, taking the model, thinking level, prompt
+hash, output-token cap and timestamp from the response's `.meta.json`. This applies to both
+`enrich_planets.py` and `enrich_jedi.py`. The promotion refuses if the saved prompt hash or the
+input data differs from what would be sent today (the response must come from the prompt being
+committed), if the review gate fails (`--accept-failing-gate` overrides it, and its use is recorded
+in the sidecar), if the responses are not one complete run, or if the seed already exists
+(`--force`). An older `.meta.json` without the input-data hash promotes with a warning. The
+sidecar always records the SHA-256 of the input snapshot files.
+
+**Recorded corrections.** A human correction to a reviewed baseline lives in
+`data/enrichment_corrections.csv` (`seed, key, column, corrected_value, reason`), outside
+`seeds/` because dbt loads every csv there as a seed. It is applied at promote time, before the
+gate, and only to `*_baseline` columns of planets sent to the model, never the `uncharted` row. A
+corrected baseline rescales its sigma to the same percentage of baseline and the sigma band is
+re-checked. The report shows the gate before and after the corrections, and the sidecar records
+each one: the original value, the corrected value, the reason, and any sigma rescale.
+`--suggest-corrections` prints, for each failing anchor, the value that just reaches its threshold
+and the channel's p90 (p10 for a low anchor).
+
 ### Output schema
 
 | Column | Type | Notes |
@@ -170,21 +193,31 @@ Before committing the CSV:
 
 - No nulls or zeros in any baseline or sigma column
 - Every `region` value is in the allowed set
-- `dark_baseline` is high for Mustafar, Dathomir, Geonosis; low for Naboo, Alderaan
-- `midi_baseline` is high for Coruscant; low for gas giants and barren worlds
-- `kyber_baseline` is high for Utapau
+- All anchors pass (blocking): `dark_baseline` is high for Mustafar, Dathomir, Geonosis and low for
+  Naboo, Alderaan; `midi_baseline` is high for Coruscant; `kyber_baseline` is high for Utapau.
+  "High" is percent rank >= 0.85 among the 59 planets, "low" is <= 0.15
+- `midi_baseline` is low for gas giants and barren worlds (a read, not an anchor)
 - Sort by `canon_confidence` ascending and read the bottom ten rows
 - No more than 10% of rows have a sigma clamped on any channel (`sigma_adjustments` in the
   provenance sidecar). More than that is a prompt problem: regenerate, do not accept
-- Baselines are spread across the range, not clustered at the midpoint
+- Each channel uses its range without clustering at the midpoint: the lowest baseline is at
+  position <= 0.25 and the highest at >= 0.75 (position = (value - range minimum) / (range maximum -
+  range minimum)), and at most 35% of baselines fall in the 0.40-0.60 band
 
-That last one is the most common failure. Models regress to the mean when generating numeric
-tables. If everything lands between 40 and 60, regenerate in smaller batches with explicit
-instruction to use the full range.
+The gate tests range use and clustering, not even spread. The prompt's own lore (peaceful worlds
+low, crystal worlds rare) makes the kyber and dark distributions right-skewed by design, so criteria
+that assume an even spread (a wide P10-P90 span, a high standard deviation, most bins occupied)
+contradict the design and are not used. Regression to the mean is still the most common failure of
+a model generating numeric tables, and it shows up as everything landing mid-range, which the
+middle-share and range-use checks catch. If it happens, regenerate in smaller batches with
+explicit instruction to use the full range (`--full-range-hint`).
 
-After `dbt seed`, "spread across the range" and "high" are checked by the queries in
+The same criteria are checked in the warehouse after `dbt seed` by the queries in
 `warehouse/dbt/analyses/` (`phase1_check_1_spread.sql`, `phase1_check_2_anchors.sql`,
-`phase1_check_3_jedi.sql`). The thresholds live in those files.
+`phase1_check_3_jedi.sql`); `scripts/check_gate_parity.py` verifies that the offline gate and the
+SQL use the same thresholds and anchors. A failing gate refuses to write a seed. For the Jedi the
+gate is exactly 17 rows and at least 3 Jedi per `primary_specialty`. `--accept-failing-gate`
+overrides a refusal, and its use is recorded in the sidecar.
 
 ---
 
