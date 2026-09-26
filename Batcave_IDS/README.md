@@ -88,8 +88,8 @@ Every non-obvious technology choice, with what it displaced. Full rationale: `do
 | One topic, four event kinds | Separate topics per kind | A discriminated envelope keeps ordering guarantees intact across every event for a session, since they all share the `session_id` partition key. Separate topics would break per-session ordering across kinds: exactly what `mart_detection_correlation` depends on. |
 | MITRE ATT&CK technique IDs | Invented technique names | The catalog gets authored either way, so real ATT&CK IDs cost nothing extra and turn the project from a game into a detection-engineering exercise. Every ID verified against attack.mitre.org. |
 | Observability tiers on techniques | A flat accuracy number | An HTTP sensor cannot see every technique. Modeling that explicitly turns a bare accuracy claim into a detection coverage gap analysis: what a real security team would actually produce. |
-| Dagster | Airflow | Native dbt integration gives asset-level lineage almost for free, and the resulting asset graph is far more legible to a reader than a DAG of opaque shell tasks. Airflow is used in the companion repo `k8s-data-platform`, so both are represented across the portfolio rather than duplicated. |
-| Infrastructure moved to a separate repo | Terraform/Kubernetes in this repo | A single stateless service and a local broker don't justify a cluster, and provisioning infrastructure whose only purpose is hosting a demo isn't a demonstration of infrastructure skill. That work lives in `k8s-data-platform`, where it's the actual subject. **Removing a technology because it didn't earn its place is a stronger signal than including it because it looks good.** |
+| Dagster | Airflow | Native dbt integration gives asset-level lineage almost for free, and the resulting asset graph is far more legible to a reader than a DAG of opaque shell tasks. Airflow runs the optional cloud deployment (Track C, `k8s-data-platform/`), so both are represented rather than duplicated. |
+| Infrastructure as an optional layer | Terraform/Kubernetes in the core pipeline | A single stateless service and a local broker don't justify a cluster, so the pipeline never needs one: it runs on a laptop with `make`. Terraform and Kubernetes live only in `k8s-data-platform/`, an optional deployment of the same code to kind and GKE where infrastructure is the actual subject. Nothing in the pipeline depends on it. **Removing a technology from where it didn't earn its place is a stronger signal than including it because it looks good.** |
 
 ---
 
@@ -406,10 +406,12 @@ make console-web   # static frontend on :8091, in a second terminal
 | [`docs/exercises.md`](docs/exercises.md) | One-off demonstrations against the live stack, with real output | A |
 
 **Tracks.** A is the headless pipeline and the shippable milestone. B adds the interactive console
-and bat bot. C is an optional cloud landing. Each ends somewhere complete.
+and bat bot. C is an optional cloud deployment: the same code on a local kind cluster, then on an
+ephemeral GKE cluster funded by the GCP Free Trial. Each ends somewhere complete.
 
-Infrastructure work: Terraform and Kubernetes: lives in the companion repository
-`k8s-data-platform`. It was removed from this project because nothing here needed it.
+Infrastructure work (Terraform, Kubernetes, Airflow on the KubernetesExecutor) lives only in
+`k8s-data-platform/`, Track C's deployment layer. The pipeline itself doesn't need it and never
+depends on it.
 
 **The engineering log is worth a specific mention.** A rule-based classifier confused two villains on
 the same feature twice, in two unrelated places, months apart: a dbt test and, independently, a

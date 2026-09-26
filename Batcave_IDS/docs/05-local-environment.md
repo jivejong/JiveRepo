@@ -303,10 +303,10 @@ reviewer you understood why the invariant mattered.
 
 | Absent | Reason |
 |---|---|
-| Cloud accounts | Expiry and credentials work against durability |
-| Terraform | Nothing here to provision; lives in `k8s-data-platform` |
-| Kubernetes | One stateless service does not justify it; lives in `k8s-data-platform` |
-| Kubernetes manifests "for completeness" | Manifests for a workload that never needed orchestration read as padding |
+| Cloud accounts | Expiry and credentials work against durability. Track C's optional GCP deployment is the only place one appears, and nothing here depends on it |
+| Terraform | Nothing in the pipeline to provision; lives only in Track C's `k8s-data-platform/` |
+| Kubernetes | One stateless service does not justify it; Track C's `k8s-data-platform/` deploys the same code to kind and GKE as an optional layer |
+| Kubernetes manifests "for completeness" | Manifests for a workload that never needed orchestration read as padding. Track C's manifests exist to run a real deployment, not to decorate this one |
 | Secrets management tooling | One optional API key; environment variable is the honest answer |
 
 State this in the README. Explaining what you left out, and why, reads as judgment. Most portfolio

@@ -166,11 +166,14 @@ the complexity of operating it.
   stop being runnable months after it is written.** A single container with no account and no expiry
   produces real, sub-second delivery semantics; the managed alternatives evaluated had minimum
   buffering windows in the tens of seconds: worse _and_ less durable.
-- Terraform and Kubernetes were **removed** from `Batcave_IDS` after being evaluated, on the reasoning
-  that provisioning infrastructure whose only purpose is hosting a demo is not itself a demonstration
-  of infrastructure skill: that work was relocated to a companion repository where infrastructure is
-  the actual subject. **Removing a technology because it failed to earn its place in a specific system
-  is a stronger engineering signal than including it because it looks impressive on a diagram.**
+- Terraform and Kubernetes were **kept out of `Batcave_IDS`'s pipeline** after being evaluated,
+  because a single stateless service and a local broker don't need a cluster, and the pipeline runs on
+  a laptop with no cloud account. They live only in an optional deployment layer
+  (`Batcave_IDS/k8s-data-platform/`, Track C). That layer deploys the same code unchanged to kind and
+  to an ephemeral GKE cluster on the GCP Free Trial; infrastructure is its actual subject, and the
+  pipeline never depends on it. **Removing a technology from a system where it failed to earn its
+  place is a stronger engineering signal than including it because it looks impressive on a
+  diagram.**
 - The Databricks notebook suite caps total LLM calls per pipeline run (four, in K.A.R.E.N.) as a
   first-class architectural constraint, not an afterthought: the deterministic pre-filtering layer
   exists specifically to shrink the problem before the metered resource is invoked at all, keeping cost

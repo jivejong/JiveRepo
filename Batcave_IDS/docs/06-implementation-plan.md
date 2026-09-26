@@ -7,9 +7,9 @@ any track boundary without leaving something half-built.
 |---|---|---|---|
 | **A — Core pipeline, headless** | 0–7 | 45–60 | A complete data engineering project, runnable with `make`, ready to push public |
 | **B — Interactive experience** | 8–10 | 25–35 | Terminal console, bat bot, finale, dashboard |
-| **C — Cloud landing (optional)** | 11 | 10–20 | Either AWS or DigitalOcean, or skip entirely |
+| **C — Cloud deployment (optional)** | 11 | 50–70 | The same code on kind locally and on ephemeral GKE (GCP Free Trial), or skip entirely |
 
-Total if all three: **80–115 hours**. Track A alone: **45–60**.
+Total if all three: **120–165 hours**. Track A alone: **45–60**.
 
 Every phase has a checkpoint. **Do not begin a phase until the previous checkpoint is satisfied
 against real output.**
@@ -312,38 +312,61 @@ concurrently, so this gets a real check rather than resting on the read-only mit
 
 ---
 
-# Track C — Cloud landing (optional)
+# Track C — Cloud deployment (optional)
 
-Only if you want a cloud name in the portfolio. The project is complete without it. Pick one path,
-not both.
+Only if you want a cloud name in the portfolio. The project is complete without it. **GCP only**:
+the earlier AWS and DigitalOcean options are dropped. FinOps and simplicity decide close calls.
 
-## Phase 11 — Option A: AWS  (12–20h)
+## Phase 11 — GKE on the GCP Free Trial, with kind locally  (50–70h)
 
-Closest to what your internal audience runs.
+The same Track A code, deployed unchanged to Kubernetes: first to a local kind cluster, then to an
+ephemeral, Terraform-provisioned GKE cluster funded by the $300 Free Trial. Everything lives in
+`k8s-data-platform/`, and the dependency runs one way only. Track A never depends on that folder:
+`make attack`, `make transform`, the tests, and CI still run on a clean clone with no cloud account
+and no cluster.
 
-- Terraform: S3 buckets, Glue Data Catalog, IAM, ECR, MSK Serverless **or** self-hosted Redpanda on
-  a single small EC2 instance (MSK Serverless is materially more expensive — price it first)
-- Consumer and honeypot as containers on ECS Fargate
-- Athena over the landed Parquet; dbt target swapped to `dbt-athena`
-- Guardrails module applied first: budgets at $5 and $20, alerts, anomaly detection
-- Deploy, run, capture evidence into `docs/evidence/`, `terraform destroy`,
-  `make verify-destroyed`
+- **Orchestration:** Airflow (KubernetesExecutor) runs the pipeline through a thin DAG. Each step is
+  a pod running the batcave-ids image with a command, so no pipeline logic moves into Airflow. Dagster
+  stays the local orchestrator.
+- **Data plane:** the same stack. Redpanda, the honeypot, and the consumer run in-cluster; dbt-duckdb
+  and baseline triage run as pods. Landed Parquet lives in a regional Cloud Storage bucket that
+  outlasts every cluster. The corpus is about 8 MB, so the 5 GB Always Free allowance covers it
+  indefinitely. There's no Pub/Sub, no BigQuery, and no rewritten SQL.
+- **Cluster:** private zonal GKE Standard (the GKE free tier covers the management fee for one zonal
+  cluster), with an on-demand system pool and a tainted Spot task pool. Workload Identity is used
+  throughout, with no key file anywhere.
+- **Ephemeral by design:** every session is `gke-up` → verify → capture evidence → `gke-down` →
+  `verify-destroyed`. Only the data bucket, the state bucket, and the image registry persist.
+- **Guardrails:** stay on the trial account, because it's a hard spending ceiling. Set budget alerts
+  at $10, $25, and $50. Don't activate the trial until the kind work passes, so the paid phases get
+  the full 90 days.
 
-**Cost note:** a fresh AWS account created after July 15, 2025 gets $100 at signup plus up to $100
-earned. Choose the **Paid plan**, not the Free plan — the Free plan closes the account and deletes
-resources when it expires. Do not create the account until you reach this phase.
+Steps, numbered C0–C6 so they never collide with this plan's phases:
 
-## Phase 11 — Option B: DigitalOcean  (10–16h)
+- **C0** kind by hand
+- **C1** Airflow on kind
+- **C2** batcave-ids end to end on kind
+- **C3** deliberate breakage and a troubleshooting log
+- **C4** Terraform against kind; the trial is activated only after this passes
+- **C5** GKE sessions
+- **C6** presentation
 
-Cheaper and simpler, and it shares the provider with `k8s-data-platform`.
+Integration is finished on kind before any cloud session, so paid sessions apply a stack that's
+already known to work.
 
-- Terraform: Droplet or DOKS, Spaces (S3-compatible) for landed Parquet
-- Redpanda and the services in Docker Compose on a Droplet, or as workloads on DOKS
-- DuckDB reads from Spaces via the httpfs extension, so the warehouse layer is unchanged
-- Roughly $12–24 for a bounded month
+**Trial facts, checked 2026-09-25** against Google's free-program page:
+- $300 over 90 days; resources stop when the trial ends.
+- No quota increases.
+- The credit can't pay for Gemini API usage in AI Studio, so cloud triage runs the baseline.
 
-**Checkpoint, either option:** evidence captured, infrastructure destroyed, billing verified at zero
-48 hours later.
+**Checkpoint:**
+- A full pipeline DAG run on GKE: Parquet landed in the bucket, dbt green, baseline triage orders
+  written, and evaluation output matching the local run's shape.
+- Airflow task logs readable from Cloud Storage, with no key file anywhere.
+- A Spot-preempted task retried to success.
+- `verify-destroyed` clean after every session.
+- Real per-session costs recorded from the billing report.
+- Billing verified at zero 48 hours after the final session.
 
 ---
 

@@ -242,17 +242,20 @@ accuracy number.
 
 ### Dagster, not Airflow
 Native dbt integration gives asset-level lineage with little glue, and the asset graph is far more
-legible to a reader than a DAG of shell tasks. Airflow appears in `k8s-data-platform`, so both are
-represented across the portfolio.
+legible to a reader than a DAG of shell tasks. Airflow appears in Track C's cloud deployment
+(`k8s-data-platform/`), so both are represented across the portfolio.
 
-### Infrastructure work lives elsewhere
-Terraform and Kubernetes were removed because nothing here needed them. A single stateless service
-and a local broker do not justify a cluster, and provisioning infrastructure whose only purpose is
-hosting a demo is not a demonstration of infrastructure skill. That work moved to
-`k8s-data-platform`, where it is the subject.
+### Infrastructure is an optional layer, not a dependency
+The pipeline needs no Terraform and no Kubernetes. A single stateless service and a local broker do
+not justify a cluster, and Track A never touches one: it runs on a laptop with `make`, with no cloud
+account and no expiry. Removing a technology because it did not earn its place is a stronger signal
+than including it because it looks good, so say this in the README.
 
-Say this in the README. Removing a technology because it did not earn its place is a stronger signal
-than including it because it looks good.
+Track C (docs/06) adds infrastructure as a separate, optional layer in `k8s-data-platform/`. It
+deploys the same Track A code, unchanged, to a local kind cluster and to an ephemeral GKE cluster on
+the GCP Free Trial. That is where Terraform, Kubernetes, and Airflow on the KubernetesExecutor are the
+actual subject, and batcave-ids is the real workload that makes them load-bearing. The dependency runs
+one way: that folder builds on Track A, and nothing in Track A imports, invokes, or requires it.
 
 ---
 
@@ -262,7 +265,7 @@ than including it because it looks good.
 |---|---|
 | Any cloud account in Track A | Expiry, credentials, and cost all work against durability |
 | Snowflake | 30-day trial; repository stops running when it lapses |
-| Terraform, Kubernetes | Nothing here to provision; moved to `k8s-data-platform` |
+| Terraform, Kubernetes in Track A | The pipeline needs neither; they live only in Track C's `k8s-data-platform/`, which deploys Track A unchanged |
 | Spark | DuckDB handles this volume on a laptop; Spark would be theater |
 | A vector database | Catalog-scale similarity does not justify the dependency |
 | Separate Kafka topics per event kind | Breaks per-session ordering across kinds |
