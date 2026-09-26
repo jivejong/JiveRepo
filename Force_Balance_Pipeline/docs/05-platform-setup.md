@@ -149,9 +149,9 @@ out = (
       .withColumn("dt", F.to_date("dt"))
       .withColumn("hh", F.col("hh").cast("int"))
       .withColumn("payload", F.parse_json(F.to_json("payload")))
-      .select("event_id", "source_id", "source_type", "schema_version", "event_time", "mode",
-              "scan_id", "sector_id", "is_synthetic", "synthetic_ingest_ts", "payload", "dt", "hh",
-              "_source_file", "_ingest_ts", "_rescued_data")
+      .select("event_id", "source_id", "source_type", "mode", "scan_id", "sector_id",
+              "schema_version", "event_time", "is_synthetic", "synthetic_ingest_ts", "payload",
+              "dt", "hh", "_source_file", "_ingest_ts", "_rescued_data")
 )
 
 (
@@ -175,6 +175,94 @@ Notes:
   failing the stream. Combined with `VARIANT`, new payload fields never break ingestion.
 - `awaitTermination()` matters — without it the job task can exit before the batch completes.
 - `dt` and `hh` come from the Hive-style path prefixes automatically.
+- The code above is `ingest/autoloader_bronze.py`; a test keeps the two identical. The `select` lists
+  the columns in the order of doc 03's `bronze.events` table.
+
+### First run, by hand
+
+Do this after the bridge has landed files in `force.raw.telemetry` (`ingest/verify_landing.py`
+confirms they are there). Run everything below as yourself, the owner of `force`, not as
+`force-bridge`.
+
+1. **Create the Git folder.** In the workspace sidebar choose Workspace, then Create, then Git
+   folder. Set the Git repository URL to `https://github.com/jivejong/JiveRepo`, the Git provider to
+   GitHub, and the name to `JiveRepo`. Optionally turn on sparse checkout with the cone pattern
+   `Force_Balance_Pipeline/ingest`, so only that folder is cloned. Click Create Git folder. A public
+   repository needs no credentials; for a private one, first link your GitHub account (Settings,
+   Linked accounts) with a token that can read it. Check that the folder is on branch `main` at the
+   latest commit; use the branch menu's Pull if it is behind.
+2. **Open the notebook.** In the Git folder, open
+   `Force_Balance_Pipeline/ingest/autoloader_bronze.py`. Its first line, `# Databricks notebook source`,
+   makes Databricks open it as a notebook.
+3. **Attach compute.** Choose Serverless in the compute menu (the only kind Free Edition has). In the
+   Environment side panel pick the newest environment version; the project's jobs use `5`. If the run
+   fails with `parse_json` not found, the environment is too old.
+4. **Run all.** The last cell starts the stream, ingests the landed files and stops: it finishes in
+   about a minute with no error. Running it again is safe and adds nothing while no new file has
+   landed.
+5. **Run the first query below**, in the SQL editor or a notebook SQL cell.
+
+### The first query: does `payload` hold real numbers?
+
+The notebook's `payload` line, `parse_json(to_json(payload))`, works only if Auto Loader hands it a
+struct whose fields keep their JSON types. With `inferColumnTypes = false` it may instead give strings.
+Settle it before anything else is built on the table:
+
+```sql
+SELECT event_id, sector_id,
+       typeof(payload)                  AS payload_type,
+       schema_of_variant(payload)       AS payload_schema,
+       payload:midichlorian_ppm::double AS midi,
+       payload:battery_pct::int         AS battery
+FROM force.bronze.events
+WHERE NOT is_synthetic
+ORDER BY event_time
+LIMIT 5;
+
+SELECT schema_of_variant_agg(payload) AS payload_schema_all_rows FROM force.bronze.events;
+```
+
+- **Pass:** `payload_type` is `variant` and every field in `payload_schema` is numeric (`BIGINT`,
+  `DECIMAL(p,s)` or `DOUBLE`; JSON numbers with a decimal point may show as `DECIMAL`).
+- **Fail:** any field typed `STRING` (numbers stored as text), the whole payload typed `STRING`
+  (double-encoded JSON), or `payload` NULL. On a fail, do the reset below and bring the failing
+  output back, so the `payload` line is fixed in this doc and in the notebook together.
+
+The rest of the checkpoint queries are in `ingest/phase2_checkpoint.sql`.
+
+### Reset, only if the first query fails
+
+Run these yourself. The order matters, and both steps are needed:
+
+```sql
+DROP TABLE IF EXISTS force.bronze.events;
+```
+
+then delete the Auto Loader checkpoint, in a notebook cell:
+
+```python
+dbutils.fs.rm("/Volumes/force/raw/checkpoints/bronze_events", True)
+```
+
+or with the Databricks CLI:
+
+```
+databricks fs rm -r dbfs:/Volumes/force/raw/checkpoints/bronze_events
+```
+
+Check both are gone: `SHOW TABLES IN force.bronze;` lists no `events`, and
+`databricks fs ls dbfs:/Volumes/force/raw/checkpoints` (or `LIST '/Volumes/force/raw/checkpoints'`
+in SQL) lists no `bronze_events`. Then rerun the notebook once the fix is in.
+
+- Drop the table **and** delete the checkpoint. With the table gone but the checkpoint kept, Auto
+  Loader believes the files were already processed and the new table stays empty. With the checkpoint
+  gone but the table kept, every file is ingested a second time and the table has duplicates. The
+  inferred schema lives in `bronze_events/schema`, so deleting the checkpoint directory is also what
+  makes the schema be inferred again.
+- **Do not delete anything in `/Volumes/force/raw/telemetry`.** Those files are the source; a fresh
+  checkpoint reads all of them again.
+- Do not try to run this as `force-bridge`: it has no access to `force.raw.checkpoints` or `bronze`,
+  by design.
 
 ---
 

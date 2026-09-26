@@ -47,6 +47,38 @@ class SuccessTests(unittest.TestCase):
             self.assertTrue(b.upload(one_batch(b)), status)
 
 
+class LandedLogTests(unittest.TestCase):
+    def test_each_landed_file_is_logged_with_its_path_and_line_count(self):
+        logs = []
+        up = S.ScriptedUploader([204])
+        b = bridge.Bridge(up, dead_letter_path=Path(tempfile.mkdtemp()) / "d.ndjson", clock=S.Clock().now,
+                          sleep=lambda s: None, log=logs.append)
+        batch = one_batch(b)
+        self.assertTrue(b.upload(batch))
+        self.assertEqual(logs, [f"bridge: landed {batch.relpath} (60 lines, {len(batch.data)} bytes)"])
+
+    def test_a_rekeyed_file_is_logged_under_its_final_path(self):
+        logs = []
+        up = S.ScriptedUploader([409, 204])
+        b = bridge.Bridge(up, dead_letter_path=Path(tempfile.mkdtemp()) / "d.ndjson", clock=S.Clock().now,
+                          sleep=lambda s: None, log=logs.append)
+        batch = one_batch(b)
+        first = batch.relpath
+        self.assertTrue(b.upload(batch))
+        landed = [l for l in logs if l.startswith("bridge: landed")]
+        self.assertEqual(len(landed), 1)
+        self.assertIn(up.calls[1][0], landed[0])
+        self.assertNotIn(first, landed[0])
+
+    def test_a_failed_upload_logs_no_landed_line(self):
+        logs = []
+        up = S.ScriptedUploader([403])
+        b = bridge.Bridge(up, dead_letter_path=Path(tempfile.mkdtemp()) / "d.ndjson", clock=S.Clock().now,
+                          sleep=lambda s: None, log=logs.append)
+        self.assertFalse(b.upload(one_batch(b)))
+        self.assertFalse(any(l.startswith("bridge: landed") for l in logs))
+
+
 class RetryTests(unittest.TestCase):
     def test_a_network_error_is_retried_with_the_same_path_and_backoff(self):
         b, up, sleeps, _ = make([TransportError("timeout"), TransportError("reset"), 204])

@@ -265,6 +265,7 @@ class Bridge:
             self.stats["events_written"] += len(batch.lines)
             self.stats["bytes_written"] += len(batch.data)
             self.stats["last_flush_utc"] = datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.log(f"bridge: landed {batch.relpath} ({len(batch.lines)} lines, {len(batch.data)} bytes)")
 
     def _fail(self, batch, reason):
         with self._lock:
