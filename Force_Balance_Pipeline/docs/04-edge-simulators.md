@@ -268,7 +268,8 @@ Runs on the GCP e2-micro.
 
 ### Responsibilities
 
-1. Subscribe to MQTT `force/telemetry/#`
+1. Subscribe to MQTT `force/telemetry/#` with a fixed client id, a persistent session and QoS 1, so
+   the broker queues messages while the bridge restarts
 2. Serve `POST /api/report` — inference then envelope construction
 3. Validate envelope structure only, never payload contents. Structural failures go to a local
    dead-letter file
@@ -290,25 +291,31 @@ the Pi connects.
 
 ### Configuration
 
-```yaml
-mqtt:
-  host: localhost
-  port: 1883
-  topics: ["force/telemetry/#"]
-http:
-  port: 8080
-flush:
-  max_bytes: 4194304
-  max_seconds: 90
-  on_complete_scan: true
-inference:
-  provider: gemini
-  model: ${INFERENCE_MODEL}          # gemini-3.1-flash-lite
-  api_key: ${GEMINI_API_KEY}         # local .env; Secret Manager on the bridge
-databricks:
-  host: ${DATABRICKS_HOST}
-  client_id: ${BRIDGE_DATABRICKS_CLIENT_ID}         # files-scoped service principal (doc 05)
-  client_secret: ${BRIDGE_DATABRICKS_CLIENT_SECRET} # OAuth M2M; exchanged at /oidc/v1/token
-  volume_path: /Volumes/force/raw/telemetry
-  user_agent: "Force_Balance_Pipeline/0.1 (+https://github.com/jivejong/JiveRepo/tree/main/Force_Balance_Pipeline)"
-```
+The bridge takes command-line flags and environment variables. There is no config file, so nothing
+on the e2-micro parses YAML. The defaults below are checked against the code by
+`ingest/tests/test_cli.py`.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--mqtt-host` | `localhost` | broker host |
+| `--mqtt-port` | `1883` | broker port |
+| `--topic` | `force/telemetry/#` | subscription, at QoS 1 |
+| `--client-id` | `force-bridge` | fixed id; with `clean_session=false` the broker keeps the session and queues QoS 1 messages while the bridge is down (Mosquitto `max_queued_messages 50000`, about 8 days of scans) |
+| `--max-bytes` | `4194304` | flush when the buffer reaches this size |
+| `--max-seconds` | `90` | flush when the oldest buffered event is this old |
+| `--scan-size` | `60` | events in a complete scan, which flushes as its own file |
+| `--volume-path` | `/Volumes/force/raw/telemetry` | the landing zone (workspace mode) |
+| `--oauth-scope` | `files` | the scope in the OAuth token request (workspace mode); the force-bridge secret is scoped to the Files API, and `all-apis` is for an unscoped secret |
+| `--local-dir` | none | write here instead of the volume (local demo and tests) |
+| `--dead-letter` | `logs/bridge_dead_letter.ndjson` | structural failures, and events that could not be uploaded |
+| `--env-file` | `.env.bridge` | the credentials file, below |
+
+Environment, in workspace mode: `DATABRICKS_HOST`, `BRIDGE_DATABRICKS_CLIENT_ID` and
+`BRIDGE_DATABRICKS_CLIENT_SECRET`, the files-scoped service principal of doc 05, exchanged at
+`/oidc/v1/token`. Locally they come from `.env.bridge` (gitignored; template `.env.bridge.example`),
+which holds only those three keys; values already in the process environment win, and on the
+e2-micro they come from Secret Manager. The bridge never uses `DATABRICKS_TOKEN` and refuses an env
+file that contains it. Every outbound request sends the project User-Agent,
+`"Force_Balance_Pipeline/0.1 (+https://github.com/jivejong/JiveRepo/tree/main/Force_Balance_Pipeline)"`.
+The report endpoint (Phase 5) adds `INFERENCE_MODEL` and `GEMINI_API_KEY` (local `.env`, Secret
+Manager on the bridge) and an `--http-port` flag (default `8080`).

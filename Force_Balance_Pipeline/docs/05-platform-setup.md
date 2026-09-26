@@ -8,22 +8,61 @@
 2. **Complete LinkedIn verification.** This unlocks outbound internet access from serverless
    compute. Without it the SWAPI dimension refresh cannot reach the API. Do this first.
 3. Generate a personal access token for local dbt development. The bridge does not use it.
-4. Create a service principal `force-bridge` in the account, add it to the workspace, and generate an
-   OAuth secret for it. Grant it only what writing the landing zone needs:
+4. Create the bridge's credential: a service principal `force-bridge`, an OAuth secret for it, and
+   grants that let it write the landing volume and nothing else. The menu names follow Databricks'
+   OAuth machine-to-machine documentation; Free Edition may differ slightly.
 
-   ```sql
-   GRANT USE CATALOG ON CATALOG force TO `force-bridge`;
-   GRANT USE SCHEMA ON SCHEMA force.raw TO `force-bridge`;
-   GRANT READ VOLUME, WRITE VOLUME ON VOLUME force.raw.telemetry TO `force-bridge`;
-   ```
+   1. **Create it in the account.** Account console, User management, Service principals, Add service
+      principal, named `force-bridge`. (A workspace admin can instead use Settings, Identity and
+      access, Service principals, Manage, Add service principal.)
+   2. **Add it to the workspace.** Account console, Workspaces, your workspace, Permissions, Add
+      permissions, `force-bridge`, role User. In the workspace, Settings, Identity and access, Service
+      principals, Manage, `force-bridge`, Configuration tab: it lists the entitlements; leave the
+      defaults.
+   3. **Generate an OAuth secret.** The same page, Secrets tab, Generate secret. Set a lifetime (at
+      most 730 days). Databricks secrets can be scoped: the scopes are fixed when the secret is
+      generated and cannot be changed afterward, so choose the **`files`** scope (the scope that covers
+      the Files API) for this one, not `all-apis`. **The secret is shown once**: copy it together with
+      the client ID, then click Done. Account admins and workspace admins can both generate one.
+   4. **Find the application ID.** The client ID shown with the secret is the service principal's
+      application ID, a UUID; the service principal's page shows it too. Grants take this UUID, not the
+      display name: Databricks describes a service principal as "represented by its applicationId
+      value" in Unity Catalog grants.
+   5. **Grant, as a user who can grant on these objects** (for example the owner of `force`). Replace
+      `<application-id>` with the UUID from step 4 and keep the backticks:
 
-   It gets no access to `force.raw.checkpoints`, `bronze`, `silver`, `gold` or the SQL warehouse.
-   Locally the client id and secret live in `.env` as `BRIDGE_DATABRICKS_CLIENT_ID` and
-   `BRIDGE_DATABRICKS_CLIENT_SECRET`; on the e2-micro they come from Secret Manager. The bridge
-   exchanges them at `/oidc/v1/token` (client credentials, with the project User-Agent), caches the
-   token, and refreshes it before it expires. Check the grant is narrow: `LIST` on the telemetry
-   volume succeeds; `LIST` on the checkpoints volume and any bronze query fail. Fallback, only if an
-   OAuth secret cannot be generated: a personal access token owned by the service principal.
+      ```sql
+      GRANT USE CATALOG ON CATALOG force TO `<application-id>`;
+      GRANT USE SCHEMA ON SCHEMA force.raw TO `<application-id>`;
+      GRANT READ VOLUME, WRITE VOLUME ON VOLUME force.raw.telemetry TO `<application-id>`;
+      ```
+
+      Creating files in a volume needs `USE CATALOG`, `USE SCHEMA`, `READ VOLUME` and `WRITE VOLUME`.
+      Nothing is granted on `force.raw.checkpoints`, `bronze`, `silver`, `gold` or the SQL warehouse.
+   6. **Store the credentials in `.env.bridge`**, which is gitignored: copy `.env.bridge.example` and
+      fill in `DATABRICKS_HOST`, `BRIDGE_DATABRICKS_CLIENT_ID` (the application ID) and
+      `BRIDGE_DATABRICKS_CLIENT_SECRET`. The file holds only those three keys. The bridge reads it by
+      default (`--env-file` names another path), values already in the process environment win, and it
+      refuses a file that contains `DATABRICKS_TOKEN`. On the e2-micro the same three values come from
+      Secret Manager.
+   7. **Check the grant is narrow** (Phase 2, first workspace run). The bridge exchanges the client ID
+      and secret at `/oidc/v1/token` (client credentials, sent with the project User-Agent) and asks for
+      the scope `files`; `--oauth-scope` changes it, for example to `all-apis` with an unscoped secret.
+      A token is valid for one hour, and the bridge caches it and refreshes it before it expires. With that token, list the telemetry volume through the Files API: it succeeds. List
+      `force.raw.checkpoints`: it fails with a permission error. A `bronze` query fails too. Fallback,
+      only if an OAuth secret cannot be generated: a personal access token owned by the service
+      principal.
+
+   **Verified against the workspace (2026-09-26, `ingest/workspace_check.py`, scope `files`):**
+   - The token response has the fields `access_token`, `token_type`, `expires_in` (3600 s) and
+     `scope`, and its `scope` is `files`, the scope that was requested.
+   - A PUT with `overwrite=false` to a new path returns **204**. The same PUT again returns **409**
+     with error code `ALREADY_EXISTS` and the message "The file being created already exists."
+     The Files API reference does not name this status; the bridge treats 409, or an
+     `ALREADY_EXISTS` error code, as "already exists".
+   - Listing the telemetry volume succeeds. Listing `force.raw.checkpoints` returns 403
+     `PERMISSION_DENIED` (no `READ VOLUME`). A call to the SQL warehouses API returns 403 "Provided
+     OAuth token does not have required scopes: sql", so the files scope is enforced.
 5. Create a Gemini API key in Google AI Studio. Locally it lives in `.env` as `GEMINI_API_KEY`.
    Cloud Run (Yoda agent) and the collector bridge read it from Secret Manager, not from a file.
 

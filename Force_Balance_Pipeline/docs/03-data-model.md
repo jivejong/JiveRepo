@@ -178,7 +178,8 @@ Keep the signed z-scores as columns. The composite gives magnitude; the signed t
 direction, which is what signature classification reads.
 
 **Thresholds.** Anomaly above 3.0, emergency above 4.5. Tune these after the backfill exists and
-you can see actual distributions — treat the initial values as placeholders, not settled.
+you can see actual distributions — treat the initial values as placeholders, not settled. Changing
+these requires updating `edge/forcesim` constants in the same commit; `test_doc_parity.py` enforces it.
 
 ### Signature classification
 
