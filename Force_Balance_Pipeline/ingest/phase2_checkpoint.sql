@@ -7,8 +7,9 @@
 --          OBJECT<battery_pct: BIGINT, dark_side_activity: DECIMAL(3,1), kyber_resonance: DECIMAL(3,1),
 --                 midichlorian_ppm: DECIMAL(6,1), sensor_temp_c: DECIMAL(3,1)>
 --          (JSON numbers with a decimal point may show as DECIMAL(p,s) or DOUBLE; both are numeric).
---    FAIL: any field typed STRING (numbers stored as text), or the whole payload typed STRING
---          (double-encoded JSON), or payload NULL. On a FAIL, do the reset in docs/05-platform-setup.md.
+--          null_payloads (0c below) is 0.
+--    FAIL: any field typed STRING (numbers stored as text), or the whole payload typed STRING, or any NULL payload
+--          (try_parse_json returns NULL for a malformed one). On a FAIL, do the reset in docs/05-platform-setup.md.
 SELECT event_id, sector_id,
        typeof(payload)                  AS payload_type,
        schema_of_variant(payload)       AS payload_schema,
@@ -21,6 +22,10 @@ LIMIT 5;
 
 -- 0b. The same across every row (one schema if all rows agree).
 SELECT schema_of_variant_agg(payload) AS payload_schema_all_rows FROM force.bronze.events;
+
+-- 0c. try_parse_json turns a malformed payload into NULL instead of failing the stream, so a bad event shows up
+--     here. Must be 0.
+SELECT count(*) AS null_payloads FROM force.bronze.events WHERE payload IS NULL;
 
 -- (a) 180 rows from 3 live scans
 SELECT count(*) AS n, count(DISTINCT scan_id) AS scans, count(DISTINCT sector_id) AS sectors,

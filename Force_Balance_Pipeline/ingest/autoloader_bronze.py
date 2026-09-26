@@ -37,7 +37,9 @@ out = (
       .withColumn("schema_version", F.col("schema_version").cast("int"))
       .withColumn("dt", F.to_date("dt"))
       .withColumn("hh", F.col("hh").cast("int"))
-      .withColumn("payload", F.parse_json(F.to_json("payload")))
+      # payload arrives as a STRING of raw JSON (inferColumnTypes is false), so it is parsed directly;
+      # a malformed payload becomes NULL instead of failing the stream
+      .withColumn("payload", F.expr("try_parse_json(payload)"))
       .select("event_id", "source_id", "source_type", "mode", "scan_id", "sector_id",
               "schema_version", "event_time", "is_synthetic", "synthetic_ingest_ts", "payload",
               "dt", "hh", "_source_file", "_ingest_ts", "_rescued_data")

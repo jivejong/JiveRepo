@@ -97,9 +97,21 @@ class NotebookContentTests(unittest.TestCase):
 
     def test_types_are_cast_to_doc_03s_types(self):
         for needle in ('F.to_timestamp("event_time")', 'F.col("schema_version").cast("int")', 'F.to_date("dt")',
-                       'F.col("hh").cast("int")', 'F.parse_json(F.to_json("payload"))', 'F.col("_metadata.file_path")',
+                       'F.col("hh").cast("int")', 'F.expr("try_parse_json(payload)")', 'F.col("_metadata.file_path")',
                        "F.current_timestamp()"):
             self.assertIn(needle, self.text, needle)
+
+    def test_payload_is_parsed_from_the_raw_string_and_never_through_to_json(self):
+        """With inferColumnTypes false, payload arrives as a STRING: to_json fails on it at analysis
+        (DATATYPE_MISMATCH.INVALID_JSON_SCHEMA, recorded in doc 05). try_parse_json also keeps a malformed
+        payload from failing the stream."""
+        code = "\n".join(code_lines(self.text))
+        self.assertNotIn("to_json", code)
+        self.assertNotIn("F.parse_json", code)
+        payload_lines = [l for l in code.splitlines() if '"payload"' in l and "withColumn" in l]
+        self.assertEqual(payload_lines, ['      .withColumn("payload", F.expr("try_parse_json(payload)"))'])
+        self.assertIn("try_parse_json", doc05_auto_loader_block())
+        self.assertNotIn("to_json", doc05_auto_loader_block().replace("try_parse_json", ""))
 
     def test_doc_03_types_for_the_columns_it_casts(self):
         d3 = doc("03-data-model.md")
@@ -128,6 +140,25 @@ class FirstRunDocTests(unittest.TestCase):
         self.assertIn("typeof(payload)", first_doc)
         self.assertIn("schema_of_variant(payload)", first_doc)
         self.assertIn("schema_of_variant_agg(payload)", normalise_sql(block))
+
+    def test_the_null_payload_count_is_in_doc_05_and_the_sql_file_and_the_pass_criteria_use_it(self):
+        section = self.doc05.split("### The first query", 1)[1].split("### Reset", 1)[0]
+        block = re.search(r"```sql\n(.*?)```", section, re.S).group(1)
+        query = "SELECT count(*) AS null_payloads FROM force.bronze.events WHERE payload IS NULL"
+        self.assertIn(query, normalise_sql(block))
+        self.assertIn(query, normalise_sql(CHECKPOINT_SQL.read_text(encoding="utf-8")))
+        pass_and_fail = section.split("- **Pass:**", 1)[1]
+        self.assertIn("`null_payloads` is 0", " ".join(pass_and_fail.split()))
+        self.assertIn("NULL payload", " ".join(pass_and_fail.split()))
+
+    def test_doc_05_records_the_first_run_result_and_no_longer_speculates(self):
+        section = " ".join(self.doc05.split("### The first query", 1)[1].split("### Reset", 1)[0].split())
+        for text in ("Recorded result (2026-09-26, first run)", "DATATYPE_MISMATCH.INVALID_JSON_SCHEMA",
+                     "a STRING of raw JSON", "try_parse_json(payload)", "a malformed payload becomes NULL"):
+            self.assertIn(text, section, text)
+        self.assertNotIn("may instead give strings", section.lower())
+        self.assertNotIn("parse_json(to_json(payload))`, works only", section)
+        self.assertNotIn("`parse_json` not found", self.doc05)
 
     def test_the_first_query_is_read_only_and_uses_the_documented_table(self):
         sql = CHECKPOINT_SQL.read_text(encoding="utf-8")

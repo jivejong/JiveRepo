@@ -148,7 +148,7 @@ out = (
       .withColumn("schema_version", F.col("schema_version").cast("int"))
       .withColumn("dt", F.to_date("dt"))
       .withColumn("hh", F.col("hh").cast("int"))
-      .withColumn("payload", F.parse_json(F.to_json("payload")))
+      .withColumn("payload", F.expr("try_parse_json(payload)"))
       .select("event_id", "source_id", "source_type", "mode", "scan_id", "sector_id",
               "schema_version", "event_time", "is_synthetic", "synthetic_ingest_ts", "payload",
               "dt", "hh", "_source_file", "_ingest_ts", "_rescued_data")
@@ -196,7 +196,7 @@ confirms they are there). Run everything below as yourself, the owner of `force`
    makes Databricks open it as a notebook.
 3. **Attach compute.** Choose Serverless in the compute menu (the only kind Free Edition has). In the
    Environment side panel pick the newest environment version; the project's jobs use `5`. If the run
-   fails with `parse_json` not found, the environment is too old.
+   fails with `try_parse_json` not found, the environment is too old.
 4. **Run all.** The last cell starts the stream, ingests the landed files and stops: it finishes in
    about a minute with no error. Running it again is safe and adds nothing while no new file has
    landed.
@@ -204,9 +204,14 @@ confirms they are there). Run everything below as yourself, the owner of `force`
 
 ### The first query: does `payload` hold real numbers?
 
-The notebook's `payload` line, `parse_json(to_json(payload))`, works only if Auto Loader hands it a
-struct whose fields keep their JSON types. With `inferColumnTypes = false` it may instead give strings.
-Settle it before anything else is built on the table:
+**Recorded result (2026-09-26, first run).** The original `payload` line,
+`parse_json(to_json(payload))`, failed at analysis with `DATATYPE_MISMATCH.INVALID_JSON_SCHEMA`:
+`to_json(payload)` received the input schema `STRING`, but it needs a struct, array, map or variant.
+With `inferColumnTypes = false`, Auto Loader hands the nested `payload` object over as a STRING of raw
+JSON. The notebook therefore parses that string directly with `try_parse_json(payload)`. The result is
+a VARIANT whose numbers keep their JSON types, and a malformed payload becomes NULL in bronze instead of
+failing the stream, so a NULL payload is where a bad event shows up. Check the fixed line before
+anything else is built on the table:
 
 ```sql
 SELECT event_id, sector_id,
@@ -220,13 +225,17 @@ ORDER BY event_time
 LIMIT 5;
 
 SELECT schema_of_variant_agg(payload) AS payload_schema_all_rows FROM force.bronze.events;
+
+SELECT count(*) AS null_payloads FROM force.bronze.events WHERE payload IS NULL;
 ```
 
-- **Pass:** `payload_type` is `variant` and every field in `payload_schema` is numeric (`BIGINT`,
-  `DECIMAL(p,s)` or `DOUBLE`; JSON numbers with a decimal point may show as `DECIMAL`).
-- **Fail:** any field typed `STRING` (numbers stored as text), the whole payload typed `STRING`
-  (double-encoded JSON), or `payload` NULL. On a fail, do the reset below and bring the failing
-  output back, so the `payload` line is fixed in this doc and in the notebook together.
+- **Pass:** `payload_type` is `variant`, every field in `payload_schema` is numeric (`BIGINT`,
+  `DECIMAL(p,s)` or `DOUBLE`; JSON numbers with a decimal point may show as `DECIMAL`), and
+  `null_payloads` is 0.
+- **Fail:** any field typed `STRING` (numbers stored as text), the whole payload typed `STRING`, or any
+  NULL payload (`try_parse_json` returns NULL for a malformed one). On a fail, do the reset below and
+  bring the failing output back, so the `payload` line is fixed in this doc and in the notebook
+  together.
 
 The rest of the checkpoint queries are in `ingest/phase2_checkpoint.sql`.
 
