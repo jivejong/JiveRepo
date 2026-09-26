@@ -2,11 +2,10 @@
   Phase 1 review check 2 (doc 08): are the anchor planets high (or low) on their channel,
   relative to the other planets? BLOCKING: every anchor must pass.
 
-  Run after `dbt seed`, once the Phase 1 seeds exist:
-    dbt show --select phase1_check_2_anchors --limit 100 --vars "{run_phase1_checks: true}" --profiles-dir .
+  Run after `dbt seed`:
+    dbt show --select phase1_check_2_anchors --limit 100 --profiles-dir .
 
-  Disabled by default, for the same reason as check 1: the ref does not resolve until the seeds
-  exist. The `uncharted` row (planets/28) is excluded by its is_unknown flag, so it neither
+  The `uncharted` row (planets/28) is excluded by its is_unknown flag, so it neither
   moves the percentile ranks nor appears as an anchor.
 
   Pass criteria: percent_rank >= 0.85 for 'high' anchors, <= 0.15 for 'low' anchors, and
@@ -16,7 +15,6 @@
   Mirrored by scripts/enrich_planets.py (ANCHORS, HIGH_PCT_RANK, LOW_PCT_RANK);
   scripts/check_gate_parity.py verifies they match.
 #}
-{{ config(enabled=var('run_phase1_checks', false) | as_bool) }}
 
 with s as (
     select * from {{ ref('dim_sector') }}

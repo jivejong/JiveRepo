@@ -2,16 +2,12 @@
   Phase 1 review check 3 (doc 08, doc 07 step 5): does the Jedi roster cover every specialty,
   and is it the expected size?
 
-  Run after `dbt seed`, once the Phase 1 seeds exist:
-    dbt show --select phase1_check_3_jedi --limit 100 --vars "{run_phase1_checks: true}" --profiles-dir .
-
-  Disabled by default, for the same reason as check 1: the ref does not resolve until the seeds
-  exist.
+  Run after `dbt seed`:
+    dbt show --select phase1_check_3_jedi --limit 100 --profiles-dir .
 
   Pass criteria: at least 3 Jedi per primary_specialty (the column the constraint layer uses),
   and exactly 17 rows.
 #}
-{{ config(enabled=var('run_phase1_checks', false) | as_bool) }}
 
 with roster as (
     select * from {{ ref('dim_jedi') }}

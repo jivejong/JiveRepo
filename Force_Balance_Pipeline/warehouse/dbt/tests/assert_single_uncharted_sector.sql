@@ -1,7 +1,3 @@
-{{ config(
-    enabled=var('run_phase1_checks', false)
-) }}
-
 -- Failure mode 1: A row is flagged as unknown but does not have the 'uncharted' sector_id
 select
     sector_id,

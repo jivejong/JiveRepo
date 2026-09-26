@@ -2,11 +2,8 @@
   Phase 1 review check 1 (doc 08): do the baselines use their documented ranges, without
   clustering at the middle?
 
-  Run after `dbt seed`, once the Phase 1 seeds exist:
-    dbt show --select phase1_check_1_spread --limit 100 --vars "{run_phase1_checks: true}" --profiles-dir .
-
-  Disabled by default. ref('dim_sector') does not resolve until the seeds exist, and an
-  unresolved ref in an enabled node makes every dbt command fail, including a plain `dbt build`.
+  Run after `dbt seed`:
+    dbt show --select phase1_check_1_spread --limit 100 --profiles-dir .
 
   The `uncharted` row (planets/28) is excluded by its is_unknown flag, not by id or name.
 
@@ -18,7 +15,6 @@
 
   Mirrored by scripts/enrich_planets.py (RANGE_USE); scripts/check_gate_parity.py verifies they match.
 #}
-{{ config(enabled=var('run_phase1_checks', false) | as_bool) }}
 
 with s as (
     select * from {{ ref('dim_sector') }}
