@@ -1,0 +1,367 @@
+{
+  "manifest_version": 1,
+  "generator_version": 1,
+  "source_id": "probe-01",
+  "seed": 20260926,
+  "window": {
+    "window_start_utc": "2026-06-28T14:15:00.000Z",
+    "window_end_utc": "2026-09-26T14:15:00.000Z",
+    "interval_seconds": 900,
+    "days": 90,
+    "scans": 8640,
+    "last_scan_utc": "2026-09-26T14:00:00.000Z",
+    "last_synthetic_event_time_utc": "2026-09-26T14:00:02.950Z",
+    "earliest_live_event_time_utc": "2026-09-26T14:27:00.000Z",
+    "latest_allowed_window_end_utc": "2026-09-26T14:15:00.000Z",
+    "overlap_rule": "no synthetic event_time at or after earliest_live_event_time_utc"
+  },
+  "texture": {
+    "path": "edge/backfill_texture.json",
+    "sha256": "3a562a26315abf2df036566281486b2d764ddc67c08473275a25e13ba9e9f0d3"
+  },
+  "dim_sector": {
+    "path": "warehouse/dbt/seeds/dim_sector.csv",
+    "sha256": "901f95ee98f35e669fa1ce97f975bd980542081d31cc926656e532f8909a4bf9",
+    "rows": 60
+  },
+  "thresholds": {
+    "anomaly": 4.0,
+    "emergency": 5.75,
+    "sustained_scans": 2,
+    "margin_k": 3,
+    "margin": 1.060287
+  },
+  "targets": {
+    "sith_presence": {
+      "dark": 4,
+      "kyber": -3,
+      "midi": 0
+    },
+    "nexus_awakening": {
+      "dark": 0,
+      "kyber": 4,
+      "midi": 5
+    },
+    "force_drain": {
+      "dark": 0,
+      "kyber": -4,
+      "midi": -5
+    },
+    "civil_unrest": {
+      "dark": 5,
+      "kyber": 0,
+      "midi": 0
+    }
+  },
+  "scan_range": {
+    "first": 0,
+    "last_exclusive": 8640,
+    "partial": false
+  },
+  "files": 8640,
+  "rows": 518400,
+  "lines_per_file": 60,
+  "bytes": 218049991,
+  "content_hash": {
+    "algorithm": "sha256",
+    "method": "sha256 over the files in ascending file-name order; for each file: its name, a NUL, its byte length in decimal, a NUL, then its bytes",
+    "value": "8308472c95e55e6360ec8168f61f6ffb56bd8abb2b9d1dd9e67ecdd9505ffc62"
+  },
+  "report": {
+    "baseline": "mean and sample SD of the emitted readings over all scans of the window, all rows kept, including gap scans",
+    "modes": {
+      "BURST": 360,
+      "CONNECTED": 515160,
+      "DISCONNECTED": 2880
+    },
+    "rows_with_lag_over_1800_s": 2260,
+    "max_lag_seconds": 10796.0,
+    "gaps": [
+      {
+        "first_scan_utc": "2026-07-08T21:45:00.000Z",
+        "scans": 8,
+        "rows": 480,
+        "recovery_scan_utc": "2026-07-08T23:45:00.000Z",
+        "reconnect_utc": "2026-07-08T23:44:55.000Z",
+        "drain_batches": 1,
+        "drain_end_utc": "2026-07-08T23:45:05.000Z"
+      },
+      {
+        "first_scan_utc": "2026-07-25T05:15:00.000Z",
+        "scans": 12,
+        "rows": 720,
+        "recovery_scan_utc": "2026-07-25T08:15:00.000Z",
+        "reconnect_utc": "2026-07-25T08:14:55.000Z",
+        "drain_batches": 2,
+        "drain_end_utc": "2026-07-25T08:15:15.000Z"
+      },
+      {
+        "first_scan_utc": "2026-08-08T19:15:00.000Z",
+        "scans": 4,
+        "rows": 240,
+        "recovery_scan_utc": "2026-08-08T20:15:00.000Z",
+        "reconnect_utc": "2026-08-08T20:14:55.000Z",
+        "drain_batches": 1,
+        "drain_end_utc": "2026-08-08T20:15:05.000Z"
+      },
+      {
+        "first_scan_utc": "2026-08-31T07:45:00.000Z",
+        "scans": 8,
+        "rows": 480,
+        "recovery_scan_utc": "2026-08-31T09:45:00.000Z",
+        "reconnect_utc": "2026-08-31T09:44:55.000Z",
+        "drain_batches": 1,
+        "drain_end_utc": "2026-08-31T09:45:05.000Z"
+      },
+      {
+        "first_scan_utc": "2026-09-11T16:45:00.000Z",
+        "scans": 6,
+        "rows": 360,
+        "recovery_scan_utc": "2026-09-11T18:15:00.000Z",
+        "reconnect_utc": "2026-09-11T18:14:55.000Z",
+        "drain_batches": 1,
+        "drain_end_utc": "2026-09-11T18:15:05.000Z"
+      },
+      {
+        "first_scan_utc": "2026-09-23T02:45:00.000Z",
+        "scans": 10,
+        "rows": 600,
+        "recovery_scan_utc": "2026-09-23T05:15:00.000Z",
+        "reconnect_utc": "2026-09-23T05:14:55.000Z",
+        "drain_batches": 2,
+        "drain_end_utc": "2026-09-23T05:15:15.000Z"
+      }
+    ],
+    "emergencies": [
+      {
+        "sector": "tatooine",
+        "signature": "sith_presence",
+        "start_utc": "2026-07-18T00:15:00.000Z",
+        "ramp": 2,
+        "hold": 4,
+        "decay": 4,
+        "hold_scans": [
+          {
+            "scan_utc": "2026-07-18T00:45:00.000Z",
+            "z_midi": 2.448,
+            "z_kyber": -3.051,
+            "z_dark": 3.887,
+            "composite": 6.747,
+            "classification": "sith_presence"
+          },
+          {
+            "scan_utc": "2026-07-18T01:00:00.000Z",
+            "z_midi": 2.136,
+            "z_kyber": -3.051,
+            "z_dark": 3.887,
+            "composite": 6.64,
+            "classification": "sith_presence"
+          },
+          {
+            "scan_utc": "2026-07-18T01:15:00.000Z",
+            "z_midi": 2.045,
+            "z_kyber": -3.051,
+            "z_dark": 3.887,
+            "composite": 6.612,
+            "classification": "sith_presence"
+          },
+          {
+            "scan_utc": "2026-07-18T01:30:00.000Z",
+            "z_midi": 1.661,
+            "z_kyber": -3.051,
+            "z_dark": 3.887,
+            "composite": 6.503,
+            "classification": "sith_presence"
+          }
+        ],
+        "min_hold_composite": 6.503,
+        "consecutive_scans_at_emergency_level_as_signature": 4,
+        "all_hold_scans_classify_as_signature": true
+      },
+      {
+        "sector": "dantooine",
+        "signature": "nexus_awakening",
+        "start_utc": "2026-08-04T23:15:00.000Z",
+        "ramp": 3,
+        "hold": 3,
+        "decay": 4,
+        "hold_scans": [
+          {
+            "scan_utc": "2026-08-05T00:00:00.000Z",
+            "z_midi": 4.964,
+            "z_kyber": 3.87,
+            "z_dark": -0.051,
+            "composite": 6.294,
+            "classification": "nexus_awakening"
+          },
+          {
+            "scan_utc": "2026-08-05T00:15:00.000Z",
+            "z_midi": 4.964,
+            "z_kyber": 3.87,
+            "z_dark": -0.051,
+            "composite": 6.294,
+            "classification": "nexus_awakening"
+          },
+          {
+            "scan_utc": "2026-08-05T00:30:00.000Z",
+            "z_midi": 4.964,
+            "z_kyber": 3.87,
+            "z_dark": -0.051,
+            "composite": 6.294,
+            "classification": "nexus_awakening"
+          }
+        ],
+        "min_hold_composite": 6.294,
+        "consecutive_scans_at_emergency_level_as_signature": 3,
+        "all_hold_scans_classify_as_signature": true
+      },
+      {
+        "sector": "kamino",
+        "signature": "force_drain",
+        "start_utc": "2026-08-25T01:15:00.000Z",
+        "ramp": 2,
+        "hold": 5,
+        "decay": 3,
+        "hold_scans": [
+          {
+            "scan_utc": "2026-08-25T01:45:00.000Z",
+            "z_midi": -4.846,
+            "z_kyber": -4.004,
+            "z_dark": 0.016,
+            "composite": 6.286,
+            "classification": "force_drain"
+          },
+          {
+            "scan_utc": "2026-08-25T02:00:00.000Z",
+            "z_midi": -4.846,
+            "z_kyber": -4.004,
+            "z_dark": 0.016,
+            "composite": 6.286,
+            "classification": "force_drain"
+          },
+          {
+            "scan_utc": "2026-08-25T02:15:00.000Z",
+            "z_midi": -4.846,
+            "z_kyber": -4.004,
+            "z_dark": 0.016,
+            "composite": 6.286,
+            "classification": "force_drain"
+          },
+          {
+            "scan_utc": "2026-08-25T02:30:00.000Z",
+            "z_midi": -4.846,
+            "z_kyber": -4.004,
+            "z_dark": 0.016,
+            "composite": 6.286,
+            "classification": "force_drain"
+          },
+          {
+            "scan_utc": "2026-08-25T02:45:00.000Z",
+            "z_midi": -4.846,
+            "z_kyber": -4.004,
+            "z_dark": 0.016,
+            "composite": 6.286,
+            "classification": "force_drain"
+          }
+        ],
+        "min_hold_composite": 6.286,
+        "consecutive_scans_at_emergency_level_as_signature": 5,
+        "all_hold_scans_classify_as_signature": true
+      },
+      {
+        "sector": "coruscant",
+        "signature": "civil_unrest",
+        "start_utc": "2026-09-15T03:15:00.000Z",
+        "ramp": 3,
+        "hold": 4,
+        "decay": 4,
+        "hold_scans": [
+          {
+            "scan_utc": "2026-09-15T04:00:00.000Z",
+            "z_midi": -0.02,
+            "z_kyber": 0.025,
+            "z_dark": 5.158,
+            "composite": 7.295,
+            "classification": "civil_unrest"
+          },
+          {
+            "scan_utc": "2026-09-15T04:15:00.000Z",
+            "z_midi": -0.02,
+            "z_kyber": 0.025,
+            "z_dark": 5.158,
+            "composite": 7.295,
+            "classification": "civil_unrest"
+          },
+          {
+            "scan_utc": "2026-09-15T04:30:00.000Z",
+            "z_midi": -0.02,
+            "z_kyber": 0.025,
+            "z_dark": 5.158,
+            "composite": 7.295,
+            "classification": "civil_unrest"
+          },
+          {
+            "scan_utc": "2026-09-15T04:45:00.000Z",
+            "z_midi": -0.02,
+            "z_kyber": 0.025,
+            "z_dark": 5.158,
+            "composite": 7.295,
+            "classification": "civil_unrest"
+          }
+        ],
+        "min_hold_composite": 7.295,
+        "consecutive_scans_at_emergency_level_as_signature": 4,
+        "all_hold_scans_classify_as_signature": true
+      }
+    ],
+    "riser": {
+      "sector": "mon_cala",
+      "channel": "dark",
+      "total_sigma": 5.0,
+      "spike_probability": 0.0,
+      "last_scan_z_dark": 1.277,
+      "last_scan_composite": 1.982,
+      "last_day_mean_z_dark": 1.265,
+      "last_day_mean_composite": 2.013,
+      "trend_below_anomaly": true,
+      "max_composite": 4.97,
+      "scans_over_anomaly": 44,
+      "consecutive_pairs_over_anomaly": 13,
+      "other_planets_max_composite": {
+        "min": 5.078,
+        "median": 6.154,
+        "max": 10.662
+      }
+    },
+    "ambient": {
+      "episodes": 52,
+      "planets_with_episodes": 23,
+      "expected_episodes": 54.9,
+      "scans_over_anomaly": {
+        "all": 5630,
+        "outside_injected_episodes": 5604,
+        "outside_all_episodes": 5396,
+        "share_of_all_scans": 0.0109
+      },
+      "consecutive_pairs_over_anomaly": {
+        "all": 2258,
+        "outside_all_episodes": 2067
+      },
+      "scans_over_emergency": {
+        "all": 199,
+        "outside_injected_episodes": 181,
+        "outside_all_episodes": 46,
+        "share_of_all_scans": 0.0004
+      },
+      "consecutive_pairs_over_emergency": {
+        "all": 124,
+        "outside_all_episodes": 12
+      },
+      "sustained_runs_over_emergency_outside_all_episodes": 9,
+      "ambient_episodes_firing_sustained_over_emergency": {
+        "fired": 32,
+        "of": 52
+      }
+    }
+  }
+}
