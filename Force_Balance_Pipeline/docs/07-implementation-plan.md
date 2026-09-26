@@ -40,7 +40,7 @@ The generator depends on these parameters, so this comes first.
    the middle of each range.
 5. Verify specialty distribution across the Jedi roster. At least three Jedi per specialty, or
    certain signatures will have no valid responder.
-6. Commit CSVs. Write `ENRICHMENT_PROVENANCE.md`.
+6. Commit CSVs. `ENRICHMENT_PROVENANCE.md` is generated at promote time (doc 08); commit it too.
 7. `dbt seed`.
 
 **Checkpoint:** `dim_sector` has 60 rows with non-null baselines and sigmas, and each channel

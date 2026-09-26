@@ -281,9 +281,11 @@ primary_specialty and secondary_specialty, each one of:
   investigation - tracking, mystery, sensing disturbances, uncovering causes
   stealth       - infiltration, reconnaissance, covert operations
 
-Assign these based on how the character actually behaves in canon, not on rank. Distribute
-across all four specialties — do not default everyone to combat. secondary_specialty may be
-null if the character is strongly one-dimensional.
+Assign these based on how the character actually behaves in canon, not on rank. Each of the four
+specialties must be the primary_specialty for at least three Jedi. Where canon is thin for a
+specialty, choose the Jedi whose canonical behavior best supports it, and lower their
+canon_confidence to reflect the uncertainty. Do not default everyone to combat.
+secondary_specialty may be null if the character is strongly one-dimensional.
 
 power_rating: 1-10 relative to this roster. Reserve 10 for Yoda.
 
@@ -303,13 +305,20 @@ Return ONLY a JSON array. No preamble, no markdown fences.
 
 `warehouse/dbt/seeds/ENRICHMENT_PROVENANCE.md`:
 
+This file is generated from the `seeds/*.provenance.json` sidecars, never edited by hand. Promote
+rewrites it, and `scripts/rebuild_provenance.py` rebuilds it from existing sidecars without
+touching a CSV. It adds the review-gate result, override status and recorded corrections to the
+table below. "Reviewed by" comes from the sidecar (`rebuild_provenance.py --seed S --reviewed-by
+NAME`). Because dbt parses every `.md` under `seeds/` as a docs file, the generator neutralises
+Jinja tokens in correction reasons.
+
 ```markdown
 # Enrichment provenance
 
 | Seed | Model ID | Temperature | Thinking level | Prompt version / hash | Generated | Regeneration cycles | Reviewed by | Rows |
 |---|---|---|---|---|---|---|---|---|
 | dim_sector.csv | gemini-3.1-flash-lite | 1.0 (default) | <open> | planets-v1 / <hash> | 2026-09-xx | <n> | <you> | 60 |
-| dim_jedi.csv | gemini-3.1-flash-lite | 1.0 (default) | <open> | jedi-v1 / <hash> | 2026-09-xx | <n> | <you> | 17 |
+| dim_jedi.csv | gemini-3.1-flash-lite | 1.0 (default) | <open> | jedi-v2 / <hash> | 2026-09-xx | <n> | <you> | 17 |
 
 Source: LLM-generated from model knowledge, human-reviewed. Not scraped from any wiki.
 Reruns do not reproduce the committed values; the reviewed CSVs are the source of truth.
