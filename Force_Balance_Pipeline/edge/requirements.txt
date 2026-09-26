@@ -1,0 +1,6 @@
+# Pins for the probe simulator (edge/probe_sim.py) and the collector bridge (ingest/bridge/bridge.py).
+# forcesim itself is standard library only. Install into a repo-local venv, never globally:
+#   python -m venv edge/.venv
+#   edge/.venv/Scripts/python.exe -m pip install -r edge/requirements.txt      (Windows)
+# The Pi needs paho-mqtt only (doc 04); ULIDs come from forcesim's own seedable implementation.
+paho-mqtt==2.1.0

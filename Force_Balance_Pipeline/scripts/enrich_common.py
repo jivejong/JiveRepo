@@ -298,7 +298,8 @@ def provenance_record(seed, model, thinking_level, prompt_version, prompt_hash_,
 
 def write_sidecar(out_dir, seed, record):
     path = sidecar_path(out_dir, seed)
-    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    with path.open("w", encoding="utf-8", newline="\n") as f:  # LF on every OS (.gitattributes: *.json eol=lf)
+        f.write(json.dumps(record, indent=2) + "\n")
     return path
 
 

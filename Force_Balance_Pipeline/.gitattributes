@@ -25,8 +25,17 @@ warehouse/dbt/dbt_packages/** linguist-vendored
 *.py                linguist-detectable
 terraform/**        linguist-detectable
 
-# Line endings
+# Line endings: LF in the repository and in the working tree, for text we write ourselves.
+# (*.yml is listed as well as *.yaml: the dbt files use .yml. CSV seeds are left to text=auto.)
 * text=auto eol=lf
-*.sh    text eol=lf
-*.png   binary
-*.gif   binary
+*.py     text eol=lf
+*.sql    text eol=lf
+*.md     text eol=lf
+*.conf   text eol=lf
+*.json   text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.ndjson text eol=lf
+*.sh     text eol=lf
+*.png    binary
+*.gif    binary
