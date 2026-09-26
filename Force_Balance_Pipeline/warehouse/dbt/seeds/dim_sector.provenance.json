@@ -1,0 +1,320 @@
+{
+  "seed": "dim_sector.csv",
+  "model_id": "gemini-3.1-flash-lite",
+  "temperature": "1.0 (model default; not sent in the request)",
+  "thinking_level": "low",
+  "prompt_version": "planets-v1",
+  "prompt_hash": "0ab79f1844ca",
+  "generated_utc": "2026-09-25T02:43:01Z",
+  "regeneration_cycles": 0,
+  "rows": 60,
+  "usage_tokens": {
+    "promptTokenCount": 4946,
+    "candidatesTokenCount": 8950,
+    "totalTokenCount": 13998,
+    "thoughtsTokenCount": 102
+  },
+  "warnings": [],
+  "structured_output": "responseMimeType + responseJsonSchema",
+  "calls": 1,
+  "batch_size": 59,
+  "max_output_tokens": 65536,
+  "sigma_enforcement": "clamped to the band; see sigma_adjustments",
+  "sigma_adjustments": [],
+  "review_gate": {
+    "rows_evaluated": 59,
+    "clamps": {
+      "midi": {
+        "clamped": 0,
+        "share": 0.0,
+        "pass": true
+      },
+      "kyber": {
+        "clamped": 0,
+        "share": 0.0,
+        "pass": true
+      },
+      "dark": {
+        "clamped": 0,
+        "share": 0.0,
+        "pass": true
+      }
+    },
+    "range_use": {
+      "midi": {
+        "min_position": 0.0083,
+        "max_position": 0.9583,
+        "middle_share": 0.1186,
+        "checks": {
+          "min": true,
+          "max": true,
+          "middle": true
+        },
+        "pass": true
+      },
+      "kyber": {
+        "min_position": 0.05,
+        "max_position": 0.8,
+        "middle_share": 0.0847,
+        "checks": {
+          "min": true,
+          "max": true,
+          "middle": true
+        },
+        "pass": true
+      },
+      "dark": {
+        "min_position": 0.05,
+        "max_position": 0.95,
+        "middle_share": 0.1186,
+        "checks": {
+          "min": true,
+          "max": true,
+          "middle": true
+        },
+        "pass": true
+      }
+    },
+    "anchors": {
+      "results": [
+        {
+          "sector_id": "mustafar",
+          "channel": "dark",
+          "expect": "high",
+          "present": true,
+          "value": 95.0,
+          "pct_rank": 1.0,
+          "ok": true
+        },
+        {
+          "sector_id": "dathomir",
+          "channel": "dark",
+          "expect": "high",
+          "present": true,
+          "value": 90.0,
+          "pct_rank": 0.9828,
+          "ok": true
+        },
+        {
+          "sector_id": "geonosis",
+          "channel": "dark",
+          "expect": "high",
+          "present": true,
+          "value": 55.0,
+          "pct_rank": 0.8966,
+          "ok": true
+        },
+        {
+          "sector_id": "naboo",
+          "channel": "dark",
+          "expect": "low",
+          "present": true,
+          "value": 10.0,
+          "pct_rank": 0.0345,
+          "ok": true
+        },
+        {
+          "sector_id": "alderaan",
+          "channel": "dark",
+          "expect": "low",
+          "present": true,
+          "value": 5.0,
+          "pct_rank": 0.0,
+          "ok": true
+        },
+        {
+          "sector_id": "coruscant",
+          "channel": "midi",
+          "expect": "high",
+          "present": true,
+          "value": 24000.0,
+          "pct_rank": 1.0,
+          "ok": true
+        },
+        {
+          "sector_id": "utapau",
+          "channel": "kyber",
+          "expect": "high",
+          "present": true,
+          "value": 80.0,
+          "pct_rank": 1.0,
+          "ok": true
+        }
+      ],
+      "passed": 7,
+      "total": 7,
+      "pass": true
+    },
+    "pass": true
+  },
+  "review_gate_pre_correction": {
+    "rows_evaluated": 59,
+    "clamps": {
+      "midi": {
+        "clamped": 0,
+        "share": 0.0,
+        "pass": true
+      },
+      "kyber": {
+        "clamped": 0,
+        "share": 0.0,
+        "pass": true
+      },
+      "dark": {
+        "clamped": 0,
+        "share": 0.0,
+        "pass": true
+      }
+    },
+    "range_use": {
+      "midi": {
+        "min_position": 0.0083,
+        "max_position": 0.9583,
+        "middle_share": 0.1186,
+        "checks": {
+          "min": true,
+          "max": true,
+          "middle": true
+        },
+        "pass": true
+      },
+      "kyber": {
+        "min_position": 0.05,
+        "max_position": 0.6,
+        "middle_share": 0.0847,
+        "checks": {
+          "min": true,
+          "max": false,
+          "middle": true
+        },
+        "pass": false
+      },
+      "dark": {
+        "min_position": 0.05,
+        "max_position": 0.95,
+        "middle_share": 0.1186,
+        "checks": {
+          "min": true,
+          "max": true,
+          "middle": true
+        },
+        "pass": true
+      }
+    },
+    "anchors": {
+      "results": [
+        {
+          "sector_id": "mustafar",
+          "channel": "dark",
+          "expect": "high",
+          "present": true,
+          "value": 95.0,
+          "pct_rank": 1.0,
+          "ok": true
+        },
+        {
+          "sector_id": "dathomir",
+          "channel": "dark",
+          "expect": "high",
+          "present": true,
+          "value": 90.0,
+          "pct_rank": 0.9828,
+          "ok": true
+        },
+        {
+          "sector_id": "geonosis",
+          "channel": "dark",
+          "expect": "high",
+          "present": true,
+          "value": 40.0,
+          "pct_rank": 0.8448,
+          "ok": false
+        },
+        {
+          "sector_id": "naboo",
+          "channel": "dark",
+          "expect": "low",
+          "present": true,
+          "value": 10.0,
+          "pct_rank": 0.0345,
+          "ok": true
+        },
+        {
+          "sector_id": "alderaan",
+          "channel": "dark",
+          "expect": "low",
+          "present": true,
+          "value": 5.0,
+          "pct_rank": 0.0,
+          "ok": true
+        },
+        {
+          "sector_id": "coruscant",
+          "channel": "midi",
+          "expect": "high",
+          "present": true,
+          "value": 24000.0,
+          "pct_rank": 1.0,
+          "ok": true
+        },
+        {
+          "sector_id": "utapau",
+          "channel": "kyber",
+          "expect": "high",
+          "present": true,
+          "value": 25.0,
+          "pct_rank": 0.7931,
+          "ok": false
+        }
+      ],
+      "passed": 5,
+      "total": 7,
+      "pass": false
+    },
+    "pass": false
+  },
+  "corrections": [
+    {
+      "sector_id": "geonosis",
+      "column": "dark_baseline",
+      "reason": "War-scarred Separatist foundry world, first battle of the Clone Wars, later sterilized by the Empire (a site of atrocity); model placed it at 40, tied with several ordinary worlds.",
+      "original_baseline": 40.0,
+      "corrected_baseline": 55.0,
+      "sigma_column": "dark_sigma",
+      "sigma_before": 2.5,
+      "sigma_rescaled": 3.4375,
+      "sigma_final": 3.4375,
+      "band_adjusted": false
+    },
+    {
+      "sector_id": "utapau",
+      "column": "kyber_baseline",
+      "reason": "Clone Wars Utapau arc: a giant kyber crystal, a major crystal deposit per the prompt's 'very high'; model placed it at 25.",
+      "original_baseline": 25.0,
+      "corrected_baseline": 80.0,
+      "sigma_column": "kyber_sigma",
+      "sigma_before": 3.0,
+      "sigma_rescaled": 9.6,
+      "sigma_final": 9.6,
+      "band_adjusted": false
+    }
+  ],
+  "corrections_file_sha256": "0c11f3a804532355c2c6c37e1ce53a41e32588b728f72ab0a6c5f5d87fb7f4a7",
+  "inputs_sha256": {
+    "planets.json": "2e8ff2adc3ac7dac8db640c205b929e900a665d99a8403d82457a5f3fc4a6285"
+  },
+  "accepted_failing_gate": false,
+  "unknown_row": "medians of the other 59 rows (computed at generation; rerun --recompute-unknown after review edits)",
+  "written_from": "reviewed saved response",
+  "promoted_from": [
+    "planets_20260925T024301Z_low_call1of1.json"
+  ],
+  "promoted_from_sha256": {
+    "planets_20260925T024301Z_low_call1of1.json": "ec91252bcca5fb7609edb84d7bb3a95faddb6f7d86c8bd8c844049ec93a1e690"
+  },
+  "promoted_utc": "20260925T032747Z",
+  "prompt_hash_matched_current_prompt": true,
+  "planet_data_matched_snapshot": false,
+  "response_run_was_trial": true,
+  "reviewed_by": "jivejong"
+}

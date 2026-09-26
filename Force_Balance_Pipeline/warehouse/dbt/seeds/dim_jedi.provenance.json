@@ -1,0 +1,64 @@
+{
+  "seed": "dim_jedi.csv",
+  "model_id": "gemini-3.1-flash-lite",
+  "temperature": "1.0 (model default; not sent in the request)",
+  "thinking_level": "low",
+  "prompt_version": "jedi-v2",
+  "prompt_hash": "93521a8f269a",
+  "generated_utc": "2026-09-25T12:49:17Z",
+  "regeneration_cycles": 0,
+  "rows": 17,
+  "usage_tokens": {
+    "promptTokenCount": 1463,
+    "candidatesTokenCount": 1932,
+    "totalTokenCount": 3517,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 1463
+      }
+    ],
+    "thoughtsTokenCount": 122,
+    "serviceTier": "standard"
+  },
+  "warnings": [],
+  "primary_specialty_counts": {
+    "combat": 6,
+    "diplomacy": 4,
+    "investigation": 4,
+    "stealth": 3
+  },
+  "structured_output": "responseMimeType + responseJsonSchema",
+  "max_output_tokens": 16384,
+  "review_gate": {
+    "row_count": 17,
+    "expected_rows": 17,
+    "min_per_specialty": 3,
+    "specialty_counts": {
+      "combat": 6,
+      "diplomacy": 4,
+      "investigation": 4,
+      "stealth": 3
+    },
+    "failures": [],
+    "pass": true
+  },
+  "accepted_failing_gate": false,
+  "inputs_sha256": {
+    "people.json": "08dd09a17bc968db640ef8bd9da0f15eb3c1c4f98dbc0f0322114e29df81d632",
+    "planets.json": "2e8ff2adc3ac7dac8db640c205b929e900a665d99a8403d82457a5f3fc4a6285",
+    "species.json": "cd44dfeb8e06f5f9c6eed63cb8c02e8e1732e04ca57c2749267ed0d7d125281b"
+  },
+  "written_from": "reviewed saved response",
+  "promoted_from": [
+    "jedi_20260925T124917Z_low_call1of1.json"
+  ],
+  "promoted_from_sha256": {
+    "jedi_20260925T124917Z_low_call1of1.json": "f962c674e49e51b03a36df863d5d238da6092b5f173f84353515fcf55baed840"
+  },
+  "promoted_utc": "20260925T125432Z",
+  "prompt_hash_matched_current_prompt": true,
+  "roster_data_matched_snapshot": true,
+  "response_run_was_trial": false,
+  "reviewed_by": "jivejong"
+}

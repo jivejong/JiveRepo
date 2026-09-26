@@ -1,0 +1,18 @@
+jedi_id,jedi_name,species_id,homeworld_sector_id,rank,primary_specialty,secondary_specialty,power_rating,lightsaber_form,notable_for,canon_confidence
+obi_wan_kenobi,Obi-Wan Kenobi,human,stewjon,master,diplomacy,combat,8,Form III Soresu,Known as the Negotiator and for his mastery of defensive lightsaber combat.,1.0
+anakin_skywalker,Anakin Skywalker,human,tatooine,knight,combat,,9,Form V Djem So,"The Chosen One, renowned for his unprecedented skill in lightsaber combat and piloting.",1.0
+yoda,Yoda,yoda_s_species,uncharted,grand_master,diplomacy,investigation,10,Form IV Ataru,"The oldest and wisest Jedi, serving as the head of the High Council for centuries.",1.0
+qui_gon_jinn,Qui-Gon Jinn,human,uncharted,master,diplomacy,investigation,7,Form IV Ataru,A maverick who followed the Living Force and discovered the technique for immortality.,1.0
+ayla_secura,Ayla Secura,twi_lek,ryloth,master,stealth,combat,6,Form IV Ataru,Often deployed for covert operations and reconnaissance behind enemy lines.,0.9
+mace_windu,Mace Windu,human,haruun_kal,council_member,combat,diplomacy,9,Form VII Vaapad,Created the Vaapad fighting style and served as the champion of the Jedi Order.,1.0
+ki_adi_mundi,Ki-Adi-Mundi,cerean,cerea,council_member,investigation,combat,6,Form IV Ataru,Known for his analytical mind and his role in major campaigns during the Clone Wars.,0.9
+kit_fisto,Kit Fisto,nautolan,glee_anselm,council_member,combat,investigation,7,Form I Shii-Cho,An expert duelist whose amphibious biology grants him unique agility in aquatic environments.,0.9
+eeth_koth,Eeth Koth,zabrak,iridonia,council_member,combat,,6,Form V Djem So,Known for his incredible pain tolerance and focus during high-intensity conflict.,0.7
+adi_gallia,Adi Gallia,tholothian,coruscant,council_member,investigation,combat,6,Form V Djem So,Highly skilled pilot and expert on intelligence-gathering operations across the galaxy.,0.8
+saesee_tiin,Saesee Tiin,iktotchi,iktotch,council_member,combat,stealth,7,Form V Djem So,A telepathic pilot known for his reflexes and tactical brilliance in space combat.,0.8
+yarael_poof,Yarael Poof,quermian,quermia,council_member,diplomacy,investigation,5,Form II Makashi,A master of mind tricks and negotiation who served on the Council for many years.,0.7
+plo_koon,Plo Koon,kel_dor,dorin,council_member,investigation,combat,7,Form V Djem So,Renowned for his keen Force intuition and strong bond with the Clone Troopers.,0.9
+luminara_unduli,Luminara Unduli,mirialan,mirial,master,combat,investigation,6,Form III Soresu,"A disciplined strategist and practitioner of precise, defensive lightsaber techniques.",0.9
+barriss_offee,Barriss Offee,mirialan,mirial,padawan,stealth,investigation,5,Form III Soresu,Known for her academic interests and eventual disillusionment with the Jedi Order.,0.9
+jocasta_nu,Jocasta Nu,human,coruscant,master,investigation,,4,Form I Shii-Cho,"The Chief Librarian of the Jedi Archives, dedicated to preserving the history of the Order.",0.9
+shaak_ti,Shaak Ti,togruta,shili,council_member,stealth,combat,7,Form II Makashi,A master of meditation who oversaw the training of clones on Kamino.,0.8
