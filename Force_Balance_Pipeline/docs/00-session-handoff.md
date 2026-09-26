@@ -48,7 +48,8 @@ what was decided and why.
 
 ## Probe (RPi 3)
 
-- 64-bit Raspberry Pi OS Lite; deps are `paho-mqtt` and `python-ulid` only.
+- 64-bit Raspberry Pi OS Lite; the only dependency is `paho-mqtt` (ULIDs come from the seedable
+  implementation in `forcesim`).
 - Sweeps **all 60 planets every 15 minutes**, emitted as one burst per `scan_id` → one file per scan.
 - Channels: **midichlorian density** (stable), **kyber resonance** (variable), **dark side
   activity** (quiet, rare spikes). Mean-reverting random walk seeded from enrichment parameters.

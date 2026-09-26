@@ -64,11 +64,14 @@ arrived, duplicates included.
 | `event_id`, `source_id`, `source_type`, `mode`, `scan_id`, `sector_id` | STRING |
 | `schema_version` | INT |
 | `event_time` | TIMESTAMP |
+| `is_synthetic` | BOOLEAN |
+| `synthetic_ingest_ts` | TIMESTAMP (null unless `is_synthetic`) |
 | `payload` | VARIANT |
 | `dt` | DATE (partition) |
 | `hh` | INT |
 | `_source_file` | STRING |
 | `_ingest_ts` | TIMESTAMP |
+| `_rescued_data` | STRING (Auto Loader `rescue` mode; null when nothing was rescued) |
 
 ---
 
@@ -82,8 +85,9 @@ Typed, validated, deduplicated. Incremental with `merge` on `event_id`.
 
 | Added column | Definition |
 |---|---|
-| `ingest_lag_seconds` | `unix_timestamp(_ingest_ts) - unix_timestamp(event_time)` |
+| `ingest_lag_seconds` | `unix_timestamp(CASE WHEN is_synthetic THEN synthetic_ingest_ts ELSE _ingest_ts END) - unix_timestamp(event_time)` |
 | `is_replayed` | `ingest_lag_seconds > 1800` |
+| `is_synthetic` | carried from bronze, so the dashboard can tell backfill from live |
 | `is_partial` | any of the three channels null — true in `STEALTH` |
 | `channels_present` | int, 1–3 |
 
@@ -278,3 +282,5 @@ Minimum set. Part of the deliverable.
 - Every `gold.deployment` references a `gold.disturbance` with `agent_processed = true`
 - Every `signature` value has at least one matching Jedi specialty available in `dim_jedi`
 - Freshness: warn if no new `bronze.events` rows in 45 minutes (three missed scans)
+- `synthetic_ingest_ts` is null on every bronze row where `is_synthetic` is false, and not null
+  where it is true

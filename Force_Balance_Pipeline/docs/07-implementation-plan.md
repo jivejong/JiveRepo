@@ -66,19 +66,23 @@ Laptop only. No Raspberry Pi yet.
 3. Collector bridge: MQTT subscribe → buffer → flush NDJSON to the UC volume via Files API.
 4. Auto Loader notebook. Run manually.
 5. **Backfill generator** — 90 days of synthetic history in one shot using the same generator
-   code, written directly as NDJSON files into dated volume paths.
+   code, written directly as NDJSON files under the same ingest-time `dt=`/`hh=` prefix as live
+   files (doc 02). The prefix names the day and hour a file was uploaded, not the date of the
+   readings; event-time organisation belongs in silver.
 
 Give the backfill texture. Flat data makes a boring dashboard and unrealistic baselines:
 
 - Gradual drift on 3–4 planets
-- 3–4 historical emergencies with distinct signatures, fully resolved
+- 3–4 injected historical emergencies with distinct signatures, fully resolved, in addition to
+  ambient dark spike episodes (doc 04)
 - One planet with a slowly rising dark side trend that has not yet crossed threshold
 - A few `DISCONNECTED` gaps with later `BURST` recovery, so `is_replayed` has history
 
 **Checkpoint:** run the live probe 45 minutes (3 scans), run Auto Loader, and see 180 rows in
 `force.bronze.events` with correct partitions and `payload` queryable as `VARIANT`. Run Auto
 Loader again with no new files — zero new rows, proving exactly-once. Backfill loads ~518,400
-rows (60 planets × 96 scans/day × 90 days) and the partition count is sane.
+rows (60 planets × 96 scans/day × 90 days) and lands in a small number of `dt` partitions (the
+upload days).
 
 ---
 

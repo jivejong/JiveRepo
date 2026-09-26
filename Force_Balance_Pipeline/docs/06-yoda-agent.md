@@ -176,6 +176,9 @@ you want the voice, apply it as a display transform on `rationale` in the dashbo
 
 The dashboard lets a user deploy to any planet with an active anomaly, choosing Jedi and ship.
 
+**OPEN:** "active anomaly" is undefined. The 3.0 anomaly threshold (doc 03) has no consumer; define
+it in Phase 6.
+
 - Same constraint layer, same rejection reasons surfaced in the UI
 - `decided_by = 'user'`, `model` and `decision_latency_ms` null
 - `rationale` is required — a free-text field the user must fill

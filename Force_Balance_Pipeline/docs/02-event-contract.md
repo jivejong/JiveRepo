@@ -22,6 +22,8 @@ split happens at silver.
   "mode":           "CONNECTED",
   "scan_id":        "01K4X8QP2K",
   "sector_id":      "tatooine",
+  "is_synthetic":        false,
+  "synthetic_ingest_ts": null,
   "payload":        { }
 }
 ```
@@ -33,9 +35,11 @@ split happens at silver.
 | `source_type` | string | `probe` \| `report`. **Load-bearing** — see below |
 | `schema_version` | int | Increment on breaking payload change |
 | `event_time` | string | ISO 8601 UTC. **When the reading was taken**, not when sent |
-| `mode` | string | Probe operating mode. Null for reports |
+| `mode` | string | Probe operating mode when the reading was taken. A reading buffered while `DISCONNECTED` keeps that value when drained; scans taken during a drain are `BURST`. Null for reports |
 | `scan_id` | string | Groups the 60 readings of one sweep. Null for reports |
 | `sector_id` | string | SWAPI planet slug. FK to `dim_sector` |
+| `is_synthetic` | boolean | True only for rows written by the backfill generator. Always present; false for live probe and report events |
+| `synthetic_ingest_ts` | string | ISO 8601 UTC. The ingest time a backfill row simulates. Set only where `is_synthetic`; always present, null otherwise |
 | `payload` | object | Source-specific. `VARIANT` in bronze |
 
 ### `source_type` is the most important field in the system
@@ -54,6 +58,12 @@ report-sourced rows appear in it.
 `event_time` is the other load-bearing field. A probe replaying a `DISCONNECTED` buffer produces
 events whose `event_time` is hours behind `_ingest_ts`. That gap is the point. The bridge must
 never overwrite it with send time.
+
+Backfill rows are written straight to the volume, so their real `_ingest_ts` is the upload time,
+not a plausible arrival time. Silver measures ingest lag for `is_synthetic` rows from
+`synthetic_ingest_ts`, and for every other row from `_ingest_ts`. Both fields are always emitted,
+because Auto Loader's `rescue` schema-evolution mode sends a field missing from the inferred schema to
+`_rescued_data` instead of a column.
 
 ---
 
@@ -126,6 +136,7 @@ trigger emergencies. See doc 03 for thresholds.
 
 Hive-style `dt=` and `hh=` prefixes, inferred by Auto Loader as partition columns. Use ingest
 wall-clock time for the prefix — it describes when the file was written, not what's in it.
+This holds for backfill files too: their `dt=` and `hh=` name the day and hour they were uploaded.
 
 Filename is `{source_id}-{ulid}.ndjson`. Immutable and uniquely named, so a retrying bridge
 cannot produce a duplicate and Auto Loader's file tracking prevents reprocessing.

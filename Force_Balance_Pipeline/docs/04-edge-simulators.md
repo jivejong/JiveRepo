@@ -17,11 +17,12 @@ The real constraint is 1 GB RAM shared with the GPU. Dependencies:
 
 ```
 paho-mqtt
-python-ulid
 ```
 
-Stdlib `sqlite3`. No cloud SDK on the device — the bridge handles upload. Run as a systemd
-service with `Restart=always`.
+Stdlib `sqlite3`. No cloud SDK on the device — the bridge handles upload. ULIDs come from
+`forcesim`'s own stdlib implementation, which is seedable: a reproducible backfill needs seeded
+randomness, and `python-ulid` draws from OS randomness. Run as a systemd service with
+`Restart=always`.
 
 ### Scan cycle
 
@@ -37,21 +38,57 @@ Parameters come from `dim_sector` — `midi_baseline`/`midi_sigma`, `kyber_basel
 Per planet, per scan:
 
 ```python
-# Mean-reverting random walk. State persists across scans per planet per channel.
-value = prev + normal(0, sigma) + 0.15 * (baseline - prev)
+# Mean-reverting AR(1) walk, calibrated so the stationary SD equals the enrichment sigma.
+# State persists across scans per planet per channel. Each series starts from a stationary draw,
+# normal(baseline, sigma), not from the baseline itself.
+K = 0.15                                    # reversion rate; phi = 1 - K = 0.85
+STEP_SD = sigma * math.sqrt(K * (2 - K))    # = sigma * sqrt(1 - phi**2) = 0.5268 * sigma
+value = prev + normal(0, STEP_SD) + K * (baseline - prev)
 ```
 
 Mean reversion keeps values anchored without them being independent draws, which is what makes
-the series look like a physical process rather than noise.
+the series look like a physical process rather than noise. The step noise is scaled so the
+long-run standard deviation of each series equals the planet's `*_sigma` from `dim_sector`. With
+step noise equal to sigma itself the long-run SD would be 1.9 x sigma, and every z-score in the
+warehouse would be 1.9 x too small. Readings are clamped to the valid ranges in doc 02; the walk
+state is not clamped, so a clamped reading does not feed back into the next step.
 
-Dark side additionally rolls `dark_spike_probability` each scan. On a hit, ramp toward
-`baseline + (4 to 7) * sigma` over 2–4 scans, hold 1–2 scans, then decay over 3–5 scans. That
-ramp-hold-decay shape is what produces `sustained_scans >= 2` and fires a real emergency.
+Dark side additionally rolls for a spike episode each scan with probability
+`dark_spike_probability / 96`. The seed value is read as a **per-day** episode rate (96 scans a
+day). The seed was generated under a per-scan framing; read that way it would produce about 5,000
+episodes galaxy-wide over the 90-day backfill, which contradicts a quiet dark channel with rare
+spikes. The seed is frozen, so the interpretation lives here (doc 08 notes it). A planet does not
+roll while it is already in a spike episode, or while an injected event (a backfill emergency or a
+control-topic injection) is active on it. On a hit, ramp toward `baseline + (4 to 7) * sigma` over
+2–4 scans, hold 1–2 scans, then decay over 3–5 scans. That ramp-hold-decay shape is what produces
+`sustained_scans >= 2` and fires a real emergency.
 
 Expose a control topic `force/control/probe-01` accepting `{"inject": "spike", "sector_id": "...",
 "signature": "sith_presence"}` so a demo can trigger a specific signature on demand. Implement it
 by manipulating the three channels' targets to match the classification rule — that is how you
 get reproducible demos and how the dashboard GIF gets made.
+An injection produces an emergency-level reading; the control message carries no severity field
+yet. Targets are computed, not listed, in `edge/forcesim/signatures.py`, and shared with the
+backfill's historical emergencies. The target of a signature is the smallest whole-sigma point whose
+reading classifies as that signature and whose nominal composite score (doc 03; under the calibrated
+walk, z equals the target in sigmas) exceeds the doc 03 emergency threshold times a margin
+`M = 1 / (1 - 3e)`, about 1.06. Here `e` is the sampling error of one 90-day window's standard
+deviation, `sqrt((1 + phi^2) / (2 (1 - phi^2) n))` with phi = 0.85 and n = 8,640 scans, which is
+1.9%. The margin lets an injected emergency still clear the threshold against a baseline whose SD
+was estimated three standard errors high (a 0.13% chance per event). It is a margin on injection
+intent, meaning the score the injection is meant to reach; it is not a margin on the signature's
+region, whose boundary is never widened. Only channels with a directional condition in the
+signature's rule (`>` or `<`) move; channels the rule bounds toward zero (`ABS(z) < c`), channels it
+does not mention, and guard channels stay at 0. Ties go to the smaller largest deviation, then to
+loading midichlorian, the channel with the widest valid range. The threshold comes from doc 03, so
+tuning it recomputes every target, and a severity can be added later as a different threshold. An
+injection holds at least 2 scans, because a disturbance needs 2 consecutive scans above the
+threshold (doc 03).
+During the hold phase the step noise on the channels that define the signature's region (its own
+rule, plus any channel that guards against an earlier rule) is zero, so the value equals its
+target exactly; without that, a target just inside a region would classify as itself only part of
+the time. Other channels keep their ambient noise. An injection the planet cannot support (a target
+outside a channel's valid range, or `civil_unrest` on a planet under 1e9 population) is refused.
 
 ### Fault injection
 
@@ -236,7 +273,9 @@ Runs on the GCP e2-micro.
 3. Validate envelope structure only, never payload contents. Structural failures go to a local
    dead-letter file
 4. Accumulate and flush NDJSON to `/Volumes/force/raw/telemetry/dt=.../hh=.../` via the Files API
-5. Expose health metrics — buffer depth, flush count, last flush — for the dashboard
+5. Expose health metrics — buffer depth, flush count, last flush — for the dashboard. Phase 2 logs
+   these counters to the console; the HTTP endpoint is built in Phase 7 (doc 07), when the
+   dashboard needs it.
 
 ### What it must not do
 
@@ -244,6 +283,10 @@ Runs on the GCP e2-micro.
   is correct and load-bearing
 - Never reorder events
 - Never deduplicate — that is silver's job, and doing it here hides duplicate bugs
+
+**OPEN:** the local Mosquitto config sets `allow_anonymous true` and binds to `127.0.0.1` only, so
+it is for the laptop only. On the e2-micro (Phase 3) the broker needs authentication and TLS before
+the Pi connects.
 
 ### Configuration
 
@@ -264,7 +307,8 @@ inference:
   api_key: ${GEMINI_API_KEY}         # local .env; Secret Manager on the bridge
 databricks:
   host: ${DATABRICKS_HOST}
-  token: ${DATABRICKS_TOKEN}
+  client_id: ${BRIDGE_DATABRICKS_CLIENT_ID}         # files-scoped service principal (doc 05)
+  client_secret: ${BRIDGE_DATABRICKS_CLIENT_SECRET} # OAuth M2M; exchanged at /oidc/v1/token
   volume_path: /Volumes/force/raw/telemetry
   user_agent: "Force_Balance_Pipeline/0.1 (+https://github.com/jivejong/JiveRepo/tree/main/Force_Balance_Pipeline)"
 ```

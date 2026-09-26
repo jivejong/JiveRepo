@@ -107,6 +107,11 @@ and the channel's p90 (p10 for a low anchor).
 | `canon_confidence` | float | 0.0–1.0, model's self-assessment |
 | `is_unknown` | boolean | true for planets/28 only (see "The `unknown` planet") |
 
+**`dark_spike_probability` is read as a per-day rate.** The column was generated under a per-scan
+framing (the prompt below says "per-scan chance"), and the frozen seed is not regenerated. The
+simulator interprets it as a per-day episode rate (doc 04): each scan starts a spike episode with
+probability `dark_spike_probability / 96`.
+
 **Departure from passthrough.** `population` and `diameter_km` are SWAPI values passed through, with
 one exception: a value that is not a number (SWAPI's `"unknown"`) is written as empty (null), so
 the seed columns can be numeric. A `diameter_km` of `0` is treated the same way: SWAPI uses `0` for

@@ -7,8 +7,24 @@
 1. Create a Databricks Free Edition account.
 2. **Complete LinkedIn verification.** This unlocks outbound internet access from serverless
    compute. Without it the SWAPI dimension refresh cannot reach the API. Do this first.
-3. Generate a personal access token for local dbt development and for the collector bridge.
-4. Create a Gemini API key in Google AI Studio. Locally it lives in `.env` as `GEMINI_API_KEY`.
+3. Generate a personal access token for local dbt development. The bridge does not use it.
+4. Create a service principal `force-bridge` in the account, add it to the workspace, and generate an
+   OAuth secret for it. Grant it only what writing the landing zone needs:
+
+   ```sql
+   GRANT USE CATALOG ON CATALOG force TO `force-bridge`;
+   GRANT USE SCHEMA ON SCHEMA force.raw TO `force-bridge`;
+   GRANT READ VOLUME, WRITE VOLUME ON VOLUME force.raw.telemetry TO `force-bridge`;
+   ```
+
+   It gets no access to `force.raw.checkpoints`, `bronze`, `silver`, `gold` or the SQL warehouse.
+   Locally the client id and secret live in `.env` as `BRIDGE_DATABRICKS_CLIENT_ID` and
+   `BRIDGE_DATABRICKS_CLIENT_SECRET`; on the e2-micro they come from Secret Manager. The bridge
+   exchanges them at `/oidc/v1/token` (client credentials, with the project User-Agent), caches the
+   token, and refreshes it before it expires. Check the grant is narrow: `LIST` on the telemetry
+   volume succeeds; `LIST` on the checkpoints volume and any bronze query fail. Fallback, only if an
+   OAuth secret cannot be generated: a personal access token owned by the service principal.
+5. Create a Gemini API key in Google AI Studio. Locally it lives in `.env` as `GEMINI_API_KEY`.
    Cloud Run (Yoda agent) and the collector bridge read it from Secret Manager, not from a file.
 
 ### Outbound HTTP clients — set a User-Agent
@@ -80,6 +96,7 @@ df = (
     .option("cloudFiles.format", "json")
     .option("cloudFiles.schemaLocation", f"{CHECKPOINT}/schema")
     .option("cloudFiles.inferColumnTypes", "false")
+    .option("cloudFiles.schemaHints", "is_synthetic BOOLEAN, synthetic_ingest_ts TIMESTAMP")
     .option("cloudFiles.schemaEvolutionMode", "rescue")
     .option("multiLine", "false")
     .load(LANDING)
@@ -89,7 +106,13 @@ out = (
     df.withColumn("_source_file", F.col("_metadata.file_path"))
       .withColumn("_ingest_ts", F.current_timestamp())
       .withColumn("event_time", F.to_timestamp("event_time"))
+      .withColumn("schema_version", F.col("schema_version").cast("int"))
+      .withColumn("dt", F.to_date("dt"))
+      .withColumn("hh", F.col("hh").cast("int"))
       .withColumn("payload", F.parse_json(F.to_json("payload")))
+      .select("event_id", "source_id", "source_type", "schema_version", "event_time", "mode",
+              "scan_id", "sector_id", "is_synthetic", "synthetic_ingest_ts", "payload", "dt", "hh",
+              "_source_file", "_ingest_ts", "_rescued_data")
 )
 
 (
@@ -291,7 +314,8 @@ recomputing them every 15 minutes would make z-scores drift under the detector.
 | ----------------- | ------------------------------------------------ |
 | `optimize_vacuum` | SQL — `OPTIMIZE` + `VACUUM` on bronze and silver |
 
-Small-file compaction. Necessary because the bridge produces a file per minute.
+Small-file compaction. Necessary because the bridge produces a file per scan (96 a day) plus a file
+per 90 seconds of report traffic.
 
 ### Job 4 — `refresh_dimensions` (manual trigger only)
 
