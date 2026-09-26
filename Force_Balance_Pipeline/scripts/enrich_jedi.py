@@ -42,7 +42,7 @@ import gemini_client
 import jedi_roster
 
 SEED = "dim_jedi"
-PROMPT_VERSION = "jedi-v1"
+PROMPT_VERSION = "jedi-v2"
 HUMAN_SPECIES_ID = 1  # SWAPI species/1; an empty SWAPI species list means Human
 # 17 entries are roughly 2-3k tokens of answer; thinking tokens count toward the cap too.
 MAX_OUTPUT_TOKENS = 16384
@@ -64,9 +64,11 @@ primary_specialty and secondary_specialty, each one of:
   investigation - tracking, mystery, sensing disturbances, uncovering causes
   stealth       - infiltration, reconnaissance, covert operations
 
-Assign these based on how the character actually behaves in canon, not on rank. Distribute
-across all four specialties — do not default everyone to combat. secondary_specialty may be
-null if the character is strongly one-dimensional.
+Assign these based on how the character actually behaves in canon, not on rank. Each of the four
+specialties must be the primary_specialty for at least three Jedi. Where canon is thin for a
+specialty, choose the Jedi whose canonical behavior best supports it, and lower their
+canon_confidence to reflect the uncertainty. Do not default everyone to combat.
+secondary_specialty may be null if the character is strongly one-dimensional.
 
 power_rating: 1-10 relative to this roster. Reserve 10 for Yoda.
 
@@ -328,8 +330,9 @@ def promote(args, inputs, ids):
          "response_run_was_trial": bool(meta.get("trial"))},
         generated_utc=ec.stamp_to_iso(meta["requested_utc"]))
     side = ec.write_sidecar(args.out_dir, SEED, rec)
+    prov_md, _ = ec.write_provenance_md(args.out_dir)
 
-    print(f"\nwrote {out_csv} ({len(rows)} rows) and {side.name}")
+    print(f"\nwrote {out_csv} ({len(rows)} rows), {side.name} and {prov_md.name}")
     print()
     print(gate_report(gate))
     if warnings:
@@ -339,8 +342,8 @@ def promote(args, inputs, ids):
     if overridden:
         print("\nWARNING: written despite a failing review gate (--accept-failing-gate). "
               "The override is recorded in the sidecar; do not accept this output.")
-    print("\nprovenance row for seeds/ENRICHMENT_PROVENANCE.md:")
-    print(ec.provenance_table_row(rec))
+    print(f"\n{prov_md.name} was rebuilt from the sidecars; 'Reviewed by' stays <you> until "
+          "rebuild_provenance.py --seed dim_jedi --reviewed-by NAME")
     return 0
 
 

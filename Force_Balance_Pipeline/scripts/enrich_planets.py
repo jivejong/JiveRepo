@@ -717,8 +717,9 @@ def finalize_and_write(args, ev, unknown_planet, info):
          **info["extra"]},
         generated_utc=info.get("generated_utc"))
     side = ec.write_sidecar(args.out_dir, SEED, rec)
+    prov_md, _ = ec.write_provenance_md(args.out_dir)
 
-    print(f"\nwrote {out_csv} ({len(ordered)} rows) and {side.name}")
+    print(f"\nwrote {out_csv} ({len(ordered)} rows), {side.name} and {prov_md.name}")
     print(f"{len(ev['adj'])} sigma adjustment(s) and {len(ev['records'])} correction(s) "
           "(all recorded in the sidecar)")
     print()
@@ -726,8 +727,8 @@ def finalize_and_write(args, ev, unknown_planet, info):
     if overridden:
         print("\nWARNING: written despite a failing review gate (--accept-failing-gate). "
               "The override is recorded in the sidecar; do not accept this output.")
-    print("\nprovenance row for seeds/ENRICHMENT_PROVENANCE.md:")
-    print(ec.provenance_table_row(rec))
+    print(f"\n{prov_md.name} was rebuilt from the sidecars; 'Reviewed by' stays <you> until "
+          "rebuild_provenance.py --seed dim_sector --reviewed-by NAME")
     return 0
 
 

@@ -303,10 +303,133 @@ def write_sidecar(out_dir, seed, record):
 
 
 def provenance_table_row(rec):
-    """A row for seeds/ENRICHMENT_PROVENANCE.md (doc 08). 'Reviewed by' is filled by hand."""
+    """A row of the seeds/ENRICHMENT_PROVENANCE.md table (doc 08). 'Reviewed by' comes from the
+    sidecar's `reviewed_by` (set with rebuild_provenance.py --reviewed-by), else the <you> placeholder."""
     return (f"| {rec['seed']} | {rec['model_id']} | 1.0 (default) | {rec['thinking_level']} | "
             f"{rec['prompt_version']} / {rec['prompt_hash']} | {rec['generated_utc'][:10]} | "
-            f"{rec['regeneration_cycles']} | <you> | {rec['rows']} |")
+            f"{rec['regeneration_cycles']} | {_md(rec.get('reviewed_by') or '<you>')} | {rec['rows']} |")
+
+
+# seeds/ENRICHMENT_PROVENANCE.md is generated from the sidecars, never edited by hand (doc 08).
+PROVENANCE_MD = "ENRICHMENT_PROVENANCE.md"
+PROVENANCE_SEED_ORDER = ("dim_sector", "dim_jedi")
+SIDECAR_SUFFIX = ".provenance.json"
+JINJA_TOKENS = ("{%", "{#", "{{")
+
+
+def _md(text):
+    """One line of text that is safe inside a markdown table cell or list item."""
+    return " ".join(str(text).split()).replace("|", "\\|")
+
+
+def _num(value):
+    return f"{value:g}" if isinstance(value, (int, float)) and not isinstance(value, bool) else str(value)
+
+
+def _iso_or_raw(stamp):
+    try:
+        return stamp_to_iso(stamp)
+    except (TypeError, ValueError):
+        return str(stamp) if stamp else "not recorded"
+
+
+def read_sidecars(out_dir):
+    """seed name -> sidecar record, for every *.provenance.json in out_dir (doc order first)."""
+    found = {}
+    for path in sorted(Path(out_dir).glob(f"*{SIDECAR_SUFFIX}")):
+        found[path.name[:-len(SIDECAR_SUFFIX)]] = json.loads(path.read_text(encoding="utf-8"))
+    ordered = [s for s in PROVENANCE_SEED_ORDER if s in found] + [s for s in found if s not in PROVENANCE_SEED_ORDER]
+    return {s: found[s] for s in ordered}
+
+
+def _gate_status(rec):
+    gate = rec.get("review_gate")
+    if gate is None:
+        return "not recorded"
+    status = "PASS" if gate.get("pass") else "FAIL"
+    pre = rec.get("review_gate_pre_correction")
+    if gate.get("pass") and pre is not None and not pre.get("pass"):
+        status += " (failed before corrections)"
+    return status
+
+
+def _override_status(rec):
+    if "accepted_failing_gate" not in rec:
+        return "not recorded"
+    return "OVERRIDDEN (--accept-failing-gate)" if rec["accepted_failing_gate"] else "no"
+
+
+def _correction_line(c):
+    line = (f"- `{c.get('sector_id', c.get('key', '?'))}.{c['column']}`: {_num(c['original_baseline'])} -> "
+            f"{_num(c['corrected_baseline'])}; {c['sigma_column']} {_num(c['sigma_before'])} -> "
+            f"{_num(c['sigma_final'])}")
+    if c.get("band_adjusted"):
+        line += f" (clamped to the sigma band from {_num(c['sigma_rescaled'])})"
+    return f"{line}. Reason: {_md(c['reason'])}"
+
+
+def render_provenance_md(records):
+    """The text of ENRICHMENT_PROVENANCE.md from {seed name: sidecar record}. A pure function of the
+    sidecars, so rebuilding it from unchanged sidecars gives identical bytes."""
+    lines = [
+        "# Enrichment provenance", "",
+        f"<!-- Generated from the seeds/*{SIDECAR_SUFFIX} sidecars by scripts/enrich_planets.py and "
+        "scripts/enrich_jedi.py at promote time, or by scripts/rebuild_provenance.py. Do not edit by hand. -->",
+        "",
+        "| Seed | Model ID | Temperature | Thinking level | Prompt version / hash | Generated | "
+        "Regeneration cycles | Reviewed by | Rows |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    lines += [provenance_table_row(rec) for rec in records.values()]
+    lines += [
+        "",
+        "Source: LLM-generated from model knowledge, human-reviewed. Not scraped from any wiki.",
+        "Reruns do not reproduce the committed values; the reviewed CSVs are the source of truth.",
+        "Regeneration invalidates the 90-day backfill and all derived baselines — see",
+        "docs/08-ai-enrichment.md.",
+        "",
+        "## Review gate and override status", "",
+        "| Seed | Review gate | Override | Corrections | Promoted from | Promoted (UTC) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for rec in records.values():
+        promoted_from = ", ".join(f"`{n}`" for n in rec.get("promoted_from", [])) or "not recorded"
+        lines.append(f"| {rec['seed']} | {_gate_status(rec)} | {_override_status(rec)} | "
+                     f"{len(rec.get('corrections') or [])} | {_md(promoted_from)} | "
+                     f"{_iso_or_raw(rec.get('promoted_utc'))} |")
+    lines += ["", "## Recorded corrections", "",
+              "Human corrections to reviewed values, applied at promote time from "
+              "`data/enrichment_corrections.csv` (doc 08).", ""]
+    for rec in records.values():
+        corrections = rec.get("corrections") or []
+        lines.append(f"### {rec['seed']}")
+        lines.append("")
+        if not corrections:
+            lines += ["None recorded.", ""]
+            continue
+        sha = rec.get("corrections_file_sha256")
+        if sha:
+            lines += [f"Corrections file SHA-256: `{sha}`", ""]
+        lines += [_correction_line(c) for c in corrections]
+        lines.append("")
+    text = "\n".join(lines).rstrip("\n") + "\n"
+    # dbt reads every .md under seed-paths as a docs file and runs Jinja block extraction on it, so an
+    # unbalanced "{%" or "{#" in a correction reason would break every dbt command. Neutralise them.
+    for token in JINJA_TOKENS:
+        text = text.replace(token, f"&#123;{token[1]}")
+    return text
+
+
+def write_provenance_md(out_dir):
+    """Rebuild ENRICHMENT_PROVENANCE.md in out_dir from its sidecars. Returns (path, sidecar count),
+    or (None, 0) when there is no sidecar to build from. Touches no CSV."""
+    records = read_sidecars(out_dir)
+    if not records:
+        return None, 0
+    path = Path(out_dir) / PROVENANCE_MD
+    with path.open("w", encoding="utf-8", newline="\n") as f:
+        f.write(render_provenance_md(records))
+    return path, len(records)
 
 
 def sum_usage(usages):
