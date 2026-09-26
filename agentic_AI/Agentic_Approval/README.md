@@ -1,6 +1,6 @@
 # The Bundy Approval Desk
 
-A Streamlit, voice-driven state-machine demo styled as a *Married... with Children* household. A user records an idea, chooses Peg or Al Bundy as the household responder, and follows an escalating response route based on an LLM score.
+A Streamlit, voice-driven state-machine demo styled as a *Married... with Children* household. A user records an idea, chooses Peg or Al Bundy as the household responder, and follows an escalating response route based on an LLM score. When Peg is the responder, Jefferson warns Al; when Al is the responder, Marcy warns Peg.
 
 ## Flow
 
@@ -19,7 +19,7 @@ At each intervention stage the user can abort, or choose to escalate. The final 
 | --- | --- |
 | Ear Agent | Sends the WAV microphone recording to Gemini for transcription. |
 | Logic Engine | Scores the reviewed idea from 1 to 10 and selects the route. |
-| Spouse and Friend agents | Generate in-character warnings and intervention text. |
+| Spouse and Friend agents | Generate warnings from Peg or Al; Jefferson intervenes for Al, while Marcy intervenes for Peg. |
 | Voice Synthesizer | Produces role-specific Microsoft Neural voice audio with `edge-tts`. |
 | Telemetry | Emits OpenTelemetry traces and metrics for model, TTS, and workflow stages. |
 

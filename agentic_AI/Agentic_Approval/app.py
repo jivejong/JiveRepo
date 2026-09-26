@@ -8,6 +8,8 @@ import uuid
 import hashlib
 import edge_tts
 import io
+import base64
+from pathlib import Path
 from google import genai
 from google.genai import types
 
@@ -22,13 +24,35 @@ from security import consume_llm_call, render_access_status, require_access
 
 GEMINI_MODEL = "gemini-3.1-flash-lite"
 
+APP_DIR = Path(__file__).resolve().parent
+IMAGE_DIR = APP_DIR / "images"
+CHARACTER_IMAGES = {
+    "Al Bundy": str(IMAGE_DIR / "Al.webp"),
+    "Peg Bundy": str(IMAGE_DIR / "Peg.webp"),
+    "Marcy": str(IMAGE_DIR / "Marcy.webp"),
+    "Jefferson": str(IMAGE_DIR / "Jefferson.webp"),
+}
+
+
+def _image_data_uri(path: Path, mime_type: str) -> str:
+    """Encode a local image for use in the masthead's CSS background."""
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+SOFA_BACKGROUND = _image_data_uri(IMAGE_DIR / "sofa.jpg", "image/jpeg")
+
 PERSONAS = {
     "wife": {
         "name": "Peg Bundy",
+        "proposer": "Al Bundy",
+        "friend": "Jefferson",
         "intro": "Peg is on the couch and ready to hear your idea.",
     },
     "husband": {
         "name": "Al Bundy",
+        "proposer": "Peg Bundy",
+        "friend": "Marcy",
         "intro": "Al is at the shoe store and ready to hear your idea.",
     },
 }
@@ -37,6 +61,16 @@ PERSONAS = {
 def persona_name(spouse: str | None) -> str:
     """Return the on-screen Bundy character name for the chosen role."""
     return PERSONAS.get(spouse or "", {}).get("name", "Bundy")
+
+
+def friend_name(spouse: str | None) -> str:
+    """Return the friend assigned to the person proposing the idea."""
+    return PERSONAS.get(spouse or "", {}).get("friend", "Friend")
+
+
+def proposer_name(spouse: str | None) -> str:
+    """Return the implied partner who is proposing the idea."""
+    return PERSONAS.get(spouse or "", {}).get("proposer", "Partner")
 
 
 def _session_id() -> str:
@@ -165,8 +199,13 @@ div.stButton > button {{
   text-align: center;
   padding: 1.35rem 1rem 1.1rem;
   margin: .25rem 0 1.6rem;
-  background-image: linear-gradient(135deg, rgba(210, 35, 30, .12) 25%, transparent 25%, transparent 50%, rgba(210, 35, 30, .12) 50%, rgba(210, 35, 30, .12) 75%, transparent 75%);
-  background-size: 18px 18px;
+  min-height: 250px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  background-image: linear-gradient(rgba(25, 10, 5, .42), rgba(25, 10, 5, .58)), url("{SOFA_BACKGROUND}");
+  background-size: cover;
+  background-position: center 68%;
 }}
 .masthead h1 {{
   margin: 0;
@@ -174,14 +213,15 @@ div.stButton > button {{
   font-size: clamp(2rem, 7vw, 3.8rem);
   letter-spacing: .055em;
   line-height: 1;
-  color: #b51512;
-  text-shadow: 2px 2px 0 #f4b000;
+  color: #fff4d8;
+  text-shadow: 3px 3px 0 #8b130f, 0 0 8px #000;
 }}
 .masthead p {{
   margin: .7rem 0 0;
   font-size: 1rem;
-  color: #35160b;
+  color: #fff4d8;
   font-weight: bold;
+  text-shadow: 1px 1px 4px #000;
 }}
 .card {{
   padding: 1.2rem;
@@ -216,6 +256,28 @@ def add_log(agent, action, detail=""):
         "action": action,
         "detail": detail
     })
+
+
+def render_character_speech(character: str, speech: str, *, critical: bool = False) -> None:
+    """Render a character portrait beside their generated speech."""
+    portrait_col, speech_col = st.columns([1, 3])
+    with portrait_col:
+        st.image(CHARACTER_IMAGES[character], width=120, caption=character)
+    with speech_col:
+        border_style = " style=\"border-color:var(--danger)\"" if critical else ""
+        transcript_style = (
+            " style=\"color:var(--danger); font-weight:bold;\""
+            if critical
+            else ""
+        )
+        label = f"{character} (CRITICAL RAGE)" if critical else f"{character} says"
+        st.markdown(
+            f'<div class="card"{border_style}>'
+            f'<div class="speaker-label">{label}:</div>'
+            f'<div class="transcript"{transcript_style}>{speech}</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def transition_stage(stage: str, action: str, detail: str, *, clear_rage: bool = False) -> None:
@@ -422,8 +484,10 @@ Limit to 2 sentences. Be witty and cutting but avoid profanity and do not quote 
     return (resp.text or "").strip()
 
 def get_friend_speech(idea: str, spouse: str) -> str:
-    character = persona_name(spouse)
-    prompt = f"""You are a worried friend calling to stop your buddy from telling {character} this idea: '{idea}'.
+    responder = persona_name(spouse)
+    proposer = proposer_name(spouse)
+    friend = friend_name(spouse)
+    prompt = f"""You are {friend}, {proposer}'s worried friend. Speak directly to {proposer} and try to stop them from telling {responder} this idea: '{idea}'.
 Be urgent and funny, with a working-class 1990s sitcom energy. Limit to 2 sentences; avoid profanity and TV-show quotes."""
     resp = _run_chat(
         prompt, task="friend_speech", temperature=0.8,
@@ -440,7 +504,8 @@ if "stage" not in st.session_state:
     st.session_state.update({
         "stage": "choose_spouse", "spouse": None, "transcript": "",
         "score": None, "score_reasoning": "", "spouse_speech": "",
-        "friend_speech": "", "exile_until": None, "logs": [], "token_events": []
+        "friend_speech": "", "friend_character": None,
+        "exile_until": None, "logs": [], "token_events": []
     })
 
 # ── Sidebar: Access status ───────────────────────────────────────────────────
@@ -494,12 +559,24 @@ if st.session_state.stage == "choose_spouse":
     col1, col2 = st.columns(2)
     with col1:
         if st.button("💋 Talk to Peg", use_container_width=True, type="primary"):
-            st.session_state.spouse, st.session_state.stage = "wife", "record_idea"
+            st.session_state.update(
+                spouse="wife",
+                stage="record_idea",
+                spouse_speech="",
+                friend_speech="",
+                friend_character="Jefferson",
+            )
             add_log("System", "Bundy Selected", "Persona: Peg Bundy")
             st.rerun()
     with col2:
         if st.button("👞 Talk to Al", use_container_width=True, type="primary"):
-            st.session_state.spouse, st.session_state.stage = "husband", "record_idea"
+            st.session_state.update(
+                spouse="husband",
+                stage="record_idea",
+                spouse_speech="",
+                friend_speech="",
+                friend_character="Marcy",
+            )
             add_log("System", "Bundy Selected", "Persona: Al Bundy")
             st.rerun()
 
@@ -549,7 +626,10 @@ elif st.session_state.stage == "spouse_warning":
     if not st.session_state.spouse_speech:
         st.session_state.spouse_speech = get_spouse_speech(st.session_state.transcript, st.session_state.spouse, st.session_state.score)
     
-    st.markdown(f'<div class="card"><div class="speaker-label">{persona_name(st.session_state.spouse)} says:</div><div class="transcript">{st.session_state.spouse_speech}</div></div>', unsafe_allow_html=True)
+    render_character_speech(
+        persona_name(st.session_state.spouse),
+        st.session_state.spouse_speech,
+    )
     
     with st.spinner("Synthesizing spouse response..."):
         voices = get_voice_mapping(st.session_state.spouse)
@@ -571,10 +651,22 @@ elif st.session_state.stage == "spouse_warning":
         )
 
 elif st.session_state.stage == "friend_intervention":
-    add_log("Intervention Agent", "Critical Risk Detected", "Auto-dialing friend...")
+    expected_friend = friend_name(st.session_state.spouse)
+    if st.session_state.get("friend_character") != expected_friend:
+        st.session_state.friend_character = expected_friend
+        st.session_state.friend_speech = ""
+
+    add_log(
+        "Intervention Agent",
+        "Critical Risk Detected",
+        f"Auto-dialing {expected_friend}...",
+    )
     if not st.session_state.friend_speech:
         st.session_state.friend_speech = get_friend_speech(st.session_state.transcript, st.session_state.spouse)
-    st.markdown(f'<div class="card"><div class="speaker-label">The neighborhood hotline says:</div><div class="transcript">{st.session_state.friend_speech}</div></div>', unsafe_allow_html=True)
+    render_character_speech(
+        expected_friend,
+        st.session_state.friend_speech,
+    )
     
     voices = get_voice_mapping(st.session_state.spouse)
     notify_msg = "This app just sent me a notification that you are about to say something really risky to your spouse."
@@ -601,14 +693,11 @@ elif st.session_state.stage == "spouse_rage":
         with st.spinner("Bracing for impact..."):
             st.session_state.rage_speech = get_spouse_speech(st.session_state.transcript, st.session_state.spouse, 10)
     
-    st.markdown(f'''
-        <div class="card" style="border-color:var(--danger)">
-            <div class="speaker-label">{persona_name(st.session_state.spouse)} (CRITICAL RAGE):</div>
-            <div class="transcript" style="color:var(--danger); font-weight:bold;">
-                {st.session_state.rage_speech}
-            </div>
-        </div>
-    ''', unsafe_allow_html=True)
+    render_character_speech(
+        persona_name(st.session_state.spouse),
+        st.session_state.rage_speech,
+        critical=True,
+    )
     
     with st.spinner("Generating rage audio..."):
         voices = get_voice_mapping(st.session_state.spouse)
@@ -643,11 +732,12 @@ elif st.session_state.stage == "abort_success":
     confirm_msg = "That was a close one. Let's just pretend this conversation never happened."
     voices = get_voice_mapping(st.session_state.spouse)
     # Using the 'Friend' voice here provides a "I've got your back" vibe
+    render_character_speech(friend_name(st.session_state.spouse), confirm_msg)
     autoplay_audio(text_to_speech(confirm_msg, voices["friend"]))
     
     if st.button("Return to Safety", use_container_width=True):
         # Clear specific keys but keep logs if you want the history to persist
-        for key in ['stage', 'spouse', 'transcript', 'score', 'score_reasoning', 'spouse_speech', 'friend_speech', 'rage_speech']:
+        for key in ['stage', 'spouse', 'transcript', 'score', 'score_reasoning', 'spouse_speech', 'friend_speech', 'friend_character', 'rage_speech']:
             if key in st.session_state:
                 st.session_state[key] = None
         st.session_state.stage = "choose_spouse"
@@ -659,6 +749,7 @@ elif st.session_state.stage == "exile":
         
     msg = f"I am going to {place}. Goodbye."
     voices = get_voice_mapping(st.session_state.spouse)
+    render_character_speech(persona_name(st.session_state.spouse), msg)
     autoplay_audio(text_to_speech(msg, voices["spouse"]))
     
     countdown_ph = st.empty()

@@ -3,12 +3,18 @@ import pandas as pd
 import random
 import json
 import re
+from pathlib import Path
 from security import (
     UsageLimitReached,
     consume_llm_call,
     require_access,
     render_session_controls,
 )
+
+APP_DIR = Path(__file__).resolve().parent
+BART_AVATAR = str(APP_DIR / "images" / "Bart.png")
+HOMER_AVATAR = str(APP_DIR / "images" / "Homer.png")
+MARGE_AVATAR = str(APP_DIR / "images" / "Marge.png")
 
 # ── DEPENDENCIES: pip install google-genai pandas streamlit chromadb ──────────
 
@@ -476,7 +482,7 @@ if submitted:
             attempted_items.append(current_item)
 
         render_agent(
-            "Bart", "🛹",
+            "Bart", BART_AVATAR,
             f"*\"{child_res.get('plea', f'I really want {current_item}!')}\"*",
             child_res.get('monologue', ''),
             f"Requesting: **{current_item}**"
@@ -492,7 +498,7 @@ if submitted:
                 homer_pushed_item = homer_res.get('suggested_item', rogue_item)
 
             render_agent(
-                "Homer", "🍩",
+                "Homer", HOMER_AVATAR,
                 f"*\"{homer_res.get('argument', 'Just give him a treat!')}\"*",
                 homer_res.get('monologue', ''),
                 f"Pushing: **{homer_pushed_item}** instead"
@@ -517,7 +523,7 @@ if submitted:
         if not allowed:
             reason = screen.get('reason', 'Not appropriate.')
             render_agent(
-                "Marge", "💙",
+                "Marge", MARGE_AVATAR,
                 f"🚫 **Automatically denied.** {reason}",
                 f"This isn't even up for debate. Category: '{category}'. I don't need to check nutrition for this.",
                 f"Auto-deny category: {category}"
@@ -554,7 +560,7 @@ if submitted:
 
         action = parent_res.get('action', 'DENY').upper()
         render_agent(
-            "Marge", "💙",
+            "Marge", MARGE_AVATAR,
             f"{'✅' if action == 'APPROVE' else '❌'} **{action}** — {parent_res.get('reasoning', '')}",
             parent_res.get('monologue', ''),
             f"Data source: {rag_source} · Sugar limit: {sugar_limit}g · Fat limit: {fat_limit}g"

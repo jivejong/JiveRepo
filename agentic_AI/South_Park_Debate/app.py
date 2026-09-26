@@ -3,6 +3,7 @@ from google import genai
 from google.genai import types
 import random
 import time
+from pathlib import Path
 from typing import Tuple
 
 from security import (
@@ -24,6 +25,43 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 st.set_page_config(page_title="South Park: Town Hall Debate", page_icon="🎤", layout="wide")
 
 MODEL_NAME = "gemini-3.1-flash-lite"
+
+IMAGE_DIR = Path(__file__).resolve().parent / "images"
+CHARACTER_AVATARS = {
+    "Stan Marsh": str(IMAGE_DIR / "stan.png"),
+    "Kyle Broflovski": str(IMAGE_DIR / "kyle.png"),
+    "Eric Cartman": str(IMAGE_DIR / "cartman.png"),
+    "Kenny McCormick": str(IMAGE_DIR / "kenny.png"),
+    "Butters Stotch": str(IMAGE_DIR / "butters.png"),
+    "Jimmy Valmer": str(IMAGE_DIR / "jimmy.png"),
+    "Timmy Burch": str(IMAGE_DIR / "timmy.png"),
+    "Clyde Donovan": str(IMAGE_DIR / "clyde.png"),
+    "Tolkien Black": str(IMAGE_DIR / "tolkien.png"),
+    "Craig Tucker": str(IMAGE_DIR / "craig.png"),
+    "Tweek Tweak": str(IMAGE_DIR / "tweak.png"),
+    "Towelie": str(IMAGE_DIR / "towelie.png"),
+    "Randy Marsh": str(IMAGE_DIR / "randy-marsh.webp"),
+    "Sheila Broflovski": str(IMAGE_DIR / "sheila-broflovski.webp"),
+    "Liane Cartman": str(IMAGE_DIR / "liane-cartman.webp"),
+    "Stuart McCormick": str(IMAGE_DIR / "stuart-mccormick.webp"),
+    "Mr. Garrison": str(IMAGE_DIR / "mr-garrison.webp"),
+    "PC Principal": str(IMAGE_DIR / "pc-principal.webp"),
+    "Sharon Marsh": str(IMAGE_DIR / "sharon-marsh.webp"),
+    "Gerald Broflovski": str(IMAGE_DIR / "gerald-broflovski.webp"),
+    "Stephen Stotch": str(IMAGE_DIR / "stephen-stotch.webp"),
+    "Jimbo Kern": str(IMAGE_DIR / "jimbo-kerns.webp"),
+    "Ned Gerblansky": str(IMAGE_DIR / "ned-gerblansky.webp"),
+    "Carol McCormick": str(IMAGE_DIR / "carol-mccormick.webp"),
+    "Principal Victoria": str(IMAGE_DIR / "principal-victoria.webp"),
+    "Officer Barbrady": str(IMAGE_DIR / "officer-barbrady.webp"),
+    "Big Gay Al": str(IMAGE_DIR / "big-gay-al.webp"),
+    "Chef": str(IMAGE_DIR / "chef.webp"),
+    "Mr. Mackey": str(IMAGE_DIR / "mr-mackey.webp"),
+    "Wendy Testaburger": str(IMAGE_DIR / "wendy.png"),
+}
+MAYOR_AVATAR = str(IMAGE_DIR / "mayor-mcdaniels.webp")
+TERRANCE_AVATAR = str(IMAGE_DIR / "terrance.webp")
+PHILLIP_AVATAR = str(IMAGE_DIR / "phillip.webp")
 
 # Guardrail-Safe Personas - Focusing purely on vocal mannerisms and safe debate styles
 PERSONAS = {
@@ -204,6 +242,34 @@ def render_telemetry_panel(placeholder, telemetry_data, total_tokens):
             st.caption("Stats appear here as each model call completes.")
 
 
+def render_topic_announcement(topic):
+    """Have Mayor McDaniels visually open the town-hall debate."""
+    st.image(MAYOR_AVATAR, caption="Mayor McDaniels")
+    st.success(f"**TODAY'S TOPIC:** {topic}")
+
+
+def render_character_message(character, message):
+    """Render an uncropped, native-size character portrait beside a message."""
+    portrait_col, message_col = st.columns([1, 7])
+    with portrait_col:
+        st.image(CHARACTER_AVATARS[character])
+    with message_col:
+        with st.container(border=True):
+            st.markdown(message)
+
+
+def render_final_verdict(announcer_text):
+    """Frame the final judgment with Terrance and Phillip."""
+    terrance_col, verdict_col, phillip_col = st.columns([1, 6, 1])
+    with terrance_col:
+        st.image(TERRANCE_AVATAR, width=64)
+    with verdict_col:
+        with st.chat_message("assistant"):
+            st.markdown(f"**Terrance & Phillip 🇨🇦**: {announcer_text}")
+    with phillip_col:
+        st.image(PHILLIP_AVATAR, width=64)
+
+
 def run_debate(
     client,
     tracer,
@@ -213,6 +279,7 @@ def run_debate(
     opp2,
     rounds,
     temperature,
+    previous_topic=None,
 ):
     """Run one explicitly requested debate and return session-local render data."""
     otel_exporter.clear()
@@ -221,12 +288,18 @@ def run_debate(
     judge_results = []
 
     st.header("🏛️ The Town Hall Arena")
+    topic_request = "Give us today's debate topic."
+    if previous_topic:
+        topic_request += (
+            f" It must be different from the previous debate topic: "
+            f"'{previous_topic}'."
+        )
     with st.spinner("Mayor McDaniels is thinking of a topic..."):
         topic, tokens = generate_response(
             client,
             tracer,
             "Moderator",
-            "Give us today's debate topic.",
+            topic_request,
             temperature,
             role_type="moderator",
         )
@@ -237,36 +310,82 @@ def run_debate(
         total_session_tokens,
     )
 
-    st.success(f"**TODAY'S TOPIC:** {topic}")
+    render_topic_announcement(topic)
 
-    stances = {opp1: "FOR (Affirmative)", opp2: "AGAINST (Negative)"}
+    coin_caller = random.choice([opp1, opp2])
+    coin_call = random.choice(["HEADS", "TAILS"])
+    coin_result = random.choice(["HEADS", "TAILS"])
+    other_contender = opp2 if coin_caller == opp1 else opp1
+    coin_winner = coin_caller if coin_call == coin_result else other_contender
+    coin_loser = opp2 if coin_winner == opp1 else opp1
+
+    winner_stance = random.choice(["FOR (Affirmative)", "AGAINST (Negative)"])
+    loser_stance = (
+        "AGAINST (Negative)"
+        if winner_stance == "FOR (Affirmative)"
+        else "FOR (Affirmative)"
+    )
+    stances = {coin_winner: winner_stance, coin_loser: loser_stance}
+
+    st.subheader("🪙 Coin Flip")
+    st.info(
+        f"**{coin_caller}** calls **{coin_call}**. The coin lands on "
+        f"**{coin_result}**, so **{coin_winner}** wins the flip."
+    )
+    st.success(
+        f"**{coin_winner}** chooses **{winner_stance}**. "
+        f"**{coin_loser}** takes **{loser_stance}** and opens the debate."
+    )
+
     st.write(f"**{opp1}** will be arguing **{stances[opp1]}**.")
     st.write(f"**{opp2}** will be arguing **{stances[opp2]}**.")
     st.divider()
 
-    first_agent = random.choice([opp1, opp2])
-    second_agent = opp2 if first_agent == opp1 else opp1
-    st.subheader("🪙 Coin Flip for Opening Statement")
+    first_agent = coin_loser
+    second_agent = coin_winner
+    st.subheader("📣 Speaking Order")
     st.info(
-        f"The coin landed on heads! **{first_agent}** gets the opening statement."
+        f"**{first_agent}** opens each round; "
+        f"**{second_agent}** responds."
     )
 
-    transcript = f"Topic: {topic}\n{opp1} is FOR. {opp2} is AGAINST.\n\n"
+    transcript = (
+        f"Topic: {topic}\n"
+        f"{opp1} is {stances[opp1]}. {opp2} is {stances[opp2]}.\n\n"
+    )
 
     st.subheader("🔥 The Debate")
     for round_number in range(1, rounds + 1):
         st.markdown(f"#### Round {round_number}")
+        round_transcript = ""
         for current_agent, opponent in (
             (first_agent, second_agent),
             (second_agent, first_agent),
         ):
+            is_opener = current_agent == first_agent
+            turn_role = "Opening statement" if is_opener else "Response"
+            if is_opener:
+                turn_instruction = (
+                    "You are opening this round. Present a standalone opening "
+                    "argument for your stance. Do not claim to be replying to, "
+                    "rebutting, or quoting your opponent; they have not spoken "
+                    "in this round yet."
+                )
+                round_context = "No one has spoken in this round yet."
+            else:
+                turn_instruction = (
+                    f"You are responding second. Directly respond to {opponent}'s "
+                    "opening argument from this round, then defend your own stance."
+                )
+                round_context = f"This round's opening argument:\n{round_transcript}"
+
             with st.spinner(f"{current_agent} is preparing their argument..."):
                 prompt = (
                     f"The debate topic is: '{topic}'.\n"
                     f"Your stance is: {stances[current_agent]}.\n"
                     f"Your opponent {opponent} is arguing {stances[opponent]}.\n"
-                    f"Here is the transcript so far:\n{transcript}\n\n"
-                    "Deliver your next debate argument. Stay strictly in character."
+                    f"{round_context}\n\n"
+                    f"{turn_instruction} Stay strictly in character."
                 )
                 argument, tokens = generate_response(
                     client,
@@ -282,7 +401,8 @@ def run_debate(
                     collect_telemetry(otel_exporter),
                     total_session_tokens,
                 )
-                transcript += f"[{current_agent}]: {argument}\n"
+                round_transcript += f"[{current_agent}]: {argument}\n"
+                transcript += f"[Round {round_number} - {current_agent}]: {argument}\n"
                 message_type = (
                     "user" if current_agent == first_agent else "assistant"
                 )
@@ -290,11 +410,14 @@ def run_debate(
                     "round": round_number,
                     "character": current_agent,
                     "message_type": message_type,
+                    "turn_role": turn_role,
                     "argument": argument,
                 }
                 round_results.append(round_result)
-                with st.chat_message(message_type):
-                    st.markdown(f"**{current_agent}**: {argument}")
+                render_character_message(
+                    current_agent,
+                    f"**{current_agent} — {turn_role}:** {argument}",
+                )
         st.divider()
 
     judge_evaluations = []
@@ -323,8 +446,7 @@ def run_debate(
             )
             judge_evaluations.append(f"[{judge}'s Verdict]: {evaluation}")
             judge_results.append({"judge": judge, "evaluation": evaluation})
-        with st.chat_message("assistant"):
-            st.markdown(f"**{judge}**: {evaluation}")
+        render_character_message(judge, f"**{judge}**: {evaluation}")
 
     st.divider()
     st.subheader("🏆 The Final Verdict")
@@ -349,8 +471,7 @@ def run_debate(
         collect_telemetry(otel_exporter),
         total_session_tokens,
     )
-    with st.chat_message("assistant"):
-        st.markdown(f"**Terrance & Phillip 🇨🇦**: {announcer_text}")
+    render_final_verdict(announcer_text)
 
     telemetry_data = collect_telemetry(otel_exporter)
 
@@ -359,6 +480,11 @@ def run_debate(
         "opp1": opp1,
         "opp2": opp2,
         "stances": stances,
+        "coin_caller": coin_caller,
+        "coin_call": coin_call,
+        "coin_result": coin_result,
+        "coin_winner": coin_winner,
+        "winner_stance": winner_stance,
         "first_agent": first_agent,
         "rounds": rounds,
         "round_results": round_results,
@@ -372,7 +498,27 @@ def run_debate(
 def render_debate_result(result):
     """Render a completed debate without repeating any model calls."""
     st.header("🏛️ The Town Hall Arena")
-    st.success(f"**TODAY'S TOPIC:** {result['topic']}")
+    render_topic_announcement(result["topic"])
+    saved_first_agent = result.get("first_agent", result["opp1"])
+    saved_second_agent = (
+        result["opp2"]
+        if saved_first_agent == result["opp1"]
+        else result["opp1"]
+    )
+
+    if result.get("coin_winner"):
+        st.subheader("🪙 Coin Flip")
+        st.info(
+            f"**{result['coin_caller']}** calls **{result['coin_call']}**. "
+            f"The coin lands on **{result['coin_result']}**, so "
+            f"**{result['coin_winner']}** wins the flip."
+        )
+        st.success(
+            f"**{result['coin_winner']}** chooses **{result['winner_stance']}**. "
+            f"**{saved_first_agent}** takes "
+            f"**{result['stances'][saved_first_agent]}** and opens the debate."
+        )
+
     st.write(
         f"**{result['opp1']}** will be arguing "
         f"**{result['stances'][result['opp1']]}**."
@@ -383,32 +529,51 @@ def render_debate_result(result):
     )
     st.divider()
 
-    st.subheader("🪙 Coin Flip for Opening Statement")
+    st.subheader("📣 Speaking Order")
     st.info(
-        f"The coin landed on heads! **{result['first_agent']}** gets the opening statement."
+        f"**{saved_first_agent}** opens each round; "
+        f"**{saved_second_agent}** responds."
     )
 
     st.subheader("🔥 The Debate")
     for round_number in range(1, result["rounds"] + 1):
         st.markdown(f"#### Round {round_number}")
-        for argument in result["round_results"]:
-            if argument["round"] != round_number:
-                continue
-            with st.chat_message(argument["message_type"]):
-                st.markdown(f"**{argument['character']}**: {argument['argument']}")
+        round_arguments = [
+            argument
+            for argument in result["round_results"]
+            if argument["round"] == round_number
+        ]
+        round_arguments.sort(
+            key=lambda argument: argument["character"] != saved_first_agent
+        )
+        for argument in round_arguments:
+            turn_role = argument.get(
+                "turn_role",
+                (
+                    "Opening statement"
+                    if argument["character"] == saved_first_agent
+                    else "Response"
+                ),
+            )
+            render_character_message(
+                argument["character"],
+                f"**{argument['character']} — {turn_role}:** "
+                f"{argument['argument']}",
+            )
         st.divider()
 
     st.subheader("⚖️ The Judges' Verdict")
     judge_tabs = st.tabs([item["judge"] for item in result["judge_results"]])
     for tab, item in zip(judge_tabs, result["judge_results"]):
         with tab:
-            with st.chat_message("assistant"):
-                st.markdown(f"**{item['judge']}**: {item['evaluation']}")
+            render_character_message(
+                item["judge"],
+                f"**{item['judge']}**: {item['evaluation']}",
+            )
 
     st.divider()
     st.subheader("🏆 The Final Verdict")
-    with st.chat_message("assistant"):
-        st.markdown(f"**Terrance & Phillip 🇨🇦**: {result['announcer_text']}")
+    render_final_verdict(result["announcer_text"])
 
     st.success(
         f"Debate completed using `{MODEL_NAME}` in {result['rounds']} rounds."
@@ -449,9 +614,9 @@ def main():
 
         col1, col2 = st.columns(2)
         with col1:
-            opp1 = st.selectbox("Opponent 1 (FOR)", roster, index=2)
+            opp1 = st.selectbox("Contender 1", roster, index=2)
         with col2:
-            opp2 = st.selectbox("Opponent 2 (AGAINST)", roster, index=0)
+            opp2 = st.selectbox("Contender 2", roster, index=0)
 
         if opp1 == opp2:
             st.error("Opponents must be different!")
@@ -495,6 +660,7 @@ def main():
                 opp2,
                 rounds,
                 temperature,
+                previous_topic=(saved_debate or {}).get("topic"),
             )
         finally:
             st.session_state["debate_in_flight"] = False

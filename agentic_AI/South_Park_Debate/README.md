@@ -5,7 +5,7 @@ A Streamlit multi-agent debate simulator. The user selects two characters and a 
 ## Debate orchestration
 
 1. Mayor McDaniels generates a family-friendly, absurd topic.
-2. A coin flip selects the opening speaker; the chosen two characters argue opposite sides for one to five rounds.
+2. One contender calls heads or tails. The winner chooses FOR or AGAINST, while the loser takes the opposite stance and opens the debate.
 3. Chef, Mr. Mackey, and Wendy independently assess the transcript.
 4. Terrance and Phillip synthesize the judges' conclusions into the final announcement.
 
@@ -13,7 +13,7 @@ The character roster contains more than 25 scoped persona prompts. System prompt
 
 ## Cost model and telemetry
 
-Each debate uses `5 + (2 x rounds)` Gemini calls: one topic, two arguments per round, three judges, and one announcer. Before a run starts, the app checks that the whole debate fits the remaining quota.
+Each debate uses `5 + (2 x rounds)` Gemini calls: one new topic for the debate, two arguments per round, three judges, and one announcer. Before a run starts, the app checks that the whole debate fits the remaining quota.
 
 The sidebar displays live OpenTelemetry-backed information for every model call, including agent, role, latency, status, and token counts. The current implementation uses an in-memory exporter for that display.
 

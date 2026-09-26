@@ -4,6 +4,7 @@ import io
 import re
 import os
 import asyncio
+from pathlib import Path
 from PIL import Image
 from security import (
     consume_llm_call,
@@ -133,6 +134,16 @@ gemini_client = genai.Client(api_key=gemini_key)
 
 GEMINI_MODEL = "gemini-3.1-flash-lite"
 
+APP_DIR = Path(__file__).resolve().parent
+IMAGE_DIR = APP_DIR / "images"
+AGENT_ICONS = {
+    "Donatello": str(IMAGE_DIR / "donatello.png"),
+    "Michelangelo": str(IMAGE_DIR / "Michaelangelo.png"),
+    "Leonardo": str(IMAGE_DIR / "leonardo.png"),
+    "Raphael": str(IMAGE_DIR / "Raphael.png"),
+}
+TITLE_IMAGE = str(IMAGE_DIR / "ninja_turtles_and_splinter.png")
+
 # ── 3. SESSION STATE ──────────────────────────────────────────────────────────
 for key, default in [("photo_key", 0), ("final_output", None)]:
     if key not in st.session_state:
@@ -144,6 +155,15 @@ def clean_json(text: str) -> str:
     """Extract the first {...} block from a string (strips markdown fences / reasoning)."""
     match = re.search(r'\{.*\}', text, re.DOTALL)
     return match.group(0) if match else text.strip()
+
+
+def render_agent_update(character: str, role: str, message: str) -> None:
+    """Show a turtle's uncropped icon beside its live workflow update."""
+    icon_col, message_col = st.columns([1, 9])
+    with icon_col:
+        st.image(AGENT_ICONS[character], width=64)
+    with message_col:
+        st.markdown(f"**{character} · {role}**: {message}")
 
 
 def call_gemini(prompt: str, max_tokens: int = 1024) -> dict:
@@ -348,7 +368,7 @@ def run_pipeline(image_file):
     with st.status("Orchestrating Multi-Agent Workflow...", expanded=True) as status:
 
         # ── AGENT 1: VISIONARY ─────────────────────────────────────────────
-        st.write("🟣 **Donatello · Visionary Agent**: Analyzing image...")
+        render_agent_update("Donatello", "Visionary Agent", "Analyzing image...")
         try:
             scene = agent_visionary(image_file)
         except Exception as e:
@@ -366,7 +386,11 @@ def run_pipeline(image_file):
             attempt += 1
             label = f"(Attempt {attempt})" if attempt > 1 else ""
 
-            st.write(f"🟠 **Michelangelo · Bard Agent**: Composing poem... {label}")
+            render_agent_update(
+                "Michelangelo",
+                "Bard Agent",
+                f"Composing poem... {label}",
+            )
             try:
                 poem = agent_bard(scene["description"], scene["setting"], scene["entities"])
             except Exception as e:
@@ -374,7 +398,11 @@ def run_pipeline(image_file):
                 return None
 
             st.write("   → Poem drafted. Sending it to Leonardo...")
-            st.write("🔵 **Leonardo · Moderator Agent**: Verifying poem relevance...")
+            render_agent_update(
+                "Leonardo",
+                "Moderator Agent",
+                "Verifying poem relevance...",
+            )
 
             try:
                 mod_result = agent_moderator(scene["entities"], poem, scene["description"])
@@ -392,7 +420,11 @@ def run_pipeline(image_file):
                     st.write(f"   ⚠️ Rejected after {MAX_BARD_RETRIES + 1} attempts — proceeding with best effort.")
 
         # ── AGENT 4: RAPHAEL / SENTIMENT ───────────────────────────────────
-        st.write("🔴 **Raphael · Sentiment Agent**: Determining mood for music selection...")
+        render_agent_update(
+            "Raphael",
+            "Sentiment Agent",
+            "Determining mood for music selection...",
+        )
         try:
             mood, mood_reason = agent_sentiment(poem, scene["description"])
         except Exception as e:
@@ -427,8 +459,12 @@ def run_pipeline(image_file):
 
 # ── 7. UI ─────────────────────────────────────────────────────────────────────
 
-st.title("🐢 TMNT Agentic Poet")
-st.caption("A sewer-studio AI performance: Vision → Verse → Discipline → Sound")
+title_image_col, title_text_col = st.columns([2, 3])
+with title_image_col:
+    st.image(TITLE_IMAGE, use_container_width=True)
+with title_text_col:
+    st.title("🐢 TMNT Agentic Poet")
+    st.caption("A sewer-studio AI performance: Vision → Verse → Discipline → Sound")
 st.markdown(
     """
     <div class="tmnt-roster">
@@ -532,20 +568,41 @@ if st.session_state.final_output:
 
     with col1:
         with st.expander("🟣 Donatello's Visionary Report", expanded=True):
-            st.write(out["scene"]["description"])
-            st.caption(f"Setting: {out['scene']['setting']}")
-            st.caption(f"Entities: {', '.join(out['scene']['entities'])}")
+            icon_col, output_col = st.columns([1, 5])
+            with icon_col:
+                st.image(AGENT_ICONS["Donatello"], width=64)
+            with output_col:
+                st.write(out["scene"]["description"])
+                st.caption(f"Setting: {out['scene']['setting']}")
+                st.caption(f"Entities: {', '.join(out['scene']['entities'])}")
 
     with col2:
         with st.expander("🟠 Michelangelo's Poem", expanded=True):
-            st.info(out["poem"])
+            icon_col, output_col = st.columns([1, 5])
+            with icon_col:
+                st.image(AGENT_ICONS["Michelangelo"], width=64)
+            with output_col:
+                st.info(out["poem"])
+
             verified = out["moderator"]["verified"]
             icon     = "✅" if verified else "⚠️"
-            st.caption(f"{icon} Leonardo · Moderator: {out['moderator']['reason']}")
+            leo_icon_col, leo_output_col = st.columns([1, 5])
+            with leo_icon_col:
+                st.image(AGENT_ICONS["Leonardo"], width=64)
+            with leo_output_col:
+                st.caption(
+                    f"{icon} Leonardo · Moderator: {out['moderator']['reason']}"
+                )
 
     st.divider()
-    st.subheader(f"🐢 The Lair Performance  ·  Raphael's Mood: **{out['mood']}**")
-    st.caption(f"_{out['mood_reason']}_")
+    raphael_icon_col, mood_col = st.columns([1, 9])
+    with raphael_icon_col:
+        st.image(AGENT_ICONS["Raphael"], width=64)
+    with mood_col:
+        st.subheader(
+            f"🐢 The Lair Performance  ·  Raphael's Mood: **{out['mood']}**"
+        )
+        st.caption(f"_{out['mood_reason']}_")
 
     if out["music"]:
         c1, c2 = st.columns(2)
