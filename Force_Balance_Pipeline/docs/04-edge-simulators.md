@@ -90,6 +90,14 @@ target exactly; without that, a target just inside a region would classify as it
 the time. Other channels keep their ambient noise. An injection the planet cannot support (a target
 outside a channel's valid range, or `civil_unrest` on a planet under 1e9 population) is refused.
 
+**Backfill window.** The 90-day backfill (doc 07, Phase 2) runs this same generator. Its window is
+`[start, end)` with `start = end - 90 days`, one scan per 15-minute boundary from `start` up to the
+boundary before `end`. `end` is the last 15-minute UTC boundary before the earliest live probe event
+already in bronze, not before generation time, so synthetic and live readings for `probe-01` never
+overlap. `end` and the earliest live event time are explicit inputs, recorded in the backfill
+manifest. The generator refuses a window that ends after that boundary, and refuses to write any
+synthetic `event_time` at or after the earliest live `event_time`.
+
 ### Fault injection
 
 During `CONNECTED`, **2–3% of readings are deliberately faulty**:

@@ -69,6 +69,10 @@ Laptop only. No Raspberry Pi yet.
    code, written directly as NDJSON files under the same ingest-time `dt=`/`hh=` prefix as live
    files (doc 02). The prefix names the day and hour a file was uploaded, not the date of the
    readings; event-time organisation belongs in silver.
+   The window ends at the last 15-minute UTC boundary before the earliest live probe event already
+   in bronze, not before generation time, so synthetic and live readings for `probe-01` never
+   overlap. That boundary is an explicit input, recorded in the manifest, and the generator refuses
+   to write any synthetic `event_time` at or after the earliest live `event_time`.
 
 Give the backfill texture. Flat data makes a boring dashboard and unrealistic baselines:
 
@@ -83,6 +87,10 @@ Give the backfill texture. Flat data makes a boring dashboard and unrealistic ba
 Loader again with no new files — zero new rows, proving exactly-once. Backfill loads ~518,400
 rows (60 planets × 96 scans/day × 90 days) and lands in a small number of `dt` partitions (the
 upload days).
+
+**Deviation, 2026-09-26:** the live checkpoint ran 3 scans at a 60 s cadence instead of 45
+minutes. The real 15-minute cadence (quarter-hour alignment, an idle bridge between scans,
+hour-boundary paths) is exercised in Phase 3.
 
 ---
 
