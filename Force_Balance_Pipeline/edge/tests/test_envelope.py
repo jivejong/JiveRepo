@@ -1,6 +1,7 @@
 """The doc 02 envelope, the seedable ULID, and SimProbe's sweep (doc 02, doc 04). Offline."""
 import json
 import random
+import re
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,7 @@ from forcesim.envelope import (CROCKFORD, ENVELOPE_KEYS, check_envelope, decode_
                                format_ts, make_envelope, new_ulid, probe_payload, to_ndjson_line, ts_ms)
 from forcesim.probe import SimProbe  # noqa: E402
 from forcesim.sectors import load_sectors, sha256_file  # noqa: E402
+from forcesim.signatures import target_for  # noqa: E402
 from forcesim.walk import stream  # noqa: E402
 
 SECTORS = load_sectors()
@@ -106,6 +108,34 @@ class EnvelopeTests(unittest.TestCase):
         self.assertEqual(p, {"midichlorian_ppm": 14200.5, "kyber_resonance": 62.4, "dark_side_activity": 11.8,
                              "sensor_temp_c": 41.2, "battery_pct": 87})
         self.assertIsInstance(p["battery_pct"], int)
+
+    def test_whole_number_readings_are_written_with_a_decimal_place(self):
+        """20.0 stays 20.0 on the wire. Even an int passed in (a clamp bound, a control-topic value) is
+        written as a float, so no reading is ever the bare token 20."""
+        for value in (20, 20.0, 19.96, 0, 0.0, 100, 12000, -3, 40):
+            with self.subTest(value=value):
+                p = probe_payload(value, value, value, value, 87)
+                line = to_ndjson_line(self.envelope(payload=p))
+                tokens = re.findall(r'"(midichlorian_ppm|kyber_resonance|dark_side_activity|sensor_temp_c)":([-0-9.]+)', line)
+                self.assertEqual(len(tokens), 4)
+                for name, token in tokens:
+                    self.assertIsInstance(p[name], float)
+                    self.assertIn(".", token, f"{name} was written as {token}")
+                self.assertRegex(line, r'"battery_pct":87[,}]')
+        p = probe_payload(20, 20, 20.0, 20, 87)
+        self.assertEqual(to_ndjson_line(self.envelope(payload=p)).count(":20.0,"), 4)
+
+    def test_every_simulated_reading_is_written_with_a_decimal_place(self):
+        probe = SimProbe(SECTORS, seed=11)
+        whole = 0
+        for scan in range(40):
+            for e in probe.sweep(scan, T0 + timedelta(minutes=15 * scan)):
+                line = to_ndjson_line(e)
+                for name, token in re.findall(
+                        r'"(midichlorian_ppm|kyber_resonance|dark_side_activity|sensor_temp_c)":([-0-9.]+)', line):
+                    self.assertIn(".", token, f"{e['sector_id']} {name} was written as {token}")
+                    whole += token.endswith(".0")
+        self.assertGreater(whole, 100, "the sample must include readings that round to a whole number")
 
     def test_ndjson_line(self):
         line = to_ndjson_line(self.envelope())
@@ -215,8 +245,12 @@ class SweepTests(unittest.TestCase):
                 if e["sector_id"] == "coruscant":
                     rows[i] = e["payload"]
         coruscant = next(s for s in SECTORS if s.sector_id == "coruscant")
-        # civil_unrest's emergency target is dark +4 sigma; every channel is pinned during the hold
-        self.assertEqual(rows[3]["dark_side_activity"], round(coruscant.dark_baseline + 4 * coruscant.dark_sigma, 1))
+        # civil_unrest's emergency target is derived from the doc 03 threshold (dark +5 sigma at 5.75); every
+        # channel is pinned during the hold
+        target = target_for("civil_unrest")
+        self.assertEqual(target, {"midi": 0, "kyber": 0, "dark": 5})
+        self.assertEqual(rows[3]["dark_side_activity"],
+                         round(coruscant.dark_baseline + target["dark"] * coruscant.dark_sigma, 1))
         self.assertEqual(rows[3]["kyber_resonance"], round(coruscant.kyber_baseline, 1))
         self.assertEqual(rows[3]["midichlorian_ppm"], round(coruscant.midi_baseline, 1))
 

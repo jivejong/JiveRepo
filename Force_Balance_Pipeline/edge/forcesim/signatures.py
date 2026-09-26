@@ -40,9 +40,11 @@ SPECIALTY = {"sith_presence": "combat", "dark_adept": "combat", "nexus_awakening
              "force_drain": "investigation", "kyber_cache": "diplomacy", "civil_unrest": "diplomacy",
              "veiled_presence": "stealth"}
 
-# Doc 03 thresholds ("tune after the backfill exists") and the firing rule's sustained requirement.
-ANOMALY_THRESHOLD = 3.0
-EMERGENCY_THRESHOLD = 4.5
+# Doc 03 thresholds and the firing rule's sustained requirement. Tuned 2026-09-26 on the full local backfill
+# (docs/PHASE2-RESULTS.md); the anomaly threshold is provisional until Phase 6 defines "active anomaly" (doc 06).
+# Retuning means rerunning edge/analyze_thresholds.py on a backfill generated with the new values.
+ANOMALY_THRESHOLD = 4.0
+EMERGENCY_THRESHOLD = 5.75
 SUSTAINED_SCANS = 2  # doc 03: "Sustained across at least 2 consecutive scans"
 
 # Doc 03 composite: weighted Euclidean over signed z-scores, scaled by SQRT(3 / channels_present).

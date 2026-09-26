@@ -58,6 +58,14 @@ class ThresholdParity(unittest.TestCase):
         self.assertGreaterEqual(len(found), 2, "expected the probe-sourced and report-sourced rules")
         self.assertEqual(set(found), {sg.EMERGENCY_THRESHOLD})
 
+    def test_the_doc_records_how_the_thresholds_were_chosen_and_how_to_retune(self):
+        text = " ".join(_doc03.text().split())
+        for needle in ("Tuned on 2026-09-26 on the full local backfill", "false sustained incident",
+                       "noise-only sustained runs are 9 per 90 days", "ambient spike episodes (62%) still fire",
+                       "The anomaly threshold is provisional until Phase 6", "Retuning requires rerunning the analysis"):
+            self.assertIn(needle, text, needle)
+        self.assertTrue((Path(__file__).resolve().parents[1] / "analyze_thresholds.py").exists())
+
     def test_sustained_scans_equal_the_doc(self):
         self.assertEqual(_doc03.sustained_scans(), sg.SUSTAINED_SCANS)
 

@@ -168,12 +168,13 @@ class ComputedTargetTests(unittest.TestCase):
         self.assertFalse(hasattr(sg, "TARGETS"))
 
     def test_golden_targets_at_the_current_doc_thresholds(self):
-        """Documentation of today's values (emergency 4.5, k = 3, M = 1.0603). If doc 03's thresholds
-        are tuned this table changes by design; the parity tests fail first if code and doc disagree."""
-        golden = {"sith_presence": (0, -3, 3), "dark_adept": (3, 0, 3), "nexus_awakening": (4, 3, 0),
-                  "force_drain": (-4, -3, 0), "kyber_cache": (0, 5, 0), "civil_unrest": (0, 0, 4)}
-        composites = {"sith_presence": 5.196, "dark_adept": 5.196, "nexus_awakening": 5.0,
-                      "force_drain": 5.0, "kyber_cache": 5.0, "civil_unrest": 5.657}
+        """Documentation of today's values (emergency 5.75, tuned 2026-09-26; k = 3, M = 1.0603; the
+        smallest whole-sigma point above 5.75 x M = 6.097). If doc 03's thresholds are tuned again this
+        table changes by design; the parity tests fail first if code and doc disagree."""
+        golden = {"sith_presence": (0, -3, 4), "dark_adept": (3, 0, 4), "nexus_awakening": (5, 4, 0),
+                  "force_drain": (-5, -4, 0), "kyber_cache": (0, 7, 0), "civil_unrest": (0, 0, 5)}
+        composites = {"sith_presence": 6.403, "dark_adept": 6.403, "nexus_awakening": 6.403,
+                      "force_drain": 6.403, "kyber_cache": 7.0, "civil_unrest": 7.071}
         for name, (midi, kyber, dark) in golden.items():
             t = target_for(name)
             with self.subTest(signature=name):
@@ -181,7 +182,8 @@ class ComputedTargetTests(unittest.TestCase):
                 self.assertAlmostEqual(imbalance_score(midi, kyber, dark), composites[name], places=3)
 
     def test_every_target_keeps_room_for_the_sampling_error(self):
-        """Even against a window SD estimated 3 standard errors high, the score still clears 4.5."""
+        """Even against a window SD estimated 3 standard errors high, the score still clears the doc 03
+        emergency threshold."""
         e = sg.window_sd_se()
         for name in sg.PRODUCIBLE:
             t = target_for(name)
@@ -276,20 +278,26 @@ class CompositeTests(unittest.TestCase):
         self.assertAlmostEqual(imbalance_score(0, 0, 3), 3.0 * 2 ** 0.5)  # dark side is double-weighted
         # STEALTH: one channel present scales by sqrt(3 / 1); missing z counts as 0 (COALESCE)
         self.assertAlmostEqual(imbalance_score(None, None, 2, channels_present=1), (2 * 4) ** 0.5 * 3 ** 0.5)
-        self.assertEqual((sg.ANOMALY_THRESHOLD, sg.EMERGENCY_THRESHOLD), (3.0, 4.5))
+        self.assertEqual((sg.ANOMALY_THRESHOLD, sg.EMERGENCY_THRESHOLD), (4.0, 5.75))
 
     def test_every_injection_target_is_emergency_level(self):
         """The reason the targets are computed: at the whole-sigma point just inside each region only
-        sith_presence and dark_adept cleared 4.5. Now every producible signature does, with margin."""
+        sith_presence and dark_adept cleared the emergency threshold. Now every producible signature does,
+        with margin."""
         for name in sg.PRODUCIBLE:
             t = target_for(name)
             with self.subTest(signature=name):
                 self.assertGreater(imbalance_score(t["midi"], t["kyber"], t["dark"]),
                                    sg.EMERGENCY_THRESHOLD * sg.margin_factor())
 
-    def test_ambient_dark_spikes_are_emergency_level(self):
-        for depth in (4.0, 7.0):
+    def test_ambient_dark_spikes_are_emergency_level_except_the_shallowest(self):
+        """A spike reaches baseline + (4 to 7) sigma on dark alone, composite depth x sqrt(2). At 5.75 the
+        emergency level starts at 5.75 / sqrt(2) = 4.07 sigma, so only the shallowest 2% of spike depths
+        (4.0 to 4.07) fall short."""
+        for depth in (4.1, 5.5, 7.0):
             self.assertGreater(imbalance_score(0, 0, depth), sg.EMERGENCY_THRESHOLD)
+        self.assertLess(imbalance_score(0, 0, 4.0), sg.EMERGENCY_THRESHOLD)
+        self.assertAlmostEqual(sg.EMERGENCY_THRESHOLD / 2 ** 0.5, 4.066, places=3)
 
 
 class InjectionCheckTests(unittest.TestCase):
@@ -303,7 +311,7 @@ class InjectionCheckTests(unittest.TestCase):
         s = SECTORS["utapau"]
         baseline, sigma = s.channel("kyber")
         self.assertAlmostEqual((VALID_RANGE["kyber"][1] - baseline) / sigma, 2.083, places=2)
-        with self.assertRaisesRegex(InjectionRefused, r"kyber target 128\.00"):  # 80 + 5 x 9.6
+        with self.assertRaisesRegex(InjectionRefused, r"kyber target 147\.20"):  # 80 + 7 x 9.6
             check_injection(s, "kyber_cache")
 
     def test_civil_unrest_population_rule(self):
@@ -318,7 +326,7 @@ class InjectionCheckTests(unittest.TestCase):
         """Hosts per signature out of the 60 sectors at today's targets. If the thresholds are tuned this
         changes by design; a signature must always keep at least one host."""
         expected = {"sith_presence": 58, "dark_adept": 58, "nexus_awakening": 59, "force_drain": 60,
-                    "kyber_cache": 59, "civil_unrest": 19}
+                    "kyber_cache": 58, "civil_unrest": 19}
         for name, want in expected.items():
             hosts = []
             for s in SECTORS.values():

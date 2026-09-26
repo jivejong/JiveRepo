@@ -177,9 +177,15 @@ isn't automatically lower-scoring than a full one.
 Keep the signed z-scores as columns. The composite gives magnitude; the signed triple gives
 direction, which is what signature classification reads.
 
-**Thresholds.** Anomaly above 3.0, emergency above 4.5. Tune these after the backfill exists and
-you can see actual distributions — treat the initial values as placeholders, not settled. Changing
-these requires updating `edge/forcesim` constants in the same commit; `test_doc_parity.py` enforces it.
+**Thresholds.** Anomaly above 4.0, emergency above 5.75. Tuned on 2026-09-26 on the full local
+backfill (60 planets x 8,640 scans; the analysis is in `PHASE2-RESULTS.md`). The emergency threshold
+comes from a false-alarm target: at most about one false sustained incident (2 or more consecutive
+scans) per week galaxy-wide, on noise alone. At 5.75 the noise-only sustained runs are 9 per 90 days
+(about 0.7 a week) and 32 of the 52 ambient spike episodes (62%) still fire; it is the lowest
+threshold that meets the target. The anomaly threshold is provisional until Phase 6 defines "active
+anomaly" (doc 06); 4.0 puts about 1% of scans over it on noise. Retuning requires rerunning the
+analysis (`edge/analyze_thresholds.py`). Changing these requires updating `edge/forcesim` constants
+in the same commit; `test_doc_parity.py` enforces it.
 
 ### Signature classification
 
@@ -226,13 +232,13 @@ Population-weighted, so the same reading over Coruscant outranks one over a barr
 
 **Firing rules — probe-sourced:**
 
-- `imbalance_score > 4.5`
+- `imbalance_score > 5.75`
 - Sustained across at least 2 consecutive scans (30 minutes)
 - Cooldown: no new incident for the same `sector_id` within 2 hours
 
 **Firing rules — report-sourced:**
 
-- `relevance_score >= 0.7` **and** inferred `imbalance_score > 4.5`
+- `relevance_score >= 0.7` **and** inferred `imbalance_score > 5.75`
 - No sustained requirement — a single credible sighting is enough
 - Same 2-hour cooldown per sector
 - `is_report_sourced = true`

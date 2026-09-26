@@ -225,7 +225,7 @@ class InjectionTests(unittest.TestCase):
         vals = [probe.step(i) for i in range(20)]
         base = {ch: sector.channel(ch) for ch in constants.CHANNELS}
         target = target_for("sith_presence")
-        self.assertEqual(target, {"midi": 0, "kyber": -3, "dark": 3})
+        self.assertEqual(target, {"midi": 0, "kyber": -3, "dark": 4})       # emergency 5.75 (doc 03), M = 1.0603
         episode = probe.episodes[0]
         self.assertEqual(episode.exact, frozenset({"kyber", "dark"}))
         for i in (12, 13, 14):  # the hold scans
@@ -238,7 +238,7 @@ class InjectionTests(unittest.TestCase):
             self.assertNotEqual(vals[i]["dark"], base["dark"][0] + target["dark"] * frac * base["dark"][1])
 
     def test_guard_channels_are_held_exactly_too(self):
-        """civil_unrest at dark +4: midi becomes a guard (dark_adept needs midi > 1.5), so all three hold."""
+        """civil_unrest at dark +5: midi becomes a guard (dark_adept needs midi > 1.5), so all three hold."""
         sector = SECTORS["coruscant"]
         probe = PlanetProbe(sector, 22)
         probe.inject("civil_unrest", start=6, ramp=2, hold=2, decay=2)
@@ -247,7 +247,7 @@ class InjectionTests(unittest.TestCase):
         for i in (8, 9):
             self.assertEqual(vals[i]["midi"], sector.midi_baseline)
             self.assertEqual(vals[i]["kyber"], sector.kyber_baseline)
-            self.assertEqual(vals[i]["dark"], sector.dark_baseline + 4 * sector.dark_sigma)
+            self.assertEqual(vals[i]["dark"], sector.dark_baseline + 5 * sector.dark_sigma)
 
     def test_ambient_walk_state_is_unaffected_by_holds(self):
         """The ambient AR state keeps advancing during a hold, so it stays stationary afterwards."""

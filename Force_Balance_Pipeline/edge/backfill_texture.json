@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "_comment": "Texture for the 90-day backfill (doc 07, Phase 2). Editable, but the manifest records its SHA-256, so a change means regenerating and recommitting the manifest. Days count back from the window end (-1 is the last 24 hours, which begins 24 hours before the end); scan_of_day is 0-95 (15-minute slots from the start of that 24-hour day, which begins at the window end's time of day, not at 00:00 UTC). Drift and the riser are linear over the whole window, in sigma units.",
+  "drifts": [
+    {"sector": "corellia", "channel": "midi", "total_sigma": 2.0},
+    {"sector": "kashyyyk", "channel": "kyber", "total_sigma": -2.0},
+    {"sector": "endor", "channel": "midi", "total_sigma": 1.5},
+    {"sector": "bespin", "channel": "kyber", "total_sigma": 2.0}
+  ],
+  "emergencies": [
+    {"sector": "tatooine", "signature": "sith_presence", "day": -71, "scan_of_day": 40, "ramp": 2, "hold": 4, "decay": 4},
+    {"sector": "dantooine", "signature": "nexus_awakening", "day": -53, "scan_of_day": 36, "ramp": 3, "hold": 3, "decay": 4},
+    {"sector": "kamino", "signature": "force_drain", "day": -33, "scan_of_day": 44, "ramp": 2, "hold": 5, "decay": 3},
+    {"sector": "coruscant", "signature": "civil_unrest", "day": -12, "scan_of_day": 52, "ramp": 3, "hold": 4, "decay": 4}
+  ],
+  "riser": {"sector": "mon_cala", "channel": "dark", "total_sigma": 5.0},
+  "gaps": [
+    {"day": -80, "scan_of_day": 30, "scans": 8},
+    {"day": -64, "scan_of_day": 60, "scans": 12},
+    {"day": -49, "scan_of_day": 20, "scans": 4},
+    {"day": -27, "scan_of_day": 70, "scans": 8},
+    {"day": -15, "scan_of_day": 10, "scans": 6},
+    {"day": -4, "scan_of_day": 50, "scans": 10}
+  ],
+  "burst": {"batch_events": 500, "batch_pause_seconds": 10, "reconnect_lead_seconds": 5}
+}

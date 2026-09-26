@@ -85,9 +85,11 @@ def make_envelope(*, event_id, source_id, source_type, event_time, mode, scan_id
 
 
 def probe_payload(midi, kyber, dark, sensor_temp_c, battery_pct):
-    """The doc 02 probe payload, values rounded as in the doc's example (one decimal)."""
-    return {"midichlorian_ppm": round(midi, 1), "kyber_resonance": round(kyber, 1),
-            "dark_side_activity": round(dark, 1), "sensor_temp_c": round(sensor_temp_c, 1),
+    """The doc 02 probe payload, values rounded as in the doc's example (one decimal). The four readings are
+    always floats, so each is written with at least one decimal place (20.0, never 20), even if a caller
+    passes an int; battery_pct is the one integer."""
+    return {"midichlorian_ppm": round(float(midi), 1), "kyber_resonance": round(float(kyber), 1),
+            "dark_side_activity": round(float(dark), 1), "sensor_temp_c": round(float(sensor_temp_c), 1),
             "battery_pct": int(battery_pct)}
 
 

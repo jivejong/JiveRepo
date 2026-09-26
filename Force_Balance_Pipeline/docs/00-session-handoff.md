@@ -65,7 +65,7 @@ what was decided and why.
   historical emergencies, one slow-rising planet, some DISCONNECTED/BURST gaps.
 - **Composite deviation score:** weighted Euclidean over signed z-scores, dark side ×2, scaled
   by `SQRT(3/channels_present)` for partial readings. Signed z-scores kept as columns.
-- **Thresholds are placeholders:** anomaly 3.0, emergency 4.5. Tune after backfill exists.
+- **Thresholds:** anomaly 4.0 (provisional), emergency 5.75, tuned on the backfill. Doc 03 has the basis.
 - **Signatures** (doc 03): sith_presence, dark_adept, nexus_awakening, force_drain,
   kyber_cache, civil_unrest, veiled_presence, unclassified — each mapped to a Jedi specialty.
 - Grain is one row per planet per scan; no windowing.

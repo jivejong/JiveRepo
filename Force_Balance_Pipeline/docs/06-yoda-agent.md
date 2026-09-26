@@ -117,6 +117,26 @@ cannot reason about.
 | Max 4 Jedi in a single deployment | `party_too_large` |
 | Max 2 tool-call retries per incident | force stand-down, `agent_exhausted_retries` |
 
+**OPEN (Phase 6, no design change yet):** the severity bands above predate the threshold tuning of
+2026-09-26 (doc 03: anomaly 4.0, emergency 5.75). Severity is `imbalance_score` times a population
+factor that runs from 1.10 to 2.20. Findings to resolve together in Phase 6:
+
+- `severity > 7.0` (master rank) now covers almost every incident. Every score above 5.75 exceeds 7.0
+  once population passes about 149 (42 of 60 planets; it was 37 of 60 at the old 4.5), and the four
+  backfill emergencies score 8.2 to 16.1. The non-master band survives only on planets with no
+  population value or a tiny one, for scores of 5.75 to 6.36.
+- `severity < 3.0` (stand-down) is unreachable. The lowest severity of any anomaly-level state is 4.40,
+  and 6.33 for an emergency incident. It was already unreachable at the old thresholds (3.30).
+- Some fixtures cannot arise. `severity_2_barren_outer_rim` is below the 4.40 minimum. The
+  `severity_5_*` and `severity_6_unclassified` fixtures are below the 6.33 minimum of an emergency
+  incident, so only a user-initiated anomaly-level state could produce them.
+  `severity_8_sith_presence_coruscant` cannot occur, since a Coruscant incident scores at least 8.80
+  even at the anomaly threshold.
+- The `get_disturbance_context` example (`imbalance_score` 6.1, `severity` 7.4, population 1e12) does
+  not match the formula, which gives 13.4. This mismatch predates the threshold change.
+
+Re-derive the bands, the fixtures and that example together.
+
 Every rejection is appended to `guardrail_overrides` whether or not the agent eventually
 succeeds. That array shows what the model wanted versus what it was allowed to do, and it is a
 far more interesting artifact than a clean success log. Put it on the dashboard.
@@ -176,7 +196,7 @@ you want the voice, apply it as a display transform on `rationale` in the dashbo
 
 The dashboard lets a user deploy to any planet with an active anomaly, choosing Jedi and ship.
 
-**OPEN:** "active anomaly" is undefined. The 3.0 anomaly threshold (doc 03) has no consumer; define
+**OPEN:** "active anomaly" is undefined. The 4.0 anomaly threshold (doc 03) has no consumer; define
 it in Phase 6.
 
 - Same constraint layer, same rejection reasons surfaced in the UI

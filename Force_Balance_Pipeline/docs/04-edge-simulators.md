@@ -63,6 +63,12 @@ control-topic injection) is active on it. On a hit, ramp toward `baseline + (4 t
 2–4 scans, hold 1–2 scans, then decay over 3–5 scans. That ramp-hold-decay shape is what produces
 `sustained_scans >= 2` and fires a real emergency.
 
+Two planets cannot fire one. Mustafar and Dathomir have dark baselines of 95 and 90 (sigma 6 and 7),
+so a spike to `baseline + (4 to 7) * sigma` would reach 118 to 139, above the dark ceiling of 100
+(doc 02). Their readings clamp at 100 and their spike episodes stay below the emergency threshold
+(doc 03): the highest sustained composite of any of their 13 episodes in the backfill is 4.04. That is
+a property of the frozen seed and the valid range, not a fault of the generator.
+
 Expose a control topic `force/control/probe-01` accepting `{"inject": "spike", "sector_id": "...",
 "signature": "sith_presence"}` so a demo can trigger a specific signature on demand. Implement it
 by manipulating the three channels' targets to match the classification rule — that is how you
@@ -97,6 +103,16 @@ already in bronze, not before generation time, so synthetic and live readings fo
 overlap. `end` and the earliest live event time are explicit inputs, recorded in the backfill
 manifest. The generator refuses a window that ends after that boundary, and refuses to write any
 synthetic `event_time` at or after the earliest live `event_time`.
+
+**Backfill timing and texture.** Each backfill row carries the `synthetic_ingest_ts` it would have had
+live (doc 02). A normal scan reaches bronze 4 to 5 seconds after it starts. A `DISCONNECTED` gap keeps
+every row: when the link returns, 5 seconds before the next scan, the buffered events are published in
+batches of 500 in `event_time` order, 10 seconds apart, and each lands 1 second after its batch is
+published. They keep the mode `DISCONNECTED`; the scan taken while the drain is still running has the
+mode `BURST` (doc 02). The texture (drift, injected emergencies, the slow riser and the gaps) is in
+`edge/backfill_texture.json`, and the manifest records its hash. The slow riser is checked as a trend:
+it passes if the mean composite score (doc 03) of its last day is under the anomaly threshold. A single
+scan is not the check, because ambient noise alone puts scans of every planet above that threshold.
 
 ### Fault injection
 
