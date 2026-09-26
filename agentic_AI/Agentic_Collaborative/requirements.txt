@@ -2,3 +2,4 @@ google-genai
 streamlit
 edge-tts
 Pillow
+requests

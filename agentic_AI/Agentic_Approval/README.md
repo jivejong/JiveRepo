@@ -17,13 +17,13 @@ At each intervention stage the user can abort, or choose to escalate. The final 
 
 | Component | Responsibility |
 | --- | --- |
-| Ear Agent | Sends the WAV microphone recording to Gemini for transcription. |
+| Ear Agent | Sends the WAV microphone recording to the configured provider for transcription. |
 | Logic Engine | Scores the reviewed idea from 1 to 10 and selects the route. |
 | Spouse and Friend agents | Generate warnings from Peg or Al; Jefferson intervenes for Al, while Marcy intervenes for Peg. |
 | Voice Synthesizer | Produces role-specific Microsoft Neural voice audio with `edge-tts`. |
 | Telemetry | Emits OpenTelemetry traces and metrics for model, TTS, and workflow stages. |
 
-All Gemini calls use `gemini-3.1-flash-lite`. Streamlit session state stores workflow stage, generated text, audio, tokens, and the sidebar orchestration trace.
+Gemini mode uses `gemini-3.1-flash-lite` for transcription and text generation. Groq mode uses `whisper-large-v3-turbo` for transcription and `openai/gpt-oss-120b` for scoring and character responses. Streamlit session state stores workflow stage, generated text, audio, tokens, and the sidebar orchestration trace.
 
 ## Setup
 
@@ -33,23 +33,34 @@ Copy-Item .streamlit\secrets.toml.example .streamlit\secrets.toml
 streamlit run app.py
 ```
 
-Add `GEMINI_API_KEY` and strong access codes to the copied file. The application also accepts `GEMINI_API_KEY` from the environment. Keep real credentials only in local or deployed Streamlit Secrets.
+Add `GEMINI_API_KEY`, `GROQ_API_KEY`, and strong access codes to the copied file. The application also accepts `GEMINI_API_KEY` from the environment. Keep real credentials only in local or deployed Streamlit Secrets.
+
+## Modes
+
+The two top-level booleans in `.streamlit/secrets.toml` control the app:
+
+```toml
+secured = true # false bypasses the password gate and session usage limit
+gemini = true  # false selects Groq Whisper and GPT-OSS 120B
+```
+
+Both settings default to `true` when omitted, preserving the original secured Gemini behavior. Use TOML booleans (`true` or `false`) rather than quoted strings. GPT-OSS 120B is text-only, so the Groq-backed Ear Agent uses Groq Whisper for the required speech-to-text operation.
 
 `edge-tts` uses Microsoft's online neural voice service, so speech synthesis requires network access.
 
 ## Access, quotas, and observability
 
-The app checks its password-only demo gate before a model request can run. The configured `owner` code is unlimited; other identities use `limits.max_llm_calls_per_session` (default: 20). Transcription and each Gemini-generated score or response consume a call; TTS does not. The sidebar shows current access status and usage.
+When `secured = true`, the app checks its password-only demo gate before a model request can run. The configured `owner` code is unlimited; other identities use `limits.max_llm_calls_per_session` (default: 20). Transcription and each provider-generated score or response consume a call; TTS does not. The sidebar shows current access status and usage. When `secured = false`, the password gate, usage counter, quota, and Lock app control are disabled.
 
 `telemetry.py` uses OpenTelemetry GenAI-style spans and metrics. With no exporter settings, it writes telemetry to the console; setting standard OTLP exporter environment variables sends it to a compatible collector. This is intentionally lightweight demo protection, not account management or persistent rate limiting.
 
 ## Project layout
 
 ```text
-app.py                  workflow, Gemini calls, and audio interaction
+app.py                  workflow, provider calls, and audio interaction
 security.py             access gate and quota controls
 telemetry.py            OpenTelemetry setup and instrumentation helpers
-requirements.txt        Streamlit, Gemini, edge-tts, and OpenTelemetry packages
+requirements.txt        Streamlit, provider, edge-tts, and OpenTelemetry packages
 .streamlit/             local secrets and the tracked safe template
 ```
 

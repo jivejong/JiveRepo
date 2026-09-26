@@ -7,9 +7,24 @@ from security import (
     consume_llm_call,
     end_session,
     is_owner,
+    is_secured,
     max_llm_calls_per_session,
     require_access,
 )
+
+
+GEMINI_MODEL = "gemini-3.1-flash-lite"
+GROQ_MODEL = "openai/gpt-oss-120b"
+
+
+def use_gemini() -> bool:
+    """Use Gemini unless the mode is explicitly disabled in Streamlit secrets."""
+    return st.secrets.get("gemini", True) is not False
+
+
+def provider_name() -> str:
+    return "Gemini" if use_gemini() else "Groq"
+
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -19,7 +34,7 @@ st.set_page_config(
 )
 
 # This gate intentionally runs before custom UI setup, session initialization,
-# or any access to the Gemini API key. Unauthenticated sessions stop here.
+# or any access to a provider API key. Unauthenticated sessions stop here.
 user = require_access()
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
@@ -313,6 +328,9 @@ def queue_example(term: str) -> None:
 
 def render_access_controls(identity: str) -> None:
     """Show access information and a session lock control in the main page."""
+    if not is_secured():
+        return
+
     status_column, lock_column = st.columns([4, 1])
     with status_column:
         if is_owner(identity):
@@ -328,9 +346,7 @@ def render_access_controls(identity: str) -> None:
 
 # ── Helper: call Gemini API ───────────────────────────────────────────────────
 def check_slang(term: str) -> dict:
-    """Call Gemini 3.1 Flash-Lite to evaluate a slang term."""
-    api_key = st.secrets["GEMINI_API_KEY"]
-
+    """Call the selected provider to evaluate a slang term."""
     system_prompt = """You are the ultimate authority on Gen Z slang — a cultural linguist who lives online and knows exactly what's fire and what's cringe. 
 
 When given a slang term, analyze its current cultural relevance and usage among actual Gen Z (born 1997–2012) as of 2024–2025.
@@ -352,6 +368,11 @@ Verdicts:
 
 Be honest, be harsh if needed, be funny. This is serious slang business."""
 
+    if not use_gemini():
+        return check_slang_with_groq(term, system_prompt)
+
+    api_key = st.secrets["GEMINI_API_KEY"]
+
     payload = {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": [{
@@ -367,7 +388,7 @@ Be honest, be harsh if needed, be funny. This is serious slang business."""
 
     response = requests.post(
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-3.1-flash-lite:generateContent",
+        f"{GEMINI_MODEL}:generateContent",
         headers={
             "Content-Type": "application/json",
             "x-goog-api-key": api_key,
@@ -389,6 +410,32 @@ Be honest, be harsh if needed, be funny. This is serious slang business."""
             content = content[4:]
     content = content.strip()
 
+    return json.loads(content)
+
+
+def check_slang_with_groq(term: str, system_prompt: str) -> dict:
+    """Call GPT-OSS 120B through Groq's OpenAI-compatible REST API."""
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f'Bearer {st.secrets["GROQ_API_KEY"]}',
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": GROQ_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f'Evaluate this slang term: "{term}"'},
+            ],
+            "temperature": 0.7,
+            "max_completion_tokens": 4096,
+            "response_format": {"type": "json_object"},
+            "include_reasoning": False,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    content = response.json()["choices"][0]["message"]["content"].strip()
     return json.loads(content)
 
 
@@ -455,7 +502,7 @@ if do_check:
                     st.stop()
 
                 st.session_state["llm_call_in_flight"] = True
-                # Exactly one Gemini generate-content request is made per check.
+                # Exactly one provider request is made per check.
                 # Reserve quota immediately before that billable request.
                 consume_llm_call(user)
                 st.session_state.result = check_slang(slang_input.strip())
@@ -465,9 +512,9 @@ if do_check:
             except requests.exceptions.HTTPError as e:
                 status = e.response.status_code if e.response is not None else "?"
                 if status in (400, 401):
-                    st.markdown('<div class="custom-error">🔑 Invalid Gemini API key. Check your .streamlit/secrets.toml file.</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="custom-error">🔑 Invalid {provider_name()} API key. Check your .streamlit/secrets.toml file.</div>', unsafe_allow_html=True)
                 elif status == 403:
-                    st.markdown('<div class="custom-error">🚫 Gemini rejected this request (403). Check API access and try again.</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="custom-error">🚫 {provider_name()} rejected this request (403). Check API access and try again.</div>', unsafe_allow_html=True)
                 elif status == 429:
                     st.markdown('<div class="custom-error">🚦 Rate limit hit. Chill for a sec and try again.</div>', unsafe_allow_html=True)
                 else:
@@ -478,7 +525,7 @@ if do_check:
                         detail = e.response.text if e.response is not None else ""
                     st.markdown(f'<div class="custom-error">💀 API error {status}: {detail or str(e)}</div>', unsafe_allow_html=True)
             except requests.exceptions.Timeout:
-                st.markdown('<div class="custom-error">⏱️ Request timed out. Gemini is busy rn, try again.</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="custom-error">⏱️ Request timed out. {provider_name()} is busy rn, try again.</div>', unsafe_allow_html=True)
             except json.JSONDecodeError:
                 st.markdown('<div class="custom-error">😵 Couldn\'t parse the response. The AI said something unhinged. Try again.</div>', unsafe_allow_html=True)
             except Exception as e:
@@ -535,8 +582,8 @@ if st.session_state.result:
 </div>
 """, unsafe_allow_html=True)
 
-st.markdown("""
+st.markdown(f"""
 <div class="footer">
-  POWERED BY GEMINI · BUILT FOR THE CULTURE · NO UNC ENERGY ALLOWED
+  POWERED BY {provider_name().upper()} · BUILT FOR THE CULTURE · NO UNC ENERGY ALLOWED
 </div>
 """, unsafe_allow_html=True)

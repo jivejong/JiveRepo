@@ -1,8 +1,8 @@
 """OpenTelemetry instrumentation for The Bundy Approval Desk.
 
 Implements the OpenTelemetry **GenAI semantic conventions** so every AI
-operation in the pipeline — Gemini Flash-Lite transcription, scoring, persona
-generation, and neural text-to-speech (edge-tts) — shows
+operation in the pipeline — provider transcription, scoring, persona generation,
+and neural text-to-speech (edge-tts) — shows
 up as a properly attributed span, with token-usage and latency metrics.
 
 Zero-config by default: spans and metrics print to the console. If the
@@ -199,10 +199,10 @@ def genai_span(
 
 
 def record_llm_response(span: Any, response: Any, *, model: str, system: str = "gemini") -> None:
-    """Attach Gemini response attributes and usage metrics to ``span``.
+    """Attach provider response attributes and usage metrics to ``span``.
 
-    The Google GenAI SDK exposes token counts under ``usage_metadata``. The
-    fallback field names keep this helper tolerant of SDK response variants.
+    Gemini exposes token counts under ``usage_metadata`` while Groq uses the
+    OpenAI-compatible ``usage`` shape. The fallback names support both.
     """
     if span is None or not _OTEL_AVAILABLE:
         return

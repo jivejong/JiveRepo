@@ -4,25 +4,21 @@ import io
 import re
 import os
 import asyncio
+import base64
+import requests
 from pathlib import Path
 from PIL import Image
 from security import (
     consume_llm_call,
     end_session,
+    is_secured,
     max_llm_calls_per_session,
     remaining_llm_calls,
     require_access,
 )
 
 # ── DEPENDENCIES ──────────────────────────────────────────────────────────────
-# pip install google-genai edge-tts pillow streamlit
-
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:
-    st.error("Missing dependency: run `pip install google-genai`")
-    st.stop()
+# pip install google-genai edge-tts pillow requests streamlit
 
 try:
     import edge_tts
@@ -121,18 +117,36 @@ st.markdown(
 access_identity = require_access()
 
 # ── 3. API KEY SETUP ──────────────────────────────────────────────────────────
-# Gemini powers both the vision and text agents.
-gemini_key = (
-    st.secrets.get("GENAI_API_KEY")
-    or st.secrets.get("GEMINI_API_KEY")
-)
-if not gemini_key:
-    st.error("Missing Gemini API key in Streamlit Secrets (GENAI_API_KEY or GEMINI_API_KEY).")
-    st.stop()
-
-gemini_client = genai.Client(api_key=gemini_key)
-
+USE_GEMINI = st.secrets.get("gemini", True) is not False
 GEMINI_MODEL = "gemini-3.1-flash-lite"
+GROQ_TEXT_MODEL = "openai/gpt-oss-120b"
+GROQ_VISION_MODEL = "qwen/qwen3.8-27b"
+LLM_PROVIDER = "Gemini" if USE_GEMINI else "Groq"
+TEXT_MODEL = GEMINI_MODEL if USE_GEMINI else GROQ_TEXT_MODEL
+VISION_MODEL = GEMINI_MODEL if USE_GEMINI else GROQ_VISION_MODEL
+
+if USE_GEMINI:
+    gemini_key = (
+        st.secrets.get("GENAI_API_KEY")
+        or st.secrets.get("GEMINI_API_KEY")
+    )
+    if not gemini_key:
+        st.error(
+            "Missing Gemini API key in Streamlit Secrets "
+            "(GENAI_API_KEY or GEMINI_API_KEY)."
+        )
+        st.stop()
+    try:
+        from google import genai
+        from google.genai import types
+        gemini_client = genai.Client(api_key=gemini_key)
+    except ImportError:
+        st.error("Missing dependency: run `pip install google-genai`")
+        st.stop()
+else:
+    if "GROQ_API_KEY" not in st.secrets:
+        st.error("Missing GROQ_API_KEY in Streamlit Secrets.")
+        st.stop()
 
 APP_DIR = Path(__file__).resolve().parent
 IMAGE_DIR = APP_DIR / "images"
@@ -166,10 +180,53 @@ def render_agent_update(character: str, role: str, message: str) -> None:
         st.markdown(f"**{character} · {role}**: {message}")
 
 
-def call_gemini(prompt: str, max_tokens: int = 1024) -> dict:
-    """
-    Single Gemini Flash Lite call for text agents, returning a parsed JSON dict.
-    """
+def _groq_json(messages: list, model: str, max_tokens: int = 1024) -> dict:
+    """Call a Groq model in JSON mode and return the parsed object."""
+    consume_llm_call(access_identity)
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f'Bearer {st.secrets["GROQ_API_KEY"]}',
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "messages": messages,
+            "temperature": 0.6,
+            "max_completion_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        },
+        timeout=45,
+    )
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as error:
+        try:
+            detail = response.json().get("error", {}).get("message", "")
+        except (ValueError, AttributeError):
+            detail = ""
+        raise RuntimeError(
+            f"Groq request failed ({response.status_code}): {detail or error}"
+        ) from error
+
+    content = response.json()["choices"][0]["message"]["content"] or ""
+    try:
+        return json.loads(clean_json(content))
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"Groq did not return valid JSON ({error}). Raw output: {content[:300]!r}"
+        ) from error
+
+
+def call_llm(prompt: str, max_tokens: int = 1024) -> dict:
+    """Call the configured text provider and return a parsed JSON object."""
+    if not USE_GEMINI:
+        return _groq_json(
+            [{"role": "user", "content": prompt}],
+            GROQ_TEXT_MODEL,
+            max_tokens,
+        )
+
     consume_llm_call(access_identity)
     response = gemini_client.models.generate_content(
         model=GEMINI_MODEL,
@@ -192,7 +249,7 @@ def call_gemini(prompt: str, max_tokens: int = 1024) -> dict:
 
 def keyword_precheck(entities: list, poem: str) -> bool:
     """
-    Fast Python check BEFORE burning a Gemini call on moderation.
+    Fast Python check before spending a provider call on moderation.
     Returns True if at least one entity keyword appears in the poem.
     This handles the obvious pass case cheaply.
     """
@@ -244,7 +301,7 @@ def narrate_as_master_splinter(text: str) -> bytes:
 
 def agent_visionary(image_file) -> dict:
     """
-    AGENT 1 — DONATELLO, THE VISIONARY (Gemini, vision required)
+    AGENT 1 — DONATELLO, THE VISIONARY (multimodal model required)
     Analyzes the image and returns structured scene data.
     This is the image-understanding call in the pipeline.
     """
@@ -262,6 +319,26 @@ def agent_visionary(image_file) -> dict:
       "setting": "brief scene setting (e.g. urban street at dusk)"
     }
     """
+    if not USE_GEMINI:
+        image_buffer = io.BytesIO()
+        raw_img.convert("RGB").save(image_buffer, format="JPEG", quality=85)
+        image_data = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+        return _groq_json(
+            [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_data}"
+                        },
+                    },
+                ],
+            }],
+            GROQ_VISION_MODEL,
+        )
+
     consume_llm_call(access_identity)
     response = gemini_client.models.generate_content(
         model=GEMINI_MODEL,
@@ -272,7 +349,7 @@ def agent_visionary(image_file) -> dict:
 
 def agent_bard(description: str, setting: str, entities: list) -> str:
     """
-    AGENT 2 — MICHELANGELO, THE BARD (Gemini Flash Lite, text only)
+    AGENT 2 — MICHELANGELO, THE BARD (text model)
     Receives the Visionary's structured output and composes a poem.
     Separated from the Visionary so the handoff is explicit and visible.
     """
@@ -293,13 +370,13 @@ def agent_bard(description: str, setting: str, entities: list) -> str:
     Return ONLY a JSON object:
     {{"poem": "line one\\nline two\\nline three\\nline four"}}
     """
-    data = call_gemini(prompt, max_tokens=1024)
+    data = call_llm(prompt, max_tokens=1024)
     return data["poem"]
 
 
 def agent_moderator(entities: list, poem: str, description: str) -> dict:
     """
-    AGENT 3 — LEONARDO, THE MODERATOR (Gemini Flash Lite, text only)
+    AGENT 3 — LEONARDO, THE MODERATOR (text model)
     Two-stage verification:
       Stage A: Fast Python keyword check (free).
       Stage B: LLM semantic check only if Stage A fails.
@@ -327,12 +404,12 @@ def agent_moderator(entities: list, poem: str, description: str) -> dict:
     Return ONLY a JSON object:
     {{"verified": true_or_false, "reason": "one sentence explanation"}}
     """
-    return call_gemini(prompt, max_tokens=1024)
+    return call_llm(prompt, max_tokens=1024)
 
 
 def agent_sentiment(poem: str, description: str) -> tuple:
     """
-    AGENT 4 — RAPHAEL, THE SENTIMENT AGENT (Gemini Flash Lite, text only)
+    AGENT 4 — RAPHAEL, THE SENTIMENT AGENT (text model)
     Reads the approved poem and picks the best mood for music selection.
     Separated from the Bard so mood analysis is its own visible step.
     """
@@ -348,7 +425,7 @@ def agent_sentiment(poem: str, description: str) -> tuple:
     Return ONLY a JSON object:
     {{"mood": "ONE_MOOD", "reason": "one sentence justification"}}
     """
-    data = call_gemini(prompt, max_tokens=512)
+    data = call_llm(prompt, max_tokens=512)
     return data["mood"].upper(), data.get("reason", "")
 
 
@@ -361,9 +438,9 @@ def run_pipeline(image_file):
     Full multi-agent pipeline with real closed-loop retry on Moderator rejection.
 
     Flow:
-      Donatello / Visionary (Gemini) -> Michelangelo / Bard (Gemini Flash Lite) -> Leonardo / Moderator (Gemini Flash Lite)
+      Donatello / Visionary -> Michelangelo / Bard -> Leonardo / Moderator
            ^___________________________|  (retry up to MAX_BARD_RETRIES times)
-      -> Raphael / Sentiment (Gemini Flash Lite) -> Master Splinter / Narrator + Maestro
+      -> Raphael / Sentiment -> Master Splinter / Narrator + Maestro
     """
     with st.status("Orchestrating Multi-Agent Workflow...", expanded=True) as status:
 
@@ -479,35 +556,39 @@ st.markdown("---")
 # Sidebar: architecture explainer (great for portfolio demos)
 with st.sidebar:
     st.header("🐢 Turtle Team")
-    st.markdown("""
+    st.markdown(f"""
     | Agent | Model | Role |
     |---|---|---|
-    | 🟣 Donatello · Visionary | Gemini 3.1 Flash Lite | Image → Scene data |
-    | 🟠 Michelangelo · Bard | Gemini 3.1 Flash Lite | Scene → Poem |
-    | 🔵 Leonardo · Moderator | Gemini 3.1 Flash Lite | Verify poem relevance |
-    | 🔴 Raphael · Sentiment | Gemini 3.1 Flash Lite | Poem → Mood |
+    | 🟣 Donatello · Visionary | {VISION_MODEL} | Image → Scene data |
+    | 🟠 Michelangelo · Bard | {TEXT_MODEL} | Scene → Poem |
+    | 🔵 Leonardo · Moderator | {TEXT_MODEL} | Verify poem relevance |
+    | 🔴 Raphael · Sentiment | {TEXT_MODEL} | Poem → Mood |
     | 🐀 Master Splinter · Narrator | Edge TTS · Guy | Poem → Male voice |
     | 🐀 Master Splinter · Maestro | Local files | Mood → Music |
     """)
     st.divider()
-    st.caption("Gemini 3.1 Flash Lite powers the full turtle team")
+    st.caption(f"{LLM_PROVIDER} powers the turtle team")
     st.caption("Leonardo sends Michelangelo back for up to 2 rewrites")
-    if access_identity == "owner":
-        st.caption("LLM access: Unlimited")
-    else:
-        st.caption(
-            f"LLM calls remaining: {remaining_llm_calls(access_identity)} "
-            f"/ {max_llm_calls_per_session()}"
-        )
+    if is_secured():
+        if access_identity == "owner":
+            st.caption("LLM access: Unlimited")
+        else:
+            st.caption(
+                f"LLM calls remaining: {remaining_llm_calls(access_identity)} "
+                f"/ {max_llm_calls_per_session()}"
+            )
 
-    if st.button("🔒 End session", use_container_width=True):
-        previous_photo_key = st.session_state["photo_key"]
-        st.session_state["final_output"] = None
-        for widget_key in (f"upload_{previous_photo_key}", f"camera_{previous_photo_key}"):
-            st.session_state.pop(widget_key, None)
-        st.session_state["photo_key"] = previous_photo_key + 1
-        end_session()
-        st.rerun()
+        if st.button("🔒 End session", use_container_width=True):
+            previous_photo_key = st.session_state["photo_key"]
+            st.session_state["final_output"] = None
+            for widget_key in (
+                f"upload_{previous_photo_key}",
+                f"camera_{previous_photo_key}",
+            ):
+                st.session_state.pop(widget_key, None)
+            st.session_state["photo_key"] = previous_photo_key + 1
+            end_session()
+            st.rerun()
 
 photo_col, guide_col = st.columns([3, 2])
 

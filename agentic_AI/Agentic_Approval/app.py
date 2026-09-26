@@ -9,9 +9,9 @@ import hashlib
 import edge_tts
 import io
 import base64
+import requests
 from pathlib import Path
-from google import genai
-from google.genai import types
+from types import SimpleNamespace
 
 from telemetry import (
     init_telemetry,
@@ -20,9 +20,12 @@ from telemetry import (
     record_tts_audio,
     app_span,
 )
-from security import consume_llm_call, render_access_status, require_access
+from security import consume_llm_call, is_secured, render_access_status, require_access
 
 GEMINI_MODEL = "gemini-3.1-flash-lite"
+GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
+GROQ_MIN_COMPLETION_TOKENS = 512
 
 APP_DIR = Path(__file__).resolve().parent
 IMAGE_DIR = APP_DIR / "images"
@@ -88,8 +91,25 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# The gate runs before any Gemini or edge-TTS request can be reached.
+USE_GEMINI = st.secrets.get("gemini", True) is not False
+LLM_PROVIDER = "Gemini" if USE_GEMINI else "Groq"
+LLM_MODEL = GEMINI_MODEL if USE_GEMINI else GROQ_MODEL
+TRANSCRIPTION_MODEL = GEMINI_MODEL if USE_GEMINI else GROQ_TRANSCRIPTION_MODEL
+
+# The gate runs before any provider or edge-TTS request can be reached.
 require_access()
+
+if USE_GEMINI:
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+    except ImportError:
+        st.error("Missing dependency: run `pip install google-genai`")
+        st.stop()
+else:
+    if "GROQ_API_KEY" not in st.secrets:
+        st.error("⚠️ GROQ_API_KEY not found.")
+        st.stop()
 
 # Idempotent: safe to call on every authorized Streamlit rerun. Exports to the
 # console by default, or to any OTLP backend when OTEL_EXPORTER_OTLP_ENDPOINT is set.
@@ -322,13 +342,23 @@ def text_to_speech(text: str, voice: str) -> bytes:
         return audio_cache[cache_key]
 
     async def _generate():
-        communicate = edge_tts.Communicate(text, voice)
-        # We use a temporary buffer to stream the data directly
-        output = io.BytesIO()
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                output.write(chunk["data"])
-        return output.getvalue()
+        last_error = None
+        for attempt in range(2):
+            try:
+                communicate = edge_tts.Communicate(text, voice)
+                output = io.BytesIO()
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        output.write(chunk["data"])
+                audio = output.getvalue()
+                if audio:
+                    return audio
+                last_error = RuntimeError("The voice service returned no audio.")
+            except Exception as error:
+                last_error = error
+            if attempt == 0:
+                await asyncio.sleep(0.25)
+        raise RuntimeError(f"Voice synthesis failed after two attempts: {last_error}")
 
     with genai_span(
         "text_to_speech",
@@ -350,8 +380,120 @@ def get_gemini_client():
         st.stop()
     return genai.Client(api_key=api_key)
 
+
+def _raise_groq_error(response: requests.Response) -> None:
+    """Raise a concise provider error without exposing credentials."""
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as error:
+        try:
+            detail = response.json().get("error", {}).get("message", "")
+        except (ValueError, AttributeError):
+            detail = ""
+        raise RuntimeError(
+            f"Groq request failed ({response.status_code}): {detail or error}"
+        ) from error
+
+
+def _groq_chat_response(
+    prompt: str,
+    *,
+    temperature: float,
+    max_tokens: int,
+    json_output: bool,
+):
+    """Return a Gemini-like response wrapper for a Groq chat completion."""
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+        # GPT-OSS completion tokens include its internal reasoning budget. The
+        # original 160-token speech limit could leave no visible advisor text.
+        "max_completion_tokens": max(max_tokens, GROQ_MIN_COMPLETION_TOKENS),
+        "reasoning_effort": "low",
+        "include_reasoning": False,
+    }
+    # The scoring prompt already requires JSON. GPT-OSS occasionally returns a
+    # provider-level json_validate_failed error in forced JSON mode for persona
+    # rubrics, so the existing defensive parser validates the content instead.
+    if json_output:
+        payload["messages"].insert(
+            0,
+            {
+                "role": "system",
+                "content": "Return exactly one valid JSON object and no other text.",
+            },
+        )
+
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f'Bearer {st.secrets["GROQ_API_KEY"]}',
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=30,
+    )
+    _raise_groq_error(response)
+    data = response.json()
+    choice = data["choices"][0]
+    usage_data = data.get("usage", {})
+    return SimpleNamespace(
+        text=choice["message"].get("content") or "",
+        model=data.get("model", GROQ_MODEL),
+        id=data.get("id"),
+        finish_reason=choice.get("finish_reason"),
+        candidates=[],
+        usage=SimpleNamespace(
+            prompt_tokens=usage_data.get("prompt_tokens", 0),
+            completion_tokens=usage_data.get("completion_tokens", 0),
+        ),
+    )
+
 def transcribe_audio(audio_bytes: bytes) -> str:
-    """Transcribe Streamlit's WAV bytes directly with Gemini Flash-Lite."""
+    """Transcribe Streamlit's WAV bytes with the configured provider."""
+    if not USE_GEMINI:
+        with genai_span(
+            "transcribe",
+            GROQ_TRANSCRIPTION_MODEL,
+            system="groq",
+            conversation_id=_session_id(),
+            extra_attrs={"audio.input.bytes": len(audio_bytes)},
+        ) as span:
+            with consume_llm_call():
+                response = requests.post(
+                    "https://api.groq.com/openai/v1/audio/transcriptions",
+                    headers={
+                        "Authorization": f'Bearer {st.secrets["GROQ_API_KEY"]}'
+                    },
+                    files={"file": ("recording.wav", audio_bytes, "audio/wav")},
+                    data={
+                        "model": GROQ_TRANSCRIPTION_MODEL,
+                        "response_format": "json",
+                        "temperature": "0",
+                    },
+                    timeout=45,
+                )
+            _raise_groq_error(response)
+            data = response.json()
+            result = (data.get("text") or "").strip()
+            wrapped = SimpleNamespace(
+                text=result,
+                model=GROQ_TRANSCRIPTION_MODEL,
+                id=data.get("x_groq", {}).get("id"),
+                candidates=[],
+                usage=None,
+            )
+            record_llm_response(
+                span,
+                wrapped,
+                model=GROQ_TRANSCRIPTION_MODEL,
+                system="groq",
+            )
+            if span is not None:
+                span.set_attribute("gen_ai.response.text.length", len(result))
+        return result
+
     client = get_gemini_client()
     with genai_span(
         "transcribe",
@@ -365,7 +507,7 @@ def transcribe_audio(audio_bytes: bytes) -> str:
                 model=GEMINI_MODEL,
                 contents=[
                     "Transcribe this audio faithfully. Output only the spoken words, with no commentary.",
-                    types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav"),
+                    genai_types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav"),
                 ],
                 config={"temperature": 0, "max_output_tokens": 1_024},
             )
@@ -379,7 +521,7 @@ def transcribe_audio(audio_bytes: bytes) -> str:
 def _extract_json(text: str) -> dict:
     """Robustly pull a JSON object out of an LLM reply.
 
-    Gemini is asked for JSON output, but this remains defensive about code
+    The provider is asked for JSON output, but this remains defensive about code
     fences and surrounding text before falling back to the first ``{…}``
     object.
     """
@@ -397,14 +539,21 @@ def _extract_json(text: str) -> dict:
 def _track_tokens(task: str, resp) -> None:
     """Record a call's token usage into session state for the sidebar meter.
 
-    Reads Gemini's ``usage_metadata`` block, matching the values exported by
-    the OpenTelemetry instrumentation.
+    Supports Gemini's ``usage_metadata`` and Groq's OpenAI-compatible ``usage``.
     """
-    usage = getattr(resp, "usage_metadata", None)
+    usage = getattr(resp, "usage_metadata", None) or getattr(resp, "usage", None)
     if usage is None:
         return
-    inp = getattr(usage, "prompt_token_count", 0) or 0
-    out = getattr(usage, "candidates_token_count", 0) or 0
+    inp = (
+        getattr(usage, "prompt_token_count", None)
+        or getattr(usage, "prompt_tokens", 0)
+        or 0
+    )
+    out = (
+        getattr(usage, "candidates_token_count", None)
+        or getattr(usage, "completion_tokens", 0)
+        or 0
+    )
     st.session_state.setdefault("token_events", [])
     st.session_state.token_events.insert(0, {
         "time": time.strftime("%H:%M:%S"),
@@ -418,27 +567,42 @@ def _track_tokens(task: str, resp) -> None:
 def _run_chat(prompt: str, *, task: str, temperature: float,
               max_tokens: int, extra_attrs: dict | None = None,
               json_output: bool = False):
-    """Call Gemini Flash-Lite and record its response and token usage."""
-    client = get_gemini_client()
+    """Call the configured text model and record response and token usage."""
     attrs = {"spousal.task": task}
     if extra_attrs:
         attrs.update(extra_attrs)
 
-    config = {"temperature": temperature, "max_output_tokens": max_tokens}
-    if json_output:
-        config["response_mime_type"] = "application/json"
-
     with genai_span(
-        "chat", GEMINI_MODEL, system="gemini", temperature=temperature,
+        "chat", LLM_MODEL, system=LLM_PROVIDER.lower(), temperature=temperature,
         conversation_id=_session_id(), extra_attrs=attrs,
     ) as span:
         with consume_llm_call():
-            resp = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=config,
-            )
-        record_llm_response(span, resp, model=GEMINI_MODEL, system="gemini")
+            if USE_GEMINI:
+                client = get_gemini_client()
+                config = {
+                    "temperature": temperature,
+                    "max_output_tokens": max_tokens,
+                }
+                if json_output:
+                    config["response_mime_type"] = "application/json"
+                resp = client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                    config=config,
+                )
+            else:
+                resp = _groq_chat_response(
+                    prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    json_output=json_output,
+                )
+        record_llm_response(
+            span,
+            resp,
+            model=LLM_MODEL,
+            system=LLM_PROVIDER.lower(),
+        )
 
     _track_tokens(task, resp)
     return resp
@@ -481,7 +645,14 @@ Limit to 2 sentences. Be witty and cutting but avoid profanity and do not quote 
         prompt, task="spouse_speech", temperature=0.8,
         max_tokens=160, extra_attrs={"spousal.score": score},
     )
-    return (resp.text or "").strip()
+    speech = (resp.text or "").strip()
+    if speech:
+        return speech
+    add_log("Logic Engine", "Empty response fallback", f"{character} speech")
+    return (
+        f"Absolutely not. That idea is not getting past {character} today, "
+        "so take a breath and think it through again."
+    )
 
 def get_friend_speech(idea: str, spouse: str) -> str:
     responder = persona_name(spouse)
@@ -493,7 +664,14 @@ Be urgent and funny, with a working-class 1990s sitcom energy. Limit to 2 senten
         prompt, task="friend_speech", temperature=0.8,
         max_tokens=160,
     )
-    return (resp.text or "").strip()
+    speech = (resp.text or "").strip()
+    if speech:
+        return speech
+    add_log("Intervention Agent", "Empty response fallback", f"{friend} speech")
+    return (
+        f"{proposer}, stop right there—do not pitch that idea to {responder} "
+        "until you have thought through what happens next."
+    )
 
 def autoplay_audio(audio_bytes: bytes):
     """Uses Streamlit's native audio player, which correctly forces a cache refresh."""
@@ -509,15 +687,16 @@ if "stage" not in st.session_state:
     })
 
 # ── Sidebar: Access status ───────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("### 🔒 Private Demo")
-    render_access_status()
-    st.divider()
+if is_secured():
+    with st.sidebar:
+        st.markdown("### 🔒 Private Demo")
+        render_access_status()
+        st.divider()
 
 # ── Sidebar: Token Usage meter ───────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 📊 Token Usage")
-    st.caption(f"Gemini · {GEMINI_MODEL}")
+    st.caption(f"{LLM_PROVIDER} · {LLM_MODEL}")
     token_events = st.session_state.get("token_events", [])
     total_in = sum(e["input"] for e in token_events)
     total_out = sum(e["output"] for e in token_events)
@@ -585,7 +764,11 @@ elif st.session_state.stage == "record_idea":
     audio_file = st.audio_input("Record your idea")
     if audio_file:
         if st.button("🔍 Transcribe", type="primary"):
-            add_log("Ear Agent", "Intercepting Audio", f"{GEMINI_MODEL} audio transcription initialized")
+            add_log(
+                "Ear Agent",
+                "Intercepting Audio",
+                f"{TRANSCRIPTION_MODEL} audio transcription initialized",
+            )
             st.session_state.transcript = transcribe_audio(audio_file.read())
             add_log("Ear Agent", "Transcription Complete", st.session_state.transcript)
             st.session_state.stage = "review_transcript"
@@ -600,7 +783,7 @@ elif st.session_state.stage == "review_transcript":
 elif st.session_state.stage == "evaluating":
     with app_span("stage.evaluating", {"gen_ai.conversation.id": _session_id()}) as stage_span:
         metric = "Al's household compatibility" if st.session_state.spouse == "husband" else "Marital risk"
-        add_log("Logic Engine", f"Analyzing {metric}", f"Querying {GEMINI_MODEL}")
+        add_log("Logic Engine", f"Analyzing {metric}", f"Querying {LLM_MODEL}")
         result = score_idea(st.session_state.transcript, st.session_state.spouse)
         st.session_state.score, st.session_state.score_reasoning = result["score"], result["reasoning"]
         add_log("Logic Engine", "Evaluation Complete", json.dumps(result, indent=2))
@@ -669,7 +852,7 @@ elif st.session_state.stage == "friend_intervention":
     )
     
     voices = get_voice_mapping(st.session_state.spouse)
-    notify_msg = "This app just sent me a notification that you are about to say something really risky to your spouse."
+    notify_msg = "This app just sent me a notification that you are about to say something really risky to your spouse.  "
     audio = text_to_speech(notify_msg + st.session_state.friend_speech, voices["friend"])
     autoplay_audio(audio)
     

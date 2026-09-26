@@ -16,7 +16,7 @@ The rendered transcript includes each agent's response and optional inner monolo
 Nutrition lookup follows a tiered fallback path:
 
 1. A persistent Chroma collection, built from `nutritional_data.csv` with local ONNX `all-MiniLM-L6-v2` embeddings.
-2. Gemini with Google Search grounding when the semantic match is not confident enough.
+2. Provider-backed browser search when the semantic match is not confident enough (Google Search grounding for Gemini or Groq browser search for GPT-OSS 120B).
 3. Model-knowledge fallback if the grounded lookup does not produce usable nutrition data.
 
 The local data source supplies `Category`, `Description`, `Cholesterol`, and `Sugar`. This demonstration treats `Cholesterol` as its fat proxy; it is a project-specific simplification, not nutritional guidance.
@@ -29,13 +29,24 @@ Copy-Item .streamlit\secrets.toml.example .streamlit\secrets.toml
 streamlit run app.py
 ```
 
-Set a real `GEMINI_API_KEY` and strong access codes in the copied secrets file. `GEMINI_MODEL` is optional and defaults to `gemini-3.1-flash-lite`. Do not commit `.streamlit/secrets.toml`.
+Set real `GEMINI_API_KEY` and `GROQ_API_KEY` values plus strong access codes in the copied secrets file. `GEMINI_MODEL` is optional and defaults to `gemini-3.1-flash-lite`. Do not commit `.streamlit/secrets.toml`.
+
+## Modes
+
+The two top-level booleans in `.streamlit/secrets.toml` control the app:
+
+```toml
+secured = true # false bypasses the password gate and session usage limit
+gemini = true  # false selects GPT-OSS 120B through Groq
+```
+
+Both settings default to `true` when omitted, preserving the original secured Gemini behavior. Use TOML booleans (`true` or `false`) rather than quoted strings. Both providers support the complete agent workflow and the browser-search RAG fallback.
 
 The first run creates or populates `chroma_db/`; later runs reuse it. The sidebar exposes the household sugar/fat thresholds, semantic-match threshold, and maximum negotiation rounds.
 
 ## Access and quota behavior
 
-The access-code screen runs before model work. The configured `owner` identity is unlimited; other configured codes use `limits.max_llm_calls_per_session` (default: 20). Gemini generations, Google Search-grounded requests, and post-search extraction consume quota. Local embeddings do not.
+When `secured = true`, the access-code screen runs before model work. The configured `owner` identity is unlimited; other configured codes use `limits.max_llm_calls_per_session` (default: 20). Provider generations, browser-search requests, and post-search extraction consume quota. Local embeddings do not. When `secured = false`, the password gate, usage counter, quota, and End session control are disabled.
 
 This is a per-session portfolio-demo safeguard, not user authentication or durable rate limiting. Configure provider-side budgets and limits separately.
 

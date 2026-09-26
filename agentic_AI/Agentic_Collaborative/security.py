@@ -1,4 +1,4 @@
-"""Lightweight password access and per-session Gemini usage controls."""
+"""Lightweight password access and per-session LLM usage controls."""
 
 import hmac
 
@@ -6,10 +6,11 @@ import streamlit as st
 
 
 DEFAULT_MAX_LLM_CALLS = 20
+UNSECURED_IDENTITY = "unsecured"
 
 
 class UsageLimitReached(RuntimeError):
-    """Raised before a non-owner session exceeds its configured Gemini quota."""
+    """Raised before a non-owner session exceeds its configured LLM quota."""
 
 
 def _configured_users() -> list[tuple[str, str]]:
@@ -24,6 +25,11 @@ def _configured_users() -> list[tuple[str, str]]:
         for identity, password in users.items()
         if isinstance(identity, str) and identity.strip() and isinstance(password, str) and password
     ]
+
+
+def is_secured() -> bool:
+    """Return whether password access and per-session limits are enabled."""
+    return st.secrets.get("secured", True) is not False
 
 
 def max_llm_calls_per_session() -> int:
@@ -42,6 +48,10 @@ def max_llm_calls_per_session() -> int:
 
 def require_access() -> str:
     """Render the access-code gate and stop unauthenticated sessions."""
+    if not is_secured():
+        st.session_state.setdefault("llm_call_in_flight", False)
+        return UNSECURED_IDENTITY
+
     identity = st.session_state.get("access_identity")
     if st.session_state.get("authorized") and isinstance(identity, str):
         st.session_state.setdefault("llm_calls", 0)
@@ -75,8 +85,8 @@ def require_access() -> str:
 
 
 def consume_llm_call(identity: str) -> None:
-    """Consume one Gemini inference call, unless the authenticated user is owner."""
-    if identity == "owner":
+    """Consume one LLM call unless security is disabled or the user is owner."""
+    if not is_secured() or identity == "owner":
         return
 
     calls_used = int(st.session_state.get("llm_calls", 0))
@@ -88,7 +98,7 @@ def consume_llm_call(identity: str) -> None:
 
 def remaining_llm_calls(identity: str) -> int | None:
     """Return remaining non-owner calls; owners have no session quota."""
-    if identity == "owner":
+    if not is_secured() or identity == "owner":
         return None
     return max(0, max_llm_calls_per_session() - int(st.session_state.get("llm_calls", 0)))
 

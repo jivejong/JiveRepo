@@ -2,6 +2,7 @@ import streamlit as st
 from google import genai
 from google.genai import types
 import random
+import requests
 import time
 from pathlib import Path
 from typing import Tuple
@@ -24,7 +25,11 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 # ==========================================
 st.set_page_config(page_title="South Park: Town Hall Debate", page_icon="🎤", layout="wide")
 
-MODEL_NAME = "gemini-3.1-flash-lite"
+GEMINI_MODEL = "gemini-3.1-flash-lite"
+GROQ_MODEL = "openai/gpt-oss-120b"
+USE_GEMINI = st.secrets.get("gemini", True) is not False
+LLM_PROVIDER = "Gemini" if USE_GEMINI else "Groq"
+MODEL_NAME = GEMINI_MODEL if USE_GEMINI else GROQ_MODEL
 
 IMAGE_DIR = Path(__file__).resolve().parent / "images"
 CHARACTER_AVATARS = {
@@ -123,7 +128,12 @@ def setup_opentelemetry() -> Tuple[trace.Tracer, InMemorySpanExporter]:
 # CLIENT INIT & CORE LLM FUNCTIONS
 # ==========================================
 @st.cache_resource
-def get_gemini_client() -> genai.Client:
+def get_llm_client():
+    if not USE_GEMINI:
+        if "GROQ_API_KEY" not in st.secrets:
+            st.error("⚠️ `GROQ_API_KEY` is missing in `.streamlit/secrets.toml`.")
+            st.stop()
+        return None
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         return genai.Client(api_key=api_key)
@@ -131,7 +141,8 @@ def get_gemini_client() -> genai.Client:
         st.error("⚠️ `GEMINI_API_KEY` is missing in `.streamlit/secrets.toml`.")
         st.stop()
 
-def generate_response(client: genai.Client, tracer: trace.Tracer, character: str, prompt: str, temp: float, role_type: str = "combatant") -> Tuple[str, int]:
+
+def generate_response(client, tracer: trace.Tracer, character: str, prompt: str, temp: float, role_type: str = "combatant") -> Tuple[str, int]:
     if role_type == "judge":
         system_instruction = JUDGES[character]
     elif role_type == "moderator":
@@ -150,41 +161,69 @@ def generate_response(client: genai.Client, tracer: trace.Tracer, character: str
             call_status = "ok"
             span.set_attribute("agent.name", character)
             span.set_attribute("agent.role", role_type)
+            span.set_attribute("gen_ai.system", LLM_PROVIDER.lower())
+            span.set_attribute("gen_ai.request.model", MODEL_NAME)
 
             try:
-                response = client.models.generate_content(
-                    model=MODEL_NAME,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=temp,
-                    ),
-                )
-
-                text_response = response.text
-
-                if not text_response or not text_response.strip():
+                if USE_GEMINI:
+                    response = client.models.generate_content(
+                        model=MODEL_NAME,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=temp,
+                        ),
+                    )
+                    text_response = response.text
                     candidates = getattr(response, "candidates", None) or []
                     finish_reason = (
                         getattr(candidates[0], "finish_reason", "unknown")
                         if candidates
                         else "unknown"
                     )
-                    text_response = f"*(API Issue)* Generation halted. Reason: {finish_reason}."
-
-                usage_metadata = getattr(response, "usage_metadata", None)
-                if usage_metadata is not None:
-                    prompt_tokens = getattr(
-                        usage_metadata, "prompt_token_count", 0
-                    ) or 0
-                    completion_tokens = getattr(
-                        usage_metadata, "candidates_token_count", 0
-                    ) or 0
-                    total_tokens = getattr(
-                        usage_metadata, "total_token_count", 0
-                    ) or 0
+                    usage_metadata = getattr(response, "usage_metadata", None)
+                    if usage_metadata is not None:
+                        prompt_tokens = getattr(
+                            usage_metadata, "prompt_token_count", 0
+                        ) or 0
+                        completion_tokens = getattr(
+                            usage_metadata, "candidates_token_count", 0
+                        ) or 0
+                        total_tokens = getattr(
+                            usage_metadata, "total_token_count", 0
+                        ) or 0
                 else:
-                    prompt_tokens, completion_tokens, total_tokens = 0, 0, 0
+                    response = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={
+                            "Authorization": f'Bearer {st.secrets["GROQ_API_KEY"]}',
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": GROQ_MODEL,
+                            "messages": [
+                                {"role": "system", "content": system_instruction},
+                                {"role": "user", "content": prompt},
+                            ],
+                            "temperature": temp,
+                            "max_completion_tokens": 512,
+                            "reasoning_effort": "low",
+                            "include_reasoning": False,
+                        },
+                        timeout=30,
+                    )
+                    response.raise_for_status()
+                    response_data = response.json()
+                    choice = response_data["choices"][0]
+                    text_response = choice["message"].get("content")
+                    finish_reason = choice.get("finish_reason", "unknown")
+                    usage_metadata = response_data.get("usage", {})
+                    prompt_tokens = usage_metadata.get("prompt_tokens", 0) or 0
+                    completion_tokens = usage_metadata.get("completion_tokens", 0) or 0
+                    total_tokens = usage_metadata.get("total_tokens", 0) or 0
+
+                if not text_response or not text_response.strip():
+                    text_response = f"*(API Issue)* Generation halted. Reason: {finish_reason}."
 
             except Exception as e:
                 text_response = "*(API Error)* The model request failed. Please try again."
@@ -585,7 +624,9 @@ def main():
     render_access_controls()
 
     st.title("🎤 South Park: Town Hall Debate")
-    st.markdown(f"A multi-agent LLM debate powered by Gemini and `{MODEL_NAME}`.")
+    st.markdown(
+        f"A multi-agent LLM debate powered by {LLM_PROVIDER} and `{MODEL_NAME}`."
+    )
 
     with st.sidebar:
         st.header("⚙️ Match Configuration")
@@ -650,7 +691,7 @@ def main():
             # Client and telemetry resources initialize only after access and an
             # explicit, quota-approved user action.
             tracer, otel_exporter = setup_opentelemetry()
-            client = get_gemini_client()
+            client = get_llm_client()
             st.session_state["last_debate"] = run_debate(
                 client,
                 tracer,

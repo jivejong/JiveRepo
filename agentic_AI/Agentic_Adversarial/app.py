@@ -3,6 +3,7 @@ import pandas as pd
 import random
 import json
 import re
+import requests
 from pathlib import Path
 from security import (
     UsageLimitReached,
@@ -44,19 +45,27 @@ st.title("🍩 Simpson Snack Negotiation")
 st.caption("A multi-agent RAG demo: Bart vs Marge vs rogue Homer")
 
 # ── 2. API + CLIENT SETUP ─────────────────────────────────────────────────────
-if "GEMINI_API_KEY" not in st.secrets:
-    st.error("Missing 'GEMINI_API_KEY' in .streamlit/secrets.toml")
-    st.stop()
+USE_GEMINI = st.secrets.get("gemini", True) is not False
+GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
+GROQ_MODEL = "openai/gpt-oss-120b"
+LLM_PROVIDER = "Gemini" if USE_GEMINI else "Groq"
+LLM_MODEL = GEMINI_MODEL if USE_GEMINI else GROQ_MODEL
 
-try:
-    from google import genai
-    from google.genai import types
-    gemini_client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"].strip())
-    # Model id is overridable via secrets so it can be swapped without a code change.
-    GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
-except ImportError:
-    st.error("Missing dependency: run `pip install google-genai`")
-    st.stop()
+if USE_GEMINI:
+    if "GEMINI_API_KEY" not in st.secrets:
+        st.error("Missing 'GEMINI_API_KEY' in .streamlit/secrets.toml")
+        st.stop()
+    try:
+        from google import genai
+        from google.genai import types
+        gemini_client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"].strip())
+    except ImportError:
+        st.error("Missing dependency: run `pip install google-genai`")
+        st.stop()
+else:
+    if "GROQ_API_KEY" not in st.secrets:
+        st.error("Missing 'GROQ_API_KEY' in .streamlit/secrets.toml")
+        st.stop()
 
 # ── 3. DATA LOADING ───────────────────────────────────────────────────────────
 @st.cache_data
@@ -90,37 +99,8 @@ def _loads_json(content: str) -> dict:
         raise
 
 
-def gemini_json(messages: list, max_tokens: int = 1024) -> dict:
-    """Call Gemini with JSON output enabled. Always returns a dict."""
-    prompt = "\n\n".join(
-        message["content"] for message in messages if message.get("content")
-    )
-    response = generate_gemini_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            max_output_tokens=max_tokens,
-        ),
-    )
-    return _loads_json(response.text)
-
-
-def gemini_web_search(query: str, max_tokens: int = 400) -> str:
-    """Call Gemini with Google Search grounding enabled. Returns text content."""
-    response = generate_gemini_content(
-        model=GEMINI_MODEL,
-        contents=query,
-        config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-            max_output_tokens=max_tokens,
-        ),
-    )
-    return response.text or ""
-
-
-def generate_gemini_content(**request):
-    """Protect one billable Gemini request from duplicate use and quota overages."""
+def _run_llm_call(call):
+    """Protect one provider request from duplicate use and quota overages."""
     if st.session_state.get("llm_call_in_flight"):
         st.warning("A request is already running.")
         st.stop()
@@ -128,12 +108,105 @@ def generate_gemini_content(**request):
     st.session_state["llm_call_in_flight"] = True
     try:
         consume_llm_call(access_identity)
-        return gemini_client.models.generate_content(**request)
+        return call()
     except UsageLimitReached as error:
         st.error(str(error))
         st.stop()
+    except requests.exceptions.HTTPError as error:
+        status = error.response.status_code if error.response is not None else "?"
+        detail = ""
+        if error.response is not None:
+            try:
+                detail = error.response.json().get("error", {}).get("message", "")
+            except (ValueError, AttributeError):
+                detail = ""
+        st.error(f"{LLM_PROVIDER} request failed ({status}): {detail or str(error)}")
+        st.stop()
+    except requests.exceptions.Timeout:
+        st.error(f"{LLM_PROVIDER} request timed out. Please try again.")
+        st.stop()
     finally:
         st.session_state["llm_call_in_flight"] = False
+
+
+def _groq_chat(
+    messages: list,
+    max_tokens: int,
+    *,
+    json_mode: bool = False,
+    web_search: bool = False,
+) -> str:
+    """Call GPT-OSS 120B through Groq's OpenAI-compatible REST API."""
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "max_completion_tokens": max_tokens,
+        "include_reasoning": False,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    if web_search:
+        payload["tools"] = [{"type": "browser_search"}]
+
+    def request():
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f'Bearer {st.secrets["GROQ_API_KEY"]}',
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"] or ""
+
+    return _run_llm_call(request)
+
+
+def llm_json(messages: list, max_tokens: int = 1024) -> dict:
+    """Call the configured provider with JSON output enabled."""
+    if not USE_GEMINI:
+        return _loads_json(
+            _groq_chat(messages, max_tokens, json_mode=True)
+        )
+
+    prompt = "\n\n".join(
+        message["content"] for message in messages if message.get("content")
+    )
+    response = _run_llm_call(
+        lambda: gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                max_output_tokens=max_tokens,
+            ),
+        )
+    )
+    return _loads_json(response.text)
+
+
+def llm_web_search(query: str, max_tokens: int = 400) -> str:
+    """Use the configured provider's grounded browser-search capability."""
+    if not USE_GEMINI:
+        return _groq_chat(
+            [{"role": "user", "content": query}],
+            max_tokens,
+            web_search=True,
+        )
+
+    response = _run_llm_call(
+        lambda: gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=query,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                max_output_tokens=max_tokens,
+            ),
+        )
+    )
+    return response.text or ""
 
 
 # ── 5. VECTOR STORE — RAG Tier 1 (Chroma + MiniLM embeddings) ────────────────
@@ -221,13 +294,13 @@ def lookup_in_vector_store(item_name: str, min_similarity: float = 0.45):
 
 # ── 6. WEB SEARCH LOOKUP — RAG Tier 2 ────────────────────────────────────────
 def lookup_via_web(item_name: str) -> dict:
-    """Use Gemini Search grounding for nutrition, then fall back to model knowledge."""
+    """Use provider browser search for nutrition, then fall back to model knowledge."""
     try:
-        raw = gemini_web_search(
+        raw = llm_web_search(
             f"Nutritional information for '{item_name}': "
             f"sugar in grams, total fat in grams, cholesterol in mg per standard serving."
         )
-        result = gemini_json([{
+        result = llm_json([{
             "role": "user",
             "content": (
                 f"Based on this nutritional text:\n{raw}\n\n"
@@ -240,7 +313,7 @@ def lookup_via_web(item_name: str) -> dict:
         result["source"] = "Web Search"
         return result
     except Exception:
-        result = gemini_json([{
+        result = llm_json([{
             "role": "user",
             "content": (
                 f"Estimate nutritional values for '{item_name}' from your knowledge. "
@@ -260,7 +333,7 @@ def prescreen_item(item_name: str) -> dict:
     Classify the item before any nutritional check.
     Returns {allowed: bool, category: str, reason: str}
     """
-    return gemini_json([{
+    return llm_json([{
         "role": "user",
         "content": (
             f"Bart Simpson is asking for '{item_name}' as a snack. Classify it strictly:\n\n"
@@ -280,7 +353,7 @@ def prescreen_item(item_name: str) -> dict:
 
 def agent_bart(desired_snack: str) -> dict:
     """Bart pleads his case for a snack."""
-    return gemini_json([{
+    return llm_json([{
         "role": "user",
         "content": (
             f"You are Bart Simpson, an enthusiastic child who really wants '{desired_snack}'. "
@@ -297,7 +370,7 @@ def agent_bart_pick_alternative(denied_item: str, denial_reason: str,
                                 previous_attempts: list) -> dict:
     """Bart picks a DIFFERENT snack after being denied."""
     tried = ", ".join(f"'{x}'" for x in previous_attempts) or "none yet"
-    return gemini_json([{
+    return llm_json([{
         "role": "user",
         "content": (
             f"You are Bart Simpson, who was just denied '{denied_item}' by Marge. "
@@ -323,7 +396,7 @@ def agent_homer_interfere(current_item: str) -> dict:
         if not top.empty:
             rogue_suggestion = top.sample(1).iloc[0]['Description']
 
-    return gemini_json([{
+    return llm_json([{
         "role": "user",
         "content": (
             f"You are Homer Simpson, the rogue agent who loves spoiling Bart with sweets. "
@@ -340,7 +413,7 @@ def agent_homer_interfere(current_item: str) -> dict:
 def agent_marge_decide(item: str, nutrition: dict, sugar_limit: float,
                        fat_limit: float, chaos_context: str) -> dict:
     """Marge makes the final ruling based on real nutritional data."""
-    return gemini_json([{
+    return llm_json([{
         "role": "user",
         "content": (
             f"You are Marge Simpson: warm, patient, strict, and fair. Here is the VERIFIED nutritional data "
@@ -430,7 +503,7 @@ with st.sidebar:
     | Tier | Source |
     |---|---|
     | 1 | Vector DB (Chroma + MiniLM) |
-    | 2 | Gemini Search grounding |
+    | 2 | {LLM_PROVIDER} browser search |
     | 3 | Model knowledge fallback |
 
     **Auto-Deny Rules**
@@ -440,7 +513,7 @@ with st.sidebar:
     - Exceeds sugar or fat limit
     """)
     st.divider()
-    st.caption(f"Springfield Agents + Vector RAG · Gemini · `{GEMINI_MODEL}`")
+    st.caption(f"Springfield Agents + Vector RAG · {LLM_PROVIDER} · `{LLM_MODEL}`")
 
 # ── 11. MAIN UI ───────────────────────────────────────────────────────────────
 with st.form("negotiation_form"):

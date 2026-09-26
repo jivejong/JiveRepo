@@ -1,4 +1,4 @@
-"""Lightweight password access and per-session Gemini quota controls."""
+"""Lightweight password access and per-session LLM quota controls."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import streamlit as st
 
 
 DEFAULT_MAX_LLM_CALLS = 20
+UNSECURED_IDENTITY = "unsecured"
 
 
 def _configured_users() -> dict[str, str]:
@@ -23,6 +24,11 @@ def _configured_users() -> dict[str, str]:
         for identity, password in users.items()
         if str(identity) and str(password)
     }
+
+
+def is_secured() -> bool:
+    """Return whether password access and per-session limits are enabled."""
+    return st.secrets.get("secured", True) is not False
 
 
 def max_llm_calls() -> int:
@@ -48,6 +54,10 @@ def _match_access_code(access_code: str) -> str | None:
 
 def require_access() -> str:
     """Render the password gate and stop unauthenticated app execution."""
+    if not is_secured():
+        st.session_state.setdefault("llm_call_in_flight", False)
+        return UNSECURED_IDENTITY
+
     if st.session_state.get("authorized") and st.session_state.get("access_identity"):
         st.session_state.setdefault("llm_calls", 0)
         st.session_state.setdefault("llm_call_in_flight", False)
@@ -76,17 +86,17 @@ def is_owner(identity: str | None = None) -> bool:
 
 
 def check_llm_quota(identity: str | None = None) -> bool:
-    """Return whether this session may make another Gemini request."""
-    if is_owner(identity):
+    """Return whether this session may make another LLM request."""
+    if not is_secured() or is_owner(identity):
         return True
     return st.session_state.get("llm_calls", 0) < max_llm_calls()
 
 
 @contextmanager
 def consume_llm_call() -> Iterator[None]:
-    """Atomically reserve one non-owner Gemini call around a real request."""
+    """Atomically reserve one secured, non-owner LLM call around a request."""
     identity = st.session_state.get("access_identity")
-    if not st.session_state.get("authorized") or not identity:
+    if is_secured() and (not st.session_state.get("authorized") or not identity):
         st.error("Access is required before using the model.")
         st.stop()
     if st.session_state.get("llm_call_in_flight"):
@@ -96,7 +106,7 @@ def consume_llm_call() -> Iterator[None]:
         st.error("Demo usage limit reached for this session.")
         st.stop()
 
-    if not is_owner(identity):
+    if is_secured() and not is_owner(identity):
         st.session_state.llm_calls = st.session_state.get("llm_calls", 0) + 1
     st.session_state.llm_call_in_flight = True
     try:
@@ -107,6 +117,9 @@ def consume_llm_call() -> Iterator[None]:
 
 def render_access_status() -> None:
     """Render the small sidebar indicator without revealing an identity."""
+    if not is_secured():
+        return
+
     if is_owner():
         st.caption("LLM access: Unlimited")
     else:

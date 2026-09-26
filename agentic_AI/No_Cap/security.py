@@ -10,6 +10,7 @@ import streamlit as st
 
 DEFAULT_MAX_LLM_CALLS = 20
 OWNER_IDENTITY = "owner"
+UNSECURED_IDENTITY = "unsecured"
 
 
 class UsageLimitReached(Exception):
@@ -24,6 +25,11 @@ def _mapping(value: object) -> Mapping[str, object]:
 def _configured_users() -> Mapping[str, object]:
     access = _mapping(st.secrets.get("access", {}))
     return _mapping(access.get("users", {}))
+
+
+def is_secured() -> bool:
+    """Return whether password access and per-session limits are enabled."""
+    return st.secrets.get("secured", True) is not False
 
 
 def _matching_identity(access_code: str) -> str | None:
@@ -52,6 +58,10 @@ def max_llm_calls_per_session() -> int:
 
 def require_access() -> str:
     """Render the password gate and stop execution until the session is authorized."""
+    if not is_secured():
+        st.session_state.setdefault("llm_call_in_flight", False)
+        return UNSECURED_IDENTITY
+
     identity = st.session_state.get("access_identity")
     if st.session_state.get("authorized") is True and isinstance(identity, str):
         st.session_state.setdefault("llm_calls", 0)
@@ -83,7 +93,7 @@ def is_owner(identity: str) -> bool:
 
 def consume_llm_call(identity: str) -> None:
     """Reserve one actual inference call, unless the authorized user is owner."""
-    if is_owner(identity):
+    if not is_secured() or is_owner(identity):
         return
 
     used_calls = int(st.session_state.get("llm_calls", 0))

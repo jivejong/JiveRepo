@@ -1,6 +1,7 @@
 streamlit
 google-genai
 edge-tts
+requests
 
 # ── Observability (OpenTelemetry) ─────────────────────────────────────────────
 opentelemetry-api

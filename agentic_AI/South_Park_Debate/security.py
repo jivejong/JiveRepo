@@ -10,6 +10,7 @@ import streamlit as st
 
 DEFAULT_MAX_BILLABLE_OPERATIONS_PER_SESSION = 20
 OWNER_IDENTITY = "owner"
+UNSECURED_IDENTITY = "unsecured"
 
 _SESSION_KEYS_TO_CLEAR = (
     "authorized",
@@ -45,6 +46,11 @@ def _configured_users() -> Optional[Sequence[Tuple[str, str]]]:
     return entries
 
 
+def is_secured() -> bool:
+    """Return whether access control and billable-operation limits are enabled."""
+    return st.secrets.get("secured", True) is not False
+
+
 def _matching_identity(
     submitted_code: str, configured_users: Sequence[Tuple[str, str]]
 ) -> Optional[str]:
@@ -59,6 +65,11 @@ def _matching_identity(
 
 def require_access() -> str:
     """Require a valid access code before protected application code can run."""
+    if not is_secured():
+        st.session_state.setdefault("api_call_in_flight", False)
+        st.session_state.setdefault("debate_in_flight", False)
+        return UNSECURED_IDENTITY
+
     configured_users = _configured_users()
     if configured_users is None:
         st.error("Access control is unavailable. Please contact the app owner.")
@@ -129,6 +140,15 @@ def get_billable_usage() -> int:
 
 def ensure_billable_capacity(required_operations: int = 1) -> None:
     """Block a workflow before it starts when the remaining quota is insufficient."""
+    if (
+        isinstance(required_operations, bool)
+        or not isinstance(required_operations, int)
+        or required_operations < 1
+    ):
+        raise ValueError("required_operations must be a positive integer")
+    if not is_secured():
+        return
+
     configured_users = _configured_users()
     configured_identities = (
         {identity for identity, _ in configured_users}
@@ -141,13 +161,6 @@ def ensure_billable_capacity(required_operations: int = 1) -> None:
     ):
         st.error("Session authorization expired. Please lock the app and sign in again.")
         st.stop()
-    if (
-        isinstance(required_operations, bool)
-        or not isinstance(required_operations, int)
-        or required_operations < 1
-    ):
-        raise ValueError("required_operations must be a positive integer")
-
     if st.session_state.get("access_identity") == OWNER_IDENTITY:
         return
 
@@ -164,7 +177,8 @@ def billable_operation() -> Iterator[None]:
         st.stop()
 
     ensure_billable_capacity()
-    st.session_state["billable_operations"] = get_billable_usage() + 1
+    if is_secured():
+        st.session_state["billable_operations"] = get_billable_usage() + 1
     st.session_state["api_call_in_flight"] = True
     try:
         yield
@@ -174,6 +188,9 @@ def billable_operation() -> Iterator[None]:
 
 def render_access_controls() -> None:
     """Show quota status and a control that clears all protected session data."""
+    if not is_secured():
+        return
+
     with st.sidebar:
         usage = get_billable_usage()
         if st.session_state.get("access_identity") == OWNER_IDENTITY:

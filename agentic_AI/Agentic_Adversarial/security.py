@@ -9,6 +9,7 @@ import streamlit as st
 
 
 DEFAULT_MAX_LLM_CALLS = 20
+UNSECURED_IDENTITY = "unsecured"
 
 
 class UsageLimitReached(RuntimeError):
@@ -23,6 +24,11 @@ def _secret_mapping(section: str) -> Mapping:
 def _configured_users() -> Mapping:
     users = _secret_mapping("access").get("users", {})
     return users if isinstance(users, Mapping) else {}
+
+
+def is_secured() -> bool:
+    """Return whether password access and per-session limits are enabled."""
+    return st.secrets.get("secured", True) is not False
 
 
 def max_llm_calls_per_session() -> int:
@@ -49,6 +55,10 @@ def _match_access_code(access_code: str) -> str | None:
 
 def require_access() -> str:
     """Render the password gate and stop unauthenticated visitors."""
+    if not is_secured():
+        st.session_state.setdefault("llm_call_in_flight", False)
+        return UNSECURED_IDENTITY
+
     if st.session_state.get("authorized") and st.session_state.get("access_identity"):
         return str(st.session_state["access_identity"])
 
@@ -72,7 +82,7 @@ def require_access() -> str:
 
 def check_llm_quota(identity: str) -> None:
     """Block non-owner sessions whose configured quota has been exhausted."""
-    if identity == "owner":
+    if not is_secured() or identity == "owner":
         return
     if st.session_state.get("llm_calls", 0) >= max_llm_calls_per_session():
         raise UsageLimitReached("Demo usage limit reached for this session.")
@@ -81,12 +91,15 @@ def check_llm_quota(identity: str) -> None:
 def consume_llm_call(identity: str) -> None:
     """Reserve one non-owner LLM call immediately before the API request."""
     check_llm_quota(identity)
-    if identity != "owner":
+    if is_secured() and identity != "owner":
         st.session_state["llm_calls"] = st.session_state.get("llm_calls", 0) + 1
 
 
 def render_session_controls(identity: str) -> None:
     """Show quota status and provide a way to return to the password screen."""
+    if not is_secured():
+        return
+
     if identity == "owner":
         st.caption("LLM access: Unlimited")
     else:
