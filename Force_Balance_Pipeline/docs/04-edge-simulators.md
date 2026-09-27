@@ -30,6 +30,12 @@ Every 15 minutes the probe sweeps all 60 planets and emits the full sweep as a s
 sharing one `scan_id`. This produces one clean file per scan rather than a trickle of
 four-event files.
 
+**Clock.** The Pi 3 has no real-time clock, so `event_time` is trusted only once NTP has synchronised
+(`timedatectl` reports `NTPSynchronized=yes`). A scan due before that is skipped and counted in the probe's log
+(`clock_unsynced`): it is not stamped with a guessed time and not buffered, so it appears as a gap. The probe keeps the last
+stamped `event_time` in its state directory and refuses a scan whose boundary is not after it, so a clock that steps backwards
+cannot re-stamp history. Scans align to :00, :15, :30 and :45 UTC (to :00 in `STEALTH`).
+
 ### Reading generation
 
 Parameters come from `dim_sector` — `midi_baseline`/`midi_sigma`, `kyber_baseline`/`kyber_sigma`,
@@ -73,6 +79,10 @@ Expose a control topic `force/control/probe-01` accepting `{"inject": "spike", "
 "signature": "sith_presence"}` so a demo can trigger a specific signature on demand. Implement it
 by manipulating the three channels' targets to match the classification rule — that is how you
 get reproducible demos and how the dashboard GIF gets made.
+The topic also accepts `{"mode": "DISCONNECTED" | "STEALTH" | "CONNECTED", "for_seconds": 2700}` to force a mode for a period.
+An injection defaults to ramp 2, hold 4 and decay 3 scans and may override them (`ramp`, `hold`, `decay`). Only the `operator`
+user may publish to the topic (broker ACL); `probe_ctl.py` asks for that password at a prompt and never stores it.
+`veiled_presence` is not injectable in Phase 3.
 An injection produces an emergency-level reading; the control message carries no severity field
 yet. Targets are computed, not listed, in `edge/forcesim/signatures.py`, and shared with the
 backfill's historical emergencies. The target of a signature is the smallest whole-sigma point whose
@@ -124,6 +134,10 @@ During `CONNECTED`, **2–3% of readings are deliberately faulty**:
   `sector_id`, including `uncharted` (the SWAPI `unknown` planet)
 - ~0.2% — `event_time` in the future
 
+Each reading is drawn independently at these rates. A faulty reading replaces the clean one, so a scan stays 60 events. A null or
+out-of-range fault hits any one of the three science channels; an unknown `sector_id` is a unique generated id, so no two faults
+share one; a future `event_time` is 24 hours ahead. Nothing is injected in `DISCONNECTED`, `BURST` or `STEALTH`.
+
 This is what feeds `silver.rejects`. Real sensors produce occasional bad readings regardless of
 mode, and without this the quarantine path stays empty and one of the better demonstrations in
 the project goes dark.
@@ -131,6 +145,11 @@ the project goes dark.
 Make the rate configurable and log the injected faults locally so you can reconcile against the
 rejects table — a test that the quarantine catches exactly what was injected, no more and no
 less, is worth writing.
+`--fault-rate` scales all four rates together (default 1.0; 0 turns injection off). Each fault is appended to
+`fault_injection.jsonl` in the probe's state directory before its event is buffered, one JSON object per line: `event_id`,
+`scan_id`, `fault`, `expected_reject_reason` (a doc 03 reason), `event_time` and `sector_id` as emitted, the channel, the original
+and injected values, and `logged_utc`. The count of rejects must equal the count in this log. The log is pulled off the Pi by hand
+(`scp`) and never travels on the telemetry topic; how it reaches Databricks for the reconciliation is decided in Phase 4.
 
 ### The four modes
 
@@ -151,6 +170,12 @@ stale. Tests the "alive but silent" case.
 
 Default schedule: 1–3 hours, roughly twice a day. Local demo: 3–5 minutes.
 
+The schedule is a simulated outage. It is **off by default until the Phase 3 checkpoint passes**, then on. A mode can also be
+forced by an operator (control topic, below), and `DISCONNECTED` is entered on a real loss of the broker (the client disconnects,
+or QoS 1 publishes stay unacknowledged past a timeout). All three run the same buffering code. A reading taken before the probe
+notices a real loss carries the mode it had when taken (`CONNECTED`) but stays buffered until acknowledged. Every mode transition
+is appended to `mode_transitions.jsonl` (`ts_utc`, `from`, `to`, `reason`).
+
 #### `BURST`
 
 Entered automatically on reconnection from `DISCONNECTED`. Drains the SQLite buffer in
@@ -158,6 +183,11 @@ Entered automatically on reconnection from `DISCONNECTED`. Drains the SQLite buf
 concurrently and is interleaved. Returns to `CONNECTED` when the buffer is empty.
 
 **Rows are deleted from SQLite only after publish is confirmed.**
+
+A batch of 500 is published, all 500 are acknowledged (QoS 1 PUBACK) and deleted in one transaction, and the probe then pauses
+10 seconds, the same pause the backfill models. A batch that is not fully acknowledged stays in the buffer and is resent, so
+delivery is at-least-once: a duplicate `event_id` is possible, and silver deduplicates. Live scans keep their schedule while the
+drain runs and are published with mode `BURST`.
 
 **Downstream:** this is the marquee feature. Replayed events arrive with `event_time` hours
 behind `_ingest_ts`, producing large `ingest_lag_seconds` and `is_replayed = true`. Historical
@@ -168,6 +198,9 @@ windows in `gold.sector_reading` must be recomputed rather than duplicated, and
 
 Limited connectivity or power. Scan interval extends to 60 minutes. Only `dark_side_activity` is
 reported — `midichlorian_ppm` and `kyber_resonance` are null. Payload drops `sensor_temp_c`.
+The sweep is on the hour, covers all 60 planets and carries one `scan_id`. `midichlorian_ppm` and `kyber_resonance` are JSON
+`null`; `sensor_temp_c` is omitted; `battery_pct` stays. A `STEALTH` probe that loses the broker keeps its `STEALTH` cadence and
+label, buffers, and drains with `BURST` when the broker returns.
 
 **Downstream:** partial readings. These must route to `silver.probe_reading` with
 `is_partial = true` and `channels_present = 1`, **not** to rejects. The composite score scales
@@ -191,8 +224,27 @@ CREATE TABLE IF NOT EXISTS buffered_events (
 CREATE INDEX IF NOT EXISTS idx_event_time ON buffered_events(event_time);
 ```
 
+`scan_id` is `NOT NULL` in this table, so a housekeeping row (which has no scan_id) is stored here as the empty string; `payload`
+keeps the real JSON `null` unchanged, and that is what a replay publishes.
+
 Cap at 100,000 rows — about 17 days of scans. On overflow drop oldest and emit a
 `buffer_overflow` event so the loss is visible in the data rather than silent.
+
+`payload` holds the complete envelope as it will be published (compact JSON), so a replay is byte-identical and keeps `event_time`
+and `mode`. Every reading is written before it is published (one transaction per scan) and deleted when its PUBACK arrives, in
+every mode; this is the durability layer of doc 02. The database uses WAL mode with `synchronous=FULL` and lives in the service's
+state directory, not in a tmpfs: about 24 KB per scan and about 200 commits a day. The cap is configurable for tests
+(`--buffer-cap`, default 100000). The `buffer_overflow` event is a housekeeping event (doc 02).
+
+### Deployment on the Pi
+
+The Pi runs from a sparse git clone of the repository (`Force_Balance_Pipeline/edge`, `Force_Balance_Pipeline/warehouse/dbt/seeds`
+and `Force_Balance_Pipeline/infra/pi`, so the unit files and the deploy script travel with the clone and nothing is `scp`'d
+separately) pinned to a commit SHA that the probe logs at start, in a venv with `paho-mqtt` (pinned in `edge/requirements.txt`).
+Unit files live under `infra/pi/`: `force-probe.service` runs as a dedicated user with `Restart=always`, after `time-sync.target` and
+`network-online.target`, with its state (buffer database and logs) in `/var/lib/force-probe/`. Configuration and the MQTT password
+are read from `/etc/force-probe/probe.env` (root-owned, mode 0600), which is never in the repository; `infra/pi/probe.env.example`
+shows the keys with empty values.
 
 ---
 
@@ -309,9 +361,14 @@ Runs on the GCP e2-micro.
 - Never reorder events
 - Never deduplicate — that is silver's job, and doing it here hides duplicate bugs
 
-**OPEN:** the local Mosquitto config sets `allow_anonymous true` and binds to `127.0.0.1` only, so
-it is for the laptop only. On the e2-micro (Phase 3) the broker needs authentication and TLS before
-the Pi connects.
+**Phase 3 staging.** The Phase 3 broker runs in Docker on the developer's desktop, bound to the desktop's LAN address and
+`127.0.0.1` (never `0.0.0.0`), with `allow_anonymous false`, a password file kept outside the repository, and per-user topic
+permissions (`infra/mosquitto/acl`): `probe-01` writes `force/telemetry/probe-01` and reads `force/control/probe-01`;
+`force-bridge` reads `force/telemetry/#`; `operator` writes `force/control/probe-01`. A Windows Firewall rule admits TCP 1883 from
+the Pi's address only. There is no TLS, so the passwords cross the LAN in clear text: accepted for staging.
+
+**OPEN:** TLS, and the e2-micro (broker and bridge, doc 01), move together to a later phase. The local-only config
+(`allow_anonymous true`, `127.0.0.1`) is for single-machine development.
 
 ### Configuration
 
@@ -343,3 +400,7 @@ file that contains it. Every outbound request sends the project User-Agent,
 `"Force_Balance_Pipeline/0.1 (+https://github.com/jivejong/JiveRepo/tree/main/Force_Balance_Pipeline)"`.
 The report endpoint (Phase 5) adds `INFERENCE_MODEL` and `GEMINI_API_KEY` (local `.env`, Secret
 Manager on the bridge) and an `--http-port` flag (default `8080`).
+
+Against an authenticated broker (Phase 3 staging) the bridge also reads `BRIDGE_MQTT_USERNAME` and `BRIDGE_MQTT_PASSWORD`, from
+the process environment or from `.env.mqtt` (gitignored, template `.env.mqtt.example`), never from `.env.bridge`, which keeps
+its three keys.

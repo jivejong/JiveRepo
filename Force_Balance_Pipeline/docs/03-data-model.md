@@ -115,6 +115,10 @@ Validation must be `STEALTH`-aware: nulls on midichlorian and kyber are expected
 must route to `probe_reading` with `is_partial = true`, not to rejects. This distinction is a
 genuine piece of pipeline logic, not boilerplate.
 
+Validation also checks for housekeeping events first (doc 02: `payload.kind` is reserved). An event with a `payload.kind` goes to a
+probe-events path before the sector check. It never reaches `probe_reading`, the baselines or the rejects, so a `buffer_overflow`
+event is not an `unknown_sector` reject and does not count against the fault-injection reconciliation.
+
 ### `silver.source_health`
 
 Latest state per source: current mode, last seen, buffer depth if reported, scan completeness
@@ -208,6 +212,11 @@ so it is testable in isolation and shared between the Databricks and Postgres ta
 
 `unclassified` must remain reachable — an incident the system can't categorize is a real
 outcome, and the agent should handle it.
+
+**OPEN:** `veiled_presence` requires `ABS(z_midi) < 1.0`, but a `STEALTH` reading has no midichlorian value, so `z_midi` is NULL and
+the condition is not true in SQL (a comparison with NULL is not true). As written the signature cannot fire. Decide in Phase 4 how a
+missing z-score is treated in the classification (for example, drop that condition when the channel is absent) and how the
+injection targets follow; `edge/forcesim/signatures.py` marks `veiled_presence` unproducible until then.
 
 ### `gold.disturbance`
 

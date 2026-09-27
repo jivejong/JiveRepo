@@ -102,10 +102,20 @@ hour-boundary paths) is exercised in Phase 3.
 4. Control topic for triggering a named signature on demand.
 5. Deploy to the Pi 3 (64-bit Raspberry Pi OS Lite), systemd with `Restart=always`.
 
+**Staging decision.** In Phase 3 the broker (Mosquitto in Docker) and the bridge (workspace mode) run on the developer's
+desktop, and the Pi publishes to the broker over the LAN with a password and per-user topic permissions. TLS and the e2-micro
+move together to a later phase; neither is part of Phase 3. The mode schedule (DISCONNECTED and STEALTH periods, doc 04) is off
+until the checkpoint below passes, then on.
+
 **Checkpoint:** force `DISCONNECTED` for 45 minutes, then restore. `BURST` drains the buffer, and
 `bronze.events` contains the buffered scans with `event_time` spanning the outage and `_ingest_ts`
 clustered at replay. No gaps, no duplicates. Separately, force `STEALTH` and confirm those rows
 arrive with two null channels.
+
+The cut is made on the Pi: a firewall rule drops its outbound TCP to the broker and a scheduled command removes it after 45
+minutes, so a lost SSH session cannot leave it in place. `mode_transitions.jsonl` on the Pi must show the transition into
+`DISCONNECTED` and the return through `BURST`; that file, not the clock, is the proof the cut happened. The checkpoint runs with
+fault injection off (`--fault-rate 0`) so the outage rows are clean; fault injection gets its own period afterwards.
 
 This checkpoint is the project's core claim. Do not proceed until it holds.
 

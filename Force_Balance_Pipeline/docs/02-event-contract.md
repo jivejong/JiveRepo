@@ -84,10 +84,11 @@ because Auto Loader's `rescue` schema-evolution mode sends a field missing from 
 | `midichlorian_ppm` | float | 0 – 30000 | in `STEALTH` and fault injection |
 | `kyber_resonance` | float | 0 – 100 | in `STEALTH` and fault injection |
 | `dark_side_activity` | float | 0 – 100 | fault injection only |
-| `sensor_temp_c` | float | -50 – 120 | yes |
+| `sensor_temp_c` | float | -50 – 120 | yes; omitted in `STEALTH` |
 | `battery_pct` | int | 0 – 100 | no |
 
 In `STEALTH` mode the probe reports `dark_side_activity` only; the other two channels are null.
+`sensor_temp_c` is omitted from the payload and `battery_pct` is kept.
 This is expected behavior, not a fault — silver must route these to a partial-reading path
 rather than to rejects, and the composite score must be computable from available channels.
 
@@ -121,6 +122,19 @@ incident, and a system that discards it in favor of the numbers has thrown away 
 
 `relevance_score` gates escalation. Low-relevance reports are stored and visible but do not
 trigger emergencies. See doc 03 for thresholds.
+
+---
+
+## Housekeeping events
+
+A probe may emit an event about itself rather than about a planet. It is an ordinary envelope: `source_type` `probe`, `scan_id`
+null, `sector_id` set to the `source_id` (the bridge requires a non-empty `sector_id`), `event_time` the moment it happened, and a
+payload whose `kind` names the event. **`payload.kind` is reserved.** A reading never has it, and silver routes any event that has
+it before the sector check, so a housekeeping event is never rejected as an unknown sector and never counted as a reading.
+
+| `payload.kind` | Emitted when | Other payload fields |
+|---|---|---|
+| `buffer_overflow` | The buffer reached its cap and the oldest rows were dropped (doc 04) | `dropped` (int), `oldest_event_time` and `newest_event_time` (ISO 8601 UTC, of the dropped rows), `cap` (int) |
 
 ---
 

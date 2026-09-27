@@ -488,6 +488,134 @@ That's a deliberate property: someone reading the repo sees the actual productio
 
 ---
 
+## Phase 3 staging: the desktop broker and the Pi
+
+In Phase 3 the broker (Mosquitto in Docker) and the bridge (workspace mode) run on the developer's Windows desktop, and the Pi
+publishes to the broker over the LAN (both on Ethernet, both with DHCP reservations on the router). There is no TLS: the broker
+authenticates with passwords and enforces per-user topic permissions, and the passwords cross the LAN in clear text. TLS and the
+e2-micro come together in a later phase. Nothing below is committed with a real address or password.
+
+### The broker on the desktop
+
+1. **Passwords**, in a directory outside the repository. Each command prompts for the password, so none is on a command line; use
+   a password manager. Each credential has one home: `probe-01` goes in the Pi's `/etc/force-probe/probe.env`
+   (`PROBE_MQTT_PASSWORD`); `force-bridge` goes in the desktop's `.env.mqtt` (`BRIDGE_MQTT_PASSWORD`); `operator` is never stored:
+   `edge/probe_ctl.py` asks for it at a prompt (`getpass`), or reads `OPERATOR_MQTT_PASSWORD` from the environment if that is set,
+   and never reads it from `.env.mqtt`.
+
+   ```powershell
+   New-Item -ItemType Directory -Force "$env:USERPROFILE\.force_balance_pipeline\mosquitto"
+   docker run --rm -it -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/work" eclipse-mosquitto:2 mosquitto_passwd -c /work/passwd probe-01
+   docker run --rm -it -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/work" eclipse-mosquitto:2 mosquitto_passwd /work/passwd force-bridge
+   docker run --rm -it -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/work" eclipse-mosquitto:2 mosquitto_passwd /work/passwd operator
+   ```
+
+2. **The broker**, bound to the desktop's LAN address and to `127.0.0.1`, never to `0.0.0.0`. The config is
+   `infra/mosquitto/mosquitto.lan.conf` (`allow_anonymous false`, the password file and `infra/mosquitto/acl` read from the mounted
+   directories, persistence and the queue limits of doc 04):
+
+   ```powershell
+   docker run -d --name force-mosquitto --restart unless-stopped `
+     -p <DESKTOP_IP>:1883:1883 -p 127.0.0.1:1883:1883 `
+     -v "<REPO>\Force_Balance_Pipeline\infra\mosquitto:/mosquitto/config:ro" `
+     -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/mosquitto/secrets:ro" `
+     -v force-mosquitto-data:/mosquitto/data `
+     eclipse-mosquitto:2 mosquitto -c /mosquitto/config/mosquitto.lan.conf
+   ```
+
+   Mosquitto may warn that the password file's permissions are too open, because the file is mounted from Windows. If a later
+   image refuses the file, copy it into a Docker volume owned by the `mosquitto` user instead.
+
+3. **The firewall**, elevated PowerShell. The rule admits TCP 1883 from the Pi only:
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "Force Pi to MQTT" -Direction Inbound -Protocol TCP -LocalPort 1883 `
+     -LocalAddress <DESKTOP_IP> -RemoteAddress <PI_IP> -Action Allow -Profile Private
+   ```
+
+   Docker Desktop may already have added its own inbound allow rules, which would make port 1883 reachable from the whole LAN
+   whatever this rule says. Check with the tests below, not by assumption.
+
+4. **Verify that the Pi can connect and nothing else can:**
+   - `docker port force-mosquitto` and `netstat -ano | findstr :1883` show `<DESKTOP_IP>` and `127.0.0.1`, no `0.0.0.0`.
+   - `edge/mqtt_check.py` (each password at a prompt, or from the environment for that run only): the right password connects; a wrong password and an anonymous
+     connection are refused; `probe-01` publishing to `force/control/probe-01` is not delivered to a subscriber (the broker
+     acknowledges a denied QoS 1 publish, so a subscriber is the only honest test). Run it on the desktop and from the Pi.
+   - From a third device on the LAN, `Test-NetConnection <DESKTOP_IP> -Port 1883` must fail. If it succeeds, Docker Desktop's
+     rule is the cause: scope it to `<PI_IP>`.
+
+5. **The bridge** runs on the desktop in workspace mode as before (doc 04). Its broker credentials come from `.env.mqtt`
+   (`BRIDGE_MQTT_USERNAME`, `BRIDGE_MQTT_PASSWORD`, gitignored) or the environment, and its persistent session queues the Pi's
+   messages while it is down.
+
+6. **The desktop stays awake and reachable for the tests.** Stop it sleeping (`powercfg /change standby-timeout-ac 0` and
+   `powercfg /change hibernate-timeout-ac 0`, and put the values back afterwards); keep Docker Desktop running; keep the VPN in one
+   state for the whole checkpoint. A VPN client can block or reroute LAN traffic, so check its "allow local network access"
+   setting, then test both ways with the VPN on and off: `Test-NetConnection <PI_IP> -Port 22` from the desktop and
+   `nc -vz <DESKTOP_IP> 1883` from the Pi. If the desktop sleeps, the Pi sees an outage.
+
+### The Pi
+
+Raspberry Pi OS Lite, 64-bit, on Ethernet, with an SSH login as `<PI_USER>`.
+
+```bash
+sudo apt update && sudo apt install -y git python3-venv sqlite3 nftables
+timedatectl status        # "System clock synchronized: yes" and "NTP service: active"
+```
+
+Clone the repository sparsely yourself, at the pinned commit — `infra/pi` is in the cone, so `deploy.sh`, the unit and the env
+template travel with the clone and nothing is copied over separately:
+
+```bash
+git clone --filter=blob:none --no-checkout https://github.com/jivejong/JiveRepo.git /opt/force-probe/repo
+cd /opt/force-probe/repo
+git sparse-checkout set --cone Force_Balance_Pipeline/edge Force_Balance_Pipeline/warehouse/dbt/seeds Force_Balance_Pipeline/infra/pi
+git checkout <full 40-character commit SHA>
+```
+
+Then run the deploy script from inside that clone:
+
+```bash
+cd /opt/force-probe/repo/Force_Balance_Pipeline/infra/pi
+./deploy.sh <full 40-character commit SHA>
+```
+
+It checks out that commit again itself (so it is safe to rerun after a `git pull` to a later SHA), builds the venv in
+`/opt/force-probe/venv` from `edge/requirements.txt`, creates the service user, installs `infra/pi/force-probe.service`, and creates
+`/etc/force-probe/probe.env` from `infra/pi/probe.env.example` if it is missing (root-owned, mode 0600). Fill it in with
+`sudoedit /etc/force-probe/probe.env` (`PROBE_MQTT_HOST`, `PROBE_MQTT_USERNAME`, `PROBE_MQTT_PASSWORD`), then
+`sudo systemctl enable --now force-probe`. Logs: `journalctl -u force-probe -f`. The probe logs the commit SHA at start.
+
+The unit orders itself `After=time-sync.target`, but that target waits for a real synchronisation only if
+`systemd-time-wait-sync.service` is enabled. The guarantee that nothing is stamped early is the probe's own `NTPSynchronized`
+check (doc 04, Clock), not the unit.
+
+The service user owns `/var/lib/force-probe/` (the buffer database, `mode_transitions.jsonl`, `fault_injection.jsonl`), so reading
+it from your login needs `sudo`; use `sudo sqlite3 -readonly` for the database so a read cannot touch its WAL files.
+
+### The checkpoint cut
+
+The cut is made on the Pi (doc 07). The rule drops outbound TCP to the broker and a scheduled command removes it after 45 minutes,
+scheduled first so a lost SSH session cannot leave it in place. Start it at :16 or :31 past the hour — a few minutes after a
+quarter-hour boundary — so the scan taken in the roughly 90 seconds before the probe notices (still labelled `CONNECTED`, doc 02,
+but buffered) falls before the cut instead of straddling it:
+
+```bash
+sudo systemd-run --on-active=45m --unit=force-cut-restore /usr/sbin/nft delete table inet forcecut
+date -u +%FT%TZ | tee -a ~/force-cut.txt
+sudo nft add table inet forcecut
+sudo nft add chain inet forcecut out '{ type filter hook output priority 0 ; policy accept ; }'
+sudo nft add rule inet forcecut out ip daddr <DESKTOP_IP> tcp dport 1883 counter drop
+sudo nft list table inet forcecut     # the drop counter rises while the probe retries
+sudo tail -n 5 /var/lib/force-probe/mode_transitions.jsonl
+```
+
+The rule matches only the broker's port, so the SSH session is unaffected, and it drops rather than rejects, so the probe finds
+out the way a real outage does. To stop early: `sudo nft delete table inet forcecut`. The outage the checkpoint queries use is the
+`DISCONNECTED` to `BURST` span in `mode_transitions.jsonl`. Run it with `--fault-rate 0` (doc 07).
+
+---
+
 ## Local development stack
 
 `docker-compose.yml` brings up:

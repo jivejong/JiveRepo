@@ -26,7 +26,7 @@ what was decided and why.
 | Ingestion | Bridge writes NDJSON to a UC volume via Files API; Auto Loader with `trigger(availableNow=True)` — same streaming semantics, one-line change to continuous |
 | Transform | dbt Core + `dbt-databricks` (pinned ≥1.6), run as native `dbt` job task pulled from Git |
 | Serving | Postgres on the GCP e2-micro; dashboard never queries the warehouse |
-| Bridge | Mosquitto + Python on the e2-micro; also hosts the report inference endpoint |
+| Bridge | Mosquitto + Python on the e2-micro (the developer's desktop in Phase 3); also hosts the report inference endpoint |
 | Agent | Cloud Run job, Gemini (`gemini-3.1-flash-lite`), function calling; reads/writes via SQL Statement Execution API |
 | Dashboard | Node/React, hosted outside Databricks |
 | Local demo | Docker Compose, Postgres standing in for the lakehouse, `make demo` |
@@ -57,6 +57,10 @@ what was decided and why.
   **BURST** (post-reconnect drain), **STEALTH** (limited power/connectivity — hourly, dark
   side channel only).
 - Control topic injects a named signature on demand for demos.
+- Control topic also forces a mode for a period. The mode schedule (DISCONNECTED, 1–3 hours about twice a day) is off until the
+  Phase 3 checkpoint passes, then on.
+- Phase 3 staging: the broker and the bridge run on the developer's desktop and the Pi publishes over the LAN (password and topic
+  permissions, no TLS). TLS and the e2-micro come later.
 
 ## Detection and classification — all deterministic SQL
 
