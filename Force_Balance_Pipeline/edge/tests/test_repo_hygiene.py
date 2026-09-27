@@ -15,7 +15,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import enrich_common as ec  # noqa: E402
 
 PATTERNS = ("*.py", "*.sql", "*.md", "*.conf", "*.json", "*.yaml", "*.ndjson")
-SKIP_DIRS = {".git", ".venv", "node_modules", "target", "logs", "__pycache__", "dbt_packages"}
+SKIP_DIRS = {".git", ".venv", "node_modules", "target", "logs", "__pycache__", "dbt_packages",
+             "probe-state", "probe-desktop-state"}   # gitignored local runtime state, not source we write
 CRLF = bytes([13, 10])
 
 

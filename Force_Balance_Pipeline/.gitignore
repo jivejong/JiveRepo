@@ -31,6 +31,11 @@ logs/
 # Phase 0 scratch state written by scripts/check_platform.py
 .phase0_state.json
 
+# Local probe state (buffer.db, mode_transitions.jsonl, fault_injection.jsonl, last_scan.json) from a
+# desktop test run of edge/probe_sim.py --live; the Pi's own state lives outside the repo (doc 04)
+probe-state/
+probe-desktop-state/
+
 # Editors and OS
 .vscode/
 .idea/

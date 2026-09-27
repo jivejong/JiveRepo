@@ -92,6 +92,10 @@ upload days).
 minutes. The real 15-minute cadence (quarter-hour alignment, an idle bridge between scans,
 hour-boundary paths) is exercised in Phase 3.
 
+**Closed, 2026-09-27:** the real 15-minute cadence ran on the desktop simulator (Phase 3, Step 3, not the
+Pi) — 3 scans, 180 rows, quarter-hour aligned, the bridge idling between scans, the landing path crossing
+an hour boundary. See PHASE3-RESULTS.md, "Desktop cadence run (closes the Phase 2 deviation)".
+
 ---
 
 ## Phase 3 — Four modes and hardware · 8–12h

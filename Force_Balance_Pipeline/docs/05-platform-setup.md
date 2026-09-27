@@ -512,19 +512,30 @@ e2-micro come together in a later phase. Nothing below is committed with a real 
 
 2. **The broker**, bound to the desktop's LAN address and to `127.0.0.1`, never to `0.0.0.0`. The config is
    `infra/mosquitto/mosquitto.lan.conf` (`allow_anonymous false`, the password file and `infra/mosquitto/acl` read from the mounted
-   directories, persistence and the queue limits of doc 04):
+   directories, persistence and the queue limits of doc 04).
+
+   Mosquitto 2.1.2 refuses to start against a password file mounted straight from Windows (`Unable to open pwfile`, a crash
+   loop): the container's `mosquitto` user cannot read a file the Windows bind mount hands it as root-owned. Copy the password
+   file into a Docker volume it can read instead, before the first run and again whenever a password changes:
+
+   ```powershell
+   docker volume create force-mosquitto-secrets
+   docker run --rm -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/from:ro" -v force-mosquitto-secrets:/to eclipse-mosquitto:2 `
+     sh -c "cp /from/passwd /to/passwd && chown mosquitto:mosquitto /to/passwd && chmod 0600 /to/passwd"
+   ```
 
    ```powershell
    docker run -d --name force-mosquitto --restart unless-stopped `
      -p <DESKTOP_IP>:1883:1883 -p 127.0.0.1:1883:1883 `
      -v "<REPO>\Force_Balance_Pipeline\infra\mosquitto:/mosquitto/config:ro" `
-     -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/mosquitto/secrets:ro" `
+     -v force-mosquitto-secrets:/mosquitto/secrets:ro `
      -v force-mosquitto-data:/mosquitto/data `
      eclipse-mosquitto:2 mosquitto -c /mosquitto/config/mosquitto.lan.conf
    ```
 
-   Mosquitto may warn that the password file's permissions are too open, because the file is mounted from Windows. If a later
-   image refuses the file, copy it into a Docker volume owned by the `mosquitto` user instead.
+   **OPEN:** the same version also warns that `/mosquitto/config/acl` (still a Windows bind mount) has the wrong group and that
+   "future versions will refuse to load this file". Not fixed yet — the options are the same volume-copy treatment as the
+   password file above, or pinning the image to a version that still accepts it; decide before moving off `eclipse-mosquitto:2`.
 
 3. **The firewall**, elevated PowerShell. The rule admits TCP 1883 from the Pi only:
 
@@ -533,16 +544,31 @@ e2-micro come together in a later phase. Nothing below is committed with a real 
      -LocalAddress <DESKTOP_IP> -RemoteAddress <PI_IP> -Action Allow -Profile Private
    ```
 
-   Docker Desktop may already have added its own inbound allow rules, which would make port 1883 reachable from the whole LAN
-   whatever this rule says. Check with the tests below, not by assumption.
+   Docker Desktop Backend installs its own inbound Allow rules on the Private profile, and Windows combines Allow rules rather
+   than picking the most specific one, so those rules override the Pi-only scoping above and open 1883 to the whole LAN. Find and
+   disable them — never Block, which would also stop the Pi:
+
+   ```powershell
+   Get-NetFirewallRule -Direction Inbound -Action Allow -Enabled True | Where-Object { $_.Profile -match "Private" -and
+     (Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $_).Program -match "docker" } | Format-Table DisplayName, Profile
+   # then, for each DisplayName it lists:
+   Disable-NetFirewallRule -DisplayName "<the rule's exact DisplayName>"
+   ```
+
+   The broker's own log cannot tell you whether this worked: Docker's port relay presents every client to Mosquitto as
+   `172.17.0.1`, so a connection from the LAN and one from the container host look identical there — the check below, a plain TCP
+   test from a genuinely separate device, is the only honest one. Docker Desktop can re-create these rules on an update, so
+   recheck after one.
 
 4. **Verify that the Pi can connect and nothing else can:**
-   - `docker port force-mosquitto` and `netstat -ano | findstr :1883` show `<DESKTOP_IP>` and `127.0.0.1`, no `0.0.0.0`.
+   - `docker port force-mosquitto` and `netstat -ano | findstr :1883` show `<DESKTOP_IP>` and `127.0.0.1`, no `0.0.0.0` (the
+     listening process is Docker's own backend, not `mosquitto.exe` — there is no such thing on Windows).
    - `edge/mqtt_check.py` (each password at a prompt, or from the environment for that run only): the right password connects; a wrong password and an anonymous
      connection are refused; `probe-01` publishing to `force/control/probe-01` is not delivered to a subscriber (the broker
      acknowledges a denied QoS 1 publish, so a subscriber is the only honest test). Run it on the desktop and from the Pi.
-   - From a third device on the LAN, `Test-NetConnection <DESKTOP_IP> -Port 1883` must fail. If it succeeds, Docker Desktop's
-     rule is the cause: scope it to `<PI_IP>`.
+   - From a third device on the LAN — an actual TCP probe (`Test-NetConnection <DESKTOP_IP> -Port 1883`), not an MQTT client and
+     not the broker log (see The firewall, above) — `TcpTestSucceeded` must be `False`. If it is `True`, a Docker Desktop Backend
+     Allow rule is almost always the cause.
 
 5. **The bridge** runs on the desktop in workspace mode as before (doc 04). Its broker credentials come from `.env.mqtt`
    (`BRIDGE_MQTT_USERNAME`, `BRIDGE_MQTT_PASSWORD`, gitignored) or the environment, and its persistent session queues the Pi's

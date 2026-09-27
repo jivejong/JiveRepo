@@ -2,6 +2,7 @@
 claims no more about time sync than is true, the env templates hold no values, the deploy script pins a full SHA and starts nothing, no
 file has CRs or a credential, and the docs and the ACL say the same thing. Offline: nothing here starts a service."""
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -166,12 +167,18 @@ class EnvTemplateTests(unittest.TestCase):
         self.assertEqual(self.values(".env.mqtt.example"), {"BRIDGE_MQTT_USERNAME": "", "BRIDGE_MQTT_PASSWORD": ""})
         self.assertNotIn("OPERATOR", text(".env.mqtt.example").split("\n", 1)[1].replace("operator password", ""))
 
-    def test_the_real_env_files_are_ignored_by_git_and_absent(self):
+    def test_the_real_env_files_are_listed_in_gitignore(self):
         ignored = text(".gitignore").splitlines()
         for name in (".env.mqtt", ".env.bridge", ".env"):
             self.assertIn(name, ignored)
-        self.assertFalse((ROOT / ".env.mqtt").exists())
-        self.assertFalse((INFRA / "pi" / "probe.env").exists())
+
+    def test_a_real_env_file_that_exists_is_not_tracked_by_git(self):
+        # the desktop staging run legitimately creates .env.mqtt; it must never be trackable, whether or not
+        # it happens to exist on this machine right now
+        for path in (ROOT / ".env.mqtt", ROOT / ".env.bridge", INFRA / "pi" / "probe.env"):
+            if path.exists():
+                result = subprocess.run(["git", "check-ignore", "-q", str(path)], cwd=ROOT)
+                self.assertEqual(result.returncode, 0, f"{path} exists and is NOT gitignored")
 
 
 class DeployScriptTests(unittest.TestCase):
@@ -261,6 +268,31 @@ class DocParityTests(unittest.TestCase):
 
     def test_doc_05_reads_the_pi_state_with_sudo(self):
         self.assertIn("sudo sqlite3 -readonly", self.doc5)
+
+    def test_doc_05_copies_the_password_file_into_a_docker_volume_not_a_windows_bind_mount(self):
+        # tested on the desktop (Step 3): Mosquitto 2.1.2 cannot open a password file mounted straight from Windows
+        self.assertIn("docker volume create force-mosquitto-secrets", self.doc5)
+        self.assertIn("chown mosquitto:mosquitto", self.doc5)
+        self.assertIn("chmod 0600", self.doc5)
+        self.assertIn("-v force-mosquitto-secrets:/mosquitto/secrets:ro", self.doc5)
+        self.assertNotIn("may warn that the password file", self.doc5)                # the old, unverified hedge
+
+    def test_doc_05_flags_the_acl_group_warning_as_open_not_fixed(self):
+        self.assertIn("**OPEN:**", self.doc5)
+        self.assertIn("future versions will refuse to load this file", self.doc5)
+        self.assertNotIn('-v force-mosquitto-secrets:/mosquitto/config', self.doc5)    # the acl fix itself is not applied
+
+    def test_doc_05_names_docker_desktop_backend_as_the_lan_exposure_and_says_never_block(self):
+        # tested on the desktop (Step 3): two enabled Private-profile Allow rules for Docker Desktop Backend overrode the
+        # Pi-only scoping, because Windows combines Allow rules rather than picking the most specific one
+        self.assertIn("Docker Desktop Backend", self.doc5)
+        self.assertIn("never Block", self.doc5)
+        self.assertIn("172.17.0.1", self.doc5)                                        # why the broker log can't be the check
+        self.assertNotIn("Docker Desktop may already have added its own inbound allow rules", self.doc5)
+
+    def test_doc_05s_third_device_check_is_a_tcp_probe_not_the_broker_log(self):
+        self.assertIn("TcpTestSucceeded", self.doc5)
+        self.assertIn("not an MQTT client and", self.doc5)
 
     def test_doc_05_clones_by_hand_with_infra_pi_in_the_cone_and_no_scp(self):
         self.assertIn("git sparse-checkout set --cone Force_Balance_Pipeline/edge Force_Balance_Pipeline/warehouse/dbt/seeds "
