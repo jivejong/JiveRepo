@@ -345,6 +345,62 @@ def build_uploader(args, environ=os.environ, default_env_file=ENV_FILE_DEFAULT):
     return FilesApiUploader(env["DATABRICKS_HOST"], args.volume_path, tokens)
 
 
+# ---- MQTT credentials (Phase 3 staging: the authenticated LAN broker) ------------------------------------
+MQTT_ENV_FILE_DEFAULT = REPO_ROOT / ".env.mqtt"
+MQTT_ENV_KEYS = ("BRIDGE_MQTT_USERNAME", "BRIDGE_MQTT_PASSWORD")
+
+
+def read_mqtt_env_file(path):
+    """The bridge's MQTT credentials file (.env.mqtt, gitignored): KEY=VALUE lines, # comments, optional quotes, and ONLY the two
+    bridge keys. The operator password is never stored in a file (edge/probe_ctl.py prompts for it) and the Databricks keys belong in
+    .env.bridge, so any other key is refused. Messages name the file and line, never a value."""
+    path = Path(path)
+    values = {}
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise SystemExit(f"{path.name} line {number}: expected KEY=VALUE")
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key == "OPERATOR_MQTT_PASSWORD":
+            raise SystemExit(f"{path.name} line {number}: the operator password is never stored in a file; "
+                             "probe_ctl.py asks for it at a prompt. Remove it.")
+        if key not in MQTT_ENV_KEYS:
+            raise SystemExit(f"{path.name} line {number}: {key} is not allowed; this file holds only " + ", ".join(MQTT_ENV_KEYS))
+        if key in values:
+            raise SystemExit(f"{path.name} line {number}: {key} is set twice")
+        values[key] = value
+    return values
+
+
+def mqtt_credentials(environ=os.environ, env_file=MQTT_ENV_FILE_DEFAULT):
+    """(username, password) for the broker, or (None, None) for an anonymous broker (the local-only config). The process environment
+    wins over the file. A username without a password, or the reverse, is refused."""
+    env = {k: environ.get(k) for k in MQTT_ENV_KEYS}
+    env_file = Path(env_file)
+    if env_file.exists():
+        for key, value in read_mqtt_env_file(env_file).items():
+            if value and not env.get(key):
+                env[key] = value
+    username, password = env["BRIDGE_MQTT_USERNAME"], env["BRIDGE_MQTT_PASSWORD"]
+    if bool(username) != bool(password):
+        raise SystemExit("BRIDGE_MQTT_USERNAME and BRIDGE_MQTT_PASSWORD go together: set both, or neither for an anonymous broker")
+    return (username, password) if username else (None, None)
+
+
+def apply_mqtt_credentials(client, environ=os.environ, env_file=MQTT_ENV_FILE_DEFAULT):
+    """Log in to the broker with the configured credentials. Prints the user name, never the password."""
+    username, password = mqtt_credentials(environ, env_file)
+    if username:
+        client.username_pw_set(username, password)
+        print(f"bridge: MQTT login as {username}", flush=True)
+    return bool(username)
+
+
 # ---- command line -------------------------------------------------------------------------------------
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -414,6 +470,7 @@ def run(bridge, args):
     uploader_thread.start()
 
     client = build_client(mqtt, args)
+    apply_mqtt_credentials(client)
 
     def on_subscribe(client, userdata, mid, reason_codes, properties=None):
         print(f"bridge: subscribed to {args.topic} (QoS 1, client id {args.client_id})", flush=True)

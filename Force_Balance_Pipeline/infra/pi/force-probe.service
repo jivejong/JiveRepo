@@ -1,0 +1,36 @@
+# The probe on the Raspberry Pi 3 (doc 04, Deployment on the Pi). Installed by infra/pi/deploy.sh; start it with
+#   sudo systemctl enable --now force-probe
+#
+# Ordering only: After=time-sync.target puts this service after the time-sync target, but that target waits for a real NTP
+# synchronisation only if systemd-time-wait-sync.service is enabled. It does not guarantee a synchronised clock. What guarantees that no
+# scan is stamped early is the probe's own NTPSynchronized check (doc 04, Clock): a scan due before sync is skipped and logged.
+#
+# The simulated-outage schedule is off (no --mode-schedule) until the Phase 3 checkpoint has passed; add it then, on purpose.
+[Unit]
+Description=Force Balance Pipeline probe (Raspberry Pi 3)
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=simple
+User=force-probe
+Group=force-probe
+WorkingDirectory=/opt/force-probe/repo/Force_Balance_Pipeline/edge
+# PROBE_MQTT_HOST, PROBE_MQTT_USERNAME and PROBE_MQTT_PASSWORD; root-owned, mode 0600, never in the repository
+EnvironmentFile=/etc/force-probe/probe.env
+Environment=PROBE_STATE_DIR=/var/lib/force-probe
+Environment=PROBE_VERSION_FILE=/opt/force-probe/version
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=force-probe
+StateDirectoryMode=0750
+ExecStart=/opt/force-probe/venv/bin/python /opt/force-probe/repo/Force_Balance_Pipeline/edge/probe_sim.py --live
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

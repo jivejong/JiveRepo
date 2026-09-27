@@ -1,0 +1,17 @@
+# Topic permissions for the Phase 3 LAN broker (docs 04 and 05). Usernames and topics only: no secret is in this file, and the passwords are
+# in a file outside the repository. A user that is not listed here can neither read nor write anything.
+#
+# The probe publishes its telemetry and listens for control messages; the bridge only reads telemetry; only the operator writes the
+# control topic. Note that Mosquitto acknowledges a QoS 1 publish that the ACL then drops, so a denial is visible only as a message that
+# never arrives (edge/mqtt_check.py tests it that way).
+
+user probe-01
+topic write force/telemetry/probe-01
+topic read force/control/probe-01
+
+user force-bridge
+topic read force/telemetry/#
+
+user operator
+topic write force/control/probe-01
+topic read force/#
