@@ -20,8 +20,10 @@ state file; it refuses to reuse the prefix for a different backfill (a different
 """
 import json
 import os
+import re
 import time
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -92,20 +94,48 @@ def fixed_prefix(state_path, now, run_id):
     run_id identifies the data (for example the manifest's content hash)."""
     state_path = Path(state_path)
     if state_path.exists():
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        if state["run_id"] != run_id:
-            raise PrefixConflict(f"{state_path} holds the prefix of backfill run {state['run_id']}, not {run_id}. "
-                                 "A regenerated backfill must not reuse it (its files would be skipped as already "
-                                 "landed); remove the state file only after clearing the landed files")
-        return state["dt"], state["hh"]
+        return _saved_prefix(state_path, run_id)
     moment = datetime.fromtimestamp(now, timezone.utc)
-    state = {"run_id": run_id, "dt": f"{moment:%Y-%m-%d}", "hh": f"{moment:%H}",
-             "assigned_utc": moment.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    return _write_state(state_path, {"run_id": run_id, "dt": f"{moment:%Y-%m-%d}", "hh": f"{moment:%H}",
+                                     "assigned_utc": moment.strftime("%Y-%m-%dT%H:%M:%SZ")})
+
+
+def _saved_prefix(state_path, run_id):
+    state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    if state["run_id"] != run_id:
+        raise PrefixConflict(f"{state_path} holds the prefix of backfill run {state['run_id']}, not {run_id}. "
+                             "A regenerated backfill must not reuse it (its files would be skipped as already "
+                             "landed); remove the state file only after clearing the landed files")
+    return state["dt"], state["hh"]
+
+
+def _write_state(state_path, state):
+    state_path = Path(state_path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = state_path.with_name(state_path.name + f".tmp-{os.getpid()}")
     tmp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, state_path)
     return state["dt"], state["hh"]
+
+
+def pin_prefix(state_path, dt, hh, run_id):
+    """Recreate a lost state file: pin the prefix a backfill run's files already landed under (read it from the
+    volume or from PHASE2-RESULTS.md). Refuses anything that disagrees with an existing state file, and any
+    prefix that is not a real dt=YYYY-MM-DD / hh=HH pair."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", dt or "") or not re.fullmatch(r"\d{2}", hh or ""):
+        raise PrefixConflict(f"the prefix must be dt YYYY-MM-DD and hh HH, not {dt!r} {hh!r}")
+    try:
+        datetime.strptime(f"{dt} {hh}", "%Y-%m-%d %H")
+    except ValueError:
+        raise PrefixConflict(f"{dt} {hh} is not a real UTC date and hour") from None
+    state_path = Path(state_path)
+    if state_path.exists():
+        saved = _saved_prefix(state_path, run_id)
+        if saved != (dt, hh):
+            raise PrefixConflict(f"{state_path} already pins dt={saved[0]} hh={saved[1]} for this run, not "
+                                 f"dt={dt} hh={hh}")
+        return saved
+    return _write_state(state_path, {"run_id": run_id, "dt": dt, "hh": hh, "pinned": True})
 
 
 def backfill_relpath(dt, hh, source_id, ulid):
@@ -118,6 +148,7 @@ class TreeSummary:
     already_landed: int = 0
     failed: int = 0
     retries: int = 0
+    failed_paths: list = field(default_factory=list)
 
 
 def upload_tree(uploader, items, *, max_attempts=5, backoff=DEFAULT_BACKOFF, sleep=time.sleep, log=print,
@@ -140,4 +171,43 @@ def upload_tree(uploader, items, *, max_attempts=5, backoff=DEFAULT_BACKOFF, sle
             log(f"upload: gave up on {relpath} ({result.reason})")
         if progress:
             progress(relpath, result, summary)
+    return summary
+
+
+def upload_tree_parallel(uploader, items, *, workers, max_attempts=5, backoff=DEFAULT_BACKOFF, sleep=time.sleep,
+                         log=print, progress=None):
+    """upload_tree with `workers` files in flight at once. Same per-file semantics (upload_file, deterministic: a
+    409 anywhere means already landed), so it is as safe to rerun after any interruption. The summary and the
+    progress callback are handled in the calling thread, in completion order; the data of each item is read
+    only when a worker takes it. An unexpected exception (not an upload failure, which is counted) cancels the
+    files not yet started and is re-raised."""
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
+    summary = TreeSummary()
+
+    def one(relpath, data):
+        payload = data() if callable(data) else data
+        return upload_file(uploader, relpath, payload, deterministic=True, max_attempts=max_attempts,
+                           backoff=backoff, sleep=sleep, log=log)
+
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = [pool.submit(one, relpath, data) for relpath, data in items]
+        for future in as_completed(futures):
+            result = future.result()
+            summary.retries += result.retries
+            if result.outcome == UPLOADED:
+                summary.uploaded += 1
+            elif result.outcome == ALREADY_LANDED:
+                summary.already_landed += 1
+            else:
+                summary.failed += 1
+                summary.failed_paths.append(result.relpath)
+                log(f"upload: gave up on {result.relpath} ({result.reason})")
+            if progress:
+                progress(result.relpath, result, summary)
+    except BaseException:
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown()
     return summary

@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .constants import CHANNELS, SCANS_PER_DAY
-from .envelope import check_envelope, format_ts, new_ulid, to_ndjson_line, ts_ms
+from .envelope import check_envelope, decode_ulid_time, format_ts, new_ulid, to_ndjson_line, ts_ms
 from .probe import SimProbe
 from .sectors import DEFAULT_SEED as DIM_SECTOR_PATH
 from .sectors import sha256_file
@@ -568,6 +568,50 @@ def verify(manifest, sectors, texture_path, out_dir=None, sector_path=DIM_SECTOR
             problems.append(f"the files on disk differ: {disk.files} files, hash {disk.hexdigest()}, manifest has "
                             f"{manifest['files']} files, hash {recorded}")
     return problems
+
+
+def manifest_window(manifest):
+    """The BackfillWindow a manifest records."""
+    w = manifest["window"]
+    return BackfillWindow(end=_parse_ts(w["window_end_utc"]), earliest_live=_parse_ts(w["earliest_live_event_time_utc"]))
+
+
+def ulid_of(name, source_id=SOURCE_ID):
+    """The ULID in a backfill file name `{source_id}-{ulid}.ndjson`."""
+    prefix, suffix = source_id + "-", ".ndjson"
+    if not (name.startswith(prefix) and name.endswith(suffix)):
+        raise BackfillError(f"{name!r} is not a backfill file name ({source_id}-<ULID>.ndjson)")
+    return name[len(prefix):-len(suffix)]
+
+
+def scan_index_of(name, window, source_id=SOURCE_ID):
+    """The scan index of a backfill file: its ULID carries the scan time in milliseconds."""
+    try:
+        delta = decode_ulid_time(ulid_of(name, source_id)) - ts_ms(window.start)
+    except ValueError:
+        raise BackfillError(f"{name!r} does not carry a ULID") from None
+    step = INTERVAL // timedelta(milliseconds=1)
+    if delta < 0 or delta % step or delta // step >= SCANS:
+        raise BackfillError(f"{name} does not carry the time of a scan in the window")
+    return delta // step
+
+
+def select_files(out_dir, manifest, only_day=None):
+    """(name, path) of the backfill files under out_dir/scans, sorted by name (which is scan order): all of them,
+    or only the SCANS_PER_DAY scans of day `only_day` (-90..-1 counted back from the window end, as in the
+    texture file). Refuses a directory that does not hold exactly what was asked for."""
+    window, source_id = manifest_window(manifest), manifest["source_id"]
+    files = sorted(Path(out_dir, "scans").glob("*.ndjson"), key=lambda p: p.name)
+    if only_day is None:
+        return [(p.name, p) for p in files]
+    if not -90 <= only_day <= -1:
+        raise BackfillError("--only-day must be between -90 and -1")
+    first = SCANS + only_day * SCANS_PER_DAY
+    chosen = [(p.name, p) for p in files if first <= scan_index_of(p.name, window, source_id) < first + SCANS_PER_DAY]
+    if len(chosen) != SCANS_PER_DAY:
+        raise BackfillError(f"day {only_day} should have {SCANS_PER_DAY} files in {Path(out_dir, 'scans')}, "
+                            f"found {len(chosen)}")
+    return chosen
 
 
 def format_report(manifest):

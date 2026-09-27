@@ -77,7 +77,7 @@ Observation, cause not settled here: in row 5 `dark_side_activity` has the type 
 number), where the other rows show one decimal place. Every field is still numeric, so the pass criterion
 holds, and the aggregate schema across all rows is `DECIMAL(4,1)`.
 
-## Threshold decision and the regenerated backfill (local; nothing uploaded)
+## Threshold decision and the regenerated backfill (local generation)
 
 ### Decision (2026-09-26, by the user)
 
@@ -142,8 +142,38 @@ Generated with `python edge/backfill.py generate --earliest-live 2026-09-26T14:2
 
 ## Backfill half: 90 days of synthetic history
 
-Pending. Nothing has been uploaded. The rows below are filled from the `(e)` queries in
-`ingest/phase2_checkpoint.sql` after the upload.
+### Upload to the landing volume (2026-09-26)
+
+`python edge/backfill.py upload` as the `force-bridge` service principal (Files API, scope `files`), from the
+directory `generate` wrote, after a disk-only `verify` against the committed manifest. The dt=/hh= prefix is ingest
+time (doc 02) and was pinned on first use in `upload_state.json`, keyed by the manifest's content hash, so the full
+upload reused it. Run id (content hash) `8308472c95e55e6360ec8168f61f6ffb56bd8abb2b9d1dd9e67ecdd9505ffc62`.
+
+| # | Check | Expected | Actual | Evidence |
+|---|---|---|---|---|
+| U1 | Pinned prefix | One prefix for the whole backfill, assigned once | **`dt=2026-09-26/hh=22`**, assigned 2026-09-26T22:48:42Z, kept by the state file for the second upload | `upload` output; `upload_state.json` |
+| U2 | One-day upload (day -71, the tatooine emergency day), 4 workers | 96 files, no 409s on a first run | 96 selected, **96 uploaded, 0 already landed (409), 0 failed, 0 retries**, 11.8 s (8.16 files/s, 0.21 MB/s, 2.4 MB). Projection for 8,640 files: 17.6 min | `upload` output |
+| U3 | Landing check on those 96 (`verify_landing.py --backfill --only-day -71`) | The files under the prefix are exactly the local ones | **LANDING VERIFIED.** 96 files under `dt=2026-09-26/hh=22/`, exactly the expected names; every listed size equals the local size; no expected file under another prefix; 96 of 96 downloaded files byte-for-byte the local files, each 60 valid synthetic envelopes with one `scan_id`. The 3 live files at `hh=14` untouched. | `verify_landing` output |
+| U4 | Directory moved to a stable location, then disk-only verify | Same content hash | The output directory (with `upload_state.json`) was moved from the session temp folder to `~/.force_balance_pipeline/backfill/full575/`, outside the repository. **`verify` OK**: 8,640 files, content hash `8308472c...ffc62` | `verify --disk-only` output |
+| U5 | Full upload, 4 workers, same run id and prefix | 96 already landed (409) for day -71; nothing under a second prefix | 8,640 selected, **8,544 uploaded, 96 already landed (409), 0 failed, 0 retries**, 1,185.3 s (19.8 min; 7.21 files/s, 0.18 MB/s, 218.0 MB). It took 12% longer than the 17.6 min projected from the one-day run. | `upload` output |
+| U6 | Landing check on the whole backfill (`verify_landing.py --backfill --sample 300`) | Names and sizes for all 8,640; 300 downloads byte-for-byte | **First run: 3 FAIL lines, all one dropped connection.** Names, sizes and prefix checks passed (8,640 files, exactly the expected names, every size equal, none under another prefix), but one download failed with a network error (`RemoteDisconnected`). The listing showed that file with the right size, and the user reports toggling a VPN around that time, the probable cause (not confirmed from the output). The verifier had no retry on reads, so it now retries a read up to 3 attempts on a network error or HTTP 429/5xx (a denied read is not retried), with tests. **Rerun, same sample: LANDING VERIFIED.** 299 of 8,640 files downloaded, all byte-for-byte the local files, each with 60 valid synthetic envelopes and one `scan_id`; the other 8,341 checked by name and size. | `verify_landing` output, both runs |
+| U7 | What is in the volume | The backfill under one prefix, plus the 3 live files | 8,640 files under `dt=2026-09-26/hh=22/` and 3 live files under `dt=2026-09-26/hh=14/`. The Auto Loader notebook has not been run on the backfill. | `verify_landing` output |
+
+**If `upload_state.json` is lost** (it lives next to the data, in `~/.force_balance_pipeline/backfill/full575/`), do not
+let a new prefix be assigned: the prefix is ingest time, so a fresh state file would name a new hour and the same file
+names would land a second time under it. Recreate it with the prefix in U1, then rerun; every file skips via 409:
+
+```
+python edge/backfill.py upload --out ~/.force_balance_pipeline/backfill/full575 --pin-prefix 2026-09-26 22   # bash; use the full path elsewhere
+```
+
+`--pin-prefix` refuses a prefix that contradicts an existing state file or a run id that does not match. If the data is
+lost too, `generate` rebuilds it byte-for-byte from the committed manifest (same run id) before pinning.
+
+### Rows in bronze
+
+Pending the Auto Loader run over the backfill. The rows below are filled from the `(e)` queries in
+`ingest/phase2_checkpoint.sql`.
 
 | # | Check | Expected | Actual | Evidence |
 |---|---|---|---|---|
