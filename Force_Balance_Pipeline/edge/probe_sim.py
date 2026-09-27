@@ -3,7 +3,8 @@
 publishes the sweep as 60 doc 02 envelopes over MQTT, one message per event, QoS 1, on
 force/telemetry/<source_id>. The readings come from forcesim (the same generator the backfill uses).
 
-Not in Phase 2: the other three modes, fault injection, the SQLite buffer, the control topic (Phase 3).
+This is the Phase 2 simulator. With --live it runs the Phase 3 runtime (edge/probe/): the four modes, the SQLite buffer,
+fault injection and the control topic.
 
 Scans align to interval boundaries of the UTC clock (900 s: :00, :15, :30, :45), so event_time is the
 scan boundary plus a 0-3 s offset in planet order. With --immediate the first scan is the boundary at or
@@ -122,6 +123,11 @@ def parse_args(argv=None):
 
 
 def main(argv=None):
+    raw = sys.argv[1:] if argv is None else list(argv)
+    if "--live" in raw:
+        # the Phase 3 runtime (modes, buffer, faults, control): edge/probe/main.py
+        from probe.main import main as live_main
+        return live_main(raw)
     args = parse_args(argv)
     if args.interval < 1:
         raise SystemExit("--interval must be at least 1 second")

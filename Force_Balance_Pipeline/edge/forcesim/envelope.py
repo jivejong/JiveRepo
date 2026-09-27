@@ -16,6 +16,7 @@ _TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
 SCHEMA_VERSION = 1
 MODES = ("CONNECTED", "DISCONNECTED", "BURST", "STEALTH")
+HOUSEKEEPING_KINDS = ("buffer_overflow",)     # doc 02: payload.kind is reserved for events about the probe itself
 ENVELOPE_KEYS = ("event_id", "source_id", "source_type", "schema_version", "event_time", "mode",
                  "scan_id", "sector_id", "is_synthetic", "synthetic_ingest_ts", "payload")
 
@@ -93,6 +94,19 @@ def probe_payload(midi, kyber, dark, sensor_temp_c, battery_pct):
             "battery_pct": int(battery_pct)}
 
 
+def stealth_payload(dark, battery_pct):
+    """The STEALTH payload (doc 04): only dark_side_activity is reported. midichlorian_ppm and kyber_resonance are JSON
+    null, sensor_temp_c is omitted, battery_pct stays."""
+    return {"midichlorian_ppm": None, "kyber_resonance": None, "dark_side_activity": round(float(dark), 1),
+            "battery_pct": int(battery_pct)}
+
+
+def housekeeping_overflow_payload(dropped, oldest_event_time, newest_event_time, cap):
+    """The buffer_overflow housekeeping event's payload (doc 02): payload.kind is a reserved field."""
+    return {"kind": "buffer_overflow", "dropped": int(dropped), "oldest_event_time": oldest_event_time,
+            "newest_event_time": newest_event_time, "cap": int(cap)}
+
+
 def to_ndjson_line(envelope):
     """One JSON object per line, no wrapping array (doc 02). Compact and deterministic."""
     return json.dumps(envelope, separators=(",", ":")) + "\n"
@@ -124,15 +138,32 @@ def check_envelope(obj):
         problems.append("sector_id is missing")
     if not isinstance(obj["payload"], dict):
         problems.append("payload must be an object")
-    if obj["source_type"] == "probe":
+    if obj["source_type"] == "probe" and isinstance(obj["payload"], dict) and "kind" in obj["payload"]:
+        # a housekeeping event (doc 02): about the probe, not a planet reading
+        if obj["payload"]["kind"] not in HOUSEKEEPING_KINDS:
+            problems.append(f"payload.kind {obj['payload']['kind']!r} is not one of {HOUSEKEEPING_KINDS}")
+        if obj["scan_id"] is not None:
+            problems.append("a housekeeping event has no scan_id")
+        if obj["sector_id"] != obj["source_id"]:
+            problems.append("a housekeeping event's sector_id is the source_id")
+    elif obj["source_type"] == "probe":
         if obj["mode"] not in MODES:
             problems.append(f"mode {obj['mode']!r} is not one of {MODES}")
         if not isinstance(obj["scan_id"], str) or not _ULID_RE.match(obj["scan_id"]):
             problems.append("scan_id is not a ULID")
         p = obj["payload"] if isinstance(obj["payload"], dict) else {}
+        stealth = obj["mode"] == "STEALTH"
         for name, lo, hi in (("midichlorian_ppm", 0, 30000), ("kyber_resonance", 0, 100),
                              ("dark_side_activity", 0, 100), ("sensor_temp_c", -50, 120)):
             v = p.get(name)
+            if stealth and name in ("midichlorian_ppm", "kyber_resonance"):
+                if name not in p or v is not None:
+                    problems.append(f"payload.{name} must be null in STEALTH")
+                continue
+            if stealth and name == "sensor_temp_c":
+                if name in p:
+                    problems.append("payload.sensor_temp_c is omitted in STEALTH")
+                continue
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
                 problems.append(f"payload.{name} = {v!r} is missing or outside {lo}-{hi}")
         b = p.get("battery_pct")

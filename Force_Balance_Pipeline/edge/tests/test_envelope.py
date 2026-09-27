@@ -165,6 +165,43 @@ class EnvelopeTests(unittest.TestCase):
         self.assertTrue(any("keys are" in p for p in check_envelope(bad)))
 
 
+class HousekeepingEnvelopeTests(unittest.TestCase):
+    """doc 02: a housekeeping event carries a reserved payload.kind; only the documented kinds are well-formed."""
+
+    def event(self, **payload):
+        return make_envelope(event_id=new_ulid(ts_ms(T0), stream(1, "hk")), source_id="probe-01", source_type="probe", event_time=T0,
+                             mode="DISCONNECTED", scan_id=None, sector_id="probe-01", payload=payload)
+
+    def test_a_buffer_overflow_event_is_well_formed(self):
+        from forcesim.envelope import housekeeping_overflow_payload
+        payload = housekeeping_overflow_payload(61, "2026-09-05T13:00:00.000Z", "2026-09-05T13:10:00.000Z", 100000)
+        self.assertEqual(check_envelope(self.event(**payload)), [])
+
+    def test_the_only_documented_kind_is_buffer_overflow(self):
+        from forcesim.envelope import HOUSEKEEPING_KINDS
+        self.assertEqual(HOUSEKEEPING_KINDS, ("buffer_overflow",))          # doc 02's table; a new kind is a doc change first
+
+    def test_an_unknown_kind_is_refused(self):
+        problems = check_envelope(self.event(kind="something_else"))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("payload.kind", problems[0])
+
+    def test_a_housekeeping_event_with_a_scan_id_or_a_planet_sector_is_refused(self):
+        event = self.event(kind="buffer_overflow")
+        event["scan_id"] = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        self.assertTrue(any("scan_id" in p for p in check_envelope(event)))
+        event["scan_id"], event["sector_id"] = None, "tatooine"
+        self.assertTrue(any("sector_id" in p for p in check_envelope(event)))
+
+
+class StealthPayloadTests(unittest.TestCase):
+    def test_only_the_dark_channel_and_the_battery_are_reported(self):
+        from forcesim.envelope import stealth_payload
+        self.assertEqual(stealth_payload(41.26, 88.0), {"midichlorian_ppm": None, "kyber_resonance": None, "dark_side_activity": 41.3,
+                                                        "battery_pct": 88})
+        self.assertNotIn("sensor_temp_c", stealth_payload(1.0, 50))
+
+
 class DeviceTests(unittest.TestCase):
     def test_battery_drains_a_point_a_day_and_recharges(self):
         levels = [device.battery_pct(T0 + timedelta(days=d)) for d in range(0, 170)]

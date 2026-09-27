@@ -10,7 +10,7 @@ import secrets
 from datetime import timedelta
 
 from .device import battery_pct, sensor_temp_c
-from .envelope import make_envelope, new_ulid, probe_payload, ts_ms
+from .envelope import make_envelope, new_ulid, probe_payload, stealth_payload, ts_ms
 from .walk import PlanetProbe, normal, stream
 
 READING_SPACING_MS = 50  # readings of one sweep are taken in planet order, 50 ms apart (0-3 s for 60)
@@ -41,8 +41,9 @@ class SimProbe:
         for j, sector in enumerate(self.sectors):
             event_time = scan_time + timedelta(milliseconds=j * READING_SPACING_MS)
             v = self.planets[sector.sector_id].step(scan_index)
-            payload = probe_payload(v["midi"], v["kyber"], v["dark"],
-                                    sensor_temp_c(event_time, normal(temp_rng)), battery)
+            temp = sensor_temp_c(event_time, normal(temp_rng))
+            payload = (stealth_payload(v["dark"], battery) if mode == "STEALTH"
+                       else probe_payload(v["midi"], v["kyber"], v["dark"], temp, battery))
             envelopes.append(make_envelope(
                 event_id=new_ulid(ts_ms(event_time), ulid_rng), source_id=self.source_id,
                 source_type="probe", event_time=event_time, mode=mode, scan_id=scan_id,
