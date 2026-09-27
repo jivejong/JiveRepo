@@ -61,11 +61,29 @@ SELECT event_id, count(*) FROM force.bronze.events GROUP BY event_id HAVING coun
 --      From the live checkpoint run this should be 2026-09-26T14:27:00.000Z, giving an end of 14:15:00Z.
 SELECT min(event_time) AS earliest_live_event_time FROM force.bronze.events WHERE NOT is_synthetic;
 
--- (e) backfill, after it is loaded: ~518,400 rows
+-- (e) backfill, after it is loaded. These are the statements that were run; docs/PHASE2-RESULTS.md records
+--     their results as B1 to B7.
+-- (e1) the backfill rows                                   -- 518,400; 8,640; 60; 2026-06-28T14:15Z .. 2026-09-26T14:00:02.950Z; 91 dates
 SELECT count(*) AS n, count(DISTINCT scan_id) AS scans, count(DISTINCT sector_id) AS sectors,
-       min(event_time), max(event_time), count(DISTINCT to_date(event_time)) AS days
-FROM force.bronze.events WHERE is_synthetic;                                        -- 518,400; 8,640; 60; ~90 days
-SELECT scan_id FROM force.bronze.events WHERE is_synthetic
-GROUP BY scan_id HAVING count(*) <> 60;                                             -- 0 rows
-SELECT count(DISTINCT dt) AS partitions FROM force.bronze.events WHERE is_synthetic;  -- 1-2 (the upload days)
-SELECT mode, count(*) FROM force.bronze.events WHERE is_synthetic GROUP BY mode;    -- texture check
+       min(event_time) AS first_ts, max(event_time) AS last_ts,
+       count(DISTINCT to_date(event_time)) AS days
+FROM force.bronze.events WHERE is_synthetic;
+-- (e2) every scan has 60 readings                          -- 0
+SELECT count(*) FROM (SELECT scan_id FROM force.bronze.events WHERE is_synthetic
+                      GROUP BY scan_id HAVING count(*) <> 60);
+-- (e3) partitions                                          -- 1 (the upload day)
+SELECT count(DISTINCT dt) AS dt_partitions FROM force.bronze.events WHERE is_synthetic;
+-- (e4) modes                                               -- CONNECTED 515,160; BURST 360; DISCONNECTED 2,880 (the manifest's counts)
+SELECT mode, count(*) FROM force.bronze.events WHERE is_synthetic GROUP BY mode;
+-- (e5) no overlap with live, and the whole table's total   -- true; 518,580 (the backfill plus the 180 live rows)
+SELECT (SELECT max(event_time) FROM force.bronze.events WHERE is_synthetic)
+     < (SELECT min(event_time) FROM force.bronze.events WHERE NOT is_synthetic) AS no_overlap,
+       (SELECT count(*) FROM force.bronze.events) AS total_rows;
+-- (e6) flags still consistent across everything            -- 0
+SELECT count(*) FROM force.bronze.events
+WHERE (is_synthetic AND synthetic_ingest_ts IS NULL) OR (NOT is_synthetic AND synthetic_ingest_ts IS NOT NULL);
+-- (e7) no duplicate event ids                              -- 0
+SELECT count(*) AS duplicate_event_ids
+FROM (SELECT event_id FROM force.bronze.events GROUP BY event_id HAVING count(*) > 1);
+-- (e8) the write history                                   -- the backfill loaded as versions 2 and 3: 90,000 + 428,400 rows
+DESCRIBE HISTORY force.bronze.events LIMIT 5;

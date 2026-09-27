@@ -156,7 +156,7 @@ upload reused it. Run id (content hash) `8308472c95e55e6360ec8168f61f6ffb56bd8ab
 | U3 | Landing check on those 96 (`verify_landing.py --backfill --only-day -71`) | The files under the prefix are exactly the local ones | **LANDING VERIFIED.** 96 files under `dt=2026-09-26/hh=22/`, exactly the expected names; every listed size equals the local size; no expected file under another prefix; 96 of 96 downloaded files byte-for-byte the local files, each 60 valid synthetic envelopes with one `scan_id`. The 3 live files at `hh=14` untouched. | `verify_landing` output |
 | U4 | Directory moved to a stable location, then disk-only verify | Same content hash | The output directory (with `upload_state.json`) was moved from the session temp folder to `~/.force_balance_pipeline/backfill/full575/`, outside the repository. **`verify` OK**: 8,640 files, content hash `8308472c...ffc62` | `verify --disk-only` output |
 | U5 | Full upload, 4 workers, same run id and prefix | 96 already landed (409) for day -71; nothing under a second prefix | 8,640 selected, **8,544 uploaded, 96 already landed (409), 0 failed, 0 retries**, 1,185.3 s (19.8 min; 7.21 files/s, 0.18 MB/s, 218.0 MB). It took 12% longer than the 17.6 min projected from the one-day run. | `upload` output |
-| U6 | Landing check on the whole backfill (`verify_landing.py --backfill --sample 300`) | Names and sizes for all 8,640; 300 downloads byte-for-byte | **First run: 3 FAIL lines, all one dropped connection.** Names, sizes and prefix checks passed (8,640 files, exactly the expected names, every size equal, none under another prefix), but one download failed with a network error (`RemoteDisconnected`). The listing showed that file with the right size, and the user reports toggling a VPN around that time, the probable cause (not confirmed from the output). The verifier had no retry on reads, so it now retries a read up to 3 attempts on a network error or HTTP 429/5xx (a denied read is not retried), with tests. **Rerun, same sample: LANDING VERIFIED.** 299 of 8,640 files downloaded, all byte-for-byte the local files, each with 60 valid synthetic envelopes and one `scan_id`; the other 8,341 checked by name and size. | `verify_landing` output, both runs |
+| U6 | Landing check on the whole backfill (`verify_landing.py --backfill --sample 300`) | Names and sizes for all 8,640; 300 downloads byte-for-byte | **First run: 3 FAIL lines, all one dropped connection.** Names, sizes and prefix checks passed (8,640 files, exactly the expected names, every size equal, none under another prefix), but one download failed with a network error (`RemoteDisconnected`). The listing showed that file with the right size, and the dropped read was likely caused by the owner toggling a VPN mid-run (owner-reported, not confirmed from the output). The verifier had no retry on reads, so it now retries a read up to 3 attempts on a network error or HTTP 429/5xx (a denied read is not retried), with tests. **Rerun, same sample: LANDING VERIFIED.** 299 of 8,640 files downloaded, all byte-for-byte the local files, each with 60 valid synthetic envelopes and one `scan_id`; the other 8,341 checked by name and size. | `verify_landing` output, both runs |
 | U7 | What is in the volume | The backfill under one prefix, plus the 3 live files | 8,640 files under `dt=2026-09-26/hh=22/` and 3 live files under `dt=2026-09-26/hh=14/`. The Auto Loader notebook has not been run on the backfill. | `verify_landing` output |
 
 **If `upload_state.json` is lost** (it lives next to the data, in `~/.force_balance_pipeline/backfill/full575/`), do not
@@ -172,14 +172,22 @@ lost too, `generate` rebuilds it byte-for-byte from the committed manifest (same
 
 ### Rows in bronze
 
-Pending the Auto Loader run over the backfill. The rows below are filled from the `(e)` queries in
-`ingest/phase2_checkpoint.sql`.
+The Auto Loader notebook was run over the uploaded backfill (reported by the user: it ran successfully) and the queries
+below were run as the user. They are the `(e1)` to `(e8)` statements of `ingest/phase2_checkpoint.sql`, with the query
+text as pasted. The user's six pasted results were, in order: the backfill rows, scans with a count other than 60, `dt`
+partitions, modes, `no_overlap` and `total_rows`, and inconsistent synthetic flags; the duplicate check and the write
+history were pasted separately.
 
-| # | Check | Expected | Actual | Evidence |
+| # | Check | Query | Expected | Actual |
 |---|---|---|---|---|
-| B1 | Rows in bronze | 518,400 with `is_synthetic`; 8,640 scans; 60 sectors; about 90 days | | |
-| B2 | Every backfill scan complete | 0 scans with a row count other than 60 | | |
-| B3 | Partitions | 1 or 2 `dt` partitions (the upload days) | | |
-| B4 | Modes | `CONNECTED`, `DISCONNECTED` and `BURST` rows present (texture check) | | |
-| B5 | No overlap with live data | 0 synthetic rows with `event_time` at or after the earliest live event | | |
-| B6 | No duplicates after the load | 0 rows from the duplicate `event_id` query | | |
+| B1 | Rows in bronze | (e1) | 518,400 with `is_synthetic`; 8,640 scans; 60 sectors; about 90 days | **Pass.** n = 518,400; scans = 8,640; sectors = 60; first `event_time` 2026-06-28T14:15:00.000Z (the window start); last 2026-09-26T14:00:02.950Z (the last synthetic event in the manifest); 91 distinct calendar dates (a 90-day window that starts at 14:15 UTC touches 91 dates). |
+| B2 | Every backfill scan complete | (e2) | 0 scans with a row count other than 60 | **Pass.** 0. |
+| B3 | Partitions | (e3) | 1 or 2 `dt` partitions (the upload days) | **Pass.** 1 (all files were uploaded on 2026-09-26). |
+| B4 | Modes | (e4) | `CONNECTED`, `DISCONNECTED` and `BURST` rows present (texture check) | **Pass.** CONNECTED 515,160; BURST 360; DISCONNECTED 2,880, exactly the counts in the manifest. |
+| B5 | No overlap with live data, and the table's total | (e5) | The latest synthetic `event_time` is before the earliest live one | **Pass.** `no_overlap` = true; `total_rows` = 518,580, which is the 518,400 backfill rows plus the 180 live rows of L5. |
+| B6 | Synthetic flags still consistent across the whole table | (e6) | 0 rows where `is_synthetic` and `synthetic_ingest_ts` disagree | **Pass.** 0. |
+| B7 | No duplicate event ids; how the backfill was written | (e7), (e8) | 0 duplicate `event_id`s; the backfill loaded by the notebook run | **Pass.** `duplicate_event_ids` = 0. `DESCRIBE HISTORY` shows four versions: 0 (`CREATE TABLE`) and 1 (the 180 live rows, 2026-09-26T15:27:34Z), then the backfill as two `STREAMING UPDATE` appends by the same stream query in one notebook run: version 2 (epoch 1, 2026-09-27T00:16:52Z) 90,000 rows in 1 file, and version 3 (epoch 2, 2026-09-27T00:17:13Z) 428,400 rows in 1 file. 180 + 90,000 + 428,400 = 518,580, the `total_rows` of B5, and 90,000 + 428,400 = 518,400 backfill rows. Both appends are blind appends with nothing removed (`numRemovedFiles` 0), on Databricks Runtime 19.6.x. |
+
+The rows match `edge/backfill_manifest.json` (518,400 rows, 8,640 scans, the mode counts and the window). Not recorded: an
+exactly-once rerun of the notebook after the backfill load. The history has no version after 3, so no later write
+happened.

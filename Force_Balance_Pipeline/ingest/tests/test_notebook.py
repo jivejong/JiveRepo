@@ -180,6 +180,21 @@ class FirstRunDocTests(unittest.TestCase):
             self.assertNotIn("/Volumes/force/raw/telemetry", command)
             self.assertNotIn("force-bridge", command)
 
+    def test_the_backfill_queries_are_the_ones_that_were_run_and_are_labelled_e1_to_e8(self):
+        sql = CHECKPOINT_SQL.read_text(encoding="utf-8")
+        labels = re.findall(r"^-- \((e[0-9]?)\)", sql, re.M)
+        self.assertEqual(labels, ["e0", "e"] + [f"e{i}" for i in range(1, 9)])
+        starts = [m.start() for m in re.finditer(r"^-- \((e[0-9]?)\)", sql, re.M)] + [len(sql)]
+        block = {label: sql[a:b] for label, a, b in zip(labels, starts, starts[1:])}
+        for label, needle in (("e1", "count(DISTINCT scan_id) AS scans"), ("e2", "HAVING count(*) <> 60"),
+                              ("e3", "count(DISTINCT dt) AS dt_partitions"), ("e4", "GROUP BY mode"),
+                              ("e5", "AS no_overlap"), ("e5", "AS total_rows"), ("e6", "synthetic_ingest_ts IS NULL"),
+                              ("e7", "AS duplicate_event_ids"), ("e8", "DESCRIBE HISTORY force.bronze.events LIMIT 5")):
+            self.assertIn(needle, block[label], f"({label}) {needle}")
+        results = " ".join((ROOT / "docs" / "PHASE2-RESULTS.md").read_text(encoding="utf-8").split())
+        for expected in ("518,400", "8,640", "515,160", "518,580", "90,000 + 428,400 = 518,400"):
+            self.assertIn(expected, results, expected)
+
     def test_the_checkpoint_sql_file_has_no_credentials(self):
         text = CHECKPOINT_SQL.read_text(encoding="utf-8")
         for word in ("token", "secret", "password"):
