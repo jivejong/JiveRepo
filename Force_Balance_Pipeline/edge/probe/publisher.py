@@ -11,7 +11,12 @@ Interface used by the runtime:
 
 Connecting never blocks the probe's loop: it uses paho's connect_async and its network thread, so scans keep their schedule while
 the broker is unreachable. Credentials come from the caller (the environment), never from a file in the repository.
+
+Every connect and disconnect prints one line to stderr (systemd sends that to journald): "probe: MQTT connected ..." or
+"probe: MQTT disconnected: <reason>" / "probe: MQTT connect refused: <reason>", the same reasons the runtime's mode_transitions.jsonl
+uses, so the two can be read side by side.
 """
+import sys
 import threading
 
 
@@ -44,16 +49,21 @@ class MqttPublisher:
         with self._lock:
             if getattr(reason_code, "is_failure", False):
                 self._connected, self.disconnect_reason = False, f"connect_refused:{reason_code}"
+                print(f"probe: MQTT connect refused: {reason_code}", file=sys.stderr, flush=True)
                 return
             self._connected, self.disconnect_reason = True, None
+        print(f"probe: MQTT connected (session present: {bool(getattr(flags, 'session_present', False))})",
+             file=sys.stderr, flush=True)
         if self.control_topic:
             client.subscribe(self.control_topic, qos=1)
 
     def _on_disconnect(self, client, userdata, disconnect_flags=None, reason_code=None, properties=None):
+        reason = f"client_disconnected:{reason_code}"
         with self._lock:
             self._connected = False
-            self.disconnect_reason = f"client_disconnected:{reason_code}"
+            self.disconnect_reason = reason
             self._pending.clear()
+        print(f"probe: MQTT disconnected: {reason}", file=sys.stderr, flush=True)
 
     def _on_publish(self, client, userdata, mid, reason_code=None, properties=None):
         with self._lock:

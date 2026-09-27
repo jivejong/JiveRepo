@@ -1,6 +1,8 @@
 """The probe runtime on a fake clock (doc 04): scans on the quarter hour, write-ahead into SQLite, deletion only on PUBACK, the clock gate,
 faults only in CONNECTED and logged before buffering, STEALTH's payload and cadence, control messages, the buffer cap and its overflow
 event, and a link that goes quiet without a disconnect. Every envelope it publishes must also pass the bridge's structural check. Offline."""
+import contextlib
+import io
 import json
 import sys
 import unittest
@@ -43,6 +45,14 @@ class SteadyStateTests(Base):
             self.assertEqual(e["mode"], "CONNECTED")
         self.assertEqual(len(rig.received()), 4 * 60)
         self.assertEqual(rig.runtime.stats["scans"], 4)
+
+    def test_a_completed_scan_logs_its_id_mode_and_counts_to_stderr(self):
+        rig = self.rig(start=START)
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            rig.run(900 + 5)
+        scan_id = rig.received()[0][2]["scan_id"]
+        self.assertIn(f"probe: scan {scan_id} (CONNECTED): 60 buffered, 60 published", buf.getvalue())
 
     def test_event_times_are_the_scan_boundary_plus_the_planet_offset_and_ids_are_unique(self):
         rig = self.rig(start=START)

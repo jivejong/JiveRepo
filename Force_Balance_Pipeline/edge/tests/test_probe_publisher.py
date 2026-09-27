@@ -1,6 +1,8 @@
 """The MQTT publisher wrapper (doc 04) against a fake paho module: credentials only when given, a QoS 1 publish is acknowledged by its PUBACK
 and by nothing else, a dropped connection forgets what was in flight, and the control topic is subscribed on every connect.
 This cannot prove behaviour against a real broker; that is the desktop and Pi steps. Offline."""
+import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -119,6 +121,34 @@ class ConnectionTests(unittest.TestCase):
         self.assertIn("client_disconnected", p.disconnect_reason)
         p._on_publish(p.client, None, 1)                          # a late PUBACK for a forgotten publish
         self.assertEqual(p.acked(), [])
+
+
+class JournaldLoggingTests(unittest.TestCase):
+    """Every connect and disconnect is one line to stderr, so `journalctl -u force-probe` shows it on the Pi (no test here
+    starts a real journald; it only checks the line is printed)."""
+
+    def test_a_successful_connect_is_logged_with_the_session_state(self):
+        p = publisher(control_topic="force/control/probe-01")
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            p._on_connect(p.client, None, SimpleNamespace(session_present=True), SimpleNamespace(is_failure=False))
+        self.assertIn("probe: MQTT connected (session present: True)", buf.getvalue())
+
+    def test_a_refused_connect_is_logged_with_the_reason_and_never_subscribes(self):
+        p = publisher(control_topic="force/control/probe-01")
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            p._on_connect(p.client, None, None, SimpleNamespace(is_failure=True))
+        self.assertIn("probe: MQTT connect refused:", buf.getvalue())
+        self.assertNotIn("subscribe", [c[0] for c in p.client.calls])
+
+    def test_a_disconnect_is_logged_with_the_same_reason_text_the_runtime_sees(self):
+        p = publisher()
+        connect(p)
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            p._on_disconnect(p.client, None, None, "keepalive")
+        self.assertIn(f"probe: MQTT disconnected: {p.disconnect_reason}", buf.getvalue())
 
 
 class PublishTests(unittest.TestCase):

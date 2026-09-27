@@ -11,8 +11,12 @@ Cadence: scans align to :00/:15/:30/:45 UTC (interval 900 s), or to :00 in STEAL
 (3 s) after its boundary, when its last reading has been taken. A scan due before the clock is
 synchronised, or not after the last one taken, is skipped and logged, never stamped (probe.clock).
 Delivery is at-least-once: a batch that is not fully acknowledged stays buffered and is sent again, so a duplicate event_id is possible.
+
+Every completed scan (not a skipped one, which probe.clock's own log already covers) prints one line to stderr, journald on the
+Pi: "probe: scan <scan_id> (<mode>): <n> buffered, <m> published".
 """
 import json
+import sys
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -145,6 +149,8 @@ class Runtime:
         if not self.modes.offline:
             published = self._publish(sending, now)
         self.trace.append((now, f"scan {iso(boundary)} taken as {mode}: {len(rows)} readings buffered, {published} published"))
+        print(f"probe: scan {envelopes[0]['scan_id']} ({mode}): {len(rows)} buffered, {published} published",
+             file=sys.stderr, flush=True)
 
     def _publish(self, rows, now):
         sent = 0

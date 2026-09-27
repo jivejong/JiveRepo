@@ -6,6 +6,10 @@
 # scan is stamped early is the probe's own NTPSynchronized check (doc 04, Clock): a scan due before sync is skipped and logged.
 #
 # The simulated-outage schedule is off (no --mode-schedule) until the Phase 3 checkpoint has passed; add it then, on purpose.
+#
+# --fault-rate 0: checkpoint prep. The default rate (1.0, doc 04) is meant for later, once the checkpoint has passed and fault
+# injection gets its own period (doc 07); change or drop the flag then. probe.env holds only the three MQTT keys (below) —
+# neither the fault rate nor the mode schedule reads from it, so this is the one file that turns them on and off.
 [Unit]
 Description=Force Balance Pipeline probe (Raspberry Pi 3)
 After=network-online.target time-sync.target
@@ -23,7 +27,7 @@ Environment=PROBE_VERSION_FILE=/opt/force-probe/version
 Environment=PYTHONUNBUFFERED=1
 StateDirectory=force-probe
 StateDirectoryMode=0750
-ExecStart=/opt/force-probe/venv/bin/python /opt/force-probe/repo/Force_Balance_Pipeline/edge/probe_sim.py --live
+ExecStart=/opt/force-probe/venv/bin/python /opt/force-probe/repo/Force_Balance_Pipeline/edge/probe_sim.py --live --fault-rate 0
 Restart=always
 RestartSec=10
 

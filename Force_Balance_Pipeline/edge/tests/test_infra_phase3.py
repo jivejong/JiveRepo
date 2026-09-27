@@ -116,14 +116,20 @@ class UnitTests(unittest.TestCase):
         exec_start = [l for l in self.lines if l.startswith("ExecStart=")]
         self.assertEqual(len(exec_start), 1)
         self.assertTrue(exec_start[0].startswith("ExecStart=/opt/force-probe/venv/bin/python "), exec_start[0])
-        self.assertTrue(exec_start[0].endswith("probe_sim.py --live"), exec_start[0])
+        self.assertIn("Force_Balance_Pipeline/edge/probe_sim.py --live", exec_start[0])
         self.assertIn("User=force-probe", self.lines)
         self.assertNotIn("User=root", self.lines)
 
     def test_the_schedule_and_the_clock_bypass_are_off(self):
         exec_start = [l for l in self.lines if l.startswith("ExecStart=")][0]
-        for flag in ("--mode-schedule", "--assume-clock-synced", "--fault-rate"):
+        for flag in ("--mode-schedule", "--assume-clock-synced"):
             self.assertNotIn(flag, exec_start)
+
+    def test_fault_injection_is_off_for_checkpoint_prep(self):
+        # doc 07: the checkpoint runs with --fault-rate 0; there is no env-file key for it (probe/main.py reads it only
+        # from this flag), so the unit is the one place that turns it on again for the later fault-injection period
+        exec_start = [l for l in self.lines if l.startswith("ExecStart=")][0]
+        self.assertRegex(exec_start, r"--fault-rate\s+0\b")
 
     def test_the_state_directory_is_persistent_and_secrets_come_from_the_env_file_only(self):
         self.assertIn("StateDirectory=force-probe", self.lines)
@@ -302,6 +308,12 @@ class DocParityTests(unittest.TestCase):
 
     def test_doc_05_starts_the_checkpoint_cut_a_few_minutes_past_the_hour(self):
         self.assertIn(":16 or :31 past the hour", self.doc5)
+
+    def test_doc_05_creates_and_hands_over_opt_force_probe_before_the_manual_clone(self):
+        # /opt is root-owned; a plain `git clone` into a not-yet-created /opt/force-probe as an unprivileged user fails
+        self.assertLess(self.doc5.index('sudo chown "$(id -un)":"$(id -gn)" /opt/force-probe'),
+                        self.doc5.index("git clone --filter=blob:none"))
+        self.assertIn("as yourself, not with `sudo`", self.doc5)
 
     def test_doc_04_and_doc_05_name_the_same_sparse_cone(self):
         doc4 = re.sub(r"[ \t]+", " ", text("docs", "04-edge-simulators.md"))

@@ -589,6 +589,14 @@ sudo apt update && sudo apt install -y git python3-venv sqlite3 nftables
 timedatectl status        # "System clock synchronized: yes" and "NTP service: active"
 ```
 
+`/opt` is root-owned, so create the target directory and hand it to yourself before cloning into it — `deploy.sh` does the same
+`mkdir`/`chown` itself and is safe to run again, but the first, manual clone below needs it done first:
+
+```bash
+sudo mkdir -p /opt/force-probe
+sudo chown "$(id -un)":"$(id -gn)" /opt/force-probe
+```
+
 Clone the repository sparsely yourself, at the pinned commit — `infra/pi` is in the cone, so `deploy.sh`, the unit and the env
 template travel with the clone and nothing is copied over separately:
 
@@ -599,7 +607,8 @@ git sparse-checkout set --cone Force_Balance_Pipeline/edge Force_Balance_Pipelin
 git checkout <full 40-character commit SHA>
 ```
 
-Then run the deploy script from inside that clone:
+Then run the deploy script from inside that clone, as yourself, not with `sudo` — it escalates internally with `sudo` only for the
+steps that need it (packages, the service user, the unit, the env file, `daemon-reload`), and reruns the same `mkdir`/`chown` above:
 
 ```bash
 cd /opt/force-probe/repo/Force_Balance_Pipeline/infra/pi
