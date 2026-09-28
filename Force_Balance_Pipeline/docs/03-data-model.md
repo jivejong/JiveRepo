@@ -73,6 +73,16 @@ arrived, duplicates included.
 | `_ingest_ts` | TIMESTAMP |
 | `_rescued_data` | STRING (Auto Loader `rescue` mode; null when nothing was rescued) |
 
+**OPEN:** `_ingest_ts` is `current_timestamp()` in the Auto Loader notebook (`ingest/autoloader_bronze.py`): the time the notebook
+processed the file, not the time the file arrived. It approximates arrival only while the notebook runs close behind the landing.
+Found in Phase 3: a batch-triggered run stamps every row it ingests alike, so a replayed row and a live row from the same run cannot
+be told apart by `_ingest_ts`. `silver.probe_reading.ingest_lag_seconds` and `is_replayed` (below) are defined on it for live rows, so
+as written they measure how late the notebook ran, not how late the data arrived. Proposal for Phase 4: capture the file's
+modification time, `_metadata.file_modification_time`, as a bronze column (for example `_file_modified_ts`, TIMESTAMP), and define
+`ingest_lag_seconds` for live rows on it, leaving `_ingest_ts` as the notebook's own processing time. Decide before silver is built.
+Not implemented; until then the Phase 3 checkpoint proves arrival from the landed files themselves (`ingest/phase3_checkpoint.sql`,
+p3-3b).
+
 ---
 
 ## Silver

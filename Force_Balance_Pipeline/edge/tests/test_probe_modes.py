@@ -149,6 +149,73 @@ class StartupConnectTests(Base):
         self.assertEqual(self.pairs()[-1], (CONNECTED, DISCONNECTED, "operator"))
 
 
+class BootWithoutBrokerTests(Base):
+    """A boot with no broker is offline, not merely slow to connect: once the runtime says the wait has run past its window
+    (first_connect_overdue), DISCONNECTED is recorded with reason no_initial_connect."""
+
+    def test_an_overdue_first_connect_is_disconnected_with_its_own_reason_and_recorded_once(self):
+        c = self.controller()
+        c.update(T0 + 5, False, 0)                                        # inside the window: nothing
+        self.assertEqual(self.pairs(), [(None, CONNECTED, "startup")])
+        for i in range(6, 12):
+            c.update(T0 + i, False, 0, first_connect_overdue=True)        # past the window, still no broker
+        self.assertEqual(self.pairs(), [(None, CONNECTED, "startup"), (CONNECTED, DISCONNECTED, "no_initial_connect")])
+        self.assertEqual((c.mode, c.offline), (DISCONNECTED, True))
+
+    def test_the_first_connect_after_an_overdue_wait_drains_through_burst(self):
+        c = self.controller()
+        c.update(T0 + 6, False, 0, first_connect_overdue=True)
+        c.update(T0 + 7, False, 120, first_connect_overdue=True)          # scans buffered while offline
+        c.update(T0 + 8, True, 120)
+        c.update(T0 + 9, True, 0)
+        self.assertEqual(self.pairs(), [(None, CONNECTED, "startup"), (CONNECTED, DISCONNECTED, "no_initial_connect"),
+                                        (DISCONNECTED, BURST, "link_restored"), (BURST, CONNECTED, "drain_complete")])
+
+    def test_an_overdue_first_connect_with_nothing_buffered_goes_straight_back_to_connected(self):
+        c = self.controller()
+        c.update(T0 + 6, False, 0, first_connect_overdue=True)
+        c.update(T0 + 7, True, 0)
+        self.assertEqual(self.pairs()[-1], (DISCONNECTED, CONNECTED, "link_restored"))
+
+    def test_a_connect_inside_the_window_records_nothing(self):
+        c = self.controller()
+        c.update(T0 + 1, False, 0)
+        c.update(T0 + 2, True, 0)
+        self.assertEqual(self.pairs(), [(None, CONNECTED, "startup")])
+
+    def test_rows_buffered_while_the_first_connect_was_pending_drain_at_the_first_connect(self):
+        """A scan can fall inside the wait (never offline, so nothing ever marked a drain): the first connect must still drain it,
+        not leave the rows in the buffer until the next restart."""
+        c = self.controller()                                             # no backlog at construction
+        c.update(T0 + 1, False, 60)                                       # a scan was buffered during the wait
+        c.update(T0 + 2, True, 60)
+        self.assertEqual(self.pairs()[-1], (CONNECTED, BURST, "startup_backlog"))
+        c.update(T0 + 3, True, 0)
+        self.assertEqual(self.pairs()[-1], (BURST, CONNECTED, "drain_complete"))
+
+    def test_a_normal_scans_unacknowledged_rows_are_not_a_startup_drain(self):
+        """After the first connect, a live scan's rows sit in the buffer until their PUBACKs: a momentary backlog on a healthy link,
+        which must never be mistaken for rows left over from before the first connect."""
+        c = self.controller()
+        c.update(T0 + 1, True, 0)                                         # first connect
+        for i, depth in enumerate((60, 60, 20, 0)):
+            c.update(T0 + 2 + i, True, depth)                             # a scan published, its acks trickling in
+        self.assertEqual(self.pairs(), [(None, CONNECTED, "startup")])
+        self.assertEqual(c.mode, CONNECTED)
+
+    def test_the_overdue_flag_means_nothing_once_the_probe_has_connected(self):
+        c = self.controller()
+        c.update(T0 + 1, True, 0)
+        c.update(T0 + 2, False, 0, "link_lost:keepalive", first_connect_overdue=True)
+        self.assertEqual(self.pairs()[-1], (CONNECTED, DISCONNECTED, "link_lost:keepalive"))
+
+    def test_a_forced_disconnected_keeps_its_own_reason_during_an_overdue_wait(self):
+        c = self.controller()
+        c.force(DISCONNECTED, until=T0 + 50)
+        c.update(T0 + 1, False, 0, first_connect_overdue=True)
+        self.assertEqual(self.pairs()[-1], (CONNECTED, DISCONNECTED, "operator"))
+
+
 class OverrideTests(Base):
     def test_forcing_disconnected_is_offline_until_it_expires(self):
         c = self.controller()

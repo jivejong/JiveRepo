@@ -275,6 +275,11 @@ class DocParityTests(unittest.TestCase):
     def test_doc_05_reads_the_pi_state_with_sudo(self):
         self.assertIn("sudo sqlite3 -readonly", self.doc5)
 
+    def test_doc_05_makes_the_journal_persistent_before_anything_else_needs_it(self):
+        # a real Pi power loss (Phase 3) lost the boot's own logs: journald defaults to volatile storage
+        self.assertLess(self.doc5.index("systemd-tmpfiles --create --prefix /var/log/journal"), self.doc5.index("sudo mkdir -p /opt/force-probe"))
+        self.assertIn("sudo systemctl restart systemd-journald", self.doc5)
+
     def test_doc_05_copies_the_password_file_into_a_docker_volume_not_a_windows_bind_mount(self):
         # tested on the desktop (Step 3): Mosquitto 2.1.2 cannot open a password file mounted straight from Windows
         self.assertIn("docker volume create force-mosquitto-secrets", self.doc5)

@@ -399,6 +399,65 @@ class JournaldDrainLoggingTests(Base):
         self.assertEqual(lines2, ["probe: drain batch sent=60 acked=60 remaining_buffered=0"])
 
 
+class BootWithoutBrokerTests(Base):
+    """A boot with no broker (the probe process starts, the broker is unreachable). The window is the runtime's own ack_timeout —
+    its existing real-loss detection window — so a slow connect inside it records nothing, and one that never comes past it is a
+    genuine outage that is recorded, buffered and drained like any other."""
+
+    def down_publisher(self):
+        pub = FakePublisher()
+        pub.link_up = pub.connected = False                    # the process is up; the broker is not reachable yet
+        return pub
+
+    def test_a_boot_with_no_broker_past_the_window_is_disconnected_buffers_and_drains_on_connect(self):
+        rig = self.rig(start=START, publisher=self.down_publisher())
+        rig.run(35)                                           # the window (ack_timeout, 30 s) has run out
+        self.assertEqual([(t["from"], t["to"], t["reason"]) for t in rig.transitions()],
+                         [(None, "CONNECTED", "startup"), ("CONNECTED", "DISCONNECTED", "no_initial_connect")])
+        recorded = parse_iso(rig.transitions()[-1]["ts_utc"]) - rig.runtime._first_tick
+        self.assertTrue(30 < recorded <= 32, recorded)         # right after ack_timeout, not at some other number
+        rig.run_until("2026-09-27T12:16:00")                  # a scan is taken, labelled and buffered as in any outage
+        self.assertEqual(rig.buffer.depth(), 60)
+        self.assertEqual({e["mode"] for _, _, e in rig.received()}, set())
+        rig.publisher.restore()
+        rig.run(10)
+        self.assertEqual([(t["from"], t["to"], t["reason"]) for t in rig.transitions()][2:],
+                         [("DISCONNECTED", "BURST", "link_restored"), ("BURST", "CONNECTED", "drain_complete")])
+        self.assertEqual(rig.buffer.depth(), 0)
+        self.assertEqual(len(rig.received()), 60)
+        self.assertEqual({e["mode"] for _, _, e in rig.received()}, {"DISCONNECTED"})       # labelled as taken
+        self.assertEqual(len({k for _, k, _ in rig.received()}), 60)
+
+    def test_a_normal_quick_boot_records_no_disconnected(self):
+        rig = self.rig(start=START, publisher=self.down_publisher())
+        rig.run(5)                                             # still connecting, well inside the window
+        rig.publisher.restore()
+        rig.run(1200)                                          # connects, and a normal 12:15 scan follows
+        self.assertEqual([t["reason"] for t in rig.transitions()], ["startup"])
+        self.assertEqual(len(rig.received()), 60)
+        self.assertEqual(rig.buffer.depth(), 0)
+
+    def test_the_window_is_the_runtimes_own_ack_timeout_not_a_number_of_its_own(self):
+        rig = self.rig(start=START, publisher=self.down_publisher())
+        rig.runtime.ack_timeout = 10
+        rig.run(8)
+        self.assertEqual([t["reason"] for t in rig.transitions()], ["startup"])
+        rig.run(6)                                             # 14 s: past 10, well inside the default 30
+        self.assertEqual([t["reason"] for t in rig.transitions()], ["startup", "no_initial_connect"])
+
+    def test_a_scan_taken_inside_the_wait_is_still_drained_at_the_first_connect(self):
+        """Restarted a few seconds before a quarter hour with the broker still unreachable: the scan falls inside the window (not
+        yet offline, so nothing marks a drain), publishes nothing, and its rows must still go out when the connect arrives."""
+        rig = self.rig(start="2026-09-27T12:14:55", publisher=self.down_publisher())
+        rig.run(10)                                            # the 12:15 scan executes at 12:15:03, 8 s into the wait
+        self.assertEqual((rig.buffer.depth(), len(rig.received())), (60, 0))
+        rig.publisher.restore()
+        rig.run(10)
+        self.assertEqual([(t["from"], t["to"], t["reason"]) for t in rig.transitions()],
+                         [(None, "CONNECTED", "startup"), ("CONNECTED", "BURST", "startup_backlog"), ("BURST", "CONNECTED", "drain_complete")])
+        self.assertEqual((rig.buffer.depth(), len(rig.received())), (0, 60))
+
+
 class OverflowTests(Base):
     def test_the_oldest_rows_are_dropped_and_one_overflow_event_says_how_many(self):
         rig = self.rig(start=START, cap=200)

@@ -12,6 +12,9 @@ Cadence: scans align to :00/:15/:30/:45 UTC (interval 900 s), or to :00 in STEAL
 synchronised, or not after the last one taken, is skipped and logged, never stamped (probe.clock).
 Delivery is at-least-once: a batch that is not fully acknowledged stays buffered and is sent again, so a duplicate event_id is possible.
 
+Before the first connect (the publisher connects asynchronously, so tick() runs first), the probe is not offline, only not connected
+yet: nothing is recorded (probe.modes). If that lasts past ack_timeout the probe is offline and says so (no_initial_connect).
+
 Every completed scan (not a skipped one, which probe.clock's own log already covers) prints one line to stderr, journald on the
 Pi: "probe: scan <scan_id> (<mode>): <n> buffered, <m> published". Every drain batch (BURST) prints two: one when it is sent
 (acked=0 so far) and one when it is fully acknowledged and deleted (acked equals sent), each with the buffer depth remaining at
@@ -55,6 +58,7 @@ class Runtime:
         self.id_rng, self.immediate = id_rng, immediate
         self.scan_index = 0
         self.next_scan, self._cadence_base = None, None
+        self._first_tick = None             # when this process first ran tick(): the start of the wait for its first connect
         self.inflight = {}                  # event_id -> time published, waiting for its PUBACK
         self.drain_ids, self.resume_at = set(), 0.0
         self.stats = {"scans": 0, "skipped": 0, "published": 0, "acked": 0, "overflows": 0}
@@ -64,8 +68,13 @@ class Runtime:
     def tick(self, now):
         self._process_acks(now)
         self._settle_drain_batch(now)
+        if self._first_tick is None:
+            self._first_tick = now
         link_up, reason = self._link(now)
-        self.modes.update(now, link_up, self.buffer.depth(), reason)
+        # A boot with no broker: still not connected once the wait for the first connect has run past ack_timeout (this runtime's
+        # existing real-loss detection window, not a number of its own) means the probe is offline, not merely slow to connect.
+        overdue = not link_up and self.modes.waiting_for_first_connect and now - self._first_tick > self.ack_timeout
+        self.modes.update(now, link_up, self.buffer.depth(), reason, first_connect_overdue=overdue)
         self._retime(now)
         while self.next_scan is not None and now >= self.next_scan + SCAN_DURATION:
             boundary = self.next_scan

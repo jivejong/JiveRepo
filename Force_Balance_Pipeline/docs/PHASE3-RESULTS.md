@@ -88,7 +88,97 @@ source outside the probe's own logs.
 
 **A second, related bug found from the same broker log, before the redeploy:** at that later reconnect (02:23:29.580Z) `mode_transitions.jsonl` logged a false `link_lost` — the broker log shows one continuous connection with no disconnect anywhere near it. Root cause: before the probe's first successful connect, `Runtime._link()` reported "not connected" indistinguishably from a real link loss, so `ModeController` recorded a spurious `CONNECTED -> DISCONNECTED -> BURST` instead of going straight to `BURST` on the real first connect. Fixed in `edge/probe/modes.py`: a "waiting for the first connect" state, distinct from a link loss, that a forced `DISCONNECTED` (operator or schedule) still overrides. Also added, per-batch and per-transition, to journald: `edge/probe/runtime.py` now prints a line when a drain batch is sent and another when it is fully acknowledged (sent/acked/remaining), and `edge/probe/modes.py` prints every mode transition alongside its `mode_transitions.jsonl` line. Found and fixed alongside this: the *last* batch of any drain never printed its "acked" line, because `ModeController.update()`'s own backlog-zero check can move the mode out of `BURST` the instant a batch's acks bring the backlog to zero — one tick before `_drain()` would have logged it. Tests for both startup paths (clean, and with a backlog) and the forced-offline override; both suites green (edge 479, ingest 257).
 
-Not yet deployed: the Pi is soaking overnight on `ca5dae0`, the commit before this fix.
+The false `link_lost` had already appeared twice on the Pi, each time within a fraction of a second of a start, in the Pi's own
+`mode_transitions.jsonl`: at 23:07:16.685Z, 215 ms after the first version's `startup`, and at 02:23:29.580Z, 214 ms after the
+`ca5dae0` start (backlog 60, which then went `DISCONNECTED -> BURST -> CONNECTED` instead of straight to `BURST`).
+
+---
+
+## Overnight soak on the Pi (Step 5): `d7f0b96`, the startup fix
+
+Deployed 2026-09-27 23:30:09 EDT (03:30:09Z). The previous run (`ca5dae0`) shut down cleanly on the restart:
+`probe: stopped; {'scans': 5, 'skipped': 0, 'published': 360, 'acked': 360, 'overflows': 0}`. Recorded from the Pi's journal, its
+`mode_transitions.jsonl` and `buffer.db`, and the desktop bridge's log.
+
+| # | Check | Expected | Actual |
+|---|---|---|---|
+| K1 | Start on `d7f0b96` | Startup line with the commit, faults 0, schedule off, empty buffer, connected | `probe: probe-01 version d7f0b96acbfb4e02b7cc5437c1f273b6a30f0a61; state /var/lib/force-probe; faults x0; mode schedule off; buffer 0 rows`, then `probe: MQTT connected (session present: False)`. **Pass.** |
+| K2 | Mode transitions on the new start | Only `startup`; no false `link_lost` | The file's last line is `{"ts_utc":"2026-09-27T23:30:09.470Z","from":null,"to":"CONNECTED","offline":false,"reason":"startup","backlog":0}` and nothing follows it. **Pass: the startup fix works on hardware.** (The two false `link_lost` entries above are in the same file, from the two earlier starts.) |
+| K3 | Consecutive scans, every quarter hour | 23:45 EDT to 07:15 EDT, no gaps | **31 scans**, 23:45:03 to 07:15:03 EDT (03:45:03Z to 11:15:03Z), every quarter hour, no gap; each `(CONNECTED): 60 buffered, 60 published`. Together with the 23:30:03 scan that closed the `ca5dae0` run, 32 scans in a row. **Pass.** |
+| K4 | Buffer | 0 | `buffer count: 0`. **Pass.** |
+| K5 | Every scan landed exactly once | One 60-line file per scan | See the reconciliation below. **Pass at file level.** |
+
+### Reconciliation against the bridge (2026-09-28, run at about 11:48Z)
+
+The desktop bridge had been running in continuous mode since 23:07Z on the 27th and was **never down**: one MQTT connection for the
+whole run (`connected (session present: True)` once, the subscription once), no reconnect, and `dead_lettered=1` (the known
+`mqtt_check.py` test string), `retries=0`, `failed_batches=0`. There was nothing queued at the broker to catch up on. Its final
+state at the time of the check: `received=2474 files=42 events=2473`, that is 41 files of 60 lines and one of 13.
+
+Each of the 32 `scan_id`s in the soak journal was matched to a landed file by timestamp: a `scan_id` is a ULID stamped when the scan
+runs, and each landed file's name is a ULID stamped when the bridge flushed it. All 32 matched a distinct 60-line file, the file
+always 3.4 to 4.0 s after the scan, under `dt=2026-09-28/hh=03` to `hh=11` as expected (ingest hour, doc 02). Zero mismatches, zero
+unmatched journal scans. The 10 files not in the supplied journal are the earlier Pi runs (23:15, 23:30 and the 13-line partial at
+23:46:33 on the 27th; the 60-row drain of the 23:45Z scan at 02:23:30Z; 02:30, 02:45, 03:00, 03:15Z) and the two scans after the
+journal was pasted (11:30 and 11:45Z), all 60 lines except the known partial.
+
+Follow-up written after the soak, not yet deployed or run on hardware: the startup fix above suppresses every "not connected" tick
+before the first connect, so a probe that boots with **no broker at all** would never have said it was offline. Now, if the first
+connect has not arrived within the runtime's own real-loss detection window (`ack_timeout`, 30 s by default; no new number), the
+probe records `DISCONNECTED` with reason `no_initial_connect`, buffers and labels scans as in any outage, and drains through
+`BURST` when the connect comes; a connect inside the window still records nothing. Also closed in the same change: a scan that
+falls *inside* the wait was buffered but never drained, because nothing had marked a drain; the first connect now drains any such
+rows (`startup_backlog`). Fake-clock tests for both boot paths and the in-window scan, mutation-checked.
+
+Not checked here: the `scan_id` values *inside* the files. Reading them needs the workspace, so the by-`scan_id` reconciliation
+happens in bronze after the notebook run (query p3-5 of `ingest/phase3_checkpoint.sql` counts scans not 60 and duplicate ids).
+
+### A STEALTH scan's landing evidence (from an operator-forced STEALTH period this session, ahead of tonight's checkpoint)
+
+`dt=2026-09-28/hh=19/probe-01-01M3MP6WFJ2KP11JDN4Z817RN1.ndjson`, landed `2026-09-28T19:00:03Z`, 60 lines, **22,467 bytes** — about
+1,500 bytes smaller than a `CONNECTED` scan's usual ~23,976. Confirmed offline, not inferred from the size alone: serialising one
+`CONNECTED` and one `STEALTH` envelope for the same planet from `forcesim.probe.SimProbe.sweep()` and diffing them gives the same
+1,509 bytes over 60 lines (25.15 bytes/line) — `"mode":"STEALTH"` (2 bytes shorter than `"CONNECTED"`), `midichlorian_ppm` and
+`kyber_resonance` as JSON `null` in place of a number, and `sensor_temp_c` omitted entirely (doc 04). This is the landing-size
+evidence that the file is a `STEALTH` scan; the content check (both channels null, `dark_side_activity` present, no
+`sensor_temp_c`) is p3-7, run as part of tonight's checkpoint.
+
+## Accidental power-loss test (unplanned, 2026-09-28)
+
+A cable move briefly cut the Pi's power. Recorded from the Pi (`uptime -s`) and the desktop bridge's log; the Pi's own journal for
+this boot was lost, because journald was volatile (fixed below).
+
+| # | Check | Actual |
+|---|---|---|
+| N1 | Boot time | `uptime -s`: **2026-09-28 09:22:09 EDT (13:22:09Z)**. |
+| N2 | The Pi's own journal for this boot | **Lost** — `journald` was on volatile storage (`/run/log/journal`, wiped every reboot). Fixed for the future: doc 05, "Persistent journal", added below. |
+| N3 | Last file landed before the loss, from the desktop bridge's log | `2026-09-28T13:15:03Z`, 60 lines. |
+| N4 | First file landed after the loss | `2026-09-28T13:30:03Z`, 60 lines. |
+| N5 | Gap between them | 900 s — exactly one normal quarter-hour cadence step. **0 scans missed**: the 13:15Z scan was taken and published before the loss, and the Pi booted, reconnected and took the 13:30Z scan normally, inside the same 15-minute window. |
+| N6 | Recovery | `force-probe` starts at boot unattended (`systemctl enable`, confirmed already in Step 4/5); reconnected without intervention; quarter-hour scans resumed. Buffer count 0 after recovery (reported), nothing stranded. |
+
+**A real bug found from this incident, not from a test:** the mode log's `startup` entry for this boot is stamped
+`2026-09-28T13:19:43.xxxZ` — *before* `uptime -s`'s `13:22:09Z`, which is impossible for a boot that happened at 13:22:09. Cause: the
+Pi has no RTC; `fake-hwclock` restores the last saved (stale) time at boot, and the probe's own clock gate (`probe/clock.py`)
+guards *readings* against this (`NTPSynchronized`) but `ModeController._record()` (`probe/modes.py`) stamps every `mode_transitions.jsonl`
+entry, `startup` included, with the raw, ungated `now` — so an entry written in the few seconds before NTP corrects the clock gets a
+false, too-early timestamp. `uptime -s` itself is queried after sync and is trustworthy; the log entry is not.
+
+**Decided, 2026-09-28 — not built yet.** Option (a): defer `ModeController`'s log writes until the clock is confirmed synced once
+(reusing `probe/clock.py`'s `timedatectl_synced`), writing one snapshot entry when it first is; the in-memory mode still updates
+normally in the meantime so buffering/publishing stays correct. Matches doc 04's existing "skip and log" treatment of readings before
+sync. Option (b) — a `clock_synced` boolean on every entry instead of suppressing anything — was not chosen: it loses no information
+but relies on the reader checking the flag, which is exactly what this incident needed and didn't have.
+
+**Addition to (a), so a boot with the broker down is never hidden:** the snapshot entry written at sync must also record what
+happened during the unsynced window — `suppressed_transitions` (how many mode/offline changes were suppressed) and, if any of them
+entered `DISCONNECTED` (`no_initial_connect` included), `disconnected_before_sync` (its reason) and *when*, measured by uptime or the
+monotonic clock, never by the (still unsynced, still possibly wrong) wall clock. A test for exactly that case — a boot with no
+broker, still unsynced when `no_initial_connect` fires — is part of the build.
+
+Implementation is deferred until after tonight's checkpoint: tonight's Pi deploy carries only the boot-with-no-broker fix already
+built and tested (above), nothing from this item. Not needed for the checkpoint either way: the desktop's clock (not a Pi, not
+gated) is what stamps `_ingest_ts`, and the Pi's `event_time`s are already protected by the existing reading-level gate.
 
 ---
 

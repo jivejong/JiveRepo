@@ -14,6 +14,31 @@ governed AI enrichment layer.
 
 ---
 
+## Status: in progress (Phase 3 of 8)
+
+This project is under halfway built. The sections below the status table (the architecture, stack,
+quickstart, signatures, and agent) describe the **target design**, specified in `docs/`. Only the
+phases marked done have been built and verified.
+
+| Phase | Scope | Status |
+|---|---|---|
+| 0 | De-risk the platform: dbt job task from Git, external locations, `streaming_table` | Done. [`docs/PHASE0-RESULTS.md`](docs/PHASE0-RESULTS.md) |
+| 1 | SWAPI snapshot, AI enrichment, reviewed `dim_sector` and `dim_jedi` seeds | Done. Frozen, with provenance |
+| 2 | Probe simulator, collector bridge, Auto Loader, 90-day backfill | Done. [`docs/PHASE2-RESULTS.md`](docs/PHASE2-RESULTS.md) |
+| 3 | Four probe modes, SQLite buffer, fault injection, control topic, Raspberry Pi | **In progress.** The probe runs on a real Pi through a password- and ACL-protected LAN broker, and has completed an overnight soak of 32 consecutive scans. The 45-minute forced-`DISCONNECTED` checkpoint, the project's core claim, has not run yet. [`docs/PHASE3-RESULTS.md`](docs/PHASE3-RESULTS.md) |
+| 4 | dbt silver and gold, rolling baselines, scoring, signatures | Not started |
+| 5 | Web intake and report inference | Not started |
+| 6 | Yoda agent and constraint layer | Not started |
+| 7 | Dashboard | Not started |
+| 8 | Repo polish, CI, clean-clone `make demo` | Not started |
+
+The `Makefile` targets (`demo`, `seed`, `test`, `test-agent`, `test-intake`, `inject`) are stubs
+that exit 1 until their phase lands, so nothing mistakes a stub for a passing check. Results files
+record command output only, and a cell stays empty until output supports it. The phase-by-phase
+plan and its checkpoints are in [`docs/07-implementation-plan.md`](docs/07-implementation-plan.md).
+
+---
+
 ## Why this project exists
 
 It's a portfolio piece. The Star Wars framing is deliberate — it makes an otherwise dry
@@ -67,7 +92,10 @@ z-scores, which is what makes Jedi selection non-arbitrary:
 
 ---
 
-## Architecture
+## Architecture (target design)
+
+The probe, the bridge, and the Auto Loader path into bronze are built; everything from silver
+onward, the web intake, the agent, and the dashboard are specified but not yet implemented.
 
 ```
   ┌──────────────────────┐      ┌──────────────────────┐
@@ -124,7 +152,11 @@ Full detail: [`docs/01-architecture.md`](docs/01-architecture.md)
 
 ---
 
-## Quickstart
+## Quickstart (target: not yet runnable)
+
+`make demo` and `make inject` are stubs today (see [Status](#status-in-progress-phase-3-of-8)); the
+local demo arrives in Phase 4, and the control topic that `make inject` will use is part of
+Phase 3. What follows is the intended end state.
 
 Runs the full pipeline locally with no cloud account. Postgres stands in for the lakehouse; the
 dbt models are the same ones that run on Databricks.

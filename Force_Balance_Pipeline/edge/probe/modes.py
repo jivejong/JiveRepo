@@ -21,6 +21,11 @@ near a restart that mode_transitions.jsonl nonetheless logged as "link_lost") â€
 CONNECTED (the constructed default) is never read as the `from` of a transition before on_connect has ever fired, and the first
 real connect goes straight to BURST with reason startup_backlog if there is one, never through a false DISCONNECTED step. A
 forced DISCONNECTED (operator or schedule) is honoured even during that wait, since it has nothing to do with the link.
+
+A boot with no broker is different from a slow connect. When the runtime says the wait has run past its own real-loss detection window
+(first_connect_overdue; the runtime passes its ack_timeout, so this adds no number of its own), the probe is genuinely offline: it
+records DISCONNECTED with reason no_initial_connect and buffers and labels scans as in any outage, and the first connect that follows
+drains the backlog through BURST. A connect that arrives inside the window records nothing at all.
 """
 import json
 import random
@@ -72,6 +77,10 @@ class ModeController:
         self._ever_connected = False         # the probe has not yet completed its first real MQTT connect
         self._record(now, None, "startup", backlog)
 
+    @property
+    def waiting_for_first_connect(self):
+        return not self._ever_connected
+
     def force(self, mode, until=None):
         if mode not in FORCEABLE:
             raise ValueError(f"a mode can be forced to one of {FORCEABLE}, not {mode!r}")
@@ -89,12 +98,13 @@ class ModeController:
                 return scheduled, "schedule"
         return CONNECTED, "default"
 
-    def update(self, now, link_up, backlog, link_reason=None):
+    def update(self, now, link_up, backlog, link_reason=None, first_connect_overdue=False):
         requested, source = self._requested(now)
         forced_offline = requested == DISCONNECTED
+        first_connect = link_up and not self._ever_connected
         if link_up:
             self._ever_connected = True
-        elif not self._ever_connected and not forced_offline:
+        elif not self._ever_connected and not forced_offline and not first_connect_overdue:
             return self.mode              # waiting for the first connect (see the module docstring): not a link loss
         base = STEALTH if requested == STEALTH else CONNECTED
         offline = forced_offline or not link_up
@@ -102,6 +112,9 @@ class ModeController:
         if self.offline and not offline and backlog > 0:
             self.draining = True
             self._drain_reason = ended
+        elif first_connect and not offline and backlog > 0 and not self.draining:
+            self.draining = True              # rows buffered while the very first connect was still pending (never offline)
+            self._drain_reason = "startup_backlog"
         drain_done = False
         if not offline and self.draining and backlog == 0:
             self.draining, drain_done = False, True
@@ -113,7 +126,12 @@ class ModeController:
             mode = base
         if (mode, offline) != (self.mode, self.offline):
             if offline and not self.offline:
-                reason = source if forced_offline else (link_reason or "link_lost")
+                if forced_offline:
+                    reason = source
+                elif not self._ever_connected:
+                    reason = "no_initial_connect"     # the wait for the first connect ran past the window
+                else:
+                    reason = link_reason or "link_lost"
             elif mode == BURST:
                 reason = self._drain_reason
             elif drain_done or self.mode == BURST:

@@ -123,6 +123,12 @@ fault injection off (`--fault-rate 0`) so the outage rows are clean; fault injec
 
 This checkpoint is the project's core claim. Do not proceed until it holds.
 
+**Decided, 2026-09-28, not built yet:** an accidental Pi power loss showed a real gap — `mode_transitions.jsonl`'s `startup` entry
+can be stamped before NTP sync corrects the clock (readings are guarded by `NTPSynchronized`; mode-transition writes weren't). Fix
+chosen: defer those writes until the clock is confirmed synced once, then log one snapshot noting any transitions and a
+`DISCONNECTED` (with reason and uptime) suppressed while unsynced. Lands after this checkpoint. See PHASE3-RESULTS.md, "Accidental
+power-loss test".
+
 ---
 
 ## Phase 4 — Transformation, scoring, signatures · 14–22h

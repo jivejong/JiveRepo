@@ -589,6 +589,15 @@ sudo apt update && sudo apt install -y git python3-venv sqlite3 nftables
 timedatectl status        # "System clock synchronized: yes" and "NTP service: active"
 ```
 
+**Persistent journal.** By default (`Storage=auto`) journald keeps logs only in `/run/log/journal`, wiped on every reboot — found the
+hard way, in Phase 3, when a Pi power loss lost the boot's own logs. Give it a real directory once, before anything else needs it:
+```bash
+sudo mkdir -p /var/log/journal
+sudo systemd-tmpfiles --create --prefix /var/log/journal
+sudo systemctl restart systemd-journald
+```
+Journals from before this point are not recovered. After the next reboot, `journalctl --list-boots` shows more than one boot.
+
 `/opt` is root-owned, so create the target directory and hand it to yourself before cloning into it — `deploy.sh` does the same
 `mkdir`/`chown` itself and is safe to run again, but the first, manual clone below needs it done first:
 
