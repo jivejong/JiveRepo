@@ -2,7 +2,7 @@
 
 **Jong Lee ("Jive Jong")**: Solutions Architect / AI Engineer / Data Engineer / Software Engineer | 30+ years in IT | Northern Virginia
 
-This is the public, working portfolio behind my resume: production-style software engineering, applied AI/LLM engineering, data engineering, MLOps, and technical architecture, with the reasoning behind each decision written up alongside the code. If you found this from LinkedIn, Buffer Overflow, or Translation Layer, this is home base. **Recruiters and hiring tools:** see [Skills](#skills) below for a structured breakdown, and [Contact](#contact) to reach me directly.
+This is the public, working portfolio behind my resume: production-style software engineering, applied AI/LLM engineering, data engineering, MLOps, and technical architecture, with the reasoning behind each decision written up alongside the code. If you found this from LinkedIn or Translation Layer, this is home base. **Recruiters and hiring tools:** see [Skills](#skills) below for a structured breakdown, and [Contact](#contact) to reach me directly.
 
 ---
 
@@ -41,6 +41,10 @@ A local, searchable chord-chart manager for live performance, combining a Python
 
 A local, streaming intrusion-detection pipeline: a simulated five-stage attack lands telemetry through Kafka (Redpanda) into a partitioned Parquet lakehouse, transformed with dbt on DuckDB and orchestrated by Dagster, with data-quality handling for ten deliberately injected pathologies (duplicates, late/out-of-order events, malformed JSON, schema drift, and clock skew). An LLM analyst then reconstructs attacker identity and MITRE ATT&CK techniques from sensor data alone. A dbt-lineage-level test prevents ground-truth leakage, and evaluation against a rule-based baseline reports attribution and technique-recall metrics by detection-observability tier. Runs entirely locally on Docker; no cloud account required. See the [Batcave_IDS README](./Batcave_IDS/README.md).
 
+### [`/Force_Balance_Pipeline`](./Force_Balance_Pipeline) (in progress)
+
+A streaming ETL system that detects disturbances in the Force, and it is halfway built. A simulated Raspberry Pi edge probe sweeps 60 Star Wars planets every 15 minutes over MQTT, a collector bridge lands the readings as NDJSON through the Databricks Files API, and Auto Loader reads them into a Unity Catalog bronze table. The plan continues with dbt silver and gold layers, rolling 90-day baselines, deterministic signature classification, a web intake, a tool-calling Yoda agent behind a code-enforced constraint layer, and a dashboard. **Built and verified so far (Phases 0-2):** Databricks Free Edition capabilities probed and recorded (dbt job task from Git works, GCS external locations do not); a governed AI-enrichment layer whose output is frozen, human-reviewed, and provenance-tracked rather than called at runtime; the ingestion path with exactly-once Auto Loader; and a frozen 90-day synthetic backfill. **Phase 3 (four probe modes and hardware) is underway:** the probe runs on a real Pi against a password- and ACL-protected LAN broker with a SQLite store-and-forward buffer, and has survived an overnight soak of 32 consecutive scans. Two concurrency bugs found on the hardware, a paho lock-order deadlock and a false link-loss at startup, are written up with their fixes. The 45-minute forced-outage checkpoint has not run yet, and transformation, scoring, the agent, and the dashboard are not started. The Quickstart in the project README describes the target end state, not what runs today. See the [project README](./Force_Balance_Pipeline/README.md) and its [implementation plan](./Force_Balance_Pipeline/docs/07-implementation-plan.md).
+
 ### [`/Agentic_AI`](./Agentic_AI)
 
 Five Streamlit applications that each isolate a different agentic pattern while sharing Gemini `gemini-3.1-flash-lite`, local Streamlit Secrets, deliberate user-triggered inference, and session-level demo safeguards. **Agentic Adversarial** is a Bart/Marge/Homer snack negotiation using Chroma-backed nutrition retrieval with grounded and model-knowledge fallbacks. **Agentic Approval** turns a recorded idea into an explicit Bundy-household escalation state machine, with Gemini transcription, Edge TTS, and OpenTelemetry traces. **Agentic Collaborative** uses a TMNT team to transform an image into a verified poem, narration, and mood-matched local music. **South Park Town Hall Debate** coordinates persona prompts, independent judges, call-budget checks, and a live telemetry panel. **No Cap** is a compact structured-output classifier for slang relevance. See the [Agentic_AI README](./Agentic_AI/README.md).
@@ -59,15 +63,26 @@ Standalone operations scripts: Bash tooling for database CRUD across three engin
 
 ### [`/Prompts`](./Prompts)
 
-AI system prompts organized around one principle: **AI should expand human thinking, not replace it.** Six families: `healthy-ai/` (guardrails against dependency and drift), `thinking/` (inward, outward, and pedagogy-based perspective tools), `code-dojo/` (programming practice built on Eastern pedagogical traditions), `training/` (a learning pipeline modeled on the ML lifecycle), `writing/` (corrective and collaborative writing partners), and `health/` (six holistic-health epistemologies). Practical, tested, no hype. See the [prompts README](./Prompts/readme.md).
+About 110 AI system prompts organized around one principle: **AI should expand human thinking, not replace it.** Each family fights the same failure mode, the model quietly doing the cognitive work the human was supposed to do, with a different structural mechanism:
 
-### [`/docs`](./docs)
+- **`healthy-ai/`** (9 bots): guardrails against dependency, drift, and endless sessions; a turn limit, a forced verdict, a stated mission, a stateless sandbox.
+- **`thinking/`** (19): perspective tools in three groups. `outward/` multiplies views on an idea or plan, `inward/` on the user's own voice, beliefs, and contradictions, and `process/` holds to the real mechanics of named pedagogies such as Socratic Circle and Cognitive Apprenticeship. Most have fidelity checklists.
+- **`code-dojo/`** (4 practices, 2 editions each): programming practice built on Eastern pedagogical traditions. The `chat/` edition reasons without executing and leaves the human as final checker; the `code/` edition runs in Claude Code, where the test runner, not the model, is the authority.
+- **`dev-workflow/`** (6 stages): a coding pipeline with a deliberate seam. Architect, then Coder and Tester working independently from one spec, then Linter, Reviewer, and Documenter. Coder and Tester never see each other's work, so a hidden ambiguity becomes a visible divergence a human can catch.
+- **`training/`** (4 partners): a learning pipeline modeled on the ML lifecycle (pre-training, training, post-training, project) with typed handoffs and a return edge into the next cycle.
+- **`writing/`** (7): corrective editors and collaborative assistants that keep the writer in the chair.
+- **`geeky/`** (48): personas built on borrowed voices, in nine groups by function. The character supplies the voice; the prompt supplies the discipline the character lacks, and the trait a character is famous for is usually the thing the prompt forbids. Shared mechanics include a named flaw, a break-character override for real trouble, a rationed persona, and a mandatory "uncomfortable" output section.
+- **`health/`** (12): six holistic-health epistemologies (TCM, Ayurveda, Galenic, Ilm al-Nafs, Ubuntu, Medicine Wheel), each split into an Assessor that produces a persistent XML "passport" and an Advisor that reads today's symptom against it without revising the baseline.
 
-Long-form writing in three formats: `articles/` (pieces for LinkedIn and other platforms), `Translation_Layer/` (article-form adaptations of the YouTube channel), and `white_papers/` (abstracts and Zenodo links for the academic work). Formal writing meant to last. See the [docs README](./docs/README.md).
+The collection also documents how each constraint behaves across model families (RLHF-tuned, open-weight, reasoning) and tests for boundary integrity rather than eloquence. These are drafted prompts, not yet validated against real conversation transcripts at scale; the [prompts README](./Prompts/readme.md) states that status plainly, and [ARCHITECTURE.md](./ARCHITECTURE.md#8-the-same-law-applied-to-the-human-in-the-loop) explains the design.
 
-### [`/projects`](./projects)
+### [`/Docs`](./Docs)
 
-The holding area for applications and code still in progress. Projects move into the repository root once they are ready to stand as complete portfolio work.
+Long-form writing in three formats: `articles/` (pieces for LinkedIn and other platforms), `Translation_Layer/` (article-form adaptations of the YouTube channel), and `white_papers/` (abstracts and Zenodo links for the academic work). Formal writing meant to last. See the [docs README](./Docs/README.md).
+
+### [`/Projects`](./Projects)
+
+The holding area for half-formed ideas and code that is not yet a project. Work moves into the repository root once it is ready to stand as portfolio work, or, like `Force_Balance_Pipeline`, earns its own folder early and is labelled in progress until it is finished.
 
 ---
 
@@ -87,11 +102,11 @@ Architectural capabilities are demonstrated in code, tests, ADRs, and project do
 
 **AI Engineering & Governance:** bounded and agentic AI systems · deterministic/probabilistic separation · structured JSON and schema-constrained generation · RAG, embeddings, and semantic retrieval · evaluation against deterministic baselines · human-in-the-loop decision seams · governance-as-code · lineage controls · model-call budgets and access controls
 
-**Data Architecture & Engineering:** streaming · Bronze/Silver/Gold medallion pipelines · dimensional modeling · Kafka-compatible Redpanda · Parquet lakehouses · dbt · Dagster · DuckDB · data quality · observability · Unity Catalog · Delta Lake · PySpark · Spark SQL · Databricks · Socrata Open Data API integration
+**Data Architecture & Engineering:** streaming · Bronze/Silver/Gold medallion pipelines · dimensional modeling · Kafka-compatible Redpanda · MQTT/Mosquitto · edge store-and-forward buffering · Parquet lakehouses · dbt · Dagster · DuckDB · data quality · observability · Unity Catalog · Delta Lake · Auto Loader · PySpark · Spark SQL · Databricks · Socrata Open Data API integration
 
 **Security & Risk:** Zero-Trust boundaries · MITRE ATT&CK-mapped threat detection · prompt-injection scanning · secret-aware configuration · auditability · trust boundaries · ground-truth-leakage prevention · structured-output reliability
 
-**FinOps & Operations:** cost-aware architecture · deterministic pre-filtering before metered inference · bounded model calls · local-versus-managed service trade-offs · Docker and Docker Compose · OpenTelemetry with GenAI semantic conventions · GitHub Actions · deployment-complexity restraint
+**FinOps & Operations:** cost-aware architecture · deterministic pre-filtering before metered inference · bounded model calls · local-versus-managed service trade-offs · Docker and Docker Compose · Raspberry Pi/systemd deployment · OpenTelemetry with GenAI semantic conventions · GitHub Actions · deployment-complexity restraint
 
 **Application & Platform Engineering:** Java · C# · Python · JavaScript/JSX · SQL (PostgreSQL, T-SQL, PL/SQL, Spark SQL) · Bash · PowerShell · HTML/CSS · Spring Boot (Web, Data JPA, Statemachine) · .NET 10 · Blazor Server · Entity Framework Core · Node.js/Express · React · Vite · Progressive Web Apps · IndexedDB · REST APIs
 
@@ -113,13 +128,12 @@ Architectural capabilities are demonstrated in code, tests, ADRs, and project do
 ## Channels
 
 - **Translation Layer**: [YouTube](https://www.youtube.com/@TranslationLayer)
-- **Buffer Overflow**: [YouTube](https://www.youtube.com/@BufferOverflow-v2j)
 
 ---
 
 ## Academic Work
 
-White papers published on [Zenodo](https://zenodo.org/communities/jivejong/): peer-indexed, DOI-assigned, citable. Current work examines how organizations can turn legacy data estates into durable AI advantages without recreating the debt through undisciplined ingestion; how AI tools can preserve productive human judgment rather than prematurely closing thought; and how frontier models differ in behavior, self-perception, and image-generation strategy under controlled comparisons. It also proposes digital archaeology, digital therapy, and LLM SEO as emerging disciplines for recovering, repairing, and deliberately preserving knowledge in an age of training compression. Links in `/docs`.
+White papers published on [Zenodo](https://zenodo.org/communities/jivejong/): peer-indexed, DOI-assigned, citable. Current work examines how organizations can turn legacy data estates into durable AI advantages without recreating the debt through undisciplined ingestion; how AI tools can preserve productive human judgment rather than prematurely closing thought; and how frontier models differ in behavior, self-perception, and image-generation strategy under controlled comparisons. It also proposes digital archaeology, digital therapy, and LLM SEO as emerging disciplines for recovering, repairing, and deliberately preserving knowledge in an age of training compression. Links in `/Docs`.
 
 ---
 

@@ -88,8 +88,8 @@ Every non-obvious technology choice, with what it displaced. Full rationale: `do
 | One topic, four event kinds | Separate topics per kind | A discriminated envelope keeps ordering guarantees intact across every event for a session, since they all share the `session_id` partition key. Separate topics would break per-session ordering across kinds: exactly what `mart_detection_correlation` depends on. |
 | MITRE ATT&CK technique IDs | Invented technique names | The catalog gets authored either way, so real ATT&CK IDs cost nothing extra and turn the project from a game into a detection-engineering exercise. Every ID verified against attack.mitre.org. |
 | Observability tiers on techniques | A flat accuracy number | An HTTP sensor cannot see every technique. Modeling that explicitly turns a bare accuracy claim into a detection coverage gap analysis: what a real security team would actually produce. |
-| Dagster | Airflow | Native dbt integration gives asset-level lineage almost for free, and the resulting asset graph is far more legible to a reader than a DAG of opaque shell tasks. Airflow runs the optional cloud deployment (Track C, `k8s-data-platform/`), so both are represented rather than duplicated. |
-| Infrastructure as an optional layer | Terraform/Kubernetes in the core pipeline | A single stateless service and a local broker don't justify a cluster, so the pipeline never needs one: it runs on a laptop with `make`. Terraform and Kubernetes live only in `k8s-data-platform/`, an optional deployment of the same code to kind and GKE where infrastructure is the actual subject. Nothing in the pipeline depends on it. **Removing a technology from where it didn't earn its place is a stronger signal than including it because it looks good.** |
+| Dagster | Airflow | Native dbt integration gives asset-level lineage almost for free, and the resulting asset graph is far more legible to a reader than a DAG of opaque shell tasks. Airflow is planned for the optional cloud deployment (Track C, `k8s-data-platform/`, not yet built), so both would be represented rather than duplicated. |
+| Infrastructure as an optional layer | Terraform/Kubernetes in the core pipeline | A single stateless service and a local broker don't justify a cluster, so the pipeline never needs one: it runs on a laptop with `make`. Terraform and Kubernetes are confined to `k8s-data-platform/`, a planned (not yet built) optional deployment of the same code to kind and GKE where infrastructure is the actual subject. Nothing in the pipeline depends on it. **Removing a technology from where it didn't earn its place is a stronger signal than including it because it looks good.** |
 
 ---
 
@@ -127,10 +127,11 @@ claim before seeing what they say.
   indistinguishable from legitimate use: camouflaged, not invisible, and recall is at least
   theoretically possible from session context.
 - **`deploy_batbot`'s evidence is structurally unmeasurable in Track A specifically**, independent of
-  sample size or model quality: its detection signature is `chat_turns_completed`, and Track A never
-  produces a chat turn: the endpoint it targets 404s until Track B's bat bot exists. It's attempted
-  like any other technique (technique selection doesn't know this), but no amount of data will ever
-  produce recall on it until Track B lands.
+  sample size or model quality: its detection signature is `chat_turns_completed`, and Track A's
+  headless simulator never produces a chat turn: the endpoint it targets 404s outside the console.
+  Track B's bat bot now exists and does produce chat turns, but only for a human playing through the
+  console, so the headless corpus that the evaluation runs on still cannot show recall on this
+  technique, and the exclusion stands (`docs/07` explains why the headless run never attempts it).
 - **Three models across two providers have been run through this pipeline, and none of the three
   results should stand in for "what LLM triage does" in general.** The first chapter ran on Groq's
   free tier against `qwen/qwen3.8-27b` (a substitute for the originally planned model, which Groq
@@ -375,17 +376,30 @@ make dev-down
 See [Prerequisites](#prerequisites) above. `GEMINI_API_KEY` is optional: without it, triage runs the
 rule-based baseline and every metric still reports.
 
-**Track B, in progress: interactive console.** With the stack up (`make dev-up`), `make console`
-runs a small FastAPI backend on `:8090` that lets a person play a villain through the same
-`StageMachine` the headless simulator drives: same event envelope, same gating and probability
+**Track B, built through Phase 10: interactive console.** With the stack up (`make dev-up`),
+`make console` runs a small FastAPI backend on `:8090` that lets a person play a villain through the
+same `StageMachine` the headless simulator drives: same event envelope, same gating and probability
 model, just a human choosing the technique instead of the autopilot. `make console-web` serves the
-static frontend (`console/`, no framework, no build step) on `:8091`. Bat bot and the counterstrike
-finale (docs/08's remaining phases) aren't built yet: a console run currently ends once the fourth
-stage clears or the villain stalls.
+static frontend (`console/`, no framework, no build step) on `:8091`. A run now has three parts
+beyond the four attack stages:
+
+- **Bat bot.** A deliberately adversarial chat that appears helpful while probing the player. It
+  opens only after a blocking consent notice that discloses the simulation and that typed text is
+  retained locally. The model writes the dialogue; a small, versioned keyword extractor alone decides
+  intent flags, refusal, and whether the conversation continues, inside a hard 3-5 turn cap. Without
+  a `GEMINI_API_KEY` it falls back to a scripted bot. Raw `user_text` stays out of marts and out of
+  the committed sample partition, which `assert_no_user_text_in_sample` checks directly.
+- **Counterstrike finale.** After the run, the Batcomputer accuses a suspect taken from the triage
+  model's own prediction, so a wrong prediction accuses the wrong villain. Console sessions are
+  excluded from the eval-facing marts by `session_source`.
+- **Batanalytics dashboard.** `make dashboard` serves a read-only Streamlit view of the marts on
+  `:8501` (kill-chain funnel, technique efficacy, detection coverage, suspect ranking); run
+  `make transform` first.
 
 ```bash
 make console       # backend on :8090: needs make dev-up first
 make console-web   # static frontend on :8091, in a second terminal
+make dashboard     # Batanalytics on :8501: needs make transform first
 ```
 
 ---
@@ -405,11 +419,13 @@ make console-web   # static frontend on :8091, in a second terminal
 | [`docs/09-engineering-log.md`](docs/09-engineering-log.md) | Bugs, diagnoses, and tuning decisions: what broke, how it was caught, what changed | All |
 | [`docs/exercises.md`](docs/exercises.md) | One-off demonstrations against the live stack, with real output | A |
 
-**Tracks.** A is the headless pipeline and the shippable milestone. B adds the interactive console
-and bat bot. C is an optional cloud deployment: the same code on a local kind cluster, then on an
-ephemeral GKE cluster funded by the GCP Free Trial. Each ends somewhere complete.
+**Tracks.** A is the headless pipeline and the shippable milestone. B adds the interactive console,
+bat bot, finale, and dashboard, and is built through Phase 10. C is an optional cloud deployment: the
+same code on a local kind cluster, then on an ephemeral GKE cluster funded by the GCP Free Trial. C is
+**planned, not built**; `k8s-data-platform/` currently holds only its design handoff. Each track ends
+somewhere complete.
 
-Infrastructure work (Terraform, Kubernetes, Airflow on the KubernetesExecutor) lives only in
+Infrastructure work (Terraform, Kubernetes, Airflow on the KubernetesExecutor) is confined to
 `k8s-data-platform/`, Track C's deployment layer. The pipeline itself doesn't need it and never
 depends on it.
 

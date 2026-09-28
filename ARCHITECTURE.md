@@ -3,7 +3,7 @@
 This document is an architectural map of the portfolio, written for engineers evaluating design judgment rather than users evaluating features.
 Every section names a material trade-off and what was rejected, because those choices are the signal.
 
-The repository is a monorepo of independently deployable systems, small utilities, notebooks, and prompt artifacts. Its recurring design principle is narrower and more accurate than a universal ban on model decisions:
+The repository is a monorepo of independently deployable systems, small utilities, notebooks, and prompt artifacts. One system, `Force_Balance_Pipeline`, is halfway built, and this document says so wherever it appears: a design that is specified but not yet built is labelled as a design, not described as a result. Its recurring design principle is narrower and more accurate than a universal ban on model decisions:
 
 > **When a decision changes durable state, money, access, safety, or a measured security outcome,
 > the rule that authorizes it is owned by deterministic code.** Models may interpret ambiguity,
@@ -30,15 +30,16 @@ plausible answer, with variance, and cannot fully explain itself. The systems th
 decisions route the authorization rule to the first kind; interactive applications use the second for
 their experience while retaining explicit limits, session controls, or a human decision point.
 
-| System                      | What stays deterministic                                                                                                             | What the model is allowed to touch                                                                                                                    |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SpringfieldTalentPipeline` | Pipeline stage legality (Spring Statemachine), offer accept/decline (arithmetic against BLS wage bands), full-text candidate ranking | Candidate fit narrative and score, parsed against a JSON schema; mock-interview dialogue                                                              |
-| `SuperHeroOps`              | Intervention effect percentage (a pure function of powerstats, normalized against the seeded roster)                                 | The prose report interprets that number, never the number itself                                                                                      |
-| `Batcave_IDS`               | Threat score, stage-gating, session correlation, technique catalog                                                                   | Attacker attribution and technique reconstruction, but only as a _scored hypothesis_, graded against a rule-based baseline that the model has to beat |
-| Databricks notebook suite   | Routing (`Issue → House` lookup table), composite scoring, dimensional pivoting                                                      | Sentiment, summarization, persona-driven writing, qualitative synthesis                                                                               |
-| `Chord_Chart_Manager`       | Sync ordering and same-song conflict resolution (server wins)                                                                        | None in the running application; the primary trade-off is offline availability versus concurrent-edit consistency                                     |
-| `Agentic_AI`                | Access-code quota checks, call budgets, and the Approval app's escalation state                                                      | Deliberately interactive classification, debate, retrieval-grounded negotiation, and multimodal generation                                            |
-| `BBS_Website`               | Client-side interaction state, keyboard/mouse mode, and local navigation                                                             | No model calls; the deliberately dependency-free implementation is itself the architectural choice                                                    |
+| System                                   | What stays deterministic                                                                                                                                                        | What the model is allowed to touch                                                                                                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SpringfieldTalentPipeline`              | Pipeline stage legality (Spring Statemachine), offer accept/decline (arithmetic against BLS wage bands), full-text candidate ranking                                            | Candidate fit narrative and score, parsed against a JSON schema; mock-interview dialogue                                                                                                                       |
+| `SuperHeroOps`                           | Intervention effect percentage (a pure function of powerstats, normalized against the seeded roster)                                                                            | The prose report interprets that number, never the number itself                                                                                                                                               |
+| `Batcave_IDS`                            | Threat score, stage-gating, session correlation, technique catalog                                                                                                              | Attacker attribution and technique reconstruction, but only as a _scored hypothesis_, graded against a rule-based baseline that the model has to beat                                                          |
+| Databricks notebook suite                | Routing (`Issue → House` lookup table), composite scoring, dimensional pivoting                                                                                                 | Sentiment, summarization, persona-driven writing, qualitative synthesis                                                                                                                                        |
+| `Force_Balance_Pipeline` _(in progress)_ | Baselines, composite scoring, and disturbance-signature classification (all SQL, planned); the deployment constraint layer shared by the agent and by human operators (planned) | Build-time reference enrichment, frozen and reviewed before use (built); free-text report inference and a tool-calling agent that proposes deployments (planned, each behind clamping or the constraint layer) |
+| `Chord_Chart_Manager`                    | Sync ordering and same-song conflict resolution (server wins)                                                                                                                   | None in the running application; the primary trade-off is offline availability versus concurrent-edit consistency                                                                                              |
+| `Agentic_AI`                             | Access-code quota checks, call budgets, and the Approval app's escalation state                                                                                                 | Deliberately interactive classification, debate, retrieval-grounded negotiation, and multimodal generation                                                                                                     |
+| `BBS_Website`                            | Client-side interaction state, keyboard/mouse mode, and local navigation                                                                                                        | No model calls; the deliberately dependency-free implementation is itself the architectural choice                                                                                                             |
 
 The pattern generalizes: **wherever a value authorizes a consequential action or is presented as a
 measured result, code owns the rule and its audit trail.** In an interactive AI application, a bad
@@ -111,6 +112,13 @@ The same governance instinct recurs, differently shaped, across the portfolio:
   would quietly launder a generated opinion into a human one. `RecruiterFeedback` lives in the
   `pipeline` package rather than `ai`, on purpose; it is the one judgment in the system no model
   produced, and the module boundary says so.
+- `Force_Balance_Pipeline` applies the same instinct to reference data. Planet baselines and Jedi
+  attributes are LLM-generated once, human-reviewed against a written gate, committed as seed CSVs with a
+  provenance file, and never regenerated at runtime, because the 90-day backfill derives from them and
+  every rolling baseline derives from the backfill: regenerating would silently invalidate all
+  historical statistics. The reviewed CSV is the source of truth; the model is a build-time tool. The
+  second half of the design, that model-inferred report values may trigger an incident but never enter a
+  baseline, is specified with a dbt test to enforce it and is not built yet (Phase 5).
 
 ### Interactive telemetry: consent, minimization, and a separate decision seam
 
@@ -150,6 +158,23 @@ those are normal conditions to design for, not exceptional cases:
   timestamp is treated as adversarial input from the moment it enters the schema: nullable, permitted
   to be wrong, and never used for anything that ordering or partitioning depends on.
 
+`Force_Balance_Pipeline` applies the same stance at the edge, where the producer is a Raspberry Pi
+that loses its network, and it has the hardware evidence to show for it:
+
+- **Write-ahead buffering with confirmed-publish deletion.** A reading leaves the Pi's SQLite buffer only
+  after the broker acknowledges it, so an outage costs latency rather than data. Delivery is
+  at-least-once by design, and deduplication on `event_id` belongs to silver, not to the probe.
+- **Ingest-time landing paths, event-time analytics.** Landing paths name the day and hour a file was
+  uploaded, not when the reading was taken, so a replayed outage lands later without rewriting history;
+  event-time organization is silver's job.
+- **A fake broker cannot find a lock-order bug.** A publisher/paho lock-order inversion deadlocked the
+  live probe on the Pi partway through a scan. The offline fake client never reproduced it because it has
+  no internal lock to invert against; a real `paho-mqtt` client against a real throwaway broker did, and
+  the fix is checked by a stress test that needs Docker and is kept out of the offline suite on purpose.
+  The failure was pinned independently from the broker's own log, and the 13 duplicate rows it caused
+  are recorded as expected rather than cleaned up. **A check that cannot fail against the real system
+  has not verified the real system.**
+
 ---
 
 ## 4. FinOps: Cost as an Architectural Constraint
@@ -168,12 +193,22 @@ the complexity of operating it.
   buffering windows in the tens of seconds: worse _and_ less durable.
 - Terraform and Kubernetes were **kept out of `Batcave_IDS`'s pipeline** after being evaluated,
   because a single stateless service and a local broker don't need a cluster, and the pipeline runs on
-  a laptop with no cloud account. They live only in an optional deployment layer
-  (`Batcave_IDS/k8s-data-platform/`, Track C). That layer deploys the same code unchanged to kind and
-  to an ephemeral GKE cluster on the GCP Free Trial; infrastructure is its actual subject, and the
-  pipeline never depends on it. **Removing a technology from a system where it failed to earn its
+  a laptop with no cloud account. They are confined to an optional deployment layer
+  (`Batcave_IDS/k8s-data-platform/`, Track C), which is **planned, not built**: today the folder holds
+  only its design handoff. That design deploys the same code unchanged to kind and to an ephemeral GKE
+  cluster on the GCP Free Trial; infrastructure is its actual subject, and the pipeline never depends
+  on it. **Removing a technology from a system where it failed to earn its
   place is a stronger engineering signal than including it because it looks impressive on a
   diagram.**
+- `Force_Balance_Pipeline` treats free-tier limits as design inputs and records each rejected
+  alternative with its reason. Continuous streaming is replaced by Auto Loader with
+  `trigger(availableNow=True)`, which keeps the streaming semantics and burns no idle quota. Databricks
+  Apps is rejected for the dashboard because it auto-stops after 24 hours. Snowflake is rejected because a
+  trial expiry would break a repository left running, the same argument as Redpanda above. A Unity
+  Catalog external location to GCS was probed and is not permitted on Free Edition, so the bridge writes to
+  a UC volume through the Files API; that answer was found by running the check, not assumed. An LLM on
+  the Pi was rejected because it would couple sensor reliability to the heaviest workload on a 1 GB
+  device; all inference runs in the cloud.
 - The Databricks notebook suite caps total LLM calls per pipeline run (four, in K.A.R.E.N.) as a
   first-class architectural constraint, not an afterthought: the deterministic pre-filtering layer
   exists specifically to shrink the problem before the metered resource is invoked at all, keeping cost
@@ -241,6 +276,18 @@ recall metric silently imply otherwise, technique recall is reported **by observ
 converting a bare accuracy number into an honest detection-coverage gap analysis: what a real security
 team would actually produce, including an explicit accounting of what the corpus structurally cannot
 measure.
+
+### `Force_Balance_Pipeline` _(in progress)_: Late-arriving edge data, governed enrichment, and a guarded agent
+
+**Trade-off: Decision automation vs. auditable control.** The final design lets a Yoda agent deploy Jedi
+in response to a detected disturbance, but the agent receives an already-classified signature from
+deterministic SQL, and every deployment, whether proposed by the agent or entered by a human, passes the
+same code-enforced constraint layer (specialty matching, rank floor for severe incidents, capacity
+limits); `decided_by` is the only difference between the two paths, and overrides and the context
+snapshot are recorded for audit. The layers built so far (platform de-risking, frozen enrichment, the
+ingestion path and 90-day backfill, and the Raspberry Pi probe with its store-and-forward buffer) are
+verified against real infrastructure with results recorded from command output only. The detection
+layers, the agent, and the dashboard are specified in the project docs and are not yet implemented.
 
 ### `SpringfieldTalentPipeline`: State-machine-governed pipeline with advisory AI
 
@@ -311,8 +358,9 @@ a person's own judgment rather than a state machine's transition table.
 
 ### The failure mode this repository is built to resist
 
-Every prompt across `healthy-ai/`, `thinking/`, `code-dojo/`, `dev-workflow/`, `training/`, and
-`writing/`, six independently designed families, fights one named failure mode: **the AI
+Every prompt across `healthy-ai/`, `thinking/`, `code-dojo/`, `dev-workflow/`, `training/`,
+`writing/`, `geeky/`, and `health/`, eight independently designed families and roughly 110 prompts,
+fights one named failure mode: **the AI
 quietly doing the cognitive work the human was supposed to do.** The instruction-tuned gravity of a
 modern LLM pulls toward resolving, converging, and answering. Left unconstrained, that gravity is not
 neutral: it erodes exactly the skill the interaction was supposed to build. The organizing test stated
@@ -345,6 +393,25 @@ be maximally helpful:
   enforces between the rule-based baseline and the LLM triage result: a claim that hasn't been checked
   against something that cannot be talked out of its answer is provisional, not proven.
 
+Two further families extend the same idea in different directions:
+
+- **State held outside the model.** `health/` splits every tradition into an Assessor, run once, that
+  emits a structured XML "passport," and an Advisor that reads today's symptom against it. The passport is
+  the persistent memory a stateless model cannot hold, and a hard rule of _constitutional primacy_ says
+  the baseline does not change mid-conversation: a contradicting presentation is recorded as a diagnostic
+  tension, not used to revise the baseline. It is the same shape as `Force_Balance_Pipeline`'s frozen
+  enrichment: the reference the rest of the system relies on is produced once, reviewed, and then
+  protected from the process that consumes it.
+- **Character as a delivery vehicle for constraints.** `geeky/` supplies a voice and domain authority
+  and lets the prompt supply the discipline the character lacks; the trait a character is famous for is
+  usually the exact behavior the prompt forbids (a contemptuous critic fenced to code, never people; a
+  Joker whose one non-negotiable rule is dropping the bit when someone is in trouble). Its recurring
+  mechanics are structural rather than tonal: a named flaw block, a break-character override evaluated
+  _before_ generation, numeric rationing of the persona (one Klingon term per response), an elicitation
+  gate with an explicit stop, fabrication bans on anything verifiable, and a mandatory "what you didn't
+  want to hear" section in every output format. They are the interaction-level counterpart of a
+  code-owned guardrail.
+
 ### Substrate awareness: the constraint has to survive the model underneath it
 
 `Prompts/readme.md` documents something most prompt libraries never state: **the same constraint
@@ -360,7 +427,9 @@ only holds on the model it was written against is not a constraint; it is a luck
 
 ### Where the two halves of this document meet
 
-Section 1 states the systems-architecture law: a model never decides anything code, money, or access
+The collection's own status is stated the same way as everything else here: the prompts are drafted
+material, several with fidelity checklists that mean "designed for verification," not "verified," and
+human-in-the-loop testing against real transcripts is the next phase. Section 1 states the systems-architecture law: a model never decides anything code, money, or access
 depends on; it only produces language, bounded by a schema. The `Prompts/` collection states the
 human-interaction corollary: a model never does the _thinking_ a person is in the session to develop;
 it only widens the aperture, bounded by a refusal to converge. Both rules exist for the same reason.
@@ -381,7 +450,10 @@ what it excludes.
   security or financial verdict depends on without first passing it through a deterministic, code-owned
   boundary.
 - No AI-generated reference data enters a statistical baseline without being frozen, reviewed, and
-  version-controlled first.
+  version-controlled first. `Force_Balance_Pipeline`'s enrichment layer is the implemented case.
+- No design that has not been built is described as if it had been. In-progress work is labelled in the
+  README, in this document, and in the project's own results files, which stay empty until command
+  output supports a cell.
 - No generative detection or classification result is presented as a measured capability claim without
   an appropriate comparator. Free-form interactive output is presented as an experience, with its
   operational controls and limitations stated separately.
