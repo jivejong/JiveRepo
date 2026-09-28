@@ -1,6 +1,6 @@
 # Portfolio Architecture
 
-This document is an architectural map of the portfolio, written for engineers evaluating designjudgment rather than users evaluating features.
+This document is an architectural map of the portfolio, written for engineers evaluating design judgment rather than users evaluating features.
 Every section names a material trade-off and what was rejected, because those choices are the signal.
 
 The repository is a monorepo of independently deployable systems, small utilities, notebooks, and prompt artifacts. Its recurring design principle is narrower and more accurate than a universal ban on model decisions:
