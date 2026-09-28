@@ -78,7 +78,10 @@ console.log(`\nVerifying ${BASE_URL} in real Chromium\n`);
 console.log('1. Initial load (empty query -> whole pool)');
 const response = await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
 check('page responded', response?.ok(), `HTTP ${response?.status()}`);
-check('React mounted', (await page.locator('h1').count()) === 1, await page.locator('h1').innerText());
+check('React mounted', (await page.locator('h1').count()) === 1, await page.locator('h1 img').getAttribute('alt'));
+// The search is a secondary panel behind a button, closed on load.
+check('search closed on load', (await page.getByTestId('search-input').count()) === 0);
+await page.getByTestId('toggle-search').click();
 await settle();
 const initialCount = await page.getByTestId('count').innerText();
 const initialRows = await page.getByTestId('result-row').count();

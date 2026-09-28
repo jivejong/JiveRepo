@@ -53,9 +53,21 @@ async function runOffer({ keywords, candidateName, amount, label }) {
   // The fit score fires automatically and is a real Gemini call; wait it out before continuing.
   await page.waitForSelector('[data-testid="fit-result"], [data-testid="fit-error"]', { timeout: AI_TIMEOUT });
 
-  await page.getByTestId('hire').click();
-  await page.waitForSelector('[data-testid="offer-form"]', { timeout: 60000 });
-  const stageAtPause = await page.getByTestId('current-stage').innerText();
+  // The fit score page's only way forward is Generate interview, which is another real Gemini call.
+  // Wait it out, then move on to the decision page.
+  await page.getByTestId('nav-forward').click();
+  await page.waitForSelector('[data-testid="interview-result"], [data-testid="interview-error"]', {
+    timeout: AI_TIMEOUT,
+  });
+  await page.getByTestId('nav-forward').click();
+  await page.waitForSelector('[data-testid="offer-form"]', { state: 'visible', timeout: 20000 });
+
+  // One Extend offer click walks the application to OFFER and then submits. Record the hops so the
+  // suite can prove the walk happened before the offer POST rather than being skipped.
+  const transitions = [];
+  page.on('response', (r) => {
+    if (r.url().includes('/transition') && r.request().method() === 'POST') transitions.push(r.status());
+  });
 
   await page.getByTestId('offer-amount').fill(String(amount));
   const responded = page.waitForResponse((r) => r.url().includes('/offer') && r.request().method() === 'POST', {
@@ -67,7 +79,7 @@ async function runOffer({ keywords, candidateName, amount, label }) {
 
   const outcome = {
     status: response.status(),
-    stageAtPause,
+    transitions,
     decision: await page.getByTestId('offer-decision').innerText(),
     rationale: await page.getByTestId('offer-rationale').innerText(),
     occupation: await page.getByTestId('offer-occupation').innerText(),
@@ -90,7 +102,11 @@ const accepted = await runOffer({
   amount: 45000,
   label: 'Offer accept',
 });
-check('walk paused at OFFER rather than auto-completing', accepted.stageAtPause === 'OFFER', accepted.stageAtPause);
+check(
+  'Extend offer walked three legal transitions to OFFER before the offer POST',
+  accepted.transitions.length === 3 && accepted.transitions.every((s) => s === 200),
+  accepted.transitions.join(', ') || 'none observed',
+);
 check('POST /offer -> 201', accepted.status === 201, `HTTP ${accepted.status}`);
 check('decision is ACCEPTED', /ACCEPTED/.test(accepted.decision), accepted.decision);
 check('landed on HIRED', accepted.finalStage === 'HIRED', accepted.finalStage);

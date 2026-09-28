@@ -1,29 +1,14 @@
-import { useState } from 'react';
-import { api } from '../lib/api.js';
 import { Status } from './Status.jsx';
 
 /**
- * Step 5. On demand rather than automatic - this is the most expensive call in the app (a whole
+ * Step 4. On demand rather than automatic - this is the most expensive call in the app (a whole
  * interview in one generation, ~1,500-1,850 tokens on the 120b model) and firing it without being
  * asked would make every application cost one.
+ *
+ * Presentational: the generation state lives in App, because the Fit score page's "Generate
+ * interview" button starts it before this page is even shown.
  */
-export default function Interview({ application, candidate }) {
-  const [interview, setInterview] = useState(null);
-  const [state, setState] = useState('idle');
-  const [error, setError] = useState(null);
-
-  async function generate() {
-    setState('loading');
-    setError(null);
-    try {
-      setInterview(await api.mockInterview(application.id));
-      setState('ready');
-    } catch (cause) {
-      setError(cause.message);
-      setState('error');
-    }
-  }
-
+export default function Interview({ candidate, interview, state, error, onGenerate }) {
   return (
     <section className="panel">
       <h2>4 · Mock interview</h2>
@@ -32,7 +17,7 @@ export default function Interview({ application, candidate }) {
         a closing assessment.
       </p>
 
-      <button type="button" onClick={generate} disabled={state === 'loading'} data-testid="interview-run">
+      <button type="button" onClick={onGenerate} disabled={state === 'loading'} data-testid="interview-run">
         {state === 'loading' ? 'Generating…' : interview ? 'Generate another' : 'Run mock interview'}
       </button>
 

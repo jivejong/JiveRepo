@@ -29,8 +29,9 @@ const failedRequests = [];
 const expectedConflicts = [];
 page.on('console', (m) => {
   if (m.type() !== 'error') return;
-  // Chromium logs every non-2xx fetch as a console error. Step 7 provokes a 409 on purpose, so
-  // that entry is evidence the test worked, not a defect. Anything else still counts.
+  // Chromium logs every non-2xx fetch as a console error. The 409 probe is commented out of the
+  // UI for now, so none is expected - but if the probe comes back, this is where its console
+  // entry is separated from real defects. Health check 8 asserts the count.
   if (/status of 409/.test(m.text())) {
     expectedConflicts.push(m.text());
     return;
@@ -49,9 +50,20 @@ page.on('requestfailed', (r) => {
  * either way, because one of the two requests still succeeds.
  */
 const aiProfilePosts = [];
+const interviewPosts = [];
 page.on('request', (r) => {
   if (r.url().includes('/ai-profile') && r.method() === 'POST') aiProfilePosts.push(r.url());
+  if (r.url().includes('/mock-interview') && r.method() === 'POST') interviewPosts.push(r.url());
 });
+
+/** Which of the four pages is showing. Hidden pages stay in the DOM, so this reads visibility. */
+async function visiblePages() {
+  const shown = [];
+  for (const name of ['applications', 'fit', 'interview', 'decision']) {
+    if (await page.getByTestId(`page-${name}`).isVisible()) shown.push(name);
+  }
+  return shown.join(',');
+}
 
 mkdirSync(SHOTS, { recursive: true });
 
@@ -69,6 +81,14 @@ console.log(`\nStage B flow against ${BASE_URL}\n`);
 console.log('1. Create requisition');
 await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
 check('app mounted', (await page.locator('h1').count()) === 1);
+check(
+  'title is the Springfield image, centred',
+  await page.locator('h1 img[alt="Springfield Talent Pipeline"]').evaluate((img) => {
+    const box = img.getBoundingClientRect();
+    return img.naturalWidth > 0 && Math.abs(box.left + box.width / 2 - window.innerWidth / 2) < 12;
+  }),
+);
+check('no New requisition button before a requisition exists', (await page.getByTestId('restart').count()) === 0);
 await page.getByTestId('req-title').fill(TITLE);
 await page.getByTestId('req-keywords').fill('bartender tavern bar drinks');
 const created = page.waitForResponse((r) => r.url().endsWith('/api/requisitions') && r.request().method() === 'POST');
@@ -105,6 +125,8 @@ const applied = page.waitForResponse((r) => r.url().endsWith('/api/applications'
 await moeRow.getByRole('button', { name: 'Apply' }).click();
 const appliedRes = await applied;
 check('POST /api/applications -> 201', appliedRes.status() === 201, `HTTP ${appliedRes.status()}`);
+await page.waitForSelector('[data-testid="page-fit"]', { state: 'visible', timeout: 15000 });
+check('applying moves to the fit score page, alone', (await visiblePages()) === 'fit', await visiblePages());
 
 // --- 4. Fit score (real Gemini call) -------------------------------------------------------
 console.log('\n4. Fit score (live Gemini generation)');
@@ -128,7 +150,14 @@ await page.screenshot({ path: `${SHOTS}3-fit-score.png`, fullPage: true });
 
 // --- 5. Mock interview (real Gemini call) --------------------------------------------------
 console.log('\n5. Mock interview (live Gemini generation)');
-await page.getByTestId('interview-run').click();
+check(
+  'fit page offers Back to applications, Generate interview and New requisition',
+  (await page.getByTestId('nav-back').innerText()).includes('Back to applications') &&
+    (await page.getByTestId('nav-forward').innerText()).includes('Generate interview') &&
+    (await page.getByTestId('restart').count()) === 1,
+);
+await page.getByTestId('nav-forward').click();
+check('Generate interview moves to the interview page, alone', (await visiblePages()) === 'interview', await visiblePages());
 const interviewLoading = await page
   .waitForSelector('[data-testid="interview-loading"]', { timeout: 15000 })
   .then((el) => el.innerText())
@@ -142,36 +171,71 @@ check('5-8 Q&A turns rendered', turns >= 5 && turns <= 8, `${turns} turns`);
 check('overallAssessment rendered', assessment.length > 20, `${assessment.slice(0, 80)}…`);
 await page.screenshot({ path: `${SHOTS}4-interview.png`, fullPage: true });
 
-// --- 6. Hire -----------------------------------------------------------------------------
-console.log('\n6. Hire (walks SOURCED → SCREENING → INTERVIEWING → OFFER → HIRED)');
-// HIRED is reachable only from OFFER, so hiring is four legal transitions, not one leap.
+// --- 5b. Navigation keeps state, and never re-pays for a Gemini call --------------------------
+console.log('\n5b. Back / forward keep the results');
+await page.getByTestId('nav-back').click();
+check('Back from interview lands on the fit page', (await visiblePages()) === 'fit', await visiblePages());
+check('fit score survived the round trip', (await page.getByTestId('fit-score').innerText()) === String(score));
+await page.getByTestId('nav-forward').click();
+check('Generate interview again just navigates', (await visiblePages()) === 'interview', await visiblePages());
+check('transcript survived the round trip', (await page.getByTestId('interview-turn').count()) === turns);
+check(
+  'still exactly one POST /ai-profile and one POST /mock-interview',
+  aiProfilePosts.length === 1 && interviewPosts.length === 1,
+  `${aiProfilePosts.length} ai-profile, ${interviewPosts.length} mock-interview`,
+);
+
+// --- 6. Extend offer (walks SOURCED → SCREENING → INTERVIEWING → OFFER, then offers) ----------
+console.log('\n6. Extend offer (one click walks to OFFER, then submits the offer)');
+await page.getByTestId('nav-forward').click();
+check('Go to decision moves to the decision page, alone', (await visiblePages()) === 'decision', await visiblePages());
+check(
+  'decision page offers Back to interview and New requisition, and no forward',
+  (await page.getByTestId('nav-back').innerText()).includes('Back to interview') &&
+    (await page.getByTestId('nav-forward').count()) === 0 &&
+    (await page.getByTestId('restart').count()) === 1,
+);
+// HIRED is reachable only from OFFER, so the offer is preceded by three legal transitions.
 const transitionStatuses = [];
+const offerStatuses = [];
 const collect = (r) => {
   if (r.url().includes('/transition') && r.request().method() === 'POST') transitionStatuses.push(r.status());
+  if (r.url().includes('/offer') && r.request().method() === 'POST') offerStatuses.push(r.status());
 };
 page.on('response', collect);
-await page.getByTestId('hire').click();
-await page.waitForFunction(
-  () => document.querySelector('[data-testid="current-stage"]')?.textContent === 'HIRED',
-  { timeout: 60000 },
-);
+await page.getByTestId('offer-amount').fill('45000');
+await page.getByTestId('offer-submit').click();
+await page.waitForSelector('[data-testid="offer-outcome"]', { timeout: 60000 });
 page.off('response', collect);
 check(
-  'four sequential transitions, every one 200',
-  transitionStatuses.length === 4 && transitionStatuses.every((s) => s === 200),
+  'three sequential transitions, every one 200',
+  transitionStatuses.length === 3 && transitionStatuses.every((s) => s === 200),
   transitionStatuses.join(', ') || 'none observed',
 );
+check('POST /offer -> 201', offerStatuses.length === 1 && offerStatuses[0] === 201, offerStatuses.join(', '));
 check(
   'walked path rendered',
-  (await page.getByTestId('walked-path').innerText()).includes(
-    'SOURCED → SCREENING → INTERVIEWING → OFFER → HIRED',
-  ),
+  (await page.getByTestId('walked-path').innerText()).includes('SOURCED → SCREENING → INTERVIEWING → OFFER'),
 );
 await settled('transition');
-check('stage is HIRED', (await page.getByTestId('current-stage').innerText()) === 'HIRED');
-check('Hire button now disabled', await page.getByTestId('hire').isDisabled());
+check('offer accepted and stage is HIRED', (await page.getByTestId('current-stage').innerText()) === 'HIRED');
+check('offer form gone after submission (one-shot)', (await page.getByTestId('offer-form').count()) === 0);
+check('Reject button gone once terminal', (await page.getByTestId('reject').count()) === 0);
+check('terminal probe section is not rendered', (await page.getByTestId('probe-409').count()) === 0);
+await page.screenshot({ path: `${SHOTS}5-decision.png`, fullPage: true });
 
-// --- 7. The 409 — the most important assertion in this stage -----------------------------
+// --- 6b. New requisition returns to step 1 ----------------------------------------------------
+console.log('\n6b. New requisition');
+await page.getByTestId('restart').click();
+check('back on the applications page with an empty form', (await visiblePages()) === 'applications');
+check('requisition form is showing again', await page.getByTestId('req-title').isVisible());
+
+/*
+ * --- 7. The 409 - the most important assertion in the earlier version of this stage -----------
+ * Commented out with the "HIRED is terminal" probe in PipelineActions.jsx. If that block is
+ * restored, restore this step (it needs to run before 6b, while the decision page is still up)
+ * and change the health check below back to expecting exactly one 409 in the console.
+ *
 console.log('\n7. Second transition must be refused (409)');
 const refused = page.waitForResponse((r) => r.url().includes('/transition') && r.request().method() === 'POST');
 await page.getByTestId('probe-409').click();
@@ -188,13 +252,14 @@ check('409 body rendered: allowedNextStages is empty', allowedNext === '(none)',
 check('409 message explains it is terminal', /terminal/i.test(errText), errText);
 check('no "unexpected" branch fired', (await page.getByTestId('rejection-unexpected').count()) === 0);
 await page.screenshot({ path: `${SHOTS}5-409-refused.png`, fullPage: true });
+*/
 
 // --- 8. Browser health -------------------------------------------------------------------
 console.log('\n8. Browser-level health');
 check('no unexpected console errors', consoleErrors.length === 0, consoleErrors.join(' | ') || 'clean');
 check(
-  'the deliberate 409 was logged by the browser exactly once',
-  expectedConflicts.length === 1,
+  'no 409 was logged (the probe that provoked one is commented out)',
+  expectedConflicts.length === 0,
   `${expectedConflicts.length} occurrence(s)`,
 );
 check('no failed requests', failedRequests.length === 0, failedRequests.join(' | ') || 'clean');

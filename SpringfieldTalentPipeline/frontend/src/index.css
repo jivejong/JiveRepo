@@ -128,6 +128,13 @@ label input { margin-top: 0.15rem; }
 .row input { flex: 1; }
 
 .actions { display: flex; gap: 0.5rem; }
+.page-nav { flex-wrap: wrap; margin-bottom: 1rem; }
+
+[hidden] { display: none !important; }
+
+header { text-align: center; }
+.title { margin: 0 0 0.75rem; }
+.title img { display: block; margin: 0 auto; max-width: 100%; height: auto; border-radius: 8px; }
 button.link {
   background: none; border: none; padding: 0;
   color: #2563a8; text-decoration: underline; cursor: pointer; font-size: 0.85rem;

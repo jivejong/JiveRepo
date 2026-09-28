@@ -424,7 +424,7 @@ fallback exist.
 
 ## Demo frontend
 
-A React front end in [`frontend/`](frontend/) walks the whole story on one screen: open a requisition, rank the pool against it, apply a candidate, score them, interview them, extend an offer, and watch the state machine refuse a second decision.
+A React front end in [`frontend/`](frontend/) walks the whole story across four pages, each with Back / forward buttons and a New requisition button: open a requisition and rank the pool against it (steps 1–2), apply a candidate and score them (3), interview them (4), and extend an offer or reject (5). The "HIRED is terminal" section that used to demonstrate the state machine refusing a second decision is commented out of the UI for now; the refusal itself is unchanged and still covered by the backend tests.
 
 ```bash
 cd frontend

@@ -4,12 +4,12 @@ import { Status } from './Status.jsx';
 import OfferForm, { OfferOutcome } from './OfferForm.jsx';
 
 /**
- * Steps 6-7. Hire or reject, then deliberately attempt a second transition.
+ * Step 5. Extend an offer (walking the application to OFFER first) or reject.
  *
- * The second attempt is the point of the panel. Both HIRED and REJECTED are terminal, so the state
- * machine refuses anything after them and answers 409 with its own account of the current stage and
- * what remains reachable - an empty list. Rendering that body verbatim is the proof; a caught error
- * with a friendly message would throw away the evidence.
+ * The second-transition probe below the outcome is commented out for now. Both HIRED and REJECTED
+ * are terminal, so the state machine refuses anything after them and answers 409 with its own
+ * account of the current stage and what remains reachable - an empty list. Rendering that body
+ * verbatim was the proof; a caught error with a friendly message would throw away the evidence.
  */
 export default function PipelineActions({ application, candidate, onStageChange }) {
   const [stage, setStage] = useState(application.currentStage);
@@ -26,7 +26,7 @@ export default function PipelineActions({ application, candidate, onStageChange 
   /**
    * The happy path, in order. HIRED is reachable only from OFFER, so "hire this candidate" is not
    * one call from SOURCED - it is a walk through every intermediate stage. Sending HIRED directly
-   * is refused with a 409, correctly, which is why the button below advances one stage at a time
+   * is refused with a 409, correctly, which is why Extend offer advances one stage at a time
    * rather than pretending the pipeline can be skipped.
    */
   const ADVANCE_PATH = [STAGE.SOURCED, STAGE.SCREENING, STAGE.INTERVIEWING, STAGE.OFFER, STAGE.HIRED];
@@ -34,7 +34,7 @@ export default function PipelineActions({ application, candidate, onStageChange 
   /**
    * The walk deliberately stops at OFFER. The three hops before it are mechanical pipeline
    * movement; the last one needs a salary from a person, so it happens through the offer form
-   * rather than being auto-completed.
+   * rather than being auto-completed. The form's submit runs the walk and then the offer.
    */
   const WALK_TARGET = STAGE.OFFER;
 
@@ -55,13 +55,17 @@ export default function PipelineActions({ application, candidate, onStageChange 
     }
   }
 
-  /** Advances through every remaining stage up to HIRED, one legal transition at a time. */
-  async function hire() {
+  /**
+   * Advances through every remaining stage up to OFFER, one legal transition at a time. Resolves
+   * true once the application is at OFFER (immediately, if it already is) and false if a hop failed
+   * - the failure has already been put on screen by move().
+   */
+  async function advanceToOffer() {
     const from = ADVANCE_PATH.indexOf(stage);
     if (from === -1) {
-      setError(`${stage} is not on the path to HIRED.`);
+      setError(`${stage} is not on the path to OFFER.`);
       setState('error');
-      return;
+      return false;
     }
     const remaining = ADVANCE_PATH.slice(from + 1, ADVANCE_PATH.indexOf(WALK_TARGET) + 1);
     setWalked([]);
@@ -71,9 +75,10 @@ export default function PipelineActions({ application, candidate, onStageChange 
         await move(next);
         setWalked((done) => [...done, next]);
       } catch {
-        return;
+        return false;
       }
     }
+    return true;
   }
 
   /** Deliberately illegal: HIRED and REJECTED are terminal, so this must be refused. */
@@ -104,39 +109,12 @@ export default function PipelineActions({ application, candidate, onStageChange 
         {allowed.length === 0 && ' · terminal, nothing reachable'}
       </p>
 
-      <div className="actions">
-        <button
-          type="button"
-          onClick={hire}
-          disabled={terminal || stage === STAGE.OFFER || state === 'loading'}
-          data-testid="hire"
-        >
-          {state === 'loading' && walked.length > 0 ? `Advancing… ${stage}` : 'Advance to offer'}
-        </button>
-        <button
-          type="button"
-          onClick={() => move(STAGE.REJECTED)}
-          disabled={terminal || state === 'loading'}
-          data-testid="reject"
-        >
-          Reject
-        </button>
-      </div>
-
-      <Status state={state} error={error} testId="transition" />
-
-      {walked.length > 0 && (
-        <p className="hint" data-testid="walked-path">
-          Walked: {[application.currentStage, ...walked].join(' → ')}
-          {' · '}each hop is a separate legal transition; the walk stops at OFFER because the next
-          step needs a number from you.
-        </p>
-      )}
-
-      {stage === STAGE.OFFER && !offer && (
+      {!terminal && !offer && (
         <OfferForm
           application={application}
           candidate={candidate}
+          onBeforeSubmit={advanceToOffer}
+          disabled={state === 'loading'}
           onDecided={(result) => {
             setOffer(result);
             setStage(result.currentStage);
@@ -145,7 +123,36 @@ export default function PipelineActions({ application, candidate, onStageChange 
         />
       )}
 
+      {!terminal && !offer && (
+        <div className="actions">
+          <button
+            type="button"
+            onClick={() => move(STAGE.REJECTED).catch(() => {})}
+            disabled={state === 'loading'}
+            data-testid="reject"
+          >
+            Reject
+          </button>
+        </div>
+      )}
+
+      <Status state={state} error={error} testId="transition" />
+
+      {walked.length > 0 && (
+        <p className="hint" data-testid="walked-path">
+          Walked: {[application.currentStage, ...walked].join(' → ')}
+          {' · '}each hop is a separate legal transition; the walk stops at OFFER, where the offer
+          itself is submitted.
+        </p>
+      )}
+
       {offer && <OfferOutcome offer={offer} />}
+
+      {/*
+        Hidden for now, and may come back: the "HIRED is terminal" section. It attempts a second
+        transition from a terminal stage and renders the state machine's 409 body verbatim.
+        probeSecondTransition, `probing` and `rejection` above are still live, so restoring this
+        block is a single uncomment.
 
       {terminal && (
         <div className="probe">
@@ -180,6 +187,7 @@ export default function PipelineActions({ application, candidate, onStageChange 
           )}
         </div>
       )}
+      */}
     </section>
   );
 }

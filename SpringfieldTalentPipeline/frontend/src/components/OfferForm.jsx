@@ -16,7 +16,7 @@ const money = new Intl.NumberFormat('en-US', {
  * no second attempt on the same application, which is also how a real offer works. Letting someone
  * edit the amount and resubmit would imply a negotiation the state machine cannot represent.
  */
-export default function OfferForm({ application, candidate, onDecided }) {
+export default function OfferForm({ application, candidate, onBeforeSubmit, onDecided, disabled }) {
   const [amount, setAmount] = useState('45000');
   const [state, setState] = useState('idle');
   const [error, setError] = useState(null);
@@ -32,6 +32,13 @@ export default function OfferForm({ application, candidate, onDecided }) {
     setState('loading');
     setError(null);
     try {
+      // The offer endpoint needs the application at OFFER, so the caller walks it there first.
+      // A failed walk reports its own error, so stop quietly rather than posting an offer that
+      // the state machine would refuse.
+      if (onBeforeSubmit && !(await onBeforeSubmit())) {
+        setState('idle');
+        return;
+      }
       onDecided(await api.extendOffer(application.id, parsed));
     } catch (cause) {
       setError(cause.message);
@@ -42,9 +49,9 @@ export default function OfferForm({ application, candidate, onDecided }) {
   return (
     <div className="probe" data-testid="offer-form">
       <p className="hint">
-        {candidate.name} is at <strong>OFFER</strong>. Enter an annual salary — acceptance is decided
-        against national wage data for their occupation, not by a model, so the same number always
-        gives the same answer.
+        Extend an offer to {candidate.name}. Enter an annual salary — acceptance is decided against
+        national wage data for their occupation, not by a model, so the same number always gives the
+        same answer. The application is moved to <strong>OFFER</strong> first if it isn't there yet.
       </p>
       <form onSubmit={submit}>
         <div className="row">
@@ -62,8 +69,8 @@ export default function OfferForm({ application, candidate, onDecided }) {
             aria-label="Annual salary offer"
             data-testid="offer-amount"
           />
-          <button type="submit" disabled={state === 'loading'} data-testid="offer-submit">
-            {state === 'loading' ? 'Extending…' : 'Extend Offer'}
+          <button type="submit" disabled={disabled || state === 'loading'} data-testid="offer-submit">
+            {state === 'loading' ? 'Extending…' : 'Extend offer'}
           </button>
         </div>
       </form>
