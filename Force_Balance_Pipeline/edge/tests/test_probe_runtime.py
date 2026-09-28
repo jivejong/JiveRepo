@@ -378,6 +378,27 @@ class ControlIntegrationTests(Base):
         self.assertEqual(Counter(e["mode"] for _, _, e in rig.received())["DISCONNECTED"], 3 * 60)
 
 
+class JournaldDrainLoggingTests(Base):
+    def test_a_drain_batch_logs_a_sent_line_and_an_acked_line_with_the_remaining_buffer_depth(self):
+        rig = self.rig(start=START)
+        rig.run(1)                                     # a real first connect, so the cut below is a genuine link loss
+        rig.publisher.cut()
+        rig.publisher.detect_after = 0
+        rig.run_until("2026-09-27T12:16:00")           # one scan (60 rows) buffered while offline
+        self.assertEqual(rig.buffer.depth(), 60)
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            rig.publisher.restore()
+            rig.run(1)
+        lines = [l for l in buf.getvalue().splitlines() if l.startswith("probe: drain batch")]
+        self.assertEqual(lines, ["probe: drain batch sent=60 acked=0 remaining_buffered=60"])
+        buf2 = io.StringIO()
+        with contextlib.redirect_stderr(buf2):
+            rig.run(1)                                  # the fake publisher's ack latency has elapsed by now
+        lines2 = [l for l in buf2.getvalue().splitlines() if l.startswith("probe: drain batch")]
+        self.assertEqual(lines2, ["probe: drain batch sent=60 acked=60 remaining_buffered=0"])
+
+
 class OverflowTests(Base):
     def test_the_oldest_rows_are_dropped_and_one_overflow_event_says_how_many(self):
         rig = self.rig(start=START, cap=200)

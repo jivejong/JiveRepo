@@ -80,6 +80,16 @@ the service restarts, the drain will resend the whole scan, including those alre
 so **13 duplicate `event_id`s in `bronze.events` are expected** from this scan once the drain runs. This is outside the checkpoint
 window and silver dedups on `event_id` (doc 03); noted here so it isn't mistaken for a checkpoint failure later.
 
+**Independent confirmation, from the broker's own log** (`probe-01` lines): a connection at 23:07:16Z (the first Pi version), then
+`probe-01 disconnected: exceeded timeout` at **23:46:34Z** — exactly the landing time of the 13-row partial file above — with no
+disconnect recorded again until the reconnect on the fixed commit (`ca5dae0`). Mosquitto dropped the deadlocked probe for missed
+keepalives (its network thread was the one frozen inside the lock), independently pinning down when the freeze happened, from a
+source outside the probe's own logs.
+
+**A second, related bug found from the same broker log, before the redeploy:** at that later reconnect (02:23:29.580Z) `mode_transitions.jsonl` logged a false `link_lost` — the broker log shows one continuous connection with no disconnect anywhere near it. Root cause: before the probe's first successful connect, `Runtime._link()` reported "not connected" indistinguishably from a real link loss, so `ModeController` recorded a spurious `CONNECTED -> DISCONNECTED -> BURST` instead of going straight to `BURST` on the real first connect. Fixed in `edge/probe/modes.py`: a "waiting for the first connect" state, distinct from a link loss, that a forced `DISCONNECTED` (operator or schedule) still overrides. Also added, per-batch and per-transition, to journald: `edge/probe/runtime.py` now prints a line when a drain batch is sent and another when it is fully acknowledged (sent/acked/remaining), and `edge/probe/modes.py` prints every mode transition alongside its `mode_transitions.jsonl` line. Found and fixed alongside this: the *last* batch of any drain never printed its "acked" line, because `ModeController.update()`'s own backlog-zero check can move the mode out of `BURST` the instant a batch's acks bring the backlog to zero — one tick before `_drain()` would have logged it. Tests for both startup paths (clean, and with a backlog) and the forced-offline override; both suites green (edge 479, ingest 257).
+
+Not yet deployed: the Pi is soaking overnight on `ca5dae0`, the commit before this fix.
+
 ---
 
 Phase 3's core checkpoint (the 45-minute forced `DISCONNECTED` on the Pi, doc 07) has not run yet. It

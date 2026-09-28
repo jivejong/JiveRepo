@@ -13,7 +13,9 @@ synchronised, or not after the last one taken, is skipped and logged, never stam
 Delivery is at-least-once: a batch that is not fully acknowledged stays buffered and is sent again, so a duplicate event_id is possible.
 
 Every completed scan (not a skipped one, which probe.clock's own log already covers) prints one line to stderr, journald on the
-Pi: "probe: scan <scan_id> (<mode>): <n> buffered, <m> published".
+Pi: "probe: scan <scan_id> (<mode>): <n> buffered, <m> published". Every drain batch (BURST) prints two: one when it is sent
+(acked=0 so far) and one when it is fully acknowledged and deleted (acked equals sent), each with the buffer depth remaining at
+that moment — so a stalled drain (a batch sent but never acked) is visible in the log rather than only inferred from silence.
 """
 import json
 import sys
@@ -61,6 +63,7 @@ class Runtime:
     # ---- the loop body --------------------------------------------------------------------------------
     def tick(self, now):
         self._process_acks(now)
+        self._settle_drain_batch(now)
         link_up, reason = self._link(now)
         self.modes.update(now, link_up, self.buffer.depth(), reason)
         self._retime(now)
@@ -162,13 +165,21 @@ class Runtime:
         return sent
 
     # ---- draining --------------------------------------------------------------------------------------
+    def _settle_drain_batch(self, now):
+        """If the batch currently in flight has just been fully acknowledged, log it and clear it, freeing the next tick to send
+        more. Called every tick, unconditionally: modes.update() (right after this) can move the mode out of BURST the instant
+        the backlog it is given reaches 0, and _drain() below only ever runs while mode == BURST — so without this, the very
+        last batch of a drain would never be settled or logged, though the buffer and mode would still end up correct."""
+        if self.drain_ids and not any(i in self.inflight for i in self.drain_ids):
+            acked_n = len(self.drain_ids)
+            self.trace.append((now, f"drain batch of {acked_n} acknowledged and deleted; pausing {self.drain_pause:g} s"))
+            print(f"probe: drain batch sent={acked_n} acked={acked_n} remaining_buffered={self.buffer.depth()}",
+                 file=sys.stderr, flush=True)
+            self.drain_ids, self.resume_at = set(), now + self.drain_pause
+
     def _drain(self, now):
         if self.drain_ids:
-            if any(i in self.inflight for i in self.drain_ids):
-                return                                          # the batch is not fully acknowledged yet
-            self.trace.append((now, f"drain batch of {len(self.drain_ids)} acknowledged and deleted; pausing {self.drain_pause:g} s"))
-            self.drain_ids, self.resume_at = set(), now + self.drain_pause
-            return
+            return                                              # still waiting on _settle_drain_batch to resolve it
         if now < self.resume_at:
             return
         rows = self.buffer.batch(self.drain_batch, exclude=self.inflight)
@@ -178,6 +189,7 @@ class Runtime:
         sent = self._publish(batch, now)
         self.drain_ids = {event_id for event_id, *_ in batch if event_id in self.inflight}
         self.trace.append((now, f"drain batch of {sent} published (oldest first, {self.buffer.depth()} buffered)"))
+        print(f"probe: drain batch sent={sent} acked=0 remaining_buffered={self.buffer.depth()}", file=sys.stderr, flush=True)
 
     # ---- control messages ------------------------------------------------------------------------------
     def on_control(self, payload, now):

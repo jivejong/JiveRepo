@@ -12,11 +12,19 @@ One mode at a time, decided each tick from three inputs:
   otherwise                                                 -> the requested base mode (CONNECTED or STEALTH)
 
 The schedule (doc 04: DISCONNECTED 1-3 hours, roughly twice a day) is a simulated outage and is OFF unless a ModeSchedule is given.
-Every change of (mode, offline) is appended to mode_transitions.jsonl: ts_utc, from, to, offline, reason, backlog. That file, not the
-wall clock, is the proof of an outage (doc 07, Phase 3 checkpoint).
+Every change of (mode, offline) is appended to mode_transitions.jsonl: ts_utc, from, to, offline, reason, backlog (also printed to
+stderr/journald, one line per transition). That file, not the wall clock, is the proof of an outage (doc 07, Phase 3 checkpoint).
+
+Before the probe's very first successful connect, link_up is False for a reason that is not a link loss: there has never been a
+link to lose. update() treats that specifically (found live: the broker log showed one continuous connection with no disconnect
+near a restart that mode_transitions.jsonl nonetheless logged as "link_lost") — nothing is recorded while waiting for it, so
+CONNECTED (the constructed default) is never read as the `from` of a transition before on_connect has ever fired, and the first
+real connect goes straight to BURST with reason startup_backlog if there is one, never through a false DISCONNECTED step. A
+forced DISCONNECTED (operator or schedule) is honoured even during that wait, since it has nothing to do with the link.
 """
 import json
 import random
+import sys
 from pathlib import Path
 
 from .clock import iso
@@ -61,6 +69,7 @@ class ModeController:
         self._drain_reason = "startup_backlog" if backlog > 0 else "link_restored"
         self._forced_by = None               # "operator" or "schedule" while a requested outage is what keeps the probe offline
         self._last_source = "default"        # who asked for the mode in force on the previous tick
+        self._ever_connected = False         # the probe has not yet completed its first real MQTT connect
         self._record(now, None, "startup", backlog)
 
     def force(self, mode, until=None):
@@ -83,6 +92,10 @@ class ModeController:
     def update(self, now, link_up, backlog, link_reason=None):
         requested, source = self._requested(now)
         forced_offline = requested == DISCONNECTED
+        if link_up:
+            self._ever_connected = True
+        elif not self._ever_connected and not forced_offline:
+            return self.mode              # waiting for the first connect (see the module docstring): not a link loss
         base = STEALTH if requested == STEALTH else CONNECTED
         offline = forced_offline or not link_up
         ended = f"{self._forced_by}_ended" if self._forced_by else "link_restored"
@@ -123,3 +136,5 @@ class ModeController:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8", newline=chr(10)) as f:
             f.write(json.dumps(entry, separators=(",", ":")) + chr(10))
+        print(f"probe: mode {entry['from']} -> {entry['to']} ({reason}, offline={entry['offline']}, backlog={backlog})",
+             file=sys.stderr, flush=True)

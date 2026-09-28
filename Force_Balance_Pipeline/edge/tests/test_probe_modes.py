@@ -1,5 +1,7 @@
 """The mode controller (doc 04, The four modes; doc 07): one mode at a time, every transition logged with a reason, DISCONNECTED on a
 lost or forced link, BURST on the way back with a backlog, STEALTH keeps its label offline, and the schedule is OFF by default. Offline."""
+import contextlib
+import io
 import json
 import shutil
 import sys
@@ -39,6 +41,16 @@ class TransitionTests(Base):
         self.assertEqual(self.pairs(), [(None, CONNECTED, "startup")])
         self.assertEqual(self.lines()[0]["ts_utc"], "2026-09-21T14:15:00.000Z")
 
+    def test_every_transition_is_also_printed_to_stderr_for_journald(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            c = self.controller()
+            c.update(T0 + 0.5, True, 0)                  # establish the first connect; no print (no transition)
+            c.update(T0 + 1, False, 0, "link_lost:keepalive")
+        self.assertEqual(buf.getvalue().splitlines(),
+                         ["probe: mode None -> CONNECTED (startup, offline=False, backlog=0)",
+                          "probe: mode CONNECTED -> DISCONNECTED (link_lost:keepalive, offline=True, backlog=0)"])
+
     def test_a_steady_link_logs_nothing_more(self):
         c = self.controller()
         for i in range(50):
@@ -47,6 +59,7 @@ class TransitionTests(Base):
 
     def test_a_lost_link_is_disconnected_with_the_reason_and_a_restored_one_is_burst_then_connected(self):
         c = self.controller()
+        c.update(T0 + 0.5, True, 0)                          # establish the first real connect; a later loss is a genuine one
         c.update(T0 + 1, False, 0, "link_lost:keepalive")
         c.update(T0 + 2, False, 180)
         c.update(T0 + 3, True, 180)
@@ -58,12 +71,14 @@ class TransitionTests(Base):
 
     def test_each_entry_says_whether_the_probe_is_offline(self):
         c = self.controller()
+        c.update(T0 + 0.5, True, 0)
         c.update(T0 + 1, False, 0, "link_lost:x")
         c.update(T0 + 2, True, 5)
         self.assertEqual([e["offline"] for e in self.lines()], [False, True, False])
 
     def test_a_restored_link_with_nothing_buffered_goes_straight_to_connected(self):
         c = self.controller()
+        c.update(T0 + 0.5, True, 0)
         c.update(T0 + 1, False, 0, "link_lost:x")
         c.update(T0 + 2, True, 0)
         self.assertEqual(self.pairs()[-1], (DISCONNECTED, CONNECTED, "link_restored"))
@@ -86,11 +101,52 @@ class TransitionTests(Base):
         self.assertEqual(self.pairs(), [(None, CONNECTED, "startup"), (CONNECTED, BURST, "startup_backlog"),
                                         (BURST, CONNECTED, "drain_complete")])
 
-    def test_a_restart_while_still_cut_is_disconnected_first(self):
+    def test_a_restart_while_still_cut_goes_straight_to_burst_once_it_connects(self):
+        """Found live on the Pi (the broker log showed one continuous connection, no disconnect near a restart that
+        mode_transitions.jsonl nonetheless logged as a link loss): while still cut, the probe has never connected in
+        this process, so that is not a link loss and nothing is recorded for it; the real first connect goes straight
+        to BURST with the startup backlog reason, never through a false DISCONNECTED step."""
         c = self.controller(backlog=220)
-        c.update(T0 + 1, False, 220, "link_lost:client_disconnected")
-        c.update(T0 + 2, True, 220)
-        self.assertEqual([p[:2] for p in self.pairs()], [(None, CONNECTED), (CONNECTED, DISCONNECTED), (DISCONNECTED, BURST)])
+        c.update(T0 + 1, False, 220, "link_lost:client_disconnected")   # still cut: not yet connected, nothing recorded
+        c.update(T0 + 2, True, 220)                                      # the real first connect
+        self.assertEqual([p[:2] for p in self.pairs()], [(None, CONNECTED), (CONNECTED, BURST)])
+        self.assertEqual(self.pairs()[-1][2], "startup_backlog")
+
+
+class StartupConnectTests(Base):
+    """Before the probe's first successful connect, link_up is False for a reason that is not a link loss (found live on the Pi:
+    the broker log showed one continuous connection, no disconnect near a restart mode_transitions.jsonl logged as one anyway).
+    Both startup paths, with nothing forced."""
+
+    def test_waiting_for_the_first_connect_logs_nothing_and_a_clean_first_connect_with_no_backlog_logs_nothing_either(self):
+        c = self.controller()
+        for i in range(5):
+            c.update(T0 + i, False, 0)                    # still waiting for the first connect; not a link loss
+        self.assertEqual(self.pairs(), [(None, CONNECTED, "startup")])            # nothing recorded for the wait
+        self.assertEqual((c.mode, c.offline), (CONNECTED, False))
+        c.update(T0 + 5, True, 0)                          # the real first connect; nothing was buffered, so nothing to drain
+        self.assertEqual(self.pairs(), [(None, CONNECTED, "startup")])            # still nothing: no false DISCONNECTED/BURST
+        self.assertEqual((c.mode, c.offline), (CONNECTED, False))
+
+    def test_waiting_for_the_first_connect_with_a_backlog_goes_straight_to_burst_not_through_disconnected(self):
+        c = self.controller(backlog=60)
+        for i in range(5):
+            c.update(T0 + i, False, 60)                    # still waiting; the backlog from disk changes nothing here
+        self.assertEqual(self.pairs(), [(None, CONNECTED, "startup")])
+        c.update(T0 + 5, True, 60)                         # the real first connect: straight to BURST
+        self.assertEqual([p[:2] for p in self.pairs()], [(None, CONNECTED), (CONNECTED, BURST)])
+        self.assertEqual(self.pairs()[-1][2], "startup_backlog")
+        c.update(T0 + 6, True, 0)
+        self.assertEqual(c.mode, CONNECTED)
+        self.assertEqual(self.pairs()[-1], (BURST, CONNECTED, "drain_complete"))
+
+    def test_a_forced_disconnected_is_honoured_even_while_waiting_for_the_first_connect(self):
+        """A forced outage has nothing to do with the link, so it is not suppressed by the first-connect wait."""
+        c = self.controller()
+        c.force(DISCONNECTED, until=T0 + 50)
+        c.update(T0 + 1, False, 0)                          # never connected AND forced offline: the force still applies
+        self.assertEqual((c.mode, c.offline), (DISCONNECTED, True))
+        self.assertEqual(self.pairs()[-1], (CONNECTED, DISCONNECTED, "operator"))
 
 
 class OverrideTests(Base):
