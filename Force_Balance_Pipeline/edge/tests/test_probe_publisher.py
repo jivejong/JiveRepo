@@ -4,6 +4,7 @@ This cannot prove behaviour against a real broker; that is the desktop and Pi st
 import contextlib
 import io
 import sys
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -123,6 +124,24 @@ class ConnectionTests(unittest.TestCase):
         self.assertEqual(p.acked(), [])
 
 
+class PollingReconciliationTests(unittest.TestCase):
+    def test_acked_alone_with_no_further_publish_drains_the_queue(self):
+        """on_publish only queues a mid (module docstring); the main loop's own polling — Runtime._process_acks(), called on
+        every tick() regardless of whether a scan is due, about twice a second in production (main.py) — is what moves it out
+        via acked(), not a later publish() call. Proved directly: publish some rows, ack them, then call ONLY acked(),
+        repeatedly, with no publish() anywhere below."""
+        p = publisher()
+        connect(p)
+        mids = {}
+        for key in ("E1", "E2", "E3"):
+            self.assertTrue(p.publish("t", b"x", key))
+            mids[key] = p.client.mids                          # the mid FakeClient.publish() just assigned
+        for mid in mids.values():
+            p._on_publish(p.client, None, mid)                 # the network thread's PUBACKs; publish() is never called again
+        self.assertEqual(sorted(p.acked()), ["E1", "E2", "E3"])
+        self.assertEqual(p._pending, {})
+
+
 class JournaldLoggingTests(unittest.TestCase):
     """Every connect and disconnect is one line to stderr, so `journalctl -u force-probe` shows it on the Pi (no test here
     starts a real journald; it only checks the line is printed)."""
@@ -228,6 +247,57 @@ class PubackRaceTests(unittest.TestCase):
             deadline.wait(0.02)
         else:
             self.fail("the PUBACK that raced publish() was lost")
+
+    def test_a_puback_queued_before_its_mid_is_registered_is_still_reconciled(self):
+        """The same race, driven directly rather than through a racing thread: on_publish's mid reaches the queue before
+        publish() gets to register it in _pending. No lock is involved anywhere in resolving this."""
+        p = publisher()
+        connect(p)
+        p.client.mids = 0                                          # the next FakeClient.publish() call will return mid 1
+        p._on_publish(p.client, None, 1)                            # ...but its ack is already here, queued ahead of registration
+        self.assertTrue(p.publish("t", b"x", "E1"))
+        self.assertEqual(p.acked(), ["E1"])
+        self.assertEqual(p._pending, {})
+        self.assertEqual(p._early_acks, set())
+
+
+class DeadlockRegressionTests(unittest.TestCase):
+    """Reproduces the exact cycle py-spy found live on the Pi: the main thread inside a paho call, holding the probe lock, while
+    paho's network thread runs on_publish. If on_publish ever needs that lock again, this hangs (bounded by a join timeout, so a
+    regression fails loudly here in well under a second instead of wedging the whole suite)."""
+
+    def test_on_publish_never_waits_on_the_probe_lock(self):
+        p = publisher()
+        connect(p)
+        p._lock.acquire()                                          # simulate: this thread is inside client.publish(), lock held
+        try:
+            done = threading.Event()
+
+            def network_thread():
+                p._on_publish(p.client, None, 1)
+                done.set()
+            t = threading.Thread(target=network_thread, daemon=True)
+            t.start()
+            got = done.wait(2.0)
+        finally:
+            p._lock.release()
+        t.join(2.0)
+        self.assertTrue(got, "on_publish blocked on the probe lock: the lock-order-inversion deadlock is back")
+
+    def test_publish_never_holds_the_probe_lock_across_the_paho_call(self):
+        """A paho client whose publish() checks, from a second thread, that the probe lock is free at the moment paho is
+        actually called — the paho call is exactly where the real deadlock happens, so this is where it must be free."""
+        seen_locked = []
+
+        class CheckingClient(FakeClient):
+            def publish(self, topic, payload, qos):
+                seen_locked.append(p._lock.locked())
+                return super().publish(topic, payload, qos)
+        fake = SimpleNamespace(Client=CheckingClient, CallbackAPIVersion=FAKE_MQTT.CallbackAPIVersion, MQTT_ERR_SUCCESS=0)
+        p = MqttPublisher(host="h", port=1883, client_id="probe-01", mqtt=fake)
+        connect(p)
+        self.assertTrue(p.publish("t", b"x", "E1"))
+        self.assertEqual(seen_locked, [False])
 
 
 if __name__ == "__main__":

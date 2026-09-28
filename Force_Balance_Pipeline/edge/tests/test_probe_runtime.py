@@ -36,6 +36,20 @@ class Base(unittest.TestCase):
 
 
 class SteadyStateTests(Base):
+    def test_a_scans_rows_are_deleted_within_seconds_by_the_main_loops_own_polling_not_by_the_next_scans_publish(self):
+        """publisher.on_publish only queues a mid; nothing dequeues it until something calls acked(). That something is
+        Runtime._process_acks(), the first thing tick() does on every call, regardless of whether a scan is due — in
+        production, about twice a second (probe/runtime.py's module docstring; main.py sleeps 0.5s between ticks). This
+        isolates one scan and stops 835 s short of the next one, so a later publish()'s own reconciliation cannot be
+        what explains the drain away."""
+        rig = self.rig(start=START)
+        rig.run(900 + 5)                              # exactly one scan, taken at +903 (boundary + SCAN_DURATION)
+        self.assertEqual(len(rig.received()), 60)
+        self.assertEqual(rig.buffer.depth(), 0, "not drained within seconds of the PUBACKs, though nothing published since")
+        rig.run(60)                                   # +65 s past the scan; the next one is 835 s away
+        self.assertEqual(rig.buffer.depth(), 0)
+        self.assertEqual(len(rig.received()), 60, "a further publish would explain the drain away; there wasn't one")
+
     def test_scans_are_taken_on_the_quarter_hour_60_readings_each(self):
         rig = self.rig(start=START)
         rig.run(3600 + 5)

@@ -55,5 +55,32 @@ files 1 and 2**, on ingest time (doc 02), each file in its own `dt=/hh=` prefix.
 
 ---
 
+## Step 5 finding: a lock-order-inversion deadlock in the publisher, live on the Pi
+
+While enabling `force-probe` (Step 5), the service deadlocked partway through the 23:45Z scan. `py-spy` on the Pi showed the main
+thread inside paho's `client.publish()` (`client.py:1787`, waiting on paho's own `_out_message_mutex`) while holding the probe's
+lock, and paho's network thread inside `on_publish` (`publisher.py:69`, called from `_handle_pubackcomp` while that same paho
+mutex was held) waiting on the probe lock — a lock-order inversion introduced when an earlier fix this phase (the PUBACK-loss race,
+Step 2) held that lock across the paho call. Fixed in `edge/probe/publisher.py`: `on_publish` now only puts the acknowledged mid
+on a `queue.Queue` (no lock, never blocks); `publish()` never calls into paho while holding the probe lock; the early-PUBACK race
+is handled by draining that queue and checking a set of "acked before its mid was registered" mids, entirely on the one thread
+that calls `publish()`/`acked()`.
+
+Verified against a real `paho-mqtt` client and a real (throwaway, local, anonymous) broker, not the offline fake: 30,000 QoS 1
+publishes in unthrottled chunks of 500 (doc 04's drain batch size), every one acknowledged exactly once, no hang. Confirmed this
+reproduces the exact deadlock when the old pattern is restored — a tight, unthrottled run of 50,000+ hangs indefinitely; the same
+scenario against the offline fake client never hangs, because the fake has no internal lock of its own to invert against, which is
+why this needed a real broker to catch at all. `edge/tests/stress_publisher_broker.py` (kept out of the offline `test_*.py` sweep
+on purpose; needs Docker).
+
+**Consequence for this run, recorded rather than cleaned up:** the buffer held all 60 readings of the 23:45Z scan safely (nothing
+was lost — the write-ahead buffer is exactly what this durability layer is for). 13 of those 60 had already been published and
+landed in `bronze.events` (the third file in the table above) before the deadlock froze the service. Once the fix is deployed and
+the service restarts, the drain will resend the whole scan, including those already-landed 13 — at-least-once delivery, doc 04 —
+so **13 duplicate `event_id`s in `bronze.events` are expected** from this scan once the drain runs. This is outside the checkpoint
+window and silver dedups on `event_id` (doc 03); noted here so it isn't mistaken for a checkpoint failure later.
+
+---
+
 Phase 3's core checkpoint (the 45-minute forced `DISCONNECTED` on the Pi, doc 07) has not run yet. It
 follows in a later section once Step 4 (Pi deployment) and Step 5 (the checkpoint itself) are done.

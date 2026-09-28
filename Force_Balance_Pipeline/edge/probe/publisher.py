@@ -15,7 +15,24 @@ the broker is unreachable. Credentials come from the caller (the environment), n
 Every connect and disconnect prints one line to stderr (systemd sends that to journald): "probe: MQTT connected ..." or
 "probe: MQTT disconnected: <reason>" / "probe: MQTT connect refused: <reason>", the same reasons the runtime's mode_transitions.jsonl
 uses, so the two can be read side by side.
+
+Concurrency (found the hard way, via py-spy on the Pi, and reproduced here at edge/tests/stress_publisher_broker.py against a real
+broker): paho's own client.publish() (paho-mqtt 2.1.0/2.1.2, client.py) holds paho's _out_message_mutex for the whole call, and
+paho's network thread holds that SAME mutex while it runs _handle_pubackcomp -> _do_on_publish -> our on_publish callback. An
+earlier version of this file held self._lock across self.client.publish() to close the early-PUBACK race below — that is a
+lock-order inversion: this thread holds self._lock wanting paho's mutex; paho's network thread holds paho's mutex wanting
+self._lock. Deadlock (confirmed: a real client against a real broker hangs forever under enough volume; it did not reproduce
+against the offline FakeClient in test_probe_publisher.py, which has no internal lock of its own to invert against). The rule now
+is absolute: on_publish never touches self._lock (or any lock) and never blocks, and publish() never calls into paho while holding
+self._lock.
+
+on_publish instead only puts the acknowledged mid on a queue.Queue (thread-safe on its own, no lock needed). _pending, _early_acks
+and _acked are touched only by the single thread that calls publish()/acked() (the runtime's tick() thread) — paho's network thread
+never reaches them directly. The one remaining race, handled explicitly: a PUBACK for a publish can be queued by the network thread
+before this thread's publish() has registered that mid in _pending. publish() drains the queue and checks _early_acks for its own
+mid right after the paho call returns, so that PUBACK is never lost.
 """
+import queue
 import sys
 import threading
 
@@ -28,9 +45,10 @@ class MqttPublisher:
         self._mqtt = mqtt
         self.host, self.port, self.keepalive = host, port, keepalive
         self.control_topic, self.on_control = control_topic, on_control
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()                  # guards ONLY _connected / disconnect_reason; never held across a paho call
         self._connected, self.disconnect_reason = False, None
-        self._pending, self._acked = {}, []
+        self._acked_mids = queue.Queue()                # on_publish (network thread) -> publish()/acked() (the one caller thread)
+        self._pending, self._early_acks, self._acked = {}, set(), []
         # clean_session=True: a reconnect starts a fresh session, so nothing stale is resent by the broker; anything unacknowledged
         # is still in the SQLite buffer and is resent by the drain (delivery is at-least-once, doc 04).
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, clean_session=True)
@@ -62,14 +80,13 @@ class MqttPublisher:
         with self._lock:
             self._connected = False
             self.disconnect_reason = reason
-            self._pending.clear()
+        self._forget_inflight()
         print(f"probe: MQTT disconnected: {reason}", file=sys.stderr, flush=True)
 
     def _on_publish(self, client, userdata, mid, reason_code=None, properties=None):
-        with self._lock:
-            key = self._pending.pop(mid, None)
-            if key is not None:
-                self._acked.append(key)
+        # Runs on paho's network thread, sometimes while paho's own internal lock is held (_handle_pubackcomp calls this directly).
+        # No lock, no blocking call of any kind here — see the module docstring.
+        self._acked_mids.put(mid)
 
     def _on_message(self, client, userdata, message):
         if self.on_control is not None:
@@ -82,30 +99,60 @@ class MqttPublisher:
             return self._connected
 
     def publish(self, topic, payload, key):
-        # The lock is held across the paho call: a PUBACK handled on paho's network thread before this method has recorded the message id
-        # would otherwise find nothing pending, the row would never be confirmed, and it would be sent again. (RLock: paho may call back
-        # on this thread.)
         with self._lock:
             if not self._connected:
                 return False
-            info = self.client.publish(topic, payload, qos=1)
-            if info.rc != self._mqtt.MQTT_ERR_SUCCESS:
-                return False
+        # Never call into paho while holding self._lock (see the module docstring: this is exactly the inversion py-spy found).
+        info = self.client.publish(topic, payload, qos=1)
+        if info.rc != self._mqtt.MQTT_ERR_SUCCESS:
+            return False
+        self._drain_acks()                              # a PUBACK for this very mid can race ahead of the next two lines
+        if info.mid in self._early_acks:
+            self._early_acks.discard(info.mid)
+            self._acked.append(key)
+        else:
             self._pending[info.mid] = key
-            return True
+        return True
 
     def acked(self):
-        with self._lock:
-            out, self._acked = self._acked, []
-            return out
+        self._drain_acks()
+        out, self._acked = self._acked, []
+        return out
 
     def reset(self):
         with self._lock:
             self._connected, self.disconnect_reason = False, "publish_unacked"
-            self._pending.clear()
+        self._forget_inflight()
         self.client.disconnect()
         self.client.connect_async(self.host, self.port, self.keepalive)
 
     def close(self):
         self.client.loop_stop()
         self.client.disconnect()
+
+    # ---- internal: caller-thread-only state (see the module docstring) --------------------------------------
+    def _drain_acks(self):
+        """Move every mid on_publish has queued so far into _acked (its key was already pending) or _early_acks (publish()
+        has not registered that mid yet). Touches no lock and makes no paho call."""
+        while True:
+            try:
+                mid = self._acked_mids.get_nowait()
+            except queue.Empty:
+                return
+            key = self._pending.pop(mid, None)
+            if key is not None:
+                self._acked.append(key)
+            else:
+                self._early_acks.add(mid)
+
+    def _forget_inflight(self):
+        """Nothing in flight can be trusted after a disconnect or a reset: the rows stay in the SQLite buffer and are sent again by
+        the drain (at-least-once, doc 04). Safe to call from either thread: no lock, no paho call, and dict/set/queue operations are
+        each atomic under the GIL, so the worst a race does is discard an entry that a disconnect should discard anyway."""
+        self._pending.clear()
+        self._early_acks.clear()
+        while True:
+            try:
+                self._acked_mids.get_nowait()
+            except queue.Empty:
+                return
