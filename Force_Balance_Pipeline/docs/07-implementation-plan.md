@@ -123,6 +123,8 @@ fault injection off (`--fault-rate 0`) so the outage rows are clean; fault injec
 
 This checkpoint is the project's core claim. Do not proceed until it holds.
 
+**Met, 2026-09-29.** See PHASE3-RESULTS.md, "Phase 3 checkpoint (2026-09-29): MET".
+
 **Decided, 2026-09-28, not built yet:** an accidental Pi power loss showed a real gap — `mode_transitions.jsonl`'s `startup` entry
 can be stamped before NTP sync corrects the clock (readings are guarded by `NTPSynchronized`; mode-transition writes weren't). Fix
 chosen: defer those writes until the clock is confirmed synced once, then log one snapshot noting any transitions and a

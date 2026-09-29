@@ -182,5 +182,172 @@ gated) is what stamps `_ingest_ts`, and the Pi's `event_time`s are already prote
 
 ---
 
-Phase 3's core checkpoint (the 45-minute forced `DISCONNECTED` on the Pi, doc 07) has not run yet. It
-follows in a later section once Step 4 (Pi deployment) and Step 5 (the checkpoint itself) are done.
+## Phase 3 checkpoint (2026-09-29): MET
+
+The project's core claim (doc 07): force `DISCONNECTED`, restore, and `bronze.events` holds the buffered scans with `event_time`
+spanning the outage, arrival clustered at the replay, no gaps, no duplicates; separately, `STEALTH` rows arrive with two null
+channels. Recorded from the Pi's UTC journal (`journalctl -u force-probe --utc`) and the workspace SQL editor's output only.
+
+### The outage, from the journal
+
+```
+Sep 29 13:32:53 JiveRPI3 systemd[1]: Started force-probe.service - Force Balance Pipeline probe (Raspberry Pi 3).
+Sep 29 13:32:54 JiveRPI3 python[3701]: probe: mode None -> CONNECTED (startup, offline=False, backlog=0)
+Sep 29 13:32:54 JiveRPI3 python[3701]: probe: probe-01 version b16f0b29a57e5231fd01149fe213a166156584b4; state /var/lib/force-probe; faults x0; mode schedule off; buffer 0 rows
+Sep 29 13:33:24 JiveRPI3 python[3701]: probe: mode CONNECTED -> DISCONNECTED (no_initial_connect, offline=True, backlog=0)
+Sep 29 13:35:30 JiveRPI3 python[3701]: probe: MQTT connected (session present: False)
+Sep 29 13:35:30 JiveRPI3 python[3701]: probe: mode DISCONNECTED -> CONNECTED (link_restored, offline=False, backlog=0)
+Sep 29 13:45:03 JiveRPI3 python[3701]: probe: scan 01M3PPJPV0CQJ8KW287ZD6WK9J (CONNECTED): 60 buffered, 60 published
+Sep 29 14:00:03 JiveRPI3 python[3701]: probe: scan 01M3PQE5R0J00T9VN2B809MM2N (CONNECTED): 60 buffered, 60 published
+Sep 29 14:15:03 JiveRPI3 python[3701]: probe: scan 01M3PR9MN00VZW2C9KV09RQT3V (CONNECTED): 60 buffered, 60 published
+Sep 29 14:19:05 JiveRPI3 python[3701]: probe: MQTT disconnected: client_disconnected:Unspecified error
+Sep 29 14:19:05 JiveRPI3 python[3701]: probe: mode CONNECTED -> DISCONNECTED (link_lost:client_disconnected:Unspecified error, offline=True, backlog=0)
+Sep 29 14:30:03 JiveRPI3 python[3701]: probe: scan 01M3PS53J0T8PXZF29VTZ4FSST (DISCONNECTED): 60 buffered, 0 published
+Sep 29 14:45:03 JiveRPI3 python[3701]: probe: scan 01M3PT0JF0NZNAKSSFYYYCQ61A (DISCONNECTED): 60 buffered, 0 published
+Sep 29 15:00:03 JiveRPI3 python[3701]: probe: scan 01M3PTW1C09MP9SYB385NWB67H (DISCONNECTED): 60 buffered, 0 published
+Sep 29 15:01:57 JiveRPI3 python[3701]: probe: MQTT connected (session present: False)
+Sep 29 15:01:57 JiveRPI3 python[3701]: probe: mode DISCONNECTED -> BURST (link_restored, offline=False, backlog=180)
+Sep 29 15:01:57 JiveRPI3 python[3701]: probe: drain batch sent=180 acked=0 remaining_buffered=180
+Sep 29 15:01:57 JiveRPI3 python[3701]: probe: drain batch sent=180 acked=180 remaining_buffered=0
+Sep 29 15:01:57 JiveRPI3 python[3701]: probe: mode BURST -> CONNECTED (drain_complete, offline=False, backlog=0)
+Sep 29 15:15:03 JiveRPI3 python[3701]: probe: scan 01M3PVQG90WY0MDH43RP2KVXYA (CONNECTED): 60 buffered, 60 published
+```
+The restore is in the journal after all (`DISCONNECTED -> BURST` then `BURST -> CONNECTED`, all inside the same second, 15:01:57),
+and the Pi's own `mode_transitions.jsonl` (`sudo tail -n 2`) gives it to millisecond precision:
+```
+{"ts_utc":"2026-09-29T14:19:05.866Z","from":"CONNECTED","to":"DISCONNECTED","offline":true,"reason":"link_lost:client_disconnected:Unspecified error","backlog":0}
+{"ts_utc":"2026-09-29T15:01:57.431Z","from":"DISCONNECTED","to":"BURST","offline":false,"reason":"link_restored","backlog":180}
+```
+`<outage_start_utc>` = **2026-09-29T14:19:05.866Z** and `<outage_end_utc>` = **2026-09-29T15:01:57.431Z** (the mode leaving `offline`),
+both now directly evidenced by the mode log itself, not approximated from the second-precision journal or the replay's landing time.
+The outage was **42 minutes 51.565 seconds**, short of the planned 45. The replay's first landing (15:01:59.000Z, LIST below) follows
+the reconnect by 1.569 s — the drain, not a separate event, consistent with both being logged in the same journal second (15:01:57).
+
+Also visible: the boot-with-no-broker fix, live on hardware for the first time. At `13:33:24Z`, 30 s after `startup` (`ack_timeout`),
+with no connection yet, the probe correctly recorded `DISCONNECTED` with reason `no_initial_connect` rather than staying silently
+`CONNECTED`; at `13:35:30Z` the real connect arrived and it went straight back to `CONNECTED` (`link_restored`; nothing was
+buffered in those two minutes, so there was nothing to drain).
+
+### LIST (`/Volumes/force/raw/telemetry/dt=2026-09-29/hh=15/`)
+
+| file | size (bytes) | modification_time (UTC) |
+|---|---|---|
+| `probe-01-01M3PTZM3CYJR0WNJ75K3STV6Z.ndjson` | 24,157 | 2026-09-29T15:01:59.000Z |
+| `probe-01-01M3PTZM4A7B2NXV8S9RQ3YYTG.ndjson` | 24,159 | 2026-09-29T15:02:00.000Z |
+| `probe-01-01M3PTZM5G5MRYN2GXHYGRYZ3F.ndjson` | 24,159 | 2026-09-29T15:02:01.000Z |
+| `probe-01-01M3PVQKSGYF9FRF38CPMGXEYS.ndjson` | 23,979 | 2026-09-29T15:15:05.000Z |
+| `probe-01-01M3PWK2Y38FQ00710BC3AMB5Q.ndjson` | 23,976 | 2026-09-29T15:30:05.000Z |
+
+The three replay files land within 2 seconds of each other, well ahead of the two normal ones 15 minutes apart. **The replay files
+are about 180 bytes (3 bytes/line) larger than a normal file**: `"mode":"DISCONNECTED"` (12 characters) versus `"mode":"CONNECTED"`
+(9) in every line, because a row keeps the mode it had when it was taken (doc 02), not the mode it was sent under. Confirmed exactly:
+`24157 - 23976 = 181` and `24159 - 23979 = 180`, both `/60 ≈ 3` bytes/line, `len("DISCONNECTED") - len("CONNECTED") = 3`.
+
+**Independent confirmation, from the desktop bridge's own log** (not the workspace): the same three files, same byte counts,
+appear as three consecutive `landed` lines with no other line between them —
+```
+bridge: landed dt=2026-09-29/hh=15/probe-01-01M3PTZM3CYJR0WNJ75K3STV6Z.ndjson (60 lines, 24157 bytes)
+bridge: landed dt=2026-09-29/hh=15/probe-01-01M3PTZM4A7B2NXV8S9RQ3YYTG.ndjson (60 lines, 24159 bytes)
+bridge: landed dt=2026-09-29/hh=15/probe-01-01M3PTZM5G5MRYN2GXHYGRYZ3F.ndjson (60 lines, 24159 bytes)
+```
+bracketed by its own periodic stats line reading `files=148` beforehand and `files=151 ... last_flush=2026-09-29T15:02:00Z`
+right after — a source independent of both the workspace SQL and the Pi's journal, agreeing with the LIST table above file for
+file, byte for byte.
+
+### `phase3_checkpoint.sql`
+
+| Query | Result | Note |
+|---|---|---|
+| p3-3b | `files=3 n=180 first_landed=2026-09-29T15:01:59.000+00:00 last_landed=2026-09-29T15:02:01.000+00:00 landing_spread_s=2 min_lag_s=119 max_lag_s=1919 rows_replayed=60` | **Pass.** `landing_spread_s=2` (the three files land within 2 s); `max_lag_s=1919 > 1800` (the oldest, 14:30Z, scan); `min_lag_s=119` (the newest, 15:00Z, scan) is small; `rows_replayed=60`, only the oldest scan. Proves "clustered at replay" from the landed files themselves, independent of the notebook. |
+| p3-0 | `live_readings_before=9493 newest_event_time=2026-09-29T15:30:02.950+00:00` | **Run after the cut, not as a pre-cut baseline** — `newest_event_time` is the just-landed 15:30Z scan, so this is a running total at the time the query was run, not a "before" snapshot to diff against. |
+| p3-1 | `n=180 scans=3 sectors=60 first_event=2026-09-29T14:30:00.000+00:00 last_event=2026-09-29T15:00:02.950+00:00` | **Pass.** 180 rows, 3 scans, 60 sectors, spanning the outage (14:30, 14:45, 15:00Z). |
+| p3-2 | `DISCONNECTED 180 3` | **Pass.** All 180 rows `DISCONNECTED` — no row taken close enough to detection to still read `CONNECTED` this time (the cut landed well before the next boundary, unlike the earlier drill). |
+| p3-3 | `first_ingest=last_ingest=2026-09-29T15:36:50.031+00:00 min_lag_s=2208 max_lag_s=4010 rows_replayed=180` | **Illustrates the doc 03 OPEN item, not a failure.** The notebook ran once, at `15:36:50Z`, well after the replay landed (`15:02Z`) and after the two live scans that followed (`15:15Z`, `15:30Z`); `_ingest_ts` stamps all of them alike, so every row looks equally "late" and `rows_replayed=180` instead of the true 60. p3-3b, above, is the proof that does not depend on when the notebook ran. |
+| p3-4 | `slots_seen=6 slots_expected=6` | **Pass.** No gaps. |
+| p3-5 | `duplicate_event_ids=0 scans_not_60=0` | **Pass.** No duplicate `event_id`s, and every scan has exactly 60 rows. |
+| p3-6 | `2026-09-29 15 3 180` | **Pass.** One `dt`/`hh` group, the ingest hour (15), not the event hours (14 and 15 on the event side too, as it happens, but by ingest time, not event time) — `files=3`, `n=180`. |
+| p3-7 | `n=60 scans=1 two_null_channels=60 dark_present=60 temperature_absent=60 first_scan=2026-09-28T19:00:00.000+00:00 last_scan=2026-09-28T19:00:02.950+00:00` | **Pass.** The content-level confirmation of the `STEALTH` scan already recorded by its landing size, above: both channels null, `dark_side_activity` present, `sensor_temp_c` absent, on every one of the 60 rows. |
+| p3-9 | `housekeeping_events=0 most_dropped=null` | **Pass.** The buffer never reached its cap. |
+
+**Checkpoint verdict: MET.** p3-1, p3-2, p3-4, p3-6, p3-7 and p3-9 pass outright; p3-3b independently proves the "clustered at
+replay" claim that p3-3 alone could not, for the reason recorded as doc 03's OPEN item; p3-0 and p3-5 are recorded exactly as given,
+with their caveats, rather than marked pass. See doc 07 for the pointer from the checkpoint's own text.
+
+---
+
+## Unplanned outage, 2026-09-29
+
+A real, local connectivity loss, later the same evening — not a scheduled event (the mode schedule was not deployed until after
+tonight's commits) and not forced by an operator. Recorded from `mode_transitions.jsonl` and the desktop bridge's own log.
+
+| # | Check | Actual |
+|---|---|---|
+| U1 | Lost (detected) | `mode_transitions.jsonl`: **2026-09-29T18:14:16.192Z**, `CONNECTED -> DISCONNECTED`, reason `link_lost` (`client_disconnected`, "Keep alive timeout"). This is *detection* time, not the moment the break happened — see below. |
+| U2 | Restored | **2026-09-29T19:29:47.517Z**, `DISCONNECTED -> BURST`, `offline=false`, backlog **300** (5 scans buffered: 18:15, 18:30, 18:45, 19:00, 19:15Z). One drain batch, 300 sent / 300 acknowledged; **2026-09-29T19:29:48.087Z**, `BURST -> CONNECTED`. |
+| U3 | Duration | **1h 15m 31.325s** offline by the mode log's detection times (19:29:47.517 − 18:14:16.192); the real break was somewhat longer — see below. |
+| U4 | The five replayed files, from the bridge's own log | Landed as one burst once the Pi reconnected — see below. |
+| U5 | Bridge-side retries/failures | `retries=0 failed_batches=0` throughout, both before and after — no evidence of an upload-side (Databricks) problem. |
+
+**Broker log (UTC), independent of both the Pi and the bridge's own logs:**
+```
+18:13:46 probe-01 disconnected: exceeded timeout
+19:29:28 force-bridge disconnected: connection closed by client
+19:29:29 force-bridge reconnected (session taken over)
+19:29:47 probe-01 reconnected
+```
+**Correction to the earlier finding: the bridge did not drop because of this outage.** The broker log shows no `force-bridge`
+disconnect anywhere near 18:13-18:14; `docker inspect` shows the broker container's own start time unchanged since 2026-09-27T14:59:00Z
+with `restarts=0`; the Windows System log shows no adapter, DHCP, power or network-profile event between 14:05 and 15:35 EDT. Broker
+and desktop both stayed up throughout, and the bridge never lost the broker during the Pi's outage. The break was specifically on the
+Pi-to-desktop path — likely the router or switch between them, since neither endpoint's own logs show a cause. My earlier read of the
+bridge's own `connected (session present: True)` line as evidence the bridge also dropped *during this outage* was wrong; the broker
+log now dates that same line to **19:29:29Z** (see below), 19 s before the Pi returned, not concurrent with the Pi's own loss.
+
+**Detection lag:** the broker declared `probe-01`'s keepalive exceeded at **18:13:46Z**, 30 s before the probe's own
+`mode_transitions.jsonl` entry (18:14:16.192Z) — consistent with the probe's own `ack_timeout`/keepalive detection running slightly
+behind the broker's. MQTT brokers typically declare a keepalive timeout at 1.5x the keepalive interval (60 s here) of silence, which
+would put the last real traffic from the Pi at roughly **18:12Z** — the true break was likely a couple of minutes earlier than either
+logged detection, and the outage a couple of minutes longer than U3's 1h15m31s.
+
+**Separate finding, cause undetermined:** why did the bridge close its own connection at 19:29:28Z, 19 s *before* the Pi returned?
+The bridge's own log has nothing at all around that point beyond the reconnect itself — no error, no exception, no other line; it
+never prints anything on its own disconnect (only on reconnect), so there is no textual evidence in this log of a cause. **Undetermined
+from the log alone.** It is not explained by, and does not appear to be caused by, the Pi's return (which came 19 s later).
+
+```
+bridge: connected (session present: True)
+bridge: subscribed to force/telemetry/# (QoS 1, client id force-bridge)
+bridge: landed dt=2026-09-29/hh=19/probe-01-01M3QAA1JR67T70V4KJPDYG6XS.ndjson (60 lines, 24156 bytes)
+bridge: landed dt=2026-09-29/hh=19/probe-01-01M3QAA1KJVND3RXK2Y1M2E6E0.ndjson (60 lines, 24156 bytes)
+bridge: landed dt=2026-09-29/hh=19/probe-01-01M3QAA1MJFEWAFKDG5ASNV81C.ndjson (60 lines, 24159 bytes)
+bridge: landed dt=2026-09-29/hh=19/probe-01-01M3QAA1NKT2Q9ER7DM1KQ22Y3.ndjson (60 lines, 24159 bytes)
+bridge: landed dt=2026-09-29/hh=19/probe-01-01M3QAA1PSHM4KCAKBREH46XNF.ndjson (60 lines, 24158 bytes)
+bridge: landed dt=2026-09-29/hh=19/probe-01-01M3QAAH3J9Z7F2JK1H1SB0TKK.ndjson (60 lines, 23975 bytes)
+```
+The `connected`/`subscribed` pair above is the bridge's own 19:29:29Z blip (just above), not a reaction to the Pi. The first five
+landed lines are the replay (`DISCONNECTED`-sized, 24156-24159 bytes each, matching the earlier checkpoint's replay files); the
+sixth, smaller (23,975 bytes, `CONNECTED`-sized) and with a visibly later ULID, is the next live 19:30Z scan landing in the same
+flush, not part of the replay. **Individual per-file landing times aren't available from this log** — the bridge only timestamps
+its periodic stats line (`last_flush=2026-09-29T19:30:03Z`, the first one to move past `18:00:05Z`), which brackets the whole burst
+but doesn't distinguish the five replayed files from each other or from the sixth.
+
+**Note for Phase 4:** the 19:00Z scan's lag (landing minus `event_time`) is approximately 1,785 s — just under whatever `is_replayed`
+cutoff Phase 4's silver logic uses at 1,800 s (the pattern already used informally in p3-3b's `min_lag_s`/`max_lag_s`). If that
+cutoff is applied here, this outage would count as **240** replayed rows (4 scans), not the full 300 (5 scans) actually buffered
+and replayed — a real edge case in whatever "was this row replayed" test Phase 4 writes, not a checkpoint concern.
+
+**Minor, found alongside this — proposal only, deferred to Phase 4:** `"probe: MQTT disconnected: ... Keep alive timeout"` printed
+twice at 18:14:15Z while `mode_transitions.jsonl` recorded only the one transition above. Likely cause, from `publisher.py`:
+`_on_disconnect` (`edge/probe/publisher.py:78`) prints unconditionally on every call from paho, with no check for whether the
+client was already marked disconnected; paho-mqtt is known to invoke `on_disconnect` from more than one internal path around a
+keepalive timeout (the periodic keepalive check and a subsequent socket-level error can each trigger it). `mode_transitions.jsonl`
+never doubled up because `ModeController`/`Runtime._link()` only records a *change* of state — a second "still disconnected"
+signal is a no-op there, but `_on_disconnect`'s `print()` has no equivalent guard.
+
+Proposed fix: track whether `_connected` was already `False` before this call and skip the print (and the `disconnect_reason`
+overwrite) if so — but the guard must **reset on every successful connect** (`_on_connect`), so a genuine second outage after a
+real reconnect still gets its own line; this isn't a one-way latch like the mode controller's `_ever_connected`. Two tests would
+be needed to prove it, not one: (1) two `on_disconnect` callbacks in a row, no connect between them, prints exactly one line;
+(2) a full connect/disconnect cycle twice (connect, disconnect, connect, disconnect) prints exactly two lines, not deduplicated
+across the reconnect. Needs a test against the real broker (`stress_publisher_broker.py`) forcing two disconnect callbacks in a
+row, or at minimum an offline test against a fake client. Not built or applied.
