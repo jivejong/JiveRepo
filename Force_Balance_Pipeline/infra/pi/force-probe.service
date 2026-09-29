@@ -5,11 +5,14 @@
 # synchronisation only if systemd-time-wait-sync.service is enabled. It does not guarantee a synchronised clock. What guarantees that no
 # scan is stamped early is the probe's own NTPSynchronized check (doc 04, Clock): a scan due before sync is skipped and logged.
 #
-# The simulated-outage schedule is off (no --mode-schedule) until the Phase 3 checkpoint has passed; add it then, on purpose.
+# The Phase 3 checkpoint (doc 07) passed 2026-09-29 (PHASE3-RESULTS.md): the simulated-outage schedule is on (--mode-schedule),
+# doc 04's default (1-3 h, roughly twice a day, its own seed drawn at random on each start).
 #
-# --fault-rate 0: checkpoint prep. The default rate (1.0, doc 04) is meant for later, once the checkpoint has passed and fault
-# injection gets its own period (doc 07); change or drop the flag then. probe.env holds only the three MQTT keys (below) —
-# neither the fault rate nor the mode schedule reads from it, so this is the one file that turns them on and off.
+# --fault-rate 0: fault injection stays off a few days after the schedule above, so a scheduled outage and an injected fault
+# are never running at the same time and an anomaly's cause is never ambiguous. It becomes its own period at doc 04's default
+# rate later (drop this flag); fault_injection.jsonl in the state directory will be the Phase 4 reconciliation source then.
+# probe.env holds only the three MQTT keys (below) — neither the fault rate nor the mode schedule reads from it, so this file
+# is the one place that turns them on and off.
 [Unit]
 Description=Force Balance Pipeline probe (Raspberry Pi 3)
 After=network-online.target time-sync.target
@@ -27,7 +30,7 @@ Environment=PROBE_VERSION_FILE=/opt/force-probe/version
 Environment=PYTHONUNBUFFERED=1
 StateDirectory=force-probe
 StateDirectoryMode=0750
-ExecStart=/opt/force-probe/venv/bin/python /opt/force-probe/repo/Force_Balance_Pipeline/edge/probe_sim.py --live --fault-rate 0
+ExecStart=/opt/force-probe/venv/bin/python /opt/force-probe/repo/Force_Balance_Pipeline/edge/probe_sim.py --live --fault-rate 0 --mode-schedule
 Restart=always
 RestartSec=10
 

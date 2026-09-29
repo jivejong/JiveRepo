@@ -57,8 +57,8 @@ what was decided and why.
   **BURST** (post-reconnect drain), **STEALTH** (limited power/connectivity — hourly, dark
   side channel only).
 - Control topic injects a named signature on demand for demos.
-- Control topic also forces a mode for a period. The mode schedule (DISCONNECTED, 1–3 hours about twice a day) is off until the
-  Phase 3 checkpoint passes, then on.
+- Control topic also forces a mode for a period. The mode schedule (DISCONNECTED, 1–3 hours about twice a day) was off until the
+  Phase 3 checkpoint passed; it passed 2026-09-29 and the schedule is on.
 - Phase 3 staging: the broker and the bridge run on the developer's desktop and the Pi publishes over the LAN (password and topic
   permissions, no TLS). TLS and the e2-micro come later.
 

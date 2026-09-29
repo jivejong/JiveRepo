@@ -120,14 +120,15 @@ class UnitTests(unittest.TestCase):
         self.assertIn("User=force-probe", self.lines)
         self.assertNotIn("User=root", self.lines)
 
-    def test_the_schedule_and_the_clock_bypass_are_off(self):
+    def test_the_mode_schedule_is_on_now_the_checkpoint_has_passed_and_the_clock_bypass_stays_off(self):
+        # doc 07: the checkpoint passed 2026-09-29 (PHASE3-RESULTS.md); the schedule that was held off for it is now on
         exec_start = [l for l in self.lines if l.startswith("ExecStart=")][0]
-        for flag in ("--mode-schedule", "--assume-clock-synced"):
-            self.assertNotIn(flag, exec_start)
+        self.assertIn("--mode-schedule", exec_start)
+        self.assertNotIn("--assume-clock-synced", exec_start)
 
-    def test_fault_injection_is_off_for_checkpoint_prep(self):
-        # doc 07: the checkpoint runs with --fault-rate 0; there is no env-file key for it (probe/main.py reads it only
-        # from this flag), so the unit is the one place that turns it on again for the later fault-injection period
+    def test_fault_injection_stays_off_a_few_days_after_the_schedule_so_a_cause_is_never_ambiguous(self):
+        # doc 07: the mode schedule went on 2026-09-29; fault injection gets its own period only after a few days of clean
+        # schedule-only running, so a scheduled outage and an injected fault are never confused with each other
         exec_start = [l for l in self.lines if l.startswith("ExecStart=")][0]
         self.assertRegex(exec_start, r"--fault-rate\s+0\b")
 

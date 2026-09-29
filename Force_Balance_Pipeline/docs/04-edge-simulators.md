@@ -151,6 +151,12 @@ less, is worth writing.
 and injected values, and `logged_utc`. The count of rejects must equal the count in this log. The log is pulled off the Pi by hand
 (`scp`) and never travels on the telemetry topic; how it reaches Databricks for the reconciliation is decided in Phase 4.
 
+Fault injection is its own period, run separately from the mode schedule (doc 07's checkpoint used `--fault-rate 0` so the outage
+rows stayed clean). The Pi's unit stays at `--fault-rate 0` a few days after the mode schedule (above) goes on, so a scheduled
+outage and an injected fault are never running at the same time and an anomaly's cause is never ambiguous; only then does fault
+injection get its own period at the default rate. `fault_injection.jsonl` from that period will be the Phase 4 reconciliation
+source — pull it before the state directory is touched again, since the file has no cap of its own and keeps growing.
+
 ### The four modes
 
 #### `CONNECTED`
@@ -170,7 +176,8 @@ stale. Tests the "alive but silent" case.
 
 Default schedule: 1–3 hours, roughly twice a day. Local demo: 3–5 minutes.
 
-The schedule is a simulated outage. It is **off by default until the Phase 3 checkpoint passes**, then on. A mode can also be
+The schedule is a simulated outage. It was off until the Phase 3 checkpoint passed; **the checkpoint passed 2026-09-29** (doc 07,
+PHASE3-RESULTS.md), so the Pi's unit now runs it (`infra/pi/force-probe.service`, `--mode-schedule`). A mode can also be
 forced by an operator (control topic, below), and `DISCONNECTED` is entered on a real loss of the broker (the client disconnects,
 or QoS 1 publishes stay unacknowledged past a timeout). All three run the same buffering code. A reading taken before the probe
 notices a real loss carries the mode it had when taken (`CONNECTED`) but stays buffered until acknowledged. Every mode transition
