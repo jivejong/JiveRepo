@@ -115,7 +115,7 @@ cd server && npm audit --omit=dev
   offline save.
 - Transpose charts and adjust capo. Saving stores `preferred_key` and
   `default_capo`; it does not rewrite the chart into a different key.
-- Swipe up for the next song and down for the previous song in the current
+- Swipe left for the next song and right for the previous song in the current
   song or setlist order.
 
 ### Setlists
@@ -123,6 +123,8 @@ cd server && npm audit --omit=dev
 - Create a setlist with a name, gig date, and notes.
 - Add songs with optional key, capo, and performance-note overrides.
 - Move songs up or down, remove them, and open charts in setlist order.
+- Key and capo overrides are displayed in the setlist row, but the chart view
+  currently opens with the song's saved preferred key and default capo.
 - Setlists are cached for offline viewing. Setlist mutations currently require
   a connection; only song mutations are queued offline.
 
@@ -190,7 +192,7 @@ app/
 - Immediate offline chart re-render.
 - Desktop/server-wins conflict handling and Settings notification.
 - Setlist create, add, reorder, remove, and per-song overrides.
-- Up/down swipe navigation.
+- Horizontal swipe navigation.
 
 The test records used for validation were removed afterward.
 
