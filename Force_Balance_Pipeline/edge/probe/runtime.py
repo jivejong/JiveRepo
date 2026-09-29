@@ -15,6 +15,12 @@ Delivery is at-least-once: a batch that is not fully acknowledged stays buffered
 Before the first connect (the publisher connects asynchronously, so tick() runs first), the probe is not offline, only not connected
 yet: nothing is recorded (probe.modes). If that lasts past ack_timeout the probe is offline and says so (no_initial_connect).
 
+Before the clock is confirmed synced (timedatectl, the same check probe.clock gates readings on), probe.modes writes nothing either
+-- readings before sync are already skipped and logged there, so this is about the mode LOG, not the readings. The runtime checks
+sync once a tick until it is first true, then trusts it (an ack_timeout-scale correction after that is not worth re-checking for);
+uptime_s (time.monotonic(), never the wall clock that is not yet trustworthy) is passed alongside so a DISCONNECTED suppressed
+during the wait can still be timed honestly in the one snapshot probe.modes writes once synced.
+
 Every completed scan (not a skipped one, which probe.clock's own log already covers) prints one line to stderr, journald on the
 Pi: "probe: scan <scan_id> (<mode>): <n> buffered, <m> published". Every drain batch (BURST) prints two: one when it is sent
 (acked=0 so far) and one when it is fully acknowledged and deleted (acked equals sent), each with the buffer depth remaining at
@@ -22,6 +28,7 @@ that moment — so a stalled drain (a batch sent but never acked) is visible in 
 """
 import json
 import sys
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,7 +55,8 @@ def compact(envelope):
 class Runtime:
     def __init__(self, *, sim, sectors, buffer, publisher, gate, modes, faults, state_dir, source_id="probe-01",
                  interval=DEFAULT_INTERVAL, stealth_interval=DEFAULT_STEALTH_INTERVAL, ack_timeout=DEFAULT_ACK_TIMEOUT,
-                 drain_batch=DEFAULT_DRAIN_BATCH, drain_pause=DEFAULT_DRAIN_PAUSE, id_rng=None, immediate=False):
+                 drain_batch=DEFAULT_DRAIN_BATCH, drain_pause=DEFAULT_DRAIN_PAUSE, id_rng=None, immediate=False,
+                 monotonic=time.monotonic):
         self.sim, self.sectors, self.buffer, self.publisher = sim, list(sectors), buffer, publisher
         self.gate, self.modes, self.faults = gate, modes, faults
         self.source_id, self.topic = source_id, f"{TOPIC_PREFIX}/{source_id}"
@@ -59,6 +67,9 @@ class Runtime:
         self.scan_index = 0
         self.next_scan, self._cadence_base = None, None
         self._first_tick = None             # when this process first ran tick(): the start of the wait for its first connect
+        self._monotonic = monotonic
+        self._start_monotonic = monotonic() # for uptime_s: independent of the wall clock, which may not be synced yet
+        self._clock_synced = False          # one-way: checked every tick until first true, then trusted (probe.clock.ClockGate)
         self.inflight = {}                  # event_id -> time published, waiting for its PUBACK
         self.drain_ids, self.resume_at = set(), 0.0
         self.stats = {"scans": 0, "skipped": 0, "published": 0, "acked": 0, "overflows": 0}
@@ -70,11 +81,15 @@ class Runtime:
         self._settle_drain_batch(now)
         if self._first_tick is None:
             self._first_tick = now
+        if not self._clock_synced:
+            self._clock_synced = self.gate.sync_check()
         link_up, reason = self._link(now)
         # A boot with no broker: still not connected once the wait for the first connect has run past ack_timeout (this runtime's
         # existing real-loss detection window, not a number of its own) means the probe is offline, not merely slow to connect.
         overdue = not link_up and self.modes.waiting_for_first_connect and now - self._first_tick > self.ack_timeout
-        self.modes.update(now, link_up, self.buffer.depth(), reason, first_connect_overdue=overdue)
+        uptime_s = self._monotonic() - self._start_monotonic
+        self.modes.update(now, link_up, self.buffer.depth(), reason, first_connect_overdue=overdue,
+                          clock_synced=self._clock_synced, uptime_s=uptime_s)
         self._retime(now)
         while self.next_scan is not None and now >= self.next_scan + SCAN_DURATION:
             boundary = self.next_scan

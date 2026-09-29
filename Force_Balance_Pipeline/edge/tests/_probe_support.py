@@ -126,10 +126,11 @@ class Rig:
         self.faults = FaultInjector(random.Random(self.seed), [s.sector_id for s in SECTORS],
                                     self.state / "fault_injection.jsonl", rate=self.fault_rate)
         self.sim = SimProbe(SECTORS, seed=self.seed)
+        monotonic_origin = self.now       # a fresh process's monotonic clock starts at 0 relative to whenever it started
         self.runtime = Runtime(sim=self.sim, sectors=SECTORS, buffer=self.buffer, publisher=self.publisher, gate=self.gate,
                                modes=self.modes, faults=self.faults, state_dir=self.state, interval=900,
                                drain_batch=self.drain_batch, drain_pause=self.drain_pause, id_rng=random.Random(self.seed + 1),
-                               immediate=self.immediate)
+                               immediate=self.immediate, monotonic=lambda: self.now - monotonic_origin)
 
     def crash(self):
         """The process dies: everything in memory is gone, buffer.db and the logs stay. The in-flight publishes are unknown."""

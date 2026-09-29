@@ -26,6 +26,15 @@ A boot with no broker is different from a slow connect. When the runtime says th
 (first_connect_overdue; the runtime passes its ack_timeout, so this adds no number of its own), the probe is genuinely offline: it
 records DISCONNECTED with reason no_initial_connect and buffers and labels scans as in any outage, and the first connect that follows
 drains the backlog through BURST. A connect that arrives inside the window records nothing at all.
+
+Nothing is WRITTEN, either, before the clock is confirmed synced (clock_synced, from the runtime's own timedatectl check; a Pi has
+no RTC, and fake-hwclock can hand the process a stale time before NTP corrects it -- found live: a "startup" entry stamped before
+the boot it belongs to). The mode still updates normally in memory throughout, so buffering and publishing stay correct; only the
+disk write (and the stderr line) waits. The first update() call with clock_synced=True writes exactly one snapshot -- "startup" if
+nothing happened in the meantime, or "clock_synced" if something did, with suppressed_transitions (how many) and, if any of them
+entered DISCONNECTED, disconnected_before_sync (its reason) and disconnected_before_sync_uptime_s (when, by uptime -- the runtime's
+monotonic clock, never the wall clock that was not yet trustworthy) -- so a boot with the broker down is never silently hidden by
+a boot with a merely-slow clock. Ordinary transition logging resumes right after.
 """
 import json
 import random
@@ -75,7 +84,9 @@ class ModeController:
         self._forced_by = None               # "operator" or "schedule" while a requested outage is what keeps the probe offline
         self._last_source = "default"        # who asked for the mode in force on the previous tick
         self._ever_connected = False         # the probe has not yet completed its first real MQTT connect
-        self._record(now, None, "startup", backlog)
+        self._deferred_write_done = False    # nothing is written until the clock is confirmed synced at least once
+        self._suppressed_transitions = 0     # how many (mode, offline) changes happened before that
+        self._disconnected_before_sync = None  # (reason, uptime_s) of the first one that entered DISCONNECTED, if any
 
     @property
     def waiting_for_first_connect(self):
@@ -98,7 +109,16 @@ class ModeController:
                 return scheduled, "schedule"
         return CONNECTED, "default"
 
-    def update(self, now, link_up, backlog, link_reason=None, first_connect_overdue=False):
+    def update(self, now, link_up, backlog, link_reason=None, first_connect_overdue=False,
+               clock_synced=True, uptime_s=None):
+        if not self._deferred_write_done and clock_synced and self._suppressed_transitions == 0 \
+                and self._disconnected_before_sync is None:
+            # the clock was already synced when this, the first call, arrived: nothing was ever suppressed, so this is
+            # exactly what __init__ used to do -- write "startup" now, for the state as constructed, then fall through
+            # to this same call's own normal processing below, unchanged.
+            self._deferred_write_done = True
+            self._record(now, None, "startup", backlog)
+
         requested, source = self._requested(now)
         forced_offline = requested == DISCONNECTED
         first_connect = link_up and not self._ever_connected
@@ -124,7 +144,9 @@ class ModeController:
             mode = BURST
         else:
             mode = base
-        if (mode, offline) != (self.mode, self.offline):
+        changed = (mode, offline) != (self.mode, self.offline)
+        reason = None
+        if changed:
             if offline and not self.offline:
                 if forced_offline:
                     reason = source
@@ -142,15 +164,45 @@ class ModeController:
                 reason = f"{self._last_source}_ended"         # a forced STEALTH (or a schedule window) has run out
             else:
                 reason = source
+
+        if not self._deferred_write_done:
+            if not clock_synced:
+                # still unsynced: update state in memory (buffering/publishing must stay correct) but write nothing
+                if changed:
+                    self._suppressed_transitions += 1
+                    if offline and not self.offline and self._disconnected_before_sync is None:
+                        self._disconnected_before_sync = (reason, uptime_s)
+                self._last_source = source
+                self._forced_by = source if forced_offline else None
+                self.mode, self.base, self.offline = mode, base, offline
+                return mode
+            # clock_synced is True here and something WAS suppressed earlier (the top-of-function branch already
+            # handled the "nothing ever suppressed" case) -- write one combined snapshot of where we ended up instead
+            # of this tick's own (possibly misleading, mid-outage) transition.
+            self._deferred_write_done = True
+            self.mode, self.base, self.offline = mode, base, offline
+            extra = {"suppressed_transitions": self._suppressed_transitions}
+            if self._disconnected_before_sync is not None:
+                d_reason, d_uptime = self._disconnected_before_sync
+                extra["disconnected_before_sync"] = d_reason
+                extra["disconnected_before_sync_uptime_s"] = d_uptime
+            self._record(now, None, "clock_synced", backlog, offline, extra=extra)
+            self._last_source = source
+            self._forced_by = source if forced_offline else None
+            return mode
+
+        if changed:
             self._record(now, mode, reason, backlog, offline)
         self._last_source = source
         self._forced_by = source if forced_offline else None
         self.mode, self.base, self.offline = mode, base, offline
         return mode
 
-    def _record(self, now, to, reason, backlog, offline=None):
+    def _record(self, now, to, reason, backlog, offline=None, extra=None):
         entry = {"ts_utc": iso(now), "from": None if to is None else self.mode, "to": to or self.mode,
                  "offline": self.offline if offline is None else offline, "reason": reason, "backlog": backlog}
+        if extra:
+            entry.update(extra)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8", newline=chr(10)) as f:
             f.write(json.dumps(entry, separators=(",", ":")) + chr(10))

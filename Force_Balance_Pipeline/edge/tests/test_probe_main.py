@@ -92,8 +92,9 @@ class BuildTests(Fixture):
         self.assertTrue(bypass.gate.sync_check())
 
     def test_the_state_directory_holds_the_buffer_and_the_logs(self):
-        self.build(publisher=FakePublisher())
+        runtime, _, _ = self.build(publisher=FakePublisher())
         self.assertTrue((self.tmp / "buffer.db").exists())
+        runtime.tick(epoch("2026-09-27T12:00:00"))     # the mode log's own first write waits for the first synced tick (probe.modes)
         self.assertTrue((self.tmp / "mode_transitions.jsonl").exists())
 
     def test_a_state_directory_with_rows_starts_a_startup_backlog_drain(self):

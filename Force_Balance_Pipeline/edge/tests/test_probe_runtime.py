@@ -458,6 +458,49 @@ class BootWithoutBrokerTests(Base):
         self.assertEqual((rig.buffer.depth(), len(rig.received())), (0, 60))
 
 
+class ModeLogClockSyncTests(Base):
+    """probe.modes writes nothing until the runtime's own clock-sync check (probe.clock, via Rig's `synced`) first reports
+    true; a boot with no broker while still unsynced must not vanish -- it survives into the one snapshot written once
+    synced, timed by uptime_s (Runtime's injected `monotonic`, here Rig's fake one tied to the fake wall clock), never by the
+    wall clock that was not yet trustworthy."""
+
+    def down_publisher(self):
+        pub = FakePublisher()
+        pub.link_up = pub.connected = False
+        return pub
+
+    def test_a_boot_with_no_broker_while_unsynced_is_captured_in_the_first_synced_snapshot(self):
+        rig = self.rig(start=START, synced=False, publisher=self.down_publisher())
+        rig.run(35)                                             # past ack_timeout (30 s), still unsynced: suppressed
+        self.assertFalse((rig.state / "mode_transitions.jsonl").exists())      # nothing written yet
+        rig.synced[0] = True
+        rig.run(1)
+        entries = rig.transitions()
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual((entry["from"], entry["to"], entry["reason"]), (None, "DISCONNECTED", "clock_synced"))
+        self.assertTrue(entry["offline"])
+        self.assertEqual(entry["disconnected_before_sync"], "no_initial_connect")
+        self.assertTrue(30 < entry["disconnected_before_sync_uptime_s"] <= 33, entry["disconnected_before_sync_uptime_s"])
+        rig.run_until("2026-09-27T12:16:00")                    # ordinary logging resumes: a scan is buffered as in any outage
+        self.assertEqual(rig.buffer.depth(), 60)
+        rig.publisher.restore()
+        rig.run(10)
+        self.assertEqual([t["to"] for t in rig.transitions()][1:], ["BURST", "CONNECTED"])
+        self.assertEqual(rig.buffer.depth(), 0)
+
+    def test_a_normal_boot_that_syncs_quickly_still_writes_a_plain_startup(self):
+        rig = self.rig(start=START, synced=False)
+        rig.run(5)                                              # still inside the wait, unsynced, nothing changed
+        self.assertFalse((rig.state / "mode_transitions.jsonl").exists())
+        rig.synced[0] = True
+        rig.run(1)
+        entries = rig.transitions()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual((entries[0]["from"], entries[0]["to"], entries[0]["reason"]), (None, "CONNECTED", "startup"))
+        self.assertNotIn("suppressed_transitions", entries[0])
+
+
 class OverflowTests(Base):
     def test_the_oldest_rows_are_dropped_and_one_overflow_event_says_how_many(self):
         rig = self.rig(start=START, cap=200)

@@ -37,6 +37,7 @@ class Base(unittest.TestCase):
 class TransitionTests(Base):
     def test_it_starts_connected_and_says_so(self):
         c = self.controller()
+        c.update(T0, True, 0)          # the first synced tick: the deferred "startup" snapshot is written now
         self.assertEqual(c.mode, CONNECTED)
         self.assertEqual(self.pairs(), [(None, CONNECTED, "startup")])
         self.assertEqual(self.lines()[0]["ts_utc"], "2026-09-21T14:15:00.000Z")
@@ -313,6 +314,60 @@ class ScheduleTests(Base):
         c.force(CONNECTED, until=end)
         c.update(start + 30, True, 0)
         self.assertEqual(c.mode, CONNECTED)
+
+
+class ClockSyncTests(Base):
+    """Nothing is WRITTEN before the clock is confirmed synced (module docstring): the mode still updates correctly in memory
+    throughout, and the first synced update() call writes exactly one snapshot -- "startup" if nothing happened in the meantime,
+    or "clock_synced" plus a count and (if one of them entered DISCONNECTED) disconnected_before_sync/_uptime_s if something did."""
+
+    def test_nothing_is_written_before_sync_though_the_mode_keeps_updating_in_memory(self):
+        c = self.controller()
+        c.update(T0 + 1, True, 0, clock_synced=False, uptime_s=1.0)
+        c.update(T0 + 2, False, 0, "link_lost:x", clock_synced=False, uptime_s=2.0)
+        c.update(T0 + 3, True, 40, clock_synced=False, uptime_s=3.0)
+        self.assertFalse(self.log.exists())                       # nothing on disk yet
+        self.assertEqual((c.mode, c.offline), (BURST, False))     # but the mode kept updating correctly throughout
+
+    def test_the_first_synced_tick_writes_startup_when_nothing_happened_while_waiting_for_sync(self):
+        c = self.controller()
+        for i in range(1, 4):
+            c.update(T0 + i, True, 0, clock_synced=False, uptime_s=float(i))     # link steady; nothing ever changes
+        self.assertFalse(self.log.exists())
+        c.update(T0 + 4, True, 0, clock_synced=True, uptime_s=4.0)
+        self.assertEqual(self.pairs(), [(None, CONNECTED, "startup")])
+        self.assertNotIn("suppressed_transitions", self.lines()[0])
+
+    def test_something_suppressed_but_never_disconnected_writes_clock_synced_with_a_count_only(self):
+        c = self.controller()
+        c.force(STEALTH)
+        c.update(T0 + 1, True, 0, clock_synced=False, uptime_s=1.0)      # the override applies; suppressed, never DISCONNECTED
+        self.assertEqual((c.mode, c.base), (STEALTH, STEALTH))          # state still correct in memory
+        self.assertFalse(self.log.exists())
+        c.update(T0 + 2, True, 0, clock_synced=True, uptime_s=2.0)
+        entry = self.lines()[0]
+        self.assertEqual((entry["from"], entry["to"], entry["reason"]), (None, STEALTH, "clock_synced"))
+        self.assertEqual(entry["suppressed_transitions"], 1)
+        self.assertNotIn("disconnected_before_sync", entry)
+
+    def test_a_boot_with_no_broker_before_sync_is_captured_as_disconnected_before_sync_with_its_uptime(self):
+        """The case the clock finding exists for: a boot with the broker down must not be hidden behind a boot with a merely
+        slow-to-sync clock. disconnected_before_sync and its uptime_s (not the wall clock, which was not yet trustworthy) must
+        survive into the one snapshot written once synced."""
+        c = self.controller()
+        c.update(T0 + 1, False, 0, clock_synced=False, uptime_s=1.0)                                      # inside the window
+        c.update(T0 + 40, False, 0, first_connect_overdue=True, clock_synced=False, uptime_s=40.0)        # no_initial_connect
+        self.assertFalse(self.log.exists())
+        self.assertEqual((c.mode, c.offline), (DISCONNECTED, True))          # correct in memory despite being unsynced
+        c.update(T0 + 41, False, 0, first_connect_overdue=True, clock_synced=True, uptime_s=41.0)
+        entry = self.lines()[0]
+        self.assertEqual((entry["from"], entry["to"], entry["reason"]), (None, DISCONNECTED, "clock_synced"))
+        self.assertTrue(entry["offline"])
+        self.assertEqual(entry["suppressed_transitions"], 1)
+        self.assertEqual(entry["disconnected_before_sync"], "no_initial_connect")
+        self.assertEqual(entry["disconnected_before_sync_uptime_s"], 40.0)     # timed by uptime, not wall time
+        c.update(T0 + 42, True, 0)                                             # ordinary logging resumes right after
+        self.assertEqual(self.pairs()[-1], (DISCONNECTED, CONNECTED, "link_restored"))
 
 
 if __name__ == "__main__":
