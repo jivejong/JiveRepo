@@ -1,0 +1,184 @@
+@page "/heroes/{AreaId:int}/results"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using SuperHeroOps.Core
+@using SuperHeroOps.Data
+@inject IDbContextFactory<SuperHeroOpsDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>Hero Search Results@(area is null ? "" : $" - {area.Name}") - SuperHeroOps</PageTitle>
+
+@if (!found)
+{
+    <p><em>No community area found for id @AreaId.</em></p>
+}
+else if (area is null || heroes is null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <p><a class="btn btn-outline-secondary" href="@SearchPageUrl">&larr; Back to hero search</a></p>
+
+    <h1>Select Heroes to Deploy to @area.Name</h1>
+
+    @if (string.IsNullOrWhiteSpace(Query))
+    {
+        <div class="alert alert-info" role="status">
+            Enter a hero search to see matching superheroes.
+        </div>
+        <a class="btn btn-primary" href="@($"heroes/{AreaId}")">Search Heroes</a>
+    }
+    else if (heroes.Count == 0)
+    {
+        <div class="alert alert-warning" role="status">
+            No heroes found for <strong>&ldquo;@Query.Trim()&rdquo;</strong>. Try another name, alias, or publisher.
+        </div>
+        <a class="btn btn-primary" href="@SearchPageUrl">Back to Search</a>
+    }
+    else
+    {
+        <p>
+            Found <strong>@heroes.Count</strong> @(heroes.Count == 1 ? "hero" : "heroes") for
+            <strong>&ldquo;@Query.Trim()&rdquo;</strong>. Select one or more to compare.
+        </p>
+
+        <div class="hero-results-actions">
+            <a class="btn btn-outline-secondary" href="@SearchPageUrl">&larr; Back to Search</a>
+            <span><strong>@selected.Count</strong> selected</span>
+            <button class="btn btn-success" disabled="@(selected.Count == 0)" @onclick="GoToDeploy">
+                Deploy Selected Heroes &rarr;
+            </button>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-striped table-hover align-middle">
+                <thead>
+                    <tr>
+                        <th scope="col">Select</th>
+                        <th scope="col"></th>
+                        <th scope="col">Name</th>
+                        <th scope="col">Publisher</th>
+                        <th scope="col">Alignment</th>
+                        <th scope="col">Int</th>
+                        <th scope="col">Str</th>
+                        <th scope="col">Spd</th>
+                        <th scope="col">Dur</th>
+                        <th scope="col">Pow</th>
+                        <th scope="col">Cmb</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var hero in heroes)
+                    {
+                        <tr>
+                            <td>
+                                <input class="form-check-input hero-select-checkbox"
+                                       type="checkbox"
+                                       aria-label="@($"Select {hero.Name}")"
+                                       checked="@selected.Contains(hero.Id)"
+                                       @onchange="e => ToggleSelected(hero.Id, (bool)e.Value!)" />
+                            </td>
+                            <td>
+                                @if (!string.IsNullOrEmpty(hero.ImagePath))
+                                {
+                                    <img src="/@hero.ImagePath" alt="" style="height:40px" />
+                                }
+                                else
+                                {
+                                    <span class="hero-avatar-placeholder" title="@hero.Name" aria-hidden="true">@hero.Name[0]</span>
+                                }
+                            </td>
+                            <td><strong>@hero.Name</strong></td>
+                            <td>@hero.Publisher</td>
+                            <td>@hero.Alignment</td>
+                            <td>@hero.Intelligence</td>
+                            <td>@hero.Strength</td>
+                            <td>@hero.Speed</td>
+                            <td>@hero.Durability</td>
+                            <td>@hero.Power</td>
+                            <td>@hero.Combat</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="hero-results-actions hero-results-actions-bottom">
+            <a class="btn btn-outline-secondary" href="@SearchPageUrl">&larr; Back to Search</a>
+            <button class="btn btn-success" disabled="@(selected.Count == 0)" @onclick="GoToDeploy">
+                Deploy Selected Heroes &rarr;
+            </button>
+        </div>
+    }
+}
+
+@code {
+    [Parameter]
+    public int AreaId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "q")]
+    public string? Query { get; set; }
+
+    private CommunityArea? area;
+    private bool found = true;
+    private List<Hero>? heroes;
+    private readonly HashSet<int> selected = [];
+
+    private string SearchPageUrl => string.IsNullOrWhiteSpace(Query)
+        ? $"heroes/{AreaId}"
+        : $"heroes/{AreaId}?q={Uri.EscapeDataString(Query.Trim())}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        selected.Clear();
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        area = await db.CommunityAreas.AsNoTracking().FirstOrDefaultAsync(a => a.Id == AreaId);
+        if (area is null)
+        {
+            found = false;
+            return;
+        }
+
+        found = true;
+        var roster = await db.Heroes.AsNoTracking().OrderBy(h => h.Name).ToListAsync();
+        var query = Query?.Trim();
+        heroes = string.IsNullOrWhiteSpace(query)
+            ? []
+            : roster.Where(hero => Matches(hero, query)).ToList();
+    }
+
+    private void ToggleSelected(int heroId, bool isSelected)
+    {
+        if (isSelected)
+        {
+            selected.Add(heroId);
+        }
+        else
+        {
+            selected.Remove(heroId);
+        }
+    }
+
+    private void GoToDeploy()
+    {
+        if (selected.Count == 0)
+        {
+            return;
+        }
+
+        var heroIdsQuery = string.Join("&", selected.OrderBy(id => id).Select(id => $"heroIds={id}"));
+        Nav.NavigateTo($"deploy/{AreaId}/details?{heroIdsQuery}");
+    }
+
+    private static bool Matches(Hero hero, string query) =>
+        Contains(hero.Name, query)
+        || Contains(hero.FullName, query)
+        || Contains(hero.Aliases, query)
+        || Contains(hero.Publisher, query);
+
+    private static bool Contains(string? value, string query) =>
+        !string.IsNullOrWhiteSpace(value)
+        && value.Contains(query, StringComparison.OrdinalIgnoreCase);
+}

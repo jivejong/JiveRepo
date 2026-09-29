@@ -98,3 +98,139 @@ h1:focus {
     font-size: 0.9rem;
     vertical-align: middle;
 }
+
+.hero-search-page {
+    max-width: 760px;
+    margin: 2rem auto 0;
+}
+
+.hero-search-form {
+    margin-top: 1rem;
+}
+
+.hero-selection-modes {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1.5rem;
+}
+
+.hero-roster-browser {
+    margin-top: 1.5rem;
+}
+
+.hero-search-controls {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+}
+
+.hero-autocomplete {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+.hero-autocomplete-menu {
+    position: absolute;
+    z-index: 1000;
+    top: calc(100% + 0.25rem);
+    right: 0;
+    left: 0;
+    overflow: hidden;
+    background: white;
+    border: 1px solid #ced4da;
+    border-radius: 0.375rem;
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+}
+
+.hero-autocomplete-option {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.65rem 0.8rem;
+    color: inherit;
+    text-align: left;
+    background: white;
+    border: 0;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.hero-autocomplete-option:last-child {
+    border-bottom: 0;
+}
+
+.hero-autocomplete-option:hover,
+.hero-autocomplete-option:focus {
+    background: #f1f7fc;
+    outline: none;
+}
+
+.hero-autocomplete-option small {
+    display: block;
+    color: #6c757d;
+}
+
+.hero-autocomplete-empty {
+    padding: 0.85rem;
+    color: #6c757d;
+    font-style: italic;
+}
+
+.hero-results-actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin: 1.25rem 0;
+}
+
+.hero-results-actions span {
+    margin-left: auto;
+}
+
+.hero-results-actions-bottom {
+    justify-content: space-between;
+}
+
+.hero-select-checkbox {
+    width: 1.25rem;
+    height: 1.25rem;
+    margin: 0;
+    cursor: pointer;
+    background-color: #fff;
+    border: 2px solid #495057;
+}
+
+.hero-select-checkbox:checked {
+    background-color: #198754;
+    border-color: #198754;
+}
+
+.hero-roster-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+@media (max-width: 575.98px) {
+    .hero-search-page {
+        margin-top: 1.5rem;
+    }
+
+    .hero-search-controls,
+    .hero-results-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .hero-results-actions span {
+        margin-left: 0;
+    }
+
+    .hero-selection-modes {
+        align-items: stretch;
+        flex-direction: column;
+    }
+}

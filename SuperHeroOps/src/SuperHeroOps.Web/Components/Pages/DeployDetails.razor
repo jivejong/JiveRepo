@@ -19,11 +19,11 @@ else if (area is null || selectedHeroes is null)
 else if (selectedHeroes.Count == 0)
 {
     <p><em>No heroes selected. Go back and select at least one hero.</em></p>
-    <p><a href="@($"heroes/{AreaId}")">&larr; Back to hero selection</a></p>
+    <p><a class="btn btn-outline-secondary" href="@($"heroes/{AreaId}")">&larr; Back to hero selection</a></p>
 }
 else
 {
-    <p><a href="@($"heroes/{AreaId}")">&larr; Back to hero selection</a></p>
+    <p><a class="btn btn-outline-secondary" href="@($"heroes/{AreaId}")">&larr; Back to hero selection</a></p>
 
     <h1>Deploy to @area.Name</h1>
     <p><em>Step 1 of 3: Hero Details</em></p>

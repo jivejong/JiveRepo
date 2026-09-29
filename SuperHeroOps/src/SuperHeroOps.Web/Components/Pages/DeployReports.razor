@@ -20,11 +20,11 @@ else if (area is null || selectedHeroes is null)
 else if (selectedHeroes.Count == 0)
 {
     <p><em>No heroes selected. Go back and select at least one hero.</em></p>
-    <p><a href="@($"heroes/{AreaId}")">&larr; Back to hero selection</a></p>
+    <p><a class="btn btn-outline-secondary" href="@($"heroes/{AreaId}")">&larr; Back to hero selection</a></p>
 }
 else
 {
-    <p><a href="@($"deploy/{AreaId}/compare?{HeroIdsQueryString}")">&larr; Back to impact comparison</a></p>
+    <p><a class="btn btn-outline-secondary" href="@($"deploy/{AreaId}/compare?{HeroIdsQueryString}")">&larr; Back to impact comparison</a></p>
 
     <h1>Deploy to @area.Name</h1>
     <p><em>Step 3 of 3: AI-Generated Reports</em></p>
@@ -33,14 +33,11 @@ else
     {
         <p class="text-danger"><em>GEMINI_API_KEY is not set in the environment - cannot generate hero reports.</em></p>
     }
-    else if (!reportsRequested)
-    {
-        <button class="btn btn-primary" @onclick="GenerateReports" disabled="@generatingReports">
-            @(generatingReports ? "Generating reports..." : "Generate Hero Reports")
-        </button>
-    }
     else
     {
+        <p role="status">
+            <em>@(generatingReports ? "Generating hero reports..." : "Hero reports generated.")</em>
+        </p>
         <div style="display:flex; flex-wrap:wrap; gap:1rem;">
             @foreach (var hero in selectedHeroes)
             {
@@ -69,6 +66,10 @@ else
             }
         </div>
     }
+
+    <p class="mt-4">
+        <a class="btn btn-primary" href="/">Start New Analysis</a>
+    </p>
 }
 
 @code {
@@ -84,17 +85,17 @@ else
     private List<Hero>? selectedHeroes;
 
     private bool geminiKeyMissing;
-    private bool reportsRequested;
     private bool generatingReports;
+    private bool reportGenerationStarted;
     private Dictionary<int, HeroReportContent?> reportResults = [];
 
     private string HeroIdsQueryString => string.Join("&", (HeroIds ?? []).Select(id => $"heroIds={id}"));
 
     protected override async Task OnParametersSetAsync()
     {
-        reportsRequested = false;
         generatingReports = false;
         geminiKeyMissing = false;
+        reportGenerationStarted = false;
         reportResults = [];
 
         await using var db = await DbFactory.CreateDbContextAsync();
@@ -110,6 +111,22 @@ else
 
         var ids = HeroIds ?? [];
         selectedHeroes = await db.Heroes.Where(h => ids.Contains(h.Id)).OrderBy(h => h.Name).ToListAsync();
+
+        geminiKeyMissing = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GEMINI_API_KEY"));
+        generatingReports = !geminiKeyMissing && selectedHeroes.Count > 0;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // OnAfterRenderAsync is not called during static prerendering. Starting here
+        // prevents duplicate Gemini requests when the interactive component connects.
+        // The explicit guard also handles an initial render that occurs before the
+        // asynchronous database load has completed.
+        if (!reportGenerationStarted && !geminiKeyMissing && selectedHeroes is { Count: > 0 })
+        {
+            reportGenerationStarted = true;
+            await GenerateReports();
+        }
     }
 
     private async Task GenerateReports()
@@ -120,7 +137,6 @@ else
             return;
         }
 
-        reportsRequested = true;
         generatingReports = true;
         reportResults = [];
         StateHasChanged();
