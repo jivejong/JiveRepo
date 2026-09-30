@@ -19,8 +19,8 @@ sections once they have run.
 
 | # | Check | Expected | Actual |
 |---|---|---|---|
-| V1 | Binding (`netstat`) | `127.0.0.1:1883` and `<DESKTOP_IP>:1883` LISTENING, no `0.0.0.0` | **Pass.** `127.0.0.1:1883` and `192.168.0.110:1883`, both LISTENING, owned by `com.docker.backend` (there is no `mosquitto.exe` on Windows — Docker's own process holds the port). No `0.0.0.0`. |
-| V2 | `docker port force-mosquitto` | The same two addresses | `127.0.0.1 -> 1883`, `192.168.0.110 -> 1883`. |
+| V1 | Binding (`netstat`) | `127.0.0.1:1883` and `<DESKTOP_IP>:1883` LISTENING, no `0.0.0.0` | **Pass.** `127.0.0.1:1883` and `<DESKTOP_IP>:1883`, both LISTENING, owned by `com.docker.backend` (there is no `mosquitto.exe` on Windows — Docker's own process holds the port). No `0.0.0.0`. |
+| V2 | `docker port force-mosquitto` | The same two addresses | `127.0.0.1 -> 1883`, `<DESKTOP_IP> -> 1883`. |
 | V3 | `edge/mqtt_check.py` on the desktop, all three users | Every check PASS | **BROKER CHECKS PASSED**, all 11: anonymous refused; wrong password refused; probe-01 connects, may subscribe `force/control/probe-01`, and publishes `force/telemetry/probe-01` (acknowledged); force-bridge and operator connect; and the four ACL-by-delivery checks — probe-01's telemetry reaches force-bridge; operator's control message reaches probe-01; probe-01 publishing to the control topic does not reach operator; force-bridge publishing to the control topic does not reach probe-01; operator publishing telemetry does not reach force-bridge. |
 | V4 | Third-device TCP probe, after the S3 fix | `Test-NetConnection <DESKTOP_IP> -Port 1883` from another Windows machine on the LAN: `TcpTestSucceeded` `False` | **Pass.** `TcpTestSucceeded` = `False`. Firewall enabled on all profiles; the desktop's Ethernet adapter is on the Private profile. |
 
@@ -164,7 +164,7 @@ usual "persistent if the directory exists" rule) does not work on this Pi OS ima
 (`test_infra_phase3.py`) checks for the drop-in, not the old `mkdir`.
 
 **Verified on the Pi, 2026-09-30** (run by the developer, not from an offline check): `ls /var/log/journal` shows one directory,
-`1f549fec124b410d9a10bcb4ad72d0c2` (the machine ID) — persistent storage took effect. `journalctl --disk-usage`: "Archived and
+`<PI_MACHINE_ID>` (the machine ID) — persistent storage took effect. `journalctl --disk-usage`: "Archived and
 active journals take up 16M in the file system," comfortably under the 100M cap. Not yet tested across an actual reboot — that
 still needs its own boot cycle to confirm.
 
@@ -202,26 +202,26 @@ channels. Recorded from the Pi's UTC journal (`journalctl -u force-probe --utc`)
 ### The outage, from the journal
 
 ```
-Sep 29 13:32:53 JiveRPI3 systemd[1]: Started force-probe.service - Force Balance Pipeline probe (Raspberry Pi 3).
-Sep 29 13:32:54 JiveRPI3 python[3701]: probe: mode None -> CONNECTED (startup, offline=False, backlog=0)
-Sep 29 13:32:54 JiveRPI3 python[3701]: probe: probe-01 version b16f0b29a57e5231fd01149fe213a166156584b4; state /var/lib/force-probe; faults x0; mode schedule off; buffer 0 rows
-Sep 29 13:33:24 JiveRPI3 python[3701]: probe: mode CONNECTED -> DISCONNECTED (no_initial_connect, offline=True, backlog=0)
-Sep 29 13:35:30 JiveRPI3 python[3701]: probe: MQTT connected (session present: False)
-Sep 29 13:35:30 JiveRPI3 python[3701]: probe: mode DISCONNECTED -> CONNECTED (link_restored, offline=False, backlog=0)
-Sep 29 13:45:03 JiveRPI3 python[3701]: probe: scan 01M3PPJPV0CQJ8KW287ZD6WK9J (CONNECTED): 60 buffered, 60 published
-Sep 29 14:00:03 JiveRPI3 python[3701]: probe: scan 01M3PQE5R0J00T9VN2B809MM2N (CONNECTED): 60 buffered, 60 published
-Sep 29 14:15:03 JiveRPI3 python[3701]: probe: scan 01M3PR9MN00VZW2C9KV09RQT3V (CONNECTED): 60 buffered, 60 published
-Sep 29 14:19:05 JiveRPI3 python[3701]: probe: MQTT disconnected: client_disconnected:Unspecified error
-Sep 29 14:19:05 JiveRPI3 python[3701]: probe: mode CONNECTED -> DISCONNECTED (link_lost:client_disconnected:Unspecified error, offline=True, backlog=0)
-Sep 29 14:30:03 JiveRPI3 python[3701]: probe: scan 01M3PS53J0T8PXZF29VTZ4FSST (DISCONNECTED): 60 buffered, 0 published
-Sep 29 14:45:03 JiveRPI3 python[3701]: probe: scan 01M3PT0JF0NZNAKSSFYYYCQ61A (DISCONNECTED): 60 buffered, 0 published
-Sep 29 15:00:03 JiveRPI3 python[3701]: probe: scan 01M3PTW1C09MP9SYB385NWB67H (DISCONNECTED): 60 buffered, 0 published
-Sep 29 15:01:57 JiveRPI3 python[3701]: probe: MQTT connected (session present: False)
-Sep 29 15:01:57 JiveRPI3 python[3701]: probe: mode DISCONNECTED -> BURST (link_restored, offline=False, backlog=180)
-Sep 29 15:01:57 JiveRPI3 python[3701]: probe: drain batch sent=180 acked=0 remaining_buffered=180
-Sep 29 15:01:57 JiveRPI3 python[3701]: probe: drain batch sent=180 acked=180 remaining_buffered=0
-Sep 29 15:01:57 JiveRPI3 python[3701]: probe: mode BURST -> CONNECTED (drain_complete, offline=False, backlog=0)
-Sep 29 15:15:03 JiveRPI3 python[3701]: probe: scan 01M3PVQG90WY0MDH43RP2KVXYA (CONNECTED): 60 buffered, 60 published
+Sep 29 13:32:53 <PI_HOSTNAME> systemd[1]: Started force-probe.service - Force Balance Pipeline probe (Raspberry Pi 3).
+Sep 29 13:32:54 <PI_HOSTNAME> python[3701]: probe: mode None -> CONNECTED (startup, offline=False, backlog=0)
+Sep 29 13:32:54 <PI_HOSTNAME> python[3701]: probe: probe-01 version b16f0b29a57e5231fd01149fe213a166156584b4; state /var/lib/force-probe; faults x0; mode schedule off; buffer 0 rows
+Sep 29 13:33:24 <PI_HOSTNAME> python[3701]: probe: mode CONNECTED -> DISCONNECTED (no_initial_connect, offline=True, backlog=0)
+Sep 29 13:35:30 <PI_HOSTNAME> python[3701]: probe: MQTT connected (session present: False)
+Sep 29 13:35:30 <PI_HOSTNAME> python[3701]: probe: mode DISCONNECTED -> CONNECTED (link_restored, offline=False, backlog=0)
+Sep 29 13:45:03 <PI_HOSTNAME> python[3701]: probe: scan 01M3PPJPV0CQJ8KW287ZD6WK9J (CONNECTED): 60 buffered, 60 published
+Sep 29 14:00:03 <PI_HOSTNAME> python[3701]: probe: scan 01M3PQE5R0J00T9VN2B809MM2N (CONNECTED): 60 buffered, 60 published
+Sep 29 14:15:03 <PI_HOSTNAME> python[3701]: probe: scan 01M3PR9MN00VZW2C9KV09RQT3V (CONNECTED): 60 buffered, 60 published
+Sep 29 14:19:05 <PI_HOSTNAME> python[3701]: probe: MQTT disconnected: client_disconnected:Unspecified error
+Sep 29 14:19:05 <PI_HOSTNAME> python[3701]: probe: mode CONNECTED -> DISCONNECTED (link_lost:client_disconnected:Unspecified error, offline=True, backlog=0)
+Sep 29 14:30:03 <PI_HOSTNAME> python[3701]: probe: scan 01M3PS53J0T8PXZF29VTZ4FSST (DISCONNECTED): 60 buffered, 0 published
+Sep 29 14:45:03 <PI_HOSTNAME> python[3701]: probe: scan 01M3PT0JF0NZNAKSSFYYYCQ61A (DISCONNECTED): 60 buffered, 0 published
+Sep 29 15:00:03 <PI_HOSTNAME> python[3701]: probe: scan 01M3PTW1C09MP9SYB385NWB67H (DISCONNECTED): 60 buffered, 0 published
+Sep 29 15:01:57 <PI_HOSTNAME> python[3701]: probe: MQTT connected (session present: False)
+Sep 29 15:01:57 <PI_HOSTNAME> python[3701]: probe: mode DISCONNECTED -> BURST (link_restored, offline=False, backlog=180)
+Sep 29 15:01:57 <PI_HOSTNAME> python[3701]: probe: drain batch sent=180 acked=0 remaining_buffered=180
+Sep 29 15:01:57 <PI_HOSTNAME> python[3701]: probe: drain batch sent=180 acked=180 remaining_buffered=0
+Sep 29 15:01:57 <PI_HOSTNAME> python[3701]: probe: mode BURST -> CONNECTED (drain_complete, offline=False, backlog=0)
+Sep 29 15:15:03 <PI_HOSTNAME> python[3701]: probe: scan 01M3PVQG90WY0MDH43RP2KVXYA (CONNECTED): 60 buffered, 60 published
 ```
 The restore is in the journal after all (`DISCONNECTED -> BURST` then `BURST -> CONNECTED`, all inside the same second, 15:01:57),
 and the Pi's own `mode_transitions.jsonl` (`sudo tail -n 2`) gives it to millisecond precision:
@@ -342,10 +342,18 @@ flush, not part of the replay. **Individual per-file landing times aren't availa
 its periodic stats line (`last_flush=2026-09-29T19:30:03Z`, the first one to move past `18:00:05Z`), which brackets the whole burst
 but doesn't distinguish the five replayed files from each other or from the sixth.
 
-**Note for Phase 4:** the 19:00Z scan's lag (landing minus `event_time`) is approximately 1,785 s — just under whatever `is_replayed`
-cutoff Phase 4's silver logic uses at 1,800 s (the pattern already used informally in p3-3b's `min_lag_s`/`max_lag_s`). If that
-cutoff is applied here, this outage would count as **240** replayed rows (4 scans), not the full 300 (5 scans) actually buffered
-and replayed — a real edge case in whatever "was this row replayed" test Phase 4 writes, not a checkpoint concern.
+**Note for Phase 4:** the 19:00Z scan's lag (landing minus `event_time`) is approximately 1,788 s — **under** the `is_replayed`
+cutoff Phase 4's silver logic uses at 1,800 s (the pattern already used informally in p3-3b's `min_lag_s`/`max_lag_s`), so it is
+not flagged as replayed. The three older scans (18:15Z ≈ 4,190 s, 18:30Z ≈ 3,290 s, 18:45Z ≈ 2,390 s) are all over the cutoff;
+19:15Z (≈ 888 s) is under it, same as 19:00Z. This outage counts as **180** replayed rows (3 scans), not the full 300 (5 scans)
+actually buffered and replayed — a real edge case in whatever "was this row replayed" test Phase 4 writes, not a checkpoint
+concern.
+
+**Correction, <commit date>:** this note originally read "240 (4 scans)". Recomputed from the five scans' lags at the replay's
+landing (~19:29:49-19:29:53Z, from U2's `BURST` entry and drain-complete times above): three scans clear 1,800 s, not four —
+180 rows, not 240. Individual per-file landing times for this replay were never logged (see above, "Individual per-file
+landing times aren't available from this log"), so this is derived from the reconnect time and the batch/publish timing in
+doc 04, not read directly off a log.
 
 **Minor, found alongside this — proposal only, deferred to Phase 4:** `"probe: MQTT disconnected: ... Keep alive timeout"` printed
 twice at 18:14:15Z while `mode_transitions.jsonl` recorded only the one transition above. Likely cause, from `publisher.py`:
