@@ -14,8 +14,21 @@ clean-targets: ["target", "dbt_packages"]
 # so a plain `dbt build` (Q1) never touches it:
 #   dbt build --select phase0_streaming_check --vars "{enable_streaming_check: true}"
 # (YAML flow form; dbt reads --vars as YAML, and it survives PowerShell 5.1 quoting.)
+#
+# Phase 4 vars, one source of truth each, checked against docs/03-data-model.md by
+# edge/tests/test_dbt_doc_parity.py -- retuning any of these means editing doc 03 first, in the same commit as
+# the change here (doc 03, "Thresholds": "Changing these requires updating edge/forcesim constants in the same
+# commit; test_doc_parity.py enforces it" -- this file is now part of that same rule).
 vars:
   enable_streaming_check: false
+  anomaly_threshold: 4.0             # doc 03:239, "Anomaly above 4.0" (provisional)
+  emergency_threshold: 5.75          # doc 03:239, "emergency above 5.75"
+  sustained_scans: 2                 # doc 03:310, "Sustained across at least 2 consecutive scans"
+  cooldown_hours: 2                  # doc 03:311, "Cooldown: no new incident ... within 2 hours"
+  replay_lag_seconds: 1800           # doc 03:102, "ingest_lag_seconds > 1800"
+  future_tolerance_minutes: 10       # doc 03:138, "more than 10 minutes ahead of arrival"
+  max_age_days: 90                   # doc 03:138, "more than 90 days behind it"
+  lag_tolerance_seconds: -2          # doc 03:117, "Tolerance: ingest_lag_seconds >= -2"
 
 models:
   force_balance:
@@ -23,3 +36,10 @@ models:
       +materialized: view
       streaming:
         +enabled: "{{ var('enable_streaming_check', false) | as_bool }}"
+    staging:
+      +schema: silver
+      +materialized: view
+    silver:
+      +schema: silver
+    gold:
+      +schema: gold

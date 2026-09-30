@@ -1,0 +1,102 @@
+version: 2
+
+unit_tests:
+  # Housekeeping routing (e): a payload.kind row lands in silver_probe_event, never in silver_rejects, even
+  # though its sector_id (source_id) is not a real dim_sector row -- routed before the sector check (doc 02/03).
+  - name: unit_test_a_housekeeping_event_routes_to_silver_probe_event
+    model: silver_probe_event
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - event_id: "01UNIT0000000000000000010"
+            source_type: "probe"
+            sector_id: "probe-01"
+            kind: "buffer_overflow"
+    expect:
+      rows:
+        - event_id: "01UNIT0000000000000000010"
+          kind: "buffer_overflow"
+
+  - name: unit_test_a_housekeeping_event_never_reaches_silver_rejects
+    model: silver_rejects
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - event_id: "01UNIT0000000000000000010"
+            source_type: "probe"
+            sector_id: "probe-01"          # not a real dim_sector row -- would be unknown_sector if not routed away first
+            kind: "buffer_overflow"
+    expect:
+      rows: []
+
+  # impossible_timestamp bounds (d): future_tolerance_minutes=10, max_age_days=90 (dbt_project.yml vars).
+  # 9/11 minutes bracket the future edge; 89/91 days bracket the old edge.
+  - name: unit_test_impossible_timestamp_future_bound
+    model: silver_rejects
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - event_id: "01UNIT0000000000000000020"
+            source_type: "probe"
+            sector_id: "tatooine"
+            event_time: "2026-09-30T12:09:00Z"    # 9 min ahead of arrival_ts -- valid
+            arrival_ts: "2026-09-30T12:00:00Z"
+          - event_id: "01UNIT0000000000000000021"
+            source_type: "probe"
+            sector_id: "tatooine"
+            event_time: "2026-09-30T12:11:00Z"    # 11 min ahead -- impossible_timestamp
+            arrival_ts: "2026-09-30T12:00:00Z"
+    expect:
+      rows:
+        - event_id: "01UNIT0000000000000000021"
+          reject_reason: "impossible_timestamp"
+
+  - name: unit_test_impossible_timestamp_old_bound
+    model: silver_rejects
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - event_id: "01UNIT0000000000000000022"
+            source_type: "probe"
+            sector_id: "tatooine"
+            event_time: "2026-07-02T12:00:00Z"    # 89 days behind -- valid
+            arrival_ts: "2026-09-30T12:00:00Z"
+          - event_id: "01UNIT0000000000000000023"
+            source_type: "probe"
+            sector_id: "tatooine"
+            event_time: "2026-06-30T12:00:00Z"    # 91 days behind -- impossible_timestamp
+            arrival_ts: "2026-09-30T12:00:00Z"
+    expect:
+      rows:
+        - event_id: "01UNIT0000000000000000023"
+          reject_reason: "impossible_timestamp"
+
+  # is_replayed boundary (g): strict `>` at replay_lag_seconds=1800 -- 1,800 itself is NOT replayed.
+  - name: unit_test_is_replayed_1799_1800_1801_boundary
+    model: silver_probe_reading
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - event_id: "01UNIT0000000000000000030"
+            source_type: "probe"
+            sector_id: "tatooine"
+            event_time: "2026-09-30T12:00:00Z"
+            arrival_ts: "2026-09-30T12:29:59Z"    # lag 1,799 s
+          - event_id: "01UNIT0000000000000000031"
+            source_type: "probe"
+            sector_id: "tatooine"
+            event_time: "2026-09-30T12:00:00Z"
+            arrival_ts: "2026-09-30T12:30:00Z"    # lag 1,800 s -- NOT replayed (strict >)
+          - event_id: "01UNIT0000000000000000032"
+            source_type: "probe"
+            sector_id: "tatooine"
+            event_time: "2026-09-30T12:00:00Z"
+            arrival_ts: "2026-09-30T12:30:01Z"    # lag 1,801 s -- replayed
+    expect:
+      rows:
+        - event_id: "01UNIT0000000000000000030"
+          is_replayed: false
+        - event_id: "01UNIT0000000000000000031"
+          is_replayed: false
+        - event_id: "01UNIT0000000000000000032"
+          is_replayed: true

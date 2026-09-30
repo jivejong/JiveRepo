@@ -1,0 +1,20 @@
+version: 2
+
+models:
+  - name: stg_bronze_events
+    description: >
+      Typed pass-through over force.bronze.events (doc 03, "Bronze"). No filtering, no dedup -- every downstream
+      model reads from here, not from the source directly.
+    columns:
+      - name: event_id
+        description: Carried from bronze, not asserted unique here (bronze isn't deduplicated).
+      - name: kind
+        description: extract_payload(payload, 'kind', 'string') -- non-null for a housekeeping event (doc 02).
+      - name: arrival_ts
+        description: COALESCE(_file_modified_ts, _ingest_ts) -- doc 03's live-row arrival time.
+      - name: midichlorian_ppm
+        description: extract_payload(payload, 'midichlorian_ppm', 'double').
+      - name: kyber_resonance
+        description: extract_payload(payload, 'kyber_resonance', 'double').
+      - name: dark_side_activity
+        description: extract_payload(payload, 'dark_side_activity', 'double').

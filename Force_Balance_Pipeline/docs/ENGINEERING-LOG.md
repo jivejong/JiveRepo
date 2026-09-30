@@ -263,6 +263,27 @@ live. Combined with `_file_modified_ts`'s 1-second rounding, doc 03 now document
 `ingest_lag_seconds` ("Lag precision") rather than treating any negative value as a data problem. The Pi's own rows,
 clock-gated before every scan, have never gone negative.
 
+### Job 1 timing
+
+**Decision:** Job 1 (`force_pipeline`, doc 05 "Job topology") is built and scheduled in Phase 4, but only after the
+gold models exist (doc 07, Phase 4 step 9) — not at the phase's start. Ingestion stays a manual notebook run through
+the silver/gold scaffolding and build-out.
+
+**Free Edition fit, researched before committing to the 15-minute cadence (web lookup, no workspace access):**
+5 concurrent job tasks per account; Job 1's 3 tasks run sequentially within one job, which doesn't count against
+that limit concurrently, so it uses at most 1 of 5 slots. The platform enforces only a 10-second minimum interval
+between scheduled runs generally, far below 15 minutes. No daily/monthly serverless compute quota number is
+published for Free Edition anywhere found — only that exceeding it shuts compute down for the rest of the day (or
+month). Sources: [Databricks Free Edition limitations](https://docs.databricks.com/aws/en/getting-started/free-edition-limitations),
+[Serverless compute limitations](https://docs.databricks.com/aws/en/compute/serverless/limitations),
+[Run jobs on a schedule](https://docs.databricks.com/aws/en/jobs/scheduled),
+[Resource limits](https://docs.databricks.com/aws/en/resources/limits).
+
+**Fallback if the undisclosed quota is hit:** drop the schedule to every 30 minutes (halves the daily run count;
+the checkpoint's `sith_presence`-within-two-scans claim becomes "within one hour" instead of thirty minutes), or
+restrict Job 1 to daytime hours only. The 15-minute cadence is needed continuously only for the checkpoint's own
+test window (doc 07, Phase 4 checkpoint, C3) — not for every day the pipeline runs afterward.
+
 ## Open items
 
 | Item | Status |

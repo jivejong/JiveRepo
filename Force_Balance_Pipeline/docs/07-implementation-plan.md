@@ -145,6 +145,10 @@ power-loss test".
 6. `gold.disturbance` — firing rules, sustained-scan requirement, 2-hour cooldown.
 7. dbt tests from doc 03.
 8. `docker-compose.yml` and `make demo` against the Postgres target.
+9. **Deviation (this round):** build and schedule Job 1 (`force_pipeline`, doc 05 "Job topology"), once the gold
+   models (steps 4-6) exist. Ingestion has been a manual notebook run for the rest of this phase (doc 05, "The
+   one-time arrival-timestamp backfill"); the checkpoint below needs the 15-minute ingest → transform → publish
+   cycle actually running on its own schedule, not a one-off `dbt build`.
 
 **Checkpoint:**
 - `dbt build` passes all tests on `prod`. **Deviation (Phase 4):** the `local` target and the `extract_payload` Postgres branch
@@ -152,7 +156,9 @@ power-loss test".
   than running untested SQL until then.
 - **The baseline test passes:** `gold.sector_baseline` contains zero report-sourced data.
 - Trigger `sith_presence` via the control topic. Within two scans a `gold.disturbance` row
-  appears with the correct `signature` and `sustained_scans >= 2`.
+  appears with the correct `signature` and `sustained_scans >= 2`. **Depends on Job 1's 15-minute rebuild
+  actually running** (step 9) — two scans is 30 minutes of wall-clock time only if the pipeline runs on that
+  cadence; a manually-triggered `dbt build` does not exercise it.
 - Trigger two disturbances in one sector 30 minutes apart. One incident row — cooldown works.
 - Fault injection reconciles: rejects table count matches the injection log, with matching
   `reject_reason` values.

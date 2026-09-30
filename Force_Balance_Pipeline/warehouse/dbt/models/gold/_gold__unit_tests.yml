@@ -1,0 +1,64 @@
+version: 2
+
+unit_tests:
+  # veiled_presence NULL grid (b): COALESCE(ABS(z_midi), 0) < 1.0, not plain ABS(z_midi) < 1.0 -- a STEALTH row's
+  # missing z_midi satisfies this one zero-bound condition; every directional condition elsewhere is still NULL,
+  # still false. Mirrors edge/tests/test_doc_parity.py's own grid case at (None, -4.0, 2.5, None, 1).
+  - name: unit_test_veiled_presence_fires_with_a_missing_z_midi
+    model: gold_sector_reading
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - event_id: "01UNIT0000000000000000040"
+            sector_id: "naboo"
+            scan_id: "01UNIT0000000000000000041"
+            z_midi: null
+            z_kyber: null
+            z_dark: 2.5
+            channels_present: 1
+      - input: ref('gold_sector_baseline')
+        rows: []
+    expect:
+      rows:
+        - sector_id: "naboo"
+          signature: "veiled_presence"
+
+  - name: unit_test_veiled_presence_does_not_fire_with_a_present_z_midi_over_the_bound
+    description: "The same STEALTH-shaped row, but z_midi is now present and over 1.0 -- must NOT classify veiled_presence."
+    model: gold_sector_reading
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - event_id: "01UNIT0000000000000000042"
+            sector_id: "naboo"
+            scan_id: "01UNIT0000000000000000043"
+            z_midi: 1.2
+            z_kyber: null
+            z_dark: 2.5
+            channels_present: 2
+      - input: ref('gold_sector_baseline')
+        rows: []
+    expect:
+      rows:
+        - sector_id: "naboo"
+          signature: "unclassified"
+
+  - name: unit_test_veiled_presence_does_not_fire_with_a_present_z_midi_under_the_bound_but_full_channels
+    description: "channels_present must also be < 3 -- a full reading with the same z-scores never classifies veiled_presence."
+    model: gold_sector_reading
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - event_id: "01UNIT0000000000000000044"
+            sector_id: "naboo"
+            scan_id: "01UNIT0000000000000000045"
+            z_midi: 0.5
+            z_kyber: 0.0
+            z_dark: 2.5
+            channels_present: 3
+      - input: ref('gold_sector_baseline')
+        rows: []
+    expect:
+      rows:
+        - sector_id: "naboo"
+          signature: "unclassified"

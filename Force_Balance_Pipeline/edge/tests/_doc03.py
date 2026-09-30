@@ -99,3 +99,27 @@ def composite_score(z_midi, z_kyber, z_dark, channels_present=3):
     z = {"midi": z_midi, "kyber": z_kyber, "dark": z_dark}
     return math.sqrt(sum(weights[c] * (0.0 if z[c] is None else z[c]) ** 2 for c in weights)) \
         * math.sqrt(full / channels_present)
+
+
+def cooldown_hours():
+    """Hours from 'Cooldown: no new incident for the same `sector_id` within N hours.'"""
+    m = re.search(r"Cooldown: no new incident for the same `sector_id` within (\d+) hours?", text())
+    return int(m.group(1))
+
+
+def replay_lag_seconds():
+    """Seconds from the is_replayed definition: `ingest_lag_seconds > N`."""
+    m = re.search(r"`is_replayed`.*?`ingest_lag_seconds > (\d+)`", text())
+    return int(m.group(1))
+
+
+def future_tolerance_minutes_and_max_age_days():
+    """(minutes, days) from the impossible_timestamp trigger row."""
+    m = re.search(r"more than (\d+) minutes ahead of arrival.*?more than (\d+) days behind it", text(), re.S)
+    return int(m.group(1)), int(m.group(2))
+
+
+def lag_tolerance_seconds():
+    """The integer from 'Tolerance: `ingest_lag_seconds >= N`.'"""
+    m = re.search(r"Tolerance: `ingest_lag_seconds >= (-?\d+)`", text())
+    return int(m.group(1))

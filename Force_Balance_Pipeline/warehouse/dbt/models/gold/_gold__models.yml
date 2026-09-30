@@ -1,0 +1,75 @@
+version: 2
+
+models:
+  - name: gold_sector_baseline
+    description: Rolling 90-day statistics per planet per channel, probe-only (doc 03).
+    columns:
+      - name: sector_id
+        data_tests: [not_null]
+      - name: channel
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [midichlorian, kyber, dark_side]
+      - name: mean_90d
+        data_tests: [not_null]
+      - name: stddev_90d
+        data_tests: [not_null]
+      - name: sample_count
+        data_tests: [not_null]
+
+  - name: gold_sector_reading
+    description: One row per planet per scan (doc 03). No windowing.
+    columns:
+      - name: sector_id
+        data_tests: [not_null]
+      - name: scan_id
+        data_tests: [not_null]
+      - name: imbalance_score
+        data_tests:
+          - expression_is_true:
+              arguments:
+                expression: ">= 0"
+      - name: channels_present
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3]
+                quote: false
+      - name: signature
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - sith_presence
+                  - dark_adept
+                  - nexus_awakening
+                  - force_drain
+                  - kyber_cache
+                  - civil_unrest
+                  - veiled_presence
+                  - unclassified
+
+  - name: gold_disturbance
+    description: One row per incident (doc 03). Probe-sourced firing rules only this phase.
+    columns:
+      - name: disturbance_id
+        data_tests: [not_null, unique]
+      - name: sector_id
+        data_tests: [not_null]
+      - name: signature
+        data_tests: [not_null]
+      - name: sustained_scans
+        data_tests:
+          - expression_is_true:
+              arguments:
+                expression: ">= {{ var('sustained_scans') }}"
+      - name: agent_processed
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [true, false]
+                quote: false
+      - name: cooldown_conflict
+        description: "Set on an existing incident's row when a later-replayed onset would fall inside its cooldown (doc 03)."

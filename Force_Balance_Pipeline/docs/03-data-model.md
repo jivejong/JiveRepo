@@ -149,6 +149,14 @@ Loader already got the row into bronze either way — but is asserted empty by a
 `battery_pct` are not range-checked in Phase 4: no fault touches them (`faults.py`'s `SCIENCE_CHANNELS` covers only the three
 science channels), so nothing requires it for the fault-reconciliation checkpoint.
 
+**STEALTH-aware routing.** `edge/probe/runtime.py:148` already gates fault injection to `mode == CONNECTED` only, so a
+`STEALTH` row can never carry an injected fault today — but silver's validation logic does not rely on that staying
+true. A `mode = 'STEALTH'` row skips `null_required_field` only for its two expected-null channels
+(`midichlorian_ppm`, `kyber_resonance`, doc 02); every other check — `unknown_schema_version`, `impossible_timestamp`,
+`unknown_sector`, and `out_of_range` on `dark_side_activity` (the one channel `STEALTH` actually reports) — still
+applies in the order above. A `STEALTH` row that passes routes to `probe_reading` with `is_partial = true`; one that
+fails `impossible_timestamp`, `unknown_sector` or `out_of_range` still lands here with the correct reason.
+
 Deduplicated the same way as `silver.probe_reading`, insert-only on `event_id`, earliest arrival wins — so doc 04's "the count
 of rejects must equal the count in this log" stays a true 1:1 comparison even if a faulted reading is somehow ingested more
 than once.

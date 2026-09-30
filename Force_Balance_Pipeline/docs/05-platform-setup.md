@@ -391,7 +391,7 @@ SQL and this never comes up.
 
 ```
 warehouse/dbt/
-├── dbt_project.yml
+├── dbt_project.yml              # +schema per folder below, and the eight Phase 4 vars -- see "Vars" below
 ├── profiles.yml.example
 ├── seeds/
 │   ├── dim_sector.csv              # SWAPI + AI enrichment, reviewed, frozen
@@ -401,27 +401,54 @@ warehouse/dbt/
 │   ├── fault_injection_<period>.csv   # converted from the Pi's fault_injection.jsonl, one seed per reconciliation period
 │   └── ENRICHMENT_PROVENANCE.md
 ├── models/
+│   ├── sources.yml               # force.bronze.events, 45-minute freshness
+│   ├── staging/
+│   │   ├── _staging__models.yml
+│   │   ├── _staging__unit_tests.yml
+│   │   └── stg_bronze_events.sql   # Jong writes this one by hand (doc 00)
 │   ├── silver/
 │   │   ├── _silver__models.yml
+│   │   ├── _silver__unit_tests.yml
+│   │   ├── silver_probe_event.sql    # Jong writes this one by hand (doc 00)
 │   │   ├── silver_probe_reading.sql
 │   │   ├── silver_force_report.sql
 │   │   ├── silver_rejects.sql
-│   │   └── silver_source_health.sql
-│   ├── gold/
-│   │   ├── _gold__models.yml
-│   │   ├── gold_sector_baseline.sql
-│   │   ├── gold_sector_reading.sql
-│   │   ├── gold_disturbance.sql
-│   │   └── gold_deployment.sql
-│   └── sources.yml
+│   │   └── silver_source_health.sql  # Jong writes this one by hand (doc 00)
+│   └── gold/
+│       ├── _gold__models.yml
+│       ├── _gold__unit_tests.yml
+│       ├── gold_sector_baseline.sql
+│       ├── gold_sector_reading.sql
+│       ├── gold_disturbance.sql
+│       └── gold_deployment.sql       # Phase 6
 ├── macros/
 │   ├── extract_payload.sql      # VARIANT on Databricks; raises on `local` until Phase 8
-│   ├── classify_signature.sql   # deterministic CASE on signed z-scores
-│   └── deterministic_id.sql     # onset-time + sector hash, ULID-shaped (doc 03: disturbance_id only; deployment_id is Phase 6)
+│   ├── epoch_seconds.sql        # unix_timestamp() on Databricks; raises on `local`, same as extract_payload
+│   ├── imbalance_score.sql      # doc 03's composite formula, checked against the doc by test_dbt_doc_parity.py
+│   ├── classify_signature.sql   # deterministic CASE on signed z-scores, same parity check
+│   ├── deterministic_id.sql     # onset-time + sector hash, ULID-shaped (doc 03: disturbance_id only; deployment_id is Phase 6)
+│   ├── generate_schema_name.sql # +schema lands as-is (silver/gold), not concatenated with the target schema
+│   └── generic_tests.sql        # expression_is_true, column_is_null -- no dbt_utils dependency
 └── tests/
+    ├── assert_baseline_probe_only.sql
     ├── assert_cooldown_respected.sql
-    └── assert_imbalance_in_range.sql
+    └── assert_stealth_never_rejected.sql
 ```
+
+`assert_imbalance_in_range.sql`, listed here in an earlier draft of this tree, was never built: doc 03's only stated
+bound is `imbalance_score >= 0` (03:367), with no upper bound, and that single check is already a column-level test
+on `gold_sector_reading.imbalance_score` (`_gold__models.yml`, `expression_is_true: >= 0`). A separate singular test
+would duplicate it with no added coverage, so it's dropped from this list rather than built.
+
+### Vars
+
+The eight Phase 4 thresholds/tolerances live in `dbt_project.yml`'s `vars:` block, each commented with the doc 03
+line it comes from: `anomaly_threshold` (4.0, 03:239), `emergency_threshold` (5.75, 03:239), `sustained_scans`
+(2, 03:310), `cooldown_hours` (2, 03:311), `replay_lag_seconds` (1800, 03:102), `future_tolerance_minutes`
+(10, 03:138), `max_age_days` (90, 03:138), `lag_tolerance_seconds` (-2, 03:117). `edge/tests/test_dbt_doc_parity.py`
+checks every one of them against doc 03 directly, offline — the same "doc is truth, code fails first" pattern
+`test_doc_parity.py` already applies to `forcesim.signatures`. Retuning any of them means editing doc 03 first, in
+the same commit as the change here.
 
 ### Portability macro
 

@@ -1,0 +1,79 @@
+version: 2
+
+models:
+  - name: silver_probe_event
+    description: Housekeeping events (doc 02), routed before the sector/validation checks.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+      - name: kind
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["buffer_overflow"]
+
+  - name: silver_force_report
+    description: Stub until Phase 5 (doc 07).
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+
+  - name: silver_rejects
+    description: Validation failures with a reason (doc 03).
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+      - name: reject_reason
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - unknown_schema_version
+                  - impossible_timestamp
+                  - unknown_sector
+                  - null_required_field
+                  - out_of_range
+
+  - name: silver_probe_reading
+    description: Valid (and STEALTH-partial) probe readings (doc 03).
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+      - name: sector_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_sector')
+                field: sector_id
+      - name: event_time
+        data_tests: [not_null]
+      - name: channels_present
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3]
+                quote: false
+      - name: ingest_lag_seconds
+        data_tests:
+          - expression_is_true:
+              arguments:
+                expression: ">= {{ var('lag_tolerance_seconds') }}"
+      - name: is_partial
+        description: "Must agree with channels_present < 3 -- checked by assert_stealth_never_rejected (singular test), not a column test here."
+      - name: synthetic_ingest_ts
+        description: "Null iff NOT is_synthetic (doc 03: bronze.events, carried through)."
+      - name: _rescued_data
+        description: "Auto Loader rescue-mode column, carried through. Non-null is unexpected, not invalid -- warn only."
+        data_tests:
+          - column_is_null:
+              config:
+                severity: warn
+
+  - name: silver_source_health
+    description: Latest state per source (doc 03).
+    columns:
+      - name: source_id
+        data_tests: [not_null, unique]

@@ -1,0 +1,66 @@
+version: 2
+
+sources:
+  - name: bronze
+    database: force
+    schema: bronze
+    tables:
+      - name: events
+        description: >
+          Append-only Auto Loader output (doc 03, "bronze.events"). One row per ingested event, duplicates
+          included -- bronze never deduplicates. loaded_at_field is COALESCE(_file_modified_ts, _ingest_ts): the
+          volume's own arrival time when known (every row ingested since the Q1 backfill column landed), falling
+          back to the notebook's own processing time for any row that predates it. dbt's loaded_at_field accepts
+          an expression, not just a bare column name (dbt Developer Hub, "freshness" reference), so this needs no
+          loaded_at_query. Not run against a live warehouse here -- confirm the compiled freshness query once Job
+          1 exists (task 1 of this round).
+        loaded_at_field: "COALESCE(_file_modified_ts, _ingest_ts)"
+        freshness:
+          warn_after: {count: 45, period: minute}
+          error_after: null
+        columns:
+          - name: event_id
+            description: ULID. Primary dedup key (doc 02).
+            data_tests:
+              - not_null
+          - name: source_id
+            description: "probe-01, web-a3f2, ..."
+          - name: source_type
+            description: "probe | report -- load-bearing (doc 02)."
+            data_tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values: ["probe", "report"]
+          - name: mode
+            description: "CONNECTED | DISCONNECTED | BURST | STEALTH. Null for reports."
+          - name: scan_id
+            description: Groups one sweep's 60 readings. Null for reports and housekeeping events.
+          - name: sector_id
+            description: SWAPI planet slug, or source_id for a housekeeping event (doc 02).
+          - name: schema_version
+            description: Increments on a breaking payload change (doc 02).
+          - name: event_time
+            description: "When the reading was taken, not when it was sent (doc 02)."
+            data_tests:
+              - not_null
+          - name: is_synthetic
+            description: True only for backfill-generated rows.
+            data_tests:
+              - not_null
+          - name: synthetic_ingest_ts
+            description: Null unless is_synthetic; the ingest time a backfill row simulates.
+          - name: payload
+            description: Source-specific, VARIANT.
+          - name: dt
+            description: Partition column, ingest date (doc 02) -- not event date.
+          - name: hh
+            description: Ingest hour.
+          - name: _source_file
+            description: "_metadata.file_path at ingest time. Equals read_files()'s _metadata.file_path with a leading dbfs: prefix stripped (doc 05, the arrival-timestamp backfill)."
+          - name: _ingest_ts
+            description: The Auto Loader notebook's own current_timestamp() -- processing time, not arrival time.
+          - name: _file_modified_ts
+            description: "_metadata.file_modification_time, 1-second resolution (doc 03, Q1). NULL on rows ingested before this column existed, and on every is_synthetic row."
+          - name: _rescued_data
+            description: Auto Loader rescue-mode column; null when nothing was rescued. A non-null value is a warn-severity test on silver, not a bronze-level reject.

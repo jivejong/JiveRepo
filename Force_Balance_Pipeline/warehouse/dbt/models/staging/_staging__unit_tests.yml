@@ -1,0 +1,73 @@
+version: 2
+
+unit_tests:
+  # extract_payload (h): JSON null, a missing field, and a numeric string. The numeric-string row's expected
+  # value is TO ESTABLISH ON DATABRICKS -- try_variant_get's behaviour on a numeric string has not been run
+  # against a live warehouse; do not treat the commented guess below as fact until it has.
+  - name: unit_test_extract_payload_json_null_is_sql_null
+    description: "A JSON null in payload (e.g. STEALTH's midichlorian_ppm) extracts as SQL NULL, not the string 'null'."
+    model: stg_bronze_events
+    given:
+      - input: source('bronze', 'events')
+        rows:
+          - event_id: "01UNIT0000000000000000001"
+            source_type: "probe"
+            payload: '{"midichlorian_ppm": null, "kyber_resonance": 40.1, "dark_side_activity": 61.2}'
+    expect:
+      rows:
+        - event_id: "01UNIT0000000000000000001"
+          midichlorian_ppm: null
+
+  - name: unit_test_extract_payload_missing_field_is_sql_null
+    description: "A field absent from payload entirely (not just JSON null) also extracts as SQL NULL."
+    model: stg_bronze_events
+    given:
+      - input: source('bronze', 'events')
+        rows:
+          - event_id: "01UNIT0000000000000000002"
+            source_type: "probe"
+            payload: '{"kyber_resonance": 40.1, "dark_side_activity": 61.2}'
+    expect:
+      rows:
+        - event_id: "01UNIT0000000000000000002"
+          midichlorian_ppm: null
+
+  - name: unit_test_extract_payload_numeric_string_TO_ESTABLISH_ON_DATABRICKS
+    description: >
+      A channel value sent as a JSON string of digits (not a JSON number) -- malformed input, not something the
+      probe or bridge produces today. try_variant_get's behaviour here (parse it, or return NULL like a genuine
+      type mismatch) is NOT ESTABLISHED against a live warehouse. The expected row below is commented out
+      deliberately: fill it in from the first real dbt test/build run against Databricks, then uncomment.
+    model: stg_bronze_events
+    given:
+      - input: source('bronze', 'events')
+        rows:
+          - event_id: "01UNIT0000000000000000003"
+            source_type: "probe"
+            payload: '{"midichlorian_ppm": "14200.5", "kyber_resonance": 40.1, "dark_side_activity": 61.2}'
+    expect:
+      rows: []  # TO ESTABLISH ON DATABRICKS -- do not fill in without running this against the real adapter
+
+  # Housekeeping routing (e): a payload.kind row is picked up by stg_bronze_events' `kind` extraction; the
+  # routing decision itself (kind IS NOT NULL -> silver_probe_event, before the sector check) is asserted on
+  # silver_probe_event and silver_rejects below, not here -- stg_bronze_events does no filtering.
+  - name: unit_test_kind_extraction_for_a_housekeeping_event
+    description: "payload.kind extracts non-null for a housekeeping event; a reading has no kind field at all."
+    model: stg_bronze_events
+    given:
+      - input: source('bronze', 'events')
+        rows:
+          - event_id: "01UNIT0000000000000000004"
+            source_type: "probe"
+            sector_id: "probe-01"
+            payload: '{"kind": "buffer_overflow", "dropped": 12, "cap": 100000}'
+          - event_id: "01UNIT0000000000000000005"
+            source_type: "probe"
+            sector_id: "tatooine"
+            payload: '{"midichlorian_ppm": 14200.5, "kyber_resonance": 62.4, "dark_side_activity": 11.8}'
+    expect:
+      rows:
+        - event_id: "01UNIT0000000000000000004"
+          kind: "buffer_overflow"
+        - event_id: "01UNIT0000000000000000005"
+          kind: null
