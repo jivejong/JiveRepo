@@ -339,19 +339,24 @@ recompute does not create a second incident and does not rewrite the existing on
 `cooldown_conflict = true` on the **existing incident's row** and stops. Treat `cooldown_conflict = true` as needing manual
 review, not as a suppressed duplicate.
 
-**Known limitation, current implementation:** the cooldown check compares each run only to the *immediately preceding* run
-for the same sector (a `LAG()`, not a walk carrying the last **accepted** incident forward), because Databricks SQL was
-believed not to support `WITH RECURSIVE`. That belief was wrong — confirmed live, 2026-09-30, on this project's serverless
-SQL warehouse (DBSQL 2026.36): a recursive CTE runs correctly, including the sequential "carry a running pointer forward
-per sector" shape this fix needs. The bug this causes is the opposite of what an earlier draft of this note claimed: a
-run that itself gets suppressed can still be a *long* one, and its own `detected_at` (used as the next run's `LAG` basis)
-can fall later than the true last-accepted incident's `detected_at` would — which makes the cooldown window for the run
-after it *too long*, not too short. Concretely, verified with a 3-run fixture (accepted run, then a long suppressed run,
-then a run that should be a clear, new incident once past the *original* accepted incident's cooldown): the current
-`LAG`-based check incorrectly suppresses that third run, where a true last-accepted-incident walk correctly accepts it. A
-recursive-CTE rewrite (walk runs per sector in onset order, carrying the last accepted incident's `detected_at` forward
-instead of the immediately preceding run's) has been proposed but not applied as of this note; see
-`docs/ENGINEERING-LOG.md`, "Stage 2 follow-up."
+**Resolved, 2026-09-30.** The cooldown check previously compared each run only to the *immediately preceding* run for the
+same sector (a `LAG()`, not a walk carrying the last **accepted** incident forward), on the mistaken belief that
+Databricks SQL doesn't support `WITH RECURSIVE`. It does (confirmed live, DBSQL 2026.36) — the bug this caused was the
+opposite of what an earlier draft of this note guessed: a run that itself gets suppressed can still be a *long* one, and
+its own `detected_at` (the old `LAG` basis) could fall later than the true last-accepted incident's `detected_at` would
+— making the following run's cooldown window too *long*, not too short, and incorrectly **suppressing** a run genuinely
+clear of the original incident's cooldown. Verified with a 3-run fixture before fixing (accepted run, then a long
+suppressed run, then a run that should be a clear, new incident) that the old `LAG`-based check suppressed the third run
+where a true last-accepted-incident walk correctly accepts it.
+
+**Fix:** `gold_disturbance` now walks runs per sector in onset order with a recursive CTE, carrying the last accepted
+incident's `detected_at` forward instead of the immediately preceding run's own. Regression-tested with the same 3-run
+shape (`unit_test_disturbance_third_rapid_run_is_accepted`). On the real 90-day backfill, the fix changed **zero** rows
+— rebuilt with `--full-refresh`, then twice more without it, all three runs producing the identical 49-row,
+byte-identical disturbance list as before the fix (same sectors, `detected_at`, signatures, `sustained_scans`). Checked
+why: the minimum gap between any two accepted incidents for the same sector, anywhere in the real data, is 47.5 hours
+(`kalee`) — far beyond the 2-hour cooldown the bug needs to matter, so the bug was real (and is now fixed, and
+regression-tested) but never actually fired on this dataset.
 
 **Firing rules — report-sourced:**
 

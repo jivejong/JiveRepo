@@ -524,13 +524,18 @@ against that limit concurrently**, so a four-task linear job is well within budg
 | ----------------- | -------------------------------------------------------------------------------- | --------------- |
 | `ingest_bronze`   | Notebook (Auto Loader)                                                        | —               |
 | `transform`       | dbt (`dbt build --exclude gold_sector_baseline`, catalog=force, schema=gold) | `ingest_bronze` |
-| `publish_serving` | Notebook                                                                      | `transform`     |
+| `publish_serving` | Notebook — **not built yet.** Writes gold aggregates to Postgres, so it waits on the Postgres/local demo stack, deferred to Phase 8 (07:157-158's own fallback, taken in Phase 4). Add it here, `depends_on: transform`, once that stack exists. | `transform`     |
 
 Signature classification and detection live inside the dbt DAG as `gold_sector_reading` and
 `gold_disturbance`, so neither needs its own task.
 
 Cadence matters: with a 15-minute scan cycle, a 5-minute schedule would burn quota finding nothing
-on two runs out of three. Offset 3 minutes behind the scan so files have landed.
+on two runs out of three. Offset 3 minutes behind the scan so files have landed — **measured, not
+guessed, Phase 4 Stage 3a:** under normal `CONNECTED` operation, `docs/PHASE3-RESULTS.md`'s own
+landed-file timestamps show files arriving about 3 *seconds* after their scan boundary (the
+2026-09-28T19:00:00Z scan landed at 19:00:03Z; the 2026-09-29 checkpoint's :15Z and :30Z scans landed
+at :15:03Z and :30:03Z). A 3-minute offset is therefore a 60x margin over the measured normal case,
+not a tight fit to it.
 
 `publish_serving` writes gold aggregates to Postgres. If outbound egress to your Postgres host is
 blocked, invert it: have a Cloud Run job pull via the SQL Statement Execution API on the same
@@ -545,7 +550,48 @@ schedule. The pull direction is preferred anyway — it keeps the work off the D
 Rolling 90-day statistics per planet per channel. **Probe-only** — the model must filter
 `source_type = 'probe'`. Excluded from Job 1's `transform` task (above) for exactly this reason: daily rather than per-run
 because baselines should be stable within a day; recomputing them every 15 minutes would make z-scores drift under the
-detector.
+detector. 03:00 UTC: a quiet overnight UTC hour, clear of Job 1's continuous :03/:18/:33/:48 cadence — this project has no
+timezone of record, so "quiet" means only "doesn't collide with Job 1."
+
+### Deploying Job 1 and Job 2
+
+Both are defined as code: `databricks.yml` (repo root) plus `resources/force_pipeline.job.yml` and
+`resources/rebuild_baseline.job.yml`, a Databricks Asset Bundle (DAB) — Databricks' current recommended way to define
+jobs as code, chosen over a hand-applied Jobs API JSON file because `databricks bundle deploy` is idempotent (it
+updates the same job in place on every deploy) where `databricks jobs create` is not (a second `create` makes a second
+job; a hand-rolled approach would need the resulting job id tracked and every change applied via `jobs reset`
+instead).
+
+This is a deliberate two-layer split, not a redundancy: the bundle's `databricks bundle deploy` pushes the job
+*definitions* (schedule, tasks, which git branch to run) from a developer machine to the workspace, while each job's
+own `git_source` (pointed at this repo's `main`, same as the dbt task config below) is what makes the *code those
+tasks run* come from Git on every single run — deploying a new job definition and merging a code change to `main` are
+two different actions, and only the second one needs no further deploy step. A job run always executes whatever was
+on `main` when that run started (`git_snapshot.used_commit` in the run's own API response makes this exact, not
+approximate).
+
+`warehouse_id` is the one workspace-specific value the bundle needs; it's a bundle variable with no committed
+default, supplied at deploy time only (`BUNDLE_VAR_warehouse_id=<id> databricks bundle deploy`), consistent with
+this project's placeholder convention for anything workspace-specific.
+
+**To change either job:** edit the relevant `resources/*.job.yml`, `databricks bundle validate`, then
+`databricks bundle deploy` (needs a `BUNDLE_VAR_warehouse_id`-authenticated CLI session; never commit the real
+warehouse id). The YAML in the repo is what's deployed — no workspace-UI edits, for the same reason the dbt task
+itself pulls from Git rather than a workspace copy (below): someone reading the repo sees the actual deployed
+configuration.
+
+**Both jobs were created PAUSED** (`schedule.pause_status: PAUSED`) and stay that way until unpaused by hand in the
+workspace UI or via `databricks jobs update` — deploying or redeploying the bundle does not change an existing job's
+pause state. **The manual notebook run (`ingest_bronze`'s notebook, run by hand per "Auto Loader ingestion" above) is
+retired once Job 1 is unpaused** — from that point, ingestion, transform, and (once it exists) publish happen on Job
+1's own schedule, and the manual run is no longer part of the normal operating path. Job 1's first manual trigger
+(Phase 4 Stage 3a, 2026-09-30) ran clean end to end: `ingest_bronze` 83.6s, `transform` 187.9s, both `SUCCESS`, against
+commit `d923a7c8` (the last commit on `main` at trigger time — Stage 3a's own changes, including this section, landed
+in a later commit and were not yet on `main` when this run fired). Bronze, silver and gold row counts all moved by
+the identical +4,860 (no rows lost or gained at any layer); `gold_disturbance` gained 2 new rows from that real
+backlog. A second `transform` run against the same data (`dbt build --exclude gold_sector_baseline`, run locally,
+same command the task runs) added zero rows at every layer, confirming the second-run-does-nothing property doc 07's
+Phase 4 checkpoint asks for.
 
 ### Job 3 — `maintenance` (weekly)
 
@@ -575,7 +621,11 @@ columns only, and should be run with care that it does not clobber enriched colu
 - **Source:** Git provider, pointed at `https://github.com/jivejong/JiveRepo`. This project lives in
   that repo as the top-level folder `Force_Balance_Pipeline/`. Not workspace files.
 - **Project directory:** `Force_Balance_Pipeline/warehouse/dbt`
-- **Commands:** `dbt deps`, `dbt seed`, `dbt build` (no `--target`).
+- **Commands:** `dbt deps`, `dbt build` (or `dbt run --select ...` for Job 2), no `--target`. **Deviation, Phase 4
+  Stage 3a:** `dbt seed` is NOT in Job 1's or Job 2's commands, despite an earlier draft of this bullet listing it
+  generically — seeds are static, enrichment-backed CSVs that change only via Job 4's own explicit `dbt seed
+  --full-refresh` (manual trigger only, above); reseeding on every 15-minute Job 1 run would spend warehouse compute
+  reproducing identical rows every time.
 - **Profile:** the task uses the profile Databricks generates, whose only target is
   `databricks_cluster` (verified in the Phase 0 q3 run log). The task's `catalog` and
   `schema` fields decide where models land. The `prod` target in `profiles.yml.example`

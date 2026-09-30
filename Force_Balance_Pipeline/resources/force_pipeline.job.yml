@@ -1,0 +1,57 @@
+# Job 1 -- doc 05, "Job topology". Every 15 minutes, offset +3 minutes from the probe's own :00/:15/:30/:45
+# scan boundary (doc 02) so the bridge's ndjson files have landed in the telemetry volume before Auto Loader
+# looks for them.
+#
+# Offset justification, from Phase 3's own measured data (docs/PHASE3-RESULTS.md): under normal CONNECTED
+# operation, files land about 3 SECONDS after their scan boundary, not minutes (e.g. the 2026-09-28T19:00:00Z
+# scan landed at 19:00:03Z; the 2026-09-29 checkpoint's 13:15Z and 13:30Z scans landed at :15:03Z and :30:03Z).
+# A 3-MINUTE offset is therefore a 60x safety margin over the measured normal case, not a tight fit to it --
+# generous enough to absorb an occasional slow publish without inventing a new number doc 05 didn't already
+# have (doc 05:533 already specifies +3 minutes; this is that number's justification, made explicit).
+#
+# publish_serving (doc 05's third task, writing gold aggregates to Postgres) is intentionally left out here --
+# it doesn't exist yet. The Postgres/local-demo stack it depends on is deferred to Phase 8 (doc 07:157-158's own
+# fallback, taken in Phase 4: "the local target ... moves to Phase 8"). Add it as this job's third task once
+# that stack lands, depends_on: transform, same as doc 05's table already shows.
+
+resources:
+  jobs:
+    force_pipeline:
+      name: force_pipeline
+      description: >-
+        Job 1 (doc 05, "Job topology"). Ingests newly landed bronze files, then runs the dbt DAG excluding the
+        daily-only gold_sector_baseline (Job 2's job). Signature classification and disturbance detection live
+        inside the dbt DAG itself (gold_sector_reading, gold_disturbance) -- neither needs its own task.
+      git_source:
+        git_url: https://github.com/jivejong/JiveRepo
+        git_provider: gitHub
+        git_branch: main
+      schedule:
+        quartz_cron_expression: "0 3,18,33,48 * * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+      tasks:
+        - task_key: ingest_bronze
+          notebook_task:
+            notebook_path: Force_Balance_Pipeline/ingest/autoloader_bronze.py
+            source: GIT
+        - task_key: transform
+          depends_on:
+            - task_key: ingest_bronze
+          dbt_task:
+            project_directory: Force_Balance_Pipeline/warehouse/dbt
+            commands:
+              - "dbt deps"
+              - "dbt build --exclude gold_sector_baseline"
+            catalog: force
+            schema: gold
+            warehouse_id: ${var.warehouse_id}
+            source: GIT
+          environment_key: dbt_env
+      environments:
+        - environment_key: dbt_env
+          spec:
+            environment_version: "5"
+            dependencies:
+              - dbt-databricks==1.9.*
+              - dbt-core==1.10.13

@@ -1,0 +1,43 @@
+# Job 2 -- doc 05, "Job topology". Daily, 03:00 UTC -- a quiet hour for this project (no real users, no
+# timezone-of-record; picked as a low-traffic overnight UTC slot, consistent with doc 05's existing choice, and
+# clear of Job 1's continuous :03/:18/:33/:48 cadence so the two never overlap).
+#
+# Separate job, not a task bundled into Job 1: gold_sector_baseline is explicitly excluded from Job 1's
+# transform task (doc 05:546-548, "recomputing them every 15 minutes would make z-scores drift under the
+# detector") -- keeping it in its own job makes that exclusion visible in the job topology itself, not just in
+# a dbt --exclude flag someone has to go read.
+
+resources:
+  jobs:
+    rebuild_baseline:
+      name: rebuild_baseline
+      description: >-
+        Job 2 (doc 05, "Job topology"). Rebuilds gold_sector_baseline's rolling 90-day statistics from scratch,
+        once a day. Probe-only by the model's own WHERE clause (assert_baseline_probe_only enforces it).
+      git_source:
+        git_url: https://github.com/jivejong/JiveRepo
+        git_provider: gitHub
+        git_branch: main
+      schedule:
+        quartz_cron_expression: "0 0 3 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+      tasks:
+        - task_key: rebuild_baseline
+          dbt_task:
+            project_directory: Force_Balance_Pipeline/warehouse/dbt
+            commands:
+              - "dbt deps"
+              - "dbt run --select gold_sector_baseline --full-refresh"
+            catalog: force
+            schema: gold
+            warehouse_id: ${var.warehouse_id}
+            source: GIT
+          environment_key: dbt_env
+      environments:
+        - environment_key: dbt_env
+          spec:
+            environment_version: "5"
+            dependencies:
+              - dbt-databricks==1.9.*
+              - dbt-core==1.10.13

@@ -474,6 +474,68 @@ should be a new incident once clear of the *first* run's cooldown) before it shi
 `unit_test_disturbance_cooldown_suppresses_a_second_onset_and_flags_the_first` fixture only covers the
 two-run case and would not have caught this. Deferred, not applied, per this round's scope.
 
+### Stage 3a: cooldown rewrite
+
+Applied the sketch above almost as written. Two refinements over the sketch: a `runs_seq` CTE computes
+`row_number() over (partition by sector_id order by onset_event_time)` on the already sustained_scans-filtered
+candidate runs (small per sector — single digits over 90 days — so the recursive walk stays cheap and nowhere
+near any recursion-depth limit), and the recursive term's suppression test is computed once in a nested
+subquery rather than repeated across the `last_accepted_detected_at`/`accepted` expressions, to avoid two
+copies of the same condition drifting apart. Both were checked directly against Databricks before writing the
+real model — `WITH RECURSIVE` does allow a plain (non-recursive) CTE earlier in the same `WITH` list, and does
+allow the recursive term's self-reference to sit inside a nested subquery, not just a bare `FROM`/`JOIN`.
+
+Each row of the new `walked` CTE carries `basis_detected_at` — which accepted incident's `detected_at` a run
+was actually tested against, NULL for a sector's first run (never suppressed). `cooldown_conflict` is now
+`EXISTS (a later, suppressed run whose basis_detected_at equals this row's own detected_at)`, which stays
+correct across a chain of several consecutive suppressed runs, since they all carry the same original
+`basis_detected_at` forward unchanged — the single-pair version this replaced couldn't express that.
+
+**Unit tests:** the three-rapid-runs fixture (`unit_test_disturbance_third_rapid_run_is_accepted`) — run 1
+accepted, run 2 long and suppressed (8 consecutive scans, its own `detected_at` landing after run 1's cooldown
+ends), run 3 clear of run 1's true cooldown but still inside what run 2's own `detected_at` would have implied
+— passes: run 1 and run 3 both come through as separate incidents, run 1 flagged `cooldown_conflict`, run 3
+not. The existing two-run cooldown fixture (doc 07 checkpoint C4's shape) and the single-run fixture both still
+pass unchanged — 17/17 gold unit tests green.
+
+**Build verification:** `dbt build --select gold_disturbance --full-refresh`, then twice more without it — all
+three green (12/12 each run), including `assert_cooldown_respected`. Row count held at 49 across all three
+builds. Diffed the full 49-row list against Stage 2's recorded list: **zero additions, zero removals, zero
+changes** to any sector, `detected_at`, signature, or `sustained_scans` — byte-identical. Checked why the real
+fix had no observable effect: the minimum gap between any two accepted incidents for the same sector anywhere
+in the 90-day backfill is 47.5 hours (`kalee`), far beyond the 2-hour cooldown the old bug needed to matter.
+The bug was real, is fixed, and is regression-tested — it simply never fired on this particular dataset.
+
+### Stage 3a: Job 1
+
+Defined Job 1 (`force_pipeline`) and Job 2 (`rebuild_baseline`) as a Databricks Asset Bundle — `databricks.yml` at
+the repo root plus `resources/*.job.yml` — rather than a hand-applied Jobs API JSON file, because `databricks
+bundle deploy` is idempotent (updates the same job in place) where `databricks jobs create` is not (a second call
+makes a second job). Doc 05, "Deploying Job 1 and Job 2," has the full reasoning and the change procedure.
+`publish_serving` (doc 05's third Job 1 task, writing to Postgres) is left out — it depends on the Postgres/local
+demo stack, deferred to Phase 8.
+
+**`environment_version` discrepancy, not fully resolved:** doc 05 already specified `"5"` for the dbt task's
+serverless environment, from an earlier phase's research. `databricks bundle validate` accepts either `"2"` or
+`"5"` as syntactically valid — validation doesn't check the value against the workspace's actual supported
+versions, only its shape. Kept `"5"` to match doc 05's existing, previously-researched number rather than
+substitute an unverified guess; the job's first live run used whatever was deployed at trigger time (see below)
+and completed successfully, which is evidence *a* valid value was in play at that moment, not proof `"5"`
+specifically is correct on this workspace going forward. Flagged, not silently resolved.
+
+**First manual run, 2026-09-30, both jobs created PAUSED as instructed:** `force_pipeline` triggered once via
+`databricks jobs run-now`. `ingest_bronze` (notebook) SUCCESS in 83.6s; `transform` (`dbt build --exclude
+gold_sector_baseline`) SUCCESS in 187.9s; both tasks' `git_snapshot.used_commit` = `d923a7c8` — the last commit
+on `main` at trigger time (this round's own changes, including this log entry, hadn't been pushed yet, so the
+run correctly did not see them; git-based deployment working as designed, doc 05 "the repository is the source
+of truth"). Row counts before → after: bronze 530,473 → 535,333, `silver_probe_reading` and `gold_sector_reading`
+530,460 → 535,320 each — the identical +4,860 at every layer, meaning the real Pi had been publishing live scans
+the whole time since the last ingestion (no rows lost or gained crossing any layer). `gold_disturbance` 49 → 51,
+two new real incidents from that backlog. Ran `transform`'s own command locally a second time against the same
+now-current data: zero row change at every layer across three consecutive runs, confirming doc 07's Phase 4
+checkpoint property ("Affected historical rows are recomputed, not duplicated" extends naturally to "a rerun over
+unchanged data changes nothing").
+
 ## Open items
 
 | Item | Status |
@@ -487,8 +549,10 @@ two-run case and would not have caught this. Deferred, not applied, per this rou
 | Composite score scaling on partial (STEALTH) readings | `SQRT(3/channels_present)` gives a dark-only STEALTH reading about 1.5x the score variance of a full reading with the same dark deviation — it trips 5.75 at `z_dark ≈ 2.35` instead of `≈ 4.07`. `SQRT(4/present_weight)` would remove the gap. Kept as-is for Phase 4; `edge/analyze_thresholds.py` gets a STEALTH-series comparison before the Phase 6 threshold retune decides between them. |
 | Fault injection still at `--fault-rate 0` | Deliberately deferred a few days after the mode schedule, so a scheduled outage and an injected fault are never running at once; becomes its own period in a later commit. |
 | Persistent-journal fix (2026-09-30) | Not yet confirmed to survive an actual Pi reboot — the next real test of it. |
-| `gold_disturbance` cooldown uses `LAG()`, not a last-accepted-incident walk | Recursive-CTE rewrite proposed (doc 03, "Known limitation, current implementation"; sketch in "Stage 2 follow-up," above), confirmed `WITH RECURSIVE` works on this warehouse, but not applied. Needs a three-rapid-runs unit test before it ships. |
+| `gold_disturbance` cooldown uses `LAG()`, not a last-accepted-incident walk | **Resolved, 2026-09-30.** See "Stage 3a: cooldown rewrite," below. |
 | 45 non-emergency `gold_disturbance` rows can't be split into ambient-episode-driven vs. pure-noise | The label lives in `edge/backfill_texture.json`'s per-scan episode data, not joined against `gold_disturbance`. Doc 03's own 9-noise / 32-ambient design-time split (0.7/week target) can't be independently re-derived from gold alone yet. |
+| Job 1/Job 2's dbt task `environment_version` is `"5"` per doc 05, unverified this round | `databricks bundle validate` accepts `"2"` or `"5"` without checking against the workspace's actual supported versions. Kept `"5"` to match doc 05's existing number. The job's one live run so far used whatever was deployed at trigger time and succeeded — not specific proof of `"5"`. |
+| `publish_serving` task not built | Waits on the Postgres/local demo stack (Phase 8). Add to Job 1, `depends_on: transform`, once it exists (doc 05). |
 
 ## Lessons (beyond this project)
 

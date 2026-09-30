@@ -1,0 +1,35 @@
+# Databricks Asset Bundle for Job 1 (force_pipeline) and Job 2 (rebuild_baseline) -- doc 05, "Job topology".
+#
+# Why a bundle, not a bare Jobs API JSON file applied by hand: `databricks jobs create` isn't idempotent (running it
+# twice makes two jobs), so a hand-rolled JSON approach needs the resulting job id tracked somewhere and every
+# change applied via `jobs reset --job-id <id>`. A bundle's `databricks bundle deploy` is idempotent by design (it
+# diffs against what it deployed last and updates the same job in place), matches Databricks' own current guidance
+# for "jobs as code," and keeps the deployed job's identity (and its run history) stable across deploys. The cost
+# is a `databricks bundle deploy` step outside plain git -- this project accepts that, since the job DEFINITION
+# (this file and resources/*.yml) is what's deployed, while the job's dbt and notebook TASKS still pull their own
+# code straight from Git main via git_source below, exactly as doc 05 already specifies ("the repository is the
+# source of truth for production transformation code").
+#
+# warehouse_id is workspace-specific, not a secret in the credential sense, but still not committed as a literal
+# here, consistent with this project's placeholder convention for anything workspace-specific (doc 05, <DESKTOP_IP>
+# etc.). Set it at deploy time: `BUNDLE_VAR_warehouse_id=<id> databricks bundle deploy`.
+
+bundle:
+  name: force_balance_pipeline
+
+variables:
+  warehouse_id:
+    description: SQL warehouse id for the dbt tasks (doc 05, "select the 2X-Small warehouse"). No default -- must
+      be supplied at deploy time via DATABRICKS_BUNDLE_VAR_warehouse_id, never committed.
+
+include:
+  - resources/*.yml
+
+targets:
+  prod:
+    default: true
+    mode: production
+    workspace:
+      # workspace.current_user.userName resolves to the deploying identity at deploy time -- keeps this file
+      # free of any real email address or username, consistent with this project's placeholder convention.
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
