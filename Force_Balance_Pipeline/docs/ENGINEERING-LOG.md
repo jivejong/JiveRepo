@@ -41,7 +41,9 @@ before building anything real on top of it.
   origin at the time. **Operational lesson, not a code bug**: push before running `q1` or `q3`.
 
 **Checkpoint: MET.** Run `1074650816698552`, commit `5cdcfc4`, `dbt=1.10.13` / `databricks=1.9.8`, `PASS=9
-TOTAL=9`, 89.7 s.
+TOTAL=9`, 89.7 s. Locally, a `dbt ls` toggle (`enable_streaming_check`, default off) confirmed the streaming
+model is disabled by default (2 models) and appears only with the var (3 models); Windows PowerShell 5.1 strips
+inner double quotes, so `--vars` needs YAML flow syntax (`--vars "{enable_streaming_check: true}"`), not JSON.
 
 **Commits:** `93a6ed7`..`a3ba8f2` (repo scaffold through Phase 0 results), 2026-09-23.
 
@@ -51,6 +53,8 @@ TOTAL=9`, 89.7 s.
 and frozen before anything downstream depends on them.
 
 **Decisions and why:**
+- Froze a SWAPI snapshot first (`data/swapi_snapshot/`): 60 planets, 82 people, 37 species, 36 starships,
+  written only once all four resources validate.
 - Switched the enrichment (and later, the agent's) inference provider from Groq to Gemini
   (`gemini-3.1-flash-lite`) partway through — stack table, agent config, `.env.example` and the egress test
   target all updated together.
@@ -65,6 +69,10 @@ and frozen before anything downstream depends on them.
 - SWAPI's `planets/28` ("unknown") becomes `sector_id` `"uncharted"` with an `is_unknown` flag and median
   baselines — and is explicitly excluded from ever being a valid fault-injection sector, so an injected
   "unknown sector" fault can never collide with a real one.
+- Gemini's structured-output shape had to be found by probing: `generationConfig.responseMimeType` +
+  `responseJsonSchema` is accepted; `responseFormat` is rejected with a named-field error; `thinkingConfig
+  .thinkingLevel` is accepted. Thinking tokens count against the same `maxOutputTokens` budget as the response,
+  so the caps are generous — 65,536 (planets, all 59 in one call) and 16,384 (Jedi).
 
 **Issues:**
 - `dim_sector`'s first review-gate pass **failed**. The model had regressed two anchors to the middle of their
@@ -73,10 +81,15 @@ and frozen before anything downstream depends on them.
   human corrections** (Geonosis 40→55, Utapau 25→80, each with sigma recalculated to keep the same relative
   band) recorded in `data/enrichment_corrections.csv` and applied at promote time — not a full regeneration.
   The gate passed after. `dim_jedi` passed its gate on the first try, 0 corrections.
+- A separate, minor issue in the same pipeline: dbt parses every `.md` under `seeds/` as a docs file and runs
+  Jinja block extraction on it, so an unbalanced `{%`/`{#`/`{{` in a free-text correction reason would have
+  broken every dbt command. The provenance generator neutralises those tokens before writing.
 
-**Checkpoint: MET.** `dim_sector.csv`: 60 rows, review gate PASS after 2 corrections, promoted
-2026-09-25T03:27:47Z. `dim_jedi.csv`: 17 rows, review gate PASS, 0 corrections, at least 3 per specialty
-confirmed, promoted 2026-09-25T12:54:32Z.
+**Checkpoint: MET.** `dim_sector.csv`: 60 rows, review gate PASS after 2 corrections (prompt `planets-v1` /
+`0ab79f1844ca`), promoted 2026-09-25T03:27:47Z. `dim_jedi.csv`: 17 rows, review gate PASS, 0 corrections
+(prompt `jedi-v2` / `93521a8f269a`), at least 3 per specialty confirmed — combat 6, diplomacy 4,
+investigation 4, stealth 3 — promoted 2026-09-25T12:54:32Z. (Obi-Wan Kenobi came back rank `master` rather
+than `council_member`; kept as a flavor field, not a gate criterion.)
 
 **Commits:** `3b4f41b`..`6bf0816`, 2026-09-24 to 2026-09-25.
 
@@ -102,6 +115,17 @@ backfill with texture (drift, resolved historical emergencies, a rising trend, o
   Phase 6 definition of "active anomaly").
 
 **Issues:**
+- The documented AR(1) walk was **1.9x too noisy**: `x_t = PHI*x_{t-1} + normal(0, sigma)` has a stationary SD
+  of `sigma/sqrt(1-PHI^2) ≈ 1.898*sigma` at `PHI=0.85`, not `sigma` — every z-score would have read 1.9x too
+  small. Fixed by scaling the step noise itself (`step_sd = sigma * sqrt(K*(2-K))`, `K = 1-PHI ≈ 0.5268*sigma`)
+  and starting each series from a stationary draw rather than 0, with a regression test pinning the old,
+  wrong form as a failure.
+- `dark_spike_probability` was read **per scan** instead of per day, which at 96 scans/day would have produced
+  roughly 5,000 ambient spike episodes over 90 days instead of the intended handful — contradicting doc 04's
+  "quiet with rare spikes." Fixed by dividing the configured per-day rate by scans/day before each roll.
+- Signature classification near the threshold boundary only succeeded about 58% of the time against walk
+  noise. Fixed by zeroing the step noise on exactly the channels that define a signature's region for the
+  duration of an injected hold, so an injection reliably lands where it's supposed to.
 - **Deviation (accepted, not a bug):** the live checkpoint ran 3 scans at a 60 s cadence instead of the
   documented 45 minutes at the real 15-minute cadence. Accepted 2026-09-26; **closed 2026-09-27** by a dedicated
   desktop cadence run (3 scans, 180 rows, real cadence, an hour boundary crossed) — filed in commit `95eba37`,
@@ -149,8 +173,12 @@ publishes over the LAN, TLS and the e2-micro move to a later phase.
    started fault injection at the full default rate (1.0) the instant it was enabled. Fixed before it ever ran.
 3. `/opt` is root-owned; a plain `git clone` into a not-yet-created `/opt/force-probe` as an unprivileged user
    fails. Fixed by adding the same `mkdir`/`chown` `deploy.sh` already did to the manual-clone instructions.
-4. A lock-order-inversion deadlock between paho-mqtt's own internal mutex and the probe's own lock, found via
-   `py-spy` on the Pi mid-scan. Reproduced reliably at volume against a **real** broker; the offline fake client
+   Separately, `deploy.sh` itself wasn't executable in Git (committed from Windows, mode `100644`); fixed as
+   its own git mode change to `100755` (commit `ca5dae0`).
+4. A lock-order-inversion deadlock between paho-mqtt's own internal mutex and the probe's own lock — introduced
+   by an *earlier* fix this same phase (closing a PUBACK-loss race by holding the probe's lock across the paho
+   call), found via `py-spy` on the Pi mid-scan. Reproduced reliably at volume against a **real** broker; the
+   offline fake client
    never triggered it, because it has no internal lock of its own to invert against — a reminder that a fake
    without the real dependency's concurrency behavior can hide a real concurrency bug. Fixed by moving all
    PUBACK bookkeeping onto a lock-free queue and never calling into paho while holding the probe's own lock.
