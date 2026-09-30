@@ -252,9 +252,11 @@ ON regexp_replace(tgt._source_file, '^dbfs:', '') = src.file_path
 WHEN MATCHED THEN UPDATE SET tgt._file_modified_ts = src.landed_at;
 ```
 
-**Recorded result, corrected run.** `live_rows_null` 9,493; dry run `rows_to_update` 9,493 (equal — proceeded); `MERGE`
-`num_affected_rows` 9,493. Confirm afterward: `SELECT count(*) FROM force.bronze.events WHERE NOT is_synthetic AND
-_file_modified_ts IS NULL` — 0.
+**Recorded result, corrected run.** `still_null` (the confirm query below) read 9,493 right after the first attempt
+above — unchanged, since that attempt affected 0 rows — the same figure the corrected dry run's `rows_to_update` needed
+to equal before the real MERGE ran. The corrected dry run's own `rows_to_update` and the corrected MERGE's own
+`num_affected_rows` were not captured for this run. Confirm afterward: `SELECT count(*) FROM force.bronze.events WHERE
+NOT is_synthetic AND _file_modified_ts IS NULL` — `still_null` 0.
 
 ### The first query: does `payload` hold real numbers?
 

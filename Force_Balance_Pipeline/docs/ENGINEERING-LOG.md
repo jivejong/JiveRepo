@@ -245,8 +245,10 @@ notebook's own `_metadata.file_path`) has no `dbfs:` prefix — the same underly
 differently by the two ingestion paths (`cloudFiles` streaming vs. ad hoc `read_files()`). Fixed by stripping the
 prefix from both sides of the join (`regexp_replace(path, '^dbfs:', '')`), a no-op on whichever side doesn't have it.
 
-**Checkpoint (this piece):** corrected run — `live_rows_null` 9,493; dry run `rows_to_update` 9,493 (equal, proceeded);
-`MERGE`'s `num_affected_rows` 9,493; `still_null` after, 0. Sanity: 12,073 live rows total (9,493 backfilled + 2,580
+**Checkpoint (this piece):** corrected run — `still_null` read 9,493 right after the first attempt above (unchanged,
+since it affected 0 rows), the figure the corrected dry run's `rows_to_update` needed to equal; that dry run's
+`rows_to_update` and the corrected `MERGE`'s `num_affected_rows` were not captured. `still_null` after the corrected
+`MERGE`: 0. Sanity: 12,073 live rows total (9,493 backfilled + 2,580
 stamped directly by the updated notebook on its own next run, 9,493 + 2,580 = 12,073); max lag 9,512 s. Every
 `_file_modified_ts` is a whole second (Databricks Runtime rounds `_metadata.file_modification_time`), confirmed on both
 populations (9,493 of 9,493 backfilled rows, 2,580 of 2,580 notebook-stamped rows).
