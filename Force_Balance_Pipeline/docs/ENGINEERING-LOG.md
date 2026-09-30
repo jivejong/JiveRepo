@@ -225,6 +225,42 @@ desktop-side drop was found to be wrong and corrected.
 and was deployed — new process startup `22:41:27Z`, faults ×0, mode schedule on; the old process it replaced had
 run 36 scans, 2,160 published and acked, 0 overflows.
 
+## Phase 4 — Transformation, scoring and signatures (2026-09-30, in progress)
+
+**Goal** (doc 07): silver (`probe_reading`, `force_report` stub, `rejects`, `source_health`), the `extract_payload`
+macro, gold (`sector_baseline`, `sector_reading`, `disturbance`), dbt tests, and the local demo stack. Started
+2026-09-30 with the design questions raised before any model is written (docs 03, 04, 05, 07).
+
+### Bronze arrival column
+
+**Decision and why:** doc 03's "decide before silver is built" item (`_ingest_ts` measures notebook run time, not file
+arrival) is resolved: a new bronze column, `_file_modified_ts`, captures `_metadata.file_modification_time` from Auto
+Loader going forward, and `silver.probe_reading.ingest_lag_seconds` reads it (falling back to `_ingest_ts`) for live
+rows. Existing live rows needed a one-time backfill, since the column didn't exist when they landed.
+
+**Issue:** the first backfill attempt matched nothing — dry run `rows_to_update` 0, `files_matched` 0; the real
+`MERGE`'s `num_affected_rows` 0. **Derived** cause: `read_files()`'s `_metadata.file_path` comes back as
+`dbfs:/Volumes/force/raw/telemetry/dt=.../hh=.../<file>.ndjson`, while `bronze._source_file` (stamped by the streaming
+notebook's own `_metadata.file_path`) has no `dbfs:` prefix — the same underlying Databricks metadata column, formatted
+differently by the two ingestion paths (`cloudFiles` streaming vs. ad hoc `read_files()`). Fixed by stripping the
+prefix from both sides of the join (`regexp_replace(path, '^dbfs:', '')`), a no-op on whichever side doesn't have it.
+
+**Checkpoint (this piece):** corrected run — `live_rows_null` 9,493; dry run `rows_to_update` 9,493 (equal, proceeded);
+`MERGE`'s `num_affected_rows` 9,493; `still_null` after, 0. Sanity: 12,073 live rows total (9,493 backfilled + 2,580
+stamped directly by the updated notebook on its own next run, 9,493 + 2,580 = 12,073); max lag 9,512 s. Every
+`_file_modified_ts` is a whole second (Databricks Runtime rounds `_metadata.file_modification_time`), confirmed on both
+populations (9,493 of 9,493 backfilled rows, 2,580 of 2,580 notebook-stamped rows).
+
+**Phase 2 clock finding, from the same sanity pass:** 97 rows show a negative `ingest_lag_seconds`, minimum -1,950 ms,
+every one of them in `date(event_time) = 2026-09-26` (180 rows that day) — confirmed from `docs/PHASE2-RESULTS.md`
+(L1, L6) as the Phase 2 checkpoint's own desktop-simulator rows; that checkpoint ran entirely on the laptop (doc 07
+Phase 2: "Laptop only. No Raspberry Pi yet."). Every later day has zero negative lags, minimum 1,050-2,050 ms. Cause:
+those rows used `--assume-clock-synced` (Windows has no `timedatectl`), which assumes the clock is synced rather than
+verifying it (doc 04); the desktop's clock ran roughly 2 s ahead of the volume's own clock while the simulator was
+live. Combined with `_file_modified_ts`'s 1-second rounding, doc 03 now documents a `-2` second tolerance on
+`ingest_lag_seconds` ("Lag precision") rather than treating any negative value as a data problem. The Pi's own rows,
+clock-gated before every scan, have never gone negative.
+
 ## Open items
 
 | Item | Status |

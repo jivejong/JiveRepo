@@ -81,8 +81,8 @@ defined on `COALESCE(_file_modified_ts, _ingest_ts)` for live rows, and unchange
 rows. A one-time backfill MERGE, run once and recorded in `docs/ENGINEERING-LOG.md`, fills `_file_modified_ts` on every existing
 **live** row: it joins a `read_files(..., format => 'text')` scan of the landing volume's `_metadata.file_path` (the same value
 Auto Loader already stores as `_source_file`) directly against `force.bronze.events._source_file`. `is_synthetic` rows are left
-NULL — their lag is never read from this column. Run only while `ingest_bronze` (Job 1) is not active, so the MERGE's
-transaction never overlaps the Auto Loader writer's. This means `force.bronze.events`'s Delta history is no longer pure-append
+NULL — their lag is never read from this column. Run only while the ingestion notebook isn't running (or, once Job 1
+exists, while it is paused), so the MERGE's transaction never overlaps the Auto Loader writer's. This means `force.bronze.events`'s Delta history is no longer pure-append
 from that point on: nothing today reads this table as a stream, but any future consumer that does would need to handle
 non-append changes (`skipChangeCommits`/`ignoreChanges`, or read a snapshot).
 
@@ -110,6 +110,13 @@ from the buffer. `was_buffered` is that direct signal: every `DISCONNECTED`-mode
 of how quickly the drain caught up to it (a row buffered for under 30 minutes has `was_buffered = true` but `is_replayed =
 false`). Surface both on the dashboard — `was_buffered` is the proof the late-arriving path works; `is_replayed` is the
 operational lag signal.
+
+**Lag precision.** `_file_modified_ts` has 1-second resolution, so `ingest_lag_seconds` carries roughly ±1 s of rounding
+on its own, on top of whatever clock skew exists between the device that wrote `event_time` and the volume's own clock.
+A live row can legitimately read a small *negative* lag — arrival appearing to precede the reading — without anything
+being wrong. Tolerance: `ingest_lag_seconds >= -2`. The Phase 2 desktop-simulator rows (`--assume-clock-synced`, doc 04)
+reach as low as -1,950 ms; the Pi's own rows, clock-gated before every scan (doc 04), have never gone negative. A lag
+below -2 s would point at a real clock problem, not rounding.
 
 Deduplicated insert-only on `event_id`: when the same event lands twice (the known 2026-09-27 23:45Z scan, 13 ids — see
 `docs/ENGINEERING-LOG.md`), the copy with the earliest arrival wins and later copies are never merged over it, so a

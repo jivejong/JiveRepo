@@ -36,6 +36,11 @@ four-event files.
 stamped `event_time` in its state directory and refuses a scan whose boundary is not after it, so a clock that steps backwards
 cannot re-stamp history. Scans align to :00, :15, :30 and :45 UTC (to :00 in `STEALTH`).
 
+A development machine has no `timedatectl` at all, so the sync check would otherwise always read unsynced. `--assume-clock-synced`
+skips it — the flag **assumes** the clock is synced, it does not verify it, and it must never appear on the Pi's own unit
+(`edge/tests/test_infra_phase3.py`). Phase 2's desktop-simulator timestamps ran roughly 2 s ahead of the volume's own clock while
+this flag was in use — see doc 03, "Lag precision".
+
 ### Reading generation
 
 Parameters come from `dim_sector` — `midi_baseline`/`midi_sigma`, `kyber_baseline`/`kyber_sigma`,

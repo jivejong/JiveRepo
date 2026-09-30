@@ -205,50 +205,56 @@ confirms they are there). Run everything below as yourself, the owner of `force`
 
 ### The one-time arrival-timestamp backfill (Phase 4)
 
-Run once, after the notebook change above has ingested at least one new file, and only while Job 1's `ingest_bronze` task is
-not running (pause the job, or run this between scheduled ticks — the MERGE below and the streaming writer must never hold
-open transactions against `force.bronze.events` at the same time).
+Run once, after the notebook change above has ingested at least one new file, and only while the ingestion notebook isn't
+running (or, once Job 1 exists, while it is paused — Job 1 is not built yet; ingestion is a manual notebook run, doc 05
+"Auto Loader ingestion"). The MERGE below and the streaming writer must never hold open transactions against
+`force.bronze.events` at the same time.
 
-`_source_file` was stamped from `_metadata.file_path` at ingest time (the notebook above); this MERGE reads the same
-`_metadata.file_path` field from `read_files()` over the same files, so the join predicate is a direct equality with no path
-rewriting. Both sides come from the same Databricks `_metadata` column on the same underlying files, but the exact string this
-workspace's `read_files()` produces for a Unity Catalog volume path has not been checked against a live table here — confirm
-with the dry run below before running the real update:
+`read_files()` on a directory path (no wildcard) recurses into the `dt=`/`hh=` subfolders the same way Auto Loader's own
+`cloudFiles` reader already does when pointed at the same top-level `LANDING` path — proven by every Phase 2/3 checkpoint
+ingesting rows from files nested under those subfolders, and now by this backfill itself (below).
+
+**Recorded result (2026-09-29/30, first attempt).** `_source_file` was assumed to equal `read_files()`'s
+`_metadata.file_path` directly, with no normalisation. It matched nothing: dry run `rows_to_update` 0, `files_matched` 0;
+the real `MERGE` (`num_affected_rows`) 0. Cause, **derived**: `read_files()` returns `_metadata.file_path` as
+`dbfs:/Volumes/force/raw/telemetry/dt=.../hh=.../<file>.ndjson`, but `bronze._source_file` (stamped by the streaming
+notebook's own `_metadata.file_path`, doc 03) has no `dbfs:` prefix — the two ingestion paths (`cloudFiles` streaming vs.
+ad hoc `read_files()`) format the same underlying column differently. Stripping the prefix from both sides of the join
+(a no-op on whichever side doesn't have it) fixed it:
 
 ```sql
--- Dry run: confirms read_files' _metadata.file_path matches what the notebook stored in _source_file. If matched_files is
--- less than distinct_source_files, the two differ (for example a dbfs: prefix on one side) and the join predicate below needs
--- adjusting before the real MERGE runs.
+-- Dry run: the same join the MERGE below uses, counted without writing anything. rows_to_update MUST equal
+-- live_rows_null, or STOP -- a mismatch means the path normalisation doesn't cover every case yet.
+SELECT count(*) AS live_rows_null FROM force.bronze.events WHERE NOT is_synthetic AND _file_modified_ts IS NULL;
+
 WITH landed AS (
-  SELECT DISTINCT _metadata.file_path AS file_path, _metadata.file_modification_time AS landed_at
+  SELECT DISTINCT regexp_replace(_metadata.file_path, '^dbfs:', '') AS file_path,
+         _metadata.file_modification_time AS landed_at
   FROM read_files('/Volumes/force/raw/telemetry/', format => 'text')
 )
-SELECT
-  (SELECT count(DISTINCT _source_file) FROM force.bronze.events WHERE NOT is_synthetic) AS distinct_source_files,
-  count(DISTINCT l.file_path) AS matched_files
-FROM landed l
-JOIN (SELECT DISTINCT _source_file FROM force.bronze.events WHERE NOT is_synthetic) b ON l.file_path = b._source_file;
+SELECT count(*) AS rows_to_update, count(DISTINCT l.file_path) AS files_matched
+FROM force.bronze.events b
+JOIN landed l ON regexp_replace(b._source_file, '^dbfs:', '') = l.file_path
+WHERE NOT b.is_synthetic AND b._file_modified_ts IS NULL;
 ```
 
-Once `matched_files = distinct_source_files`:
+Once `rows_to_update = live_rows_null`:
 
 ```sql
 MERGE INTO force.bronze.events AS tgt
 USING (
-  SELECT DISTINCT _metadata.file_path AS file_path, _metadata.file_modification_time AS landed_at
+  SELECT DISTINCT regexp_replace(_metadata.file_path, '^dbfs:', '') AS file_path,
+         _metadata.file_modification_time AS landed_at
   FROM read_files('/Volumes/force/raw/telemetry/', format => 'text')
 ) AS src
-ON src.file_path = tgt._source_file AND tgt._file_modified_ts IS NULL AND NOT tgt.is_synthetic
+ON regexp_replace(tgt._source_file, '^dbfs:', '') = src.file_path
+   AND tgt._file_modified_ts IS NULL AND NOT tgt.is_synthetic
 WHEN MATCHED THEN UPDATE SET tgt._file_modified_ts = src.landed_at;
 ```
 
-`read_files()` on a directory path (no wildcard) recurses into the `dt=`/`hh=` subfolders the same way Auto Loader's own
-`cloudFiles` reader already does when pointed at the same top-level `LANDING` path (`/Volumes/force/raw/telemetry`, proven by
-every Phase 2/3 checkpoint ingesting rows from files nested under those subfolders). `read_files()` isn't independently
-exercised against this specific volume in this repo before now, so confirm the dry run above returns a match before running
-the update.
-
-Confirm afterward: `SELECT count(*) FROM force.bronze.events WHERE NOT is_synthetic AND _file_modified_ts IS NULL` is 0.
+**Recorded result, corrected run.** `live_rows_null` 9,493; dry run `rows_to_update` 9,493 (equal — proceeded); `MERGE`
+`num_affected_rows` 9,493. Confirm afterward: `SELECT count(*) FROM force.bronze.events WHERE NOT is_synthetic AND
+_file_modified_ts IS NULL` — 0.
 
 ### The first query: does `payload` hold real numbers?
 
@@ -549,15 +555,15 @@ That's a deliberate property: someone reading the repo sees the actual productio
 
 ## Phase 3 staging: the desktop broker and the Pi
 
-Committed docs use `<DESKTOP_IP>`, `<PI_IP>`, `<PI_HOSTNAME>` and `<PI_MACHINE_ID>` placeholders — never a real address,
-hostname or machine ID. `edge/tests/test_no_sensitive_addresses.py` guards RFC 1918 addresses unconditionally, and the
-hostname/machine ID against an untracked, per-developer list at `~/.force_balance_pipeline/sensitive-strings.txt`: one literal
-per line, blank lines and lines starting with `#` ignored, e.g.
+Committed docs use `<DESKTOP_IP>`, `<PI_IP>` and `<PI_MACHINE_ID>` placeholders — never a real address or machine ID. The
+Pi's hostname is not treated as sensitive (a deliberate decision, not an oversight) and may be written directly.
+`edge/tests/test_no_sensitive_addresses.py` guards RFC 1918 addresses unconditionally, and, optionally, a machine ID
+against an untracked, per-developer list at `~/.force_balance_pipeline/sensitive-strings.txt`: one literal per line,
+blank lines and lines starting with `#` ignored, e.g.
 
 ```
 # ~/.force_balance_pipeline/sensitive-strings.txt
-# example only -- replace with this Pi's real hostname and machine ID
-<the-pi-hostname>
+# example only -- replace with this Pi's real machine ID
 <the-pi-machine-id>
 ```
 
