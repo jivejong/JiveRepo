@@ -32,6 +32,13 @@ vars:
 
 models:
   force_balance:
+    # Applies to every incremental model project-wide (no-op on view/table models). dbt-databricks's default,
+    # 'ignore', silently drops a column an incremental model's SELECT no longer produces and silently leaves a
+    # new one unpopulated on already-materialized rows (found live: adding _rescued_data to
+    # silver_probe_reading did nothing to the already-built table until a --full-refresh). 'fail' turns that
+    # silent no-op into a build failure instead, so a schema change always needs a deliberate --full-refresh
+    # decision, not a surprise later.
+    +on_schema_change: fail
     phase0:
       +materialized: view
       streaming:

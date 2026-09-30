@@ -136,7 +136,10 @@ power-loss test".
 ## Phase 4 — Transformation, scoring, signatures · 14–22h
 
 1. Silver: `probe_reading`, `force_report` (stub until Phase 5), `rejects`, `source_health`.
-   Incremental merge on `event_id`.
+   Incremental merge on `event_id`. **Deviation:** Claude Code writes every Phase 4 model, including
+   `stg_bronze_events`, `silver_probe_event` and `silver_source_health` — the three doc 00's working guidance
+   originally set aside for Jong to write by hand. Jong learns from the code and `docs/ENGINEERING-LOG.md`
+   instead. See doc 00, "Working guidance."
 2. `extract_payload` macro with Databricks and Postgres branches.
 3. **STEALTH-aware validation** — partial readings route to `probe_reading` with `is_partial`,
    not to rejects. This is the trickiest logic in the phase.

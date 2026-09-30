@@ -345,6 +345,15 @@ and production match. On serverless job compute, set the versions through the **
 Libraries** field on the task, not the dependent-libraries field; the job's serverless
 environment installs both pins.
 
+**Git Bash on Windows silently breaks the connection.** Found live (2026-09-30): running `dbt` from Git Bash
+auto-converts any argument or environment variable that looks like a POSIX path before handing it to the
+(native Windows) `dbt.exe` process -- `DATABRICKS_HTTP_PATH` (`/sql/1.0/warehouses/<id>`) becomes something
+like `C:/Program Files/Git/sql/1.0/warehouses/<id>`, and every command hangs or fails against a garbage host
+path with no clear error (`dbt debug` prints nothing for minutes; the process is alive, just stuck). Confirm
+with `dbt debug`'s own "Connection:" block, which echoes `http_path` back -- if it doesn't start with `/`,
+this is why. Fix: set `MSYS_NO_PATHCONV=1` in the environment for every `dbt` invocation from Git Bash, or run
+`dbt` from PowerShell instead, which doesn't do this conversion at all.
+
 ### `profiles.yml`
 
 ```yaml

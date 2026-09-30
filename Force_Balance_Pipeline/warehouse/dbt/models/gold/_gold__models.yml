@@ -22,6 +22,9 @@ models:
   - name: gold_sector_reading
     description: One row per planet per scan (doc 03). No windowing.
     columns:
+      - name: event_id
+        description: "The merge key in practice (doc 03's own column list doesn't name it -- pending addition)."
+        data_tests: [not_null, unique]
       - name: sector_id
         data_tests: [not_null]
       - name: scan_id

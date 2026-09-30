@@ -284,6 +284,80 @@ the checkpoint's `sith_presence`-within-two-scans claim becomes "within one hour
 restrict Job 1 to daytime hours only. The 15-minute cadence is needed continuously only for the checkpoint's own
 test window (doc 07, Phase 4 checkpoint, C3) — not for every day the pipeline runs afterward.
 
+### Stage 1: staging and silver
+
+Six models, real SQL for the first time this phase (`stg_bronze_events`, `silver_probe_event`,
+`silver_rejects`, `silver_probe_reading`, `silver_source_health`, `silver_force_report` stub) — written by
+Claude Code, not hand-written as doc 00 originally planned (see "Claude writes all Phase 4 models," above).
+Notes here are for a reader learning dbt from this code, not just a record of what happened.
+
+**Dedup design: insert-only, earliest arrival wins.** Doc 03 says a duplicate `event_id` keeps its earliest
+arrival, never gets overwritten by a slower duplicate landing later. dbt's incremental `merge` strategy
+updates a matching row by default, which is the opposite of what's needed here, so every append-only silver
+model uses the same two-part pattern instead of that default:
+
+1. `row_number() over (partition by event_id order by arrival_ts asc)`, keep `rn = 1` — handles two copies of
+   the same event_id landing in the *same* dbt run (Auto Loader can ingest an original and its replay in one
+   notebook pass).
+2. `WHERE event_id NOT IN (SELECT event_id FROM {{ this }})` inside `{% if is_incremental() %}` — handles a
+   duplicate landing in a *later* run. Because the SELECT itself already excludes anything already in the
+   table, the generated `MERGE`'s `WHEN MATCHED` branch is never reached for these models' own rows; it's an
+   ordinary merge given a source that never contains an already-matched key, not a special "insert-only"
+   dbt feature (dbt has no built-in switch for this — the exclusion in the query is what does it).
+
+**`silver_probe_reading` as the complement of `silver_rejects`**, not a second copy of the validation CASE:
+it `ref()`s `silver_rejects` and does `LEFT JOIN ... WHERE r.event_id IS NULL` — a candidate row that
+validation didn't reject, reached here. The two models can't drift out of sync the way two independent
+copies of the same CASE expression could; changing `silver_rejects`' rules changes `silver_probe_reading`'s
+population automatically, with no logic duplicated. The cost: `silver_rejects` must build before
+`silver_probe_reading` can (dbt's own dependency graph enforces this from the `ref()`, no separate ordering
+step needed).
+
+**The unit-test VARIANT finding, and how it was actually resolved.** `extract_payload`'s
+`try_variant_get(payload, ...)` calls returned NULL for every field when first unit-tested, even for
+genuinely valid JSON numbers. Cause: dbt-databricks 1.9.8's default unit-test fixture format renders a
+VARIANT-typed column as a plain `CAST(<json text> AS VARIANT)`, which does not parse the JSON — it wraps the
+literal text as a STRING-typed variant scalar, so every path lookup finds nothing. Two ways to fix this were
+tried, in order:
+
+1. Make the macro re-parse defensively: `try_variant_get(try_parse_json(cast(payload as string)), ...)`.
+   Worked, confirmed harmless on real (already-parsed) bronze data too (`dbt show`, identical output either
+   way) — but it added a cast-and-reparse round trip to every real read, for a problem that was really in the
+   test fixtures, not the macro.
+2. **What shipped instead:** unit test fixtures for `payload` use `format: sql` (a dbt unit-test option that
+   takes a raw `SELECT` instead of the default column-by-column dict) with our own `parse_json(...)` call,
+   producing a genuine object VARIANT. `extract_payload` stays the simple, one-line form; the fixtures, not
+   the production macro, work around a fixture-rendering gap in this dbt-databricks version.
+
+The general lesson, not just this bug: when a test and the code under test disagree, check which one is
+wrong before "fixing" the code — the first, working fix here was fixing the wrong thing.
+
+**`on_schema_change`: a silent no-op, not an error.** Adding `_rescued_data` to `silver_probe_reading`'s
+SELECT and running dbt again did not fail — it also did not add the column. dbt-databricks's default,
+`ignore`, means a schema change to an already-built incremental table is silently dropped until a
+`--full-refresh` rebuilds it from scratch. `dbt_project.yml` now sets `on_schema_change: fail` project-wide
+(harmless on the view and table models, which rebuild from scratch every run regardless), so the next schema
+change surfaces as a build failure that names the missing full-refresh, not a test that mysteriously never
+sees the new column.
+
+**MSYS path conversion** (doc 05, dbt setup section, has the durable fix): Git Bash on this machine rewrote
+`DATABRICKS_HTTP_PATH` into a Windows path before `dbt.exe` ever saw it, hanging every command with no error.
+`MSYS_NO_PATHCONV=1` fixed it for this session.
+
+**Verified counts, staging + silver, against Databricks (`--target prod`, `--select staging silver`), two
+consecutive `dbt build` runs, identical both times:** `stg_bronze_events` 530,473; `silver_probe_event` 0;
+`silver_rejects` 0 (fault injection is still off, doc 04 — confirmed independently, straight against bronze,
+that there are zero out-of-range or unknown-sector rows to reject yet); `silver_probe_reading` 530,460 (the
+530,473 minus exactly the 13 known duplicate `event_id`s from the 2026-09-27 23:45Z scan, deduplicated away);
+`silver_force_report` 0; `silver_source_health` 1. Five real-data checks against known fixtures — the
+13-duplicate scan (60 rows, 13 not replayed / 47 replayed), the 2026-09-29 outage (300/300 buffered, 180/300
+replayed), the Phase 3 checkpoint outage (60/180 replayed), the 2026-09-28 STEALTH scan (60/60 in
+`probe_reading`, all `is_partial`, 0 in `silver_rejects`) — all matched exactly. The fifth, minimum
+`ingest_lag_seconds` on 2026-09-26 (the Phase 2 desktop-clock day, doc 03 "Lag precision"), measured -1 s
+against a documented tolerance of -2 s; **derived**, not a doc number: `unix_timestamp()` truncates each
+timestamp to whole seconds before subtracting rather than rounding the true sub-second difference, which can
+land a truly ~-1.95 s lag at -1 instead of -2. Still inside the documented `>= -2` tolerance, not a violation.
+
 ## Open items
 
 | Item | Status |

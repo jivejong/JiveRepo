@@ -130,7 +130,10 @@ what was decided and why.
   incremental recompute for replayed data, the dual-target `extract_payload` macro) and for the
   agent's constraint layer. Fable not needed. Get logs before escalating models on hardware issues.
 - **Learning dbt:** write the first three silver models by hand, using Claude as reviewer, then
-  accelerate.
+  accelerate. **Deviation, Phase 4:** Claude Code writes all Phase 4 models instead, including the three
+  originally meant to be hand-written (`stg_bronze_events`, `silver_probe_event`, `silver_source_health`) —
+  Jong learns from the code and `docs/ENGINEERING-LOG.md` rather than by writing them first. See doc 07,
+  Phase 4.
 - **Estimate:** 66–100 focused hours. Core data engineering claim complete at end of Phase 4
   (~40–52h). Checkpoint verification dominates, not authoring.
 - **Commit at every checkpoint.** The history is part of the portfolio artifact.

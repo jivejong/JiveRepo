@@ -1,70 +1,158 @@
 version: 2
 
 unit_tests:
-  # extract_payload (h): JSON null, a missing field, and a numeric string. The numeric-string row's expected
-  # value is TO ESTABLISH ON DATABRICKS -- try_variant_get's behaviour on a numeric string has not been run
-  # against a live warehouse; do not treat the commented guess below as fact until it has.
+  # extract_payload (h), tried with format: sql fixtures (raw SQL, our own parse_json(...) for payload) instead
+  # of the default dict format (a plain CAST(<json text> AS VARIANT), which does not parse the JSON -- see
+  # macros/extract_payload.sql). format: sql gives full control over every fixture column's type, at the cost
+  # of spelling every source column out by hand instead of letting dbt fill the rest with NULL.
   - name: unit_test_extract_payload_json_null_is_sql_null
     description: "A JSON null in payload (e.g. STEALTH's midichlorian_ppm) extracts as SQL NULL, not the string 'null'."
     model: stg_bronze_events
     given:
       - input: source('bronze', 'events')
-        rows:
-          - event_id: "01UNIT0000000000000000001"
-            source_type: "probe"
-            payload: '{"midichlorian_ppm": null, "kyber_resonance": 40.1, "dark_side_activity": 61.2}'
+        format: sql
+        rows: |
+          select
+            cast('01UNIT0000000000000000001' as string) as event_id,
+            cast(null as string) as source_id,
+            cast('probe' as string) as source_type,
+            cast(null as string) as mode,
+            cast(null as string) as scan_id,
+            cast(null as string) as sector_id,
+            cast(null as int) as schema_version,
+            cast(null as timestamp) as event_time,
+            cast(null as boolean) as is_synthetic,
+            cast(null as timestamp) as synthetic_ingest_ts,
+            parse_json('{"midichlorian_ppm": null, "kyber_resonance": 40.1, "dark_side_activity": 61.2}') as payload,
+            cast(null as date) as dt,
+            cast(null as int) as hh,
+            cast(null as string) as _source_file,
+            cast(null as timestamp) as _ingest_ts,
+            cast(null as timestamp) as _file_modified_ts,
+            cast(null as string) as _rescued_data
     expect:
       rows:
         - event_id: "01UNIT0000000000000000001"
           midichlorian_ppm: null
+          kyber_resonance: 40.1
+          dark_side_activity: 61.2
 
   - name: unit_test_extract_payload_missing_field_is_sql_null
     description: "A field absent from payload entirely (not just JSON null) also extracts as SQL NULL."
     model: stg_bronze_events
     given:
       - input: source('bronze', 'events')
-        rows:
-          - event_id: "01UNIT0000000000000000002"
-            source_type: "probe"
-            payload: '{"kyber_resonance": 40.1, "dark_side_activity": 61.2}'
+        format: sql
+        rows: |
+          select
+            cast('01UNIT0000000000000000002' as string) as event_id,
+            cast(null as string) as source_id,
+            cast('probe' as string) as source_type,
+            cast(null as string) as mode,
+            cast(null as string) as scan_id,
+            cast(null as string) as sector_id,
+            cast(null as int) as schema_version,
+            cast(null as timestamp) as event_time,
+            cast(null as boolean) as is_synthetic,
+            cast(null as timestamp) as synthetic_ingest_ts,
+            parse_json('{"kyber_resonance": 40.1, "dark_side_activity": 61.2}') as payload,
+            cast(null as date) as dt,
+            cast(null as int) as hh,
+            cast(null as string) as _source_file,
+            cast(null as timestamp) as _ingest_ts,
+            cast(null as timestamp) as _file_modified_ts,
+            cast(null as string) as _rescued_data
     expect:
       rows:
         - event_id: "01UNIT0000000000000000002"
           midichlorian_ppm: null
+          kyber_resonance: 40.1
+          dark_side_activity: 61.2
 
-  - name: unit_test_extract_payload_numeric_string_TO_ESTABLISH_ON_DATABRICKS
+  - name: unit_test_extract_payload_numeric_string_is_coerced
     description: >
-      A channel value sent as a JSON string of digits (not a JSON number) -- malformed input, not something the
-      probe or bridge produces today. try_variant_get's behaviour here (parse it, or return NULL like a genuine
-      type mismatch) is NOT ESTABLISHED against a live warehouse. The expected row below is commented out
-      deliberately: fill it in from the first real dbt test/build run against Databricks, then uncomment.
+      A channel value sent as a JSON string of digits (not a JSON number) -- malformed input, not something
+      the probe or bridge produces today. ESTABLISHED ON DATABRICKS: it is coerced to the number (the outer
+      CAST does it, not try_variant_get). The other two fields in the same payload are genuine JSON numbers
+      and extract normally, proving this row isn't succeeding for some unrelated reason.
     model: stg_bronze_events
     given:
       - input: source('bronze', 'events')
-        rows:
-          - event_id: "01UNIT0000000000000000003"
-            source_type: "probe"
-            payload: '{"midichlorian_ppm": "14200.5", "kyber_resonance": 40.1, "dark_side_activity": 61.2}'
+        format: sql
+        rows: |
+          select
+            cast('01UNIT0000000000000000003' as string) as event_id,
+            cast(null as string) as source_id,
+            cast('probe' as string) as source_type,
+            cast(null as string) as mode,
+            cast(null as string) as scan_id,
+            cast(null as string) as sector_id,
+            cast(null as int) as schema_version,
+            cast(null as timestamp) as event_time,
+            cast(null as boolean) as is_synthetic,
+            cast(null as timestamp) as synthetic_ingest_ts,
+            parse_json('{"midichlorian_ppm": "14200.5", "kyber_resonance": 40.1, "dark_side_activity": 61.2}') as payload,
+            cast(null as date) as dt,
+            cast(null as int) as hh,
+            cast(null as string) as _source_file,
+            cast(null as timestamp) as _ingest_ts,
+            cast(null as timestamp) as _file_modified_ts,
+            cast(null as string) as _rescued_data
     expect:
-      rows: []  # TO ESTABLISH ON DATABRICKS -- do not fill in without running this against the real adapter
+      rows:
+        - event_id: "01UNIT0000000000000000003"
+          midichlorian_ppm: 14200.5
+          kyber_resonance: 40.1
+          dark_side_activity: 61.2
 
   # Housekeeping routing (e): a payload.kind row is picked up by stg_bronze_events' `kind` extraction; the
   # routing decision itself (kind IS NOT NULL -> silver_probe_event, before the sector check) is asserted on
-  # silver_probe_event and silver_rejects below, not here -- stg_bronze_events does no filtering.
+  # silver_probe_event and silver_rejects (models/silver/_silver__unit_tests.yml), not here -- stg_bronze_events
+  # does no filtering.
   - name: unit_test_kind_extraction_for_a_housekeeping_event
     description: "payload.kind extracts non-null for a housekeeping event; a reading has no kind field at all."
     model: stg_bronze_events
     given:
       - input: source('bronze', 'events')
-        rows:
-          - event_id: "01UNIT0000000000000000004"
-            source_type: "probe"
-            sector_id: "probe-01"
-            payload: '{"kind": "buffer_overflow", "dropped": 12, "cap": 100000}'
-          - event_id: "01UNIT0000000000000000005"
-            source_type: "probe"
-            sector_id: "tatooine"
-            payload: '{"midichlorian_ppm": 14200.5, "kyber_resonance": 62.4, "dark_side_activity": 11.8}'
+        format: sql
+        rows: |
+          select
+            cast('01UNIT0000000000000000004' as string) as event_id,
+            cast(null as string) as source_id,
+            cast('probe' as string) as source_type,
+            cast(null as string) as mode,
+            cast(null as string) as scan_id,
+            cast('probe-01' as string) as sector_id,
+            cast(null as int) as schema_version,
+            cast(null as timestamp) as event_time,
+            cast(null as boolean) as is_synthetic,
+            cast(null as timestamp) as synthetic_ingest_ts,
+            parse_json('{"kind": "buffer_overflow", "dropped": 12, "cap": 100000}') as payload,
+            cast(null as date) as dt,
+            cast(null as int) as hh,
+            cast(null as string) as _source_file,
+            cast(null as timestamp) as _ingest_ts,
+            cast(null as timestamp) as _file_modified_ts,
+            cast(null as string) as _rescued_data
+          union all
+          select
+            cast('01UNIT0000000000000000005' as string) as event_id,
+            cast(null as string) as source_id,
+            cast('probe' as string) as source_type,
+            cast(null as string) as mode,
+            cast(null as string) as scan_id,
+            cast('tatooine' as string) as sector_id,
+            cast(null as int) as schema_version,
+            cast(null as timestamp) as event_time,
+            cast(null as boolean) as is_synthetic,
+            cast(null as timestamp) as synthetic_ingest_ts,
+            parse_json('{"midichlorian_ppm": 14200.5, "kyber_resonance": 62.4, "dark_side_activity": 11.8}') as payload,
+            cast(null as date) as dt,
+            cast(null as int) as hh,
+            cast(null as string) as _source_file,
+            cast(null as timestamp) as _ingest_ts,
+            cast(null as timestamp) as _file_modified_ts,
+            cast(null as string) as _rescued_data
     expect:
       rows:
         - event_id: "01UNIT0000000000000000004"

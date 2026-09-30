@@ -1,64 +1,362 @@
 version: 2
 
 unit_tests:
-  # veiled_presence NULL grid (b): COALESCE(ABS(z_midi), 0) < 1.0, not plain ABS(z_midi) < 1.0 -- a STEALTH row's
-  # missing z_midi satisfies this one zero-bound condition; every directional condition elsewhere is still NULL,
-  # still false. Mirrors edge/tests/test_doc_parity.py's own grid case at (None, -4.0, 2.5, None, 1).
+  # Every fixture here uses mean_90d=0, stddev_90d=1 for every channel, so z_channel = the raw reading value
+  # directly (subtract 0, divide by 1) -- this makes constructing an exact target z-score combination as
+  # simple as setting the raw reading to that number, with no arithmetic to get wrong in the fixture itself.
+
+  # classify_signature: one row per signature, doc 03's own order, each picked so it does NOT also satisfy an
+  # earlier rule in the table (proving first-match order, not just that each rule CAN fire in isolation).
+  - name: unit_test_signature_sith_presence
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000100", sector_id: "tatooine", scan_id: "01UNIT0000000000000000101", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 0.0, kyber_resonance: -2.0, dark_side_activity: 3.0, channels_present: 3}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", signature: "sith_presence"}
+
+  - name: unit_test_signature_dark_adept
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000102", sector_id: "tatooine", scan_id: "01UNIT0000000000000000103", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 2.0, kyber_resonance: 0.0, dark_side_activity: 2.2, channels_present: 3}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", signature: "dark_adept"}
+
+  - name: unit_test_signature_nexus_awakening
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000104", sector_id: "tatooine", scan_id: "01UNIT0000000000000000105", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 3.0, kyber_resonance: 3.0, dark_side_activity: 0.5, channels_present: 3}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", signature: "nexus_awakening"}
+
+  - name: unit_test_signature_force_drain
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000106", sector_id: "tatooine", scan_id: "01UNIT0000000000000000107", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: -3.0, kyber_resonance: -3.0, dark_side_activity: 0.0, channels_present: 3}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", signature: "force_drain"}
+
+  - name: unit_test_signature_kyber_cache
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000108", sector_id: "tatooine", scan_id: "01UNIT0000000000000000109", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 0.0, kyber_resonance: 3.0, dark_side_activity: 0.0, channels_present: 3}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", signature: "kyber_cache"}
+
+  - name: unit_test_signature_civil_unrest
+    description: "Needs population > 1e9 -- coruscant, doc 03's own civil_unrest example."
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000110", sector_id: "coruscant", scan_id: "01UNIT0000000000000000111", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 0.0, kyber_resonance: 0.0, dark_side_activity: 2.0, channels_present: 3}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "coruscant", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "coruscant", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "coruscant", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "coruscant", population: 10000000000}
+    expect:
+      rows:
+        - {sector_id: "coruscant", signature: "civil_unrest"}
+
+  - name: unit_test_signature_unclassified_fallback
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000112", sector_id: "tatooine", scan_id: "01UNIT0000000000000000113", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 0.0, kyber_resonance: 0.0, dark_side_activity: 0.0, channels_present: 3}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", signature: "unclassified"}
+
+  # veiled_presence NULL grid (b): COALESCE(ABS(z_midi), 0) < 1.0, not plain ABS(z_midi) < 1.0 -- a STEALTH
+  # row's missing midichlorian_ppm (and so missing z_midi) satisfies this one zero-bound condition; every
+  # directional condition elsewhere is still NULL, still false. Mirrors
+  # edge/tests/test_doc_parity.py's own grid case at (None, -4.0, 2.5, None, 1).
   - name: unit_test_veiled_presence_fires_with_a_missing_z_midi
     model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
     given:
       - input: ref('silver_probe_reading')
         rows:
-          - event_id: "01UNIT0000000000000000040"
-            sector_id: "naboo"
-            scan_id: "01UNIT0000000000000000041"
-            z_midi: null
-            z_kyber: null
-            z_dark: 2.5
-            channels_present: 1
+          - {event_id: "01UNIT0000000000000000114", sector_id: "naboo", scan_id: "01UNIT0000000000000000115", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: null, kyber_resonance: null, dark_side_activity: 2.5, channels_present: 1}
       - input: ref('gold_sector_baseline')
-        rows: []
+        rows:
+          - {sector_id: "naboo", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "naboo", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "naboo", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "naboo", population: 4500000000}
     expect:
       rows:
-        - sector_id: "naboo"
-          signature: "veiled_presence"
+        - {sector_id: "naboo", signature: "veiled_presence"}
 
   - name: unit_test_veiled_presence_does_not_fire_with_a_present_z_midi_over_the_bound
-    description: "The same STEALTH-shaped row, but z_midi is now present and over 1.0 -- must NOT classify veiled_presence."
+    description: "The same STEALTH-shaped row, but midichlorian_ppm is now present and its z-score is over 1.0 -- must NOT classify veiled_presence."
     model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
     given:
       - input: ref('silver_probe_reading')
         rows:
-          - event_id: "01UNIT0000000000000000042"
-            sector_id: "naboo"
-            scan_id: "01UNIT0000000000000000043"
-            z_midi: 1.2
-            z_kyber: null
-            z_dark: 2.5
-            channels_present: 2
+          - {event_id: "01UNIT0000000000000000116", sector_id: "naboo", scan_id: "01UNIT0000000000000000117", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 1.2, kyber_resonance: null, dark_side_activity: 2.5, channels_present: 2}
       - input: ref('gold_sector_baseline')
-        rows: []
+        rows:
+          - {sector_id: "naboo", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "naboo", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "naboo", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "naboo", population: 4500000000}
     expect:
       rows:
-        - sector_id: "naboo"
-          signature: "unclassified"
+        - {sector_id: "naboo", signature: "unclassified"}
 
-  - name: unit_test_veiled_presence_does_not_fire_with_a_present_z_midi_under_the_bound_but_full_channels
-    description: "channels_present must also be < 3 -- a full reading with the same z-scores never classifies veiled_presence."
+  - name: unit_test_veiled_presence_does_not_fire_with_full_channels
+    description: >
+      channels_present must also be < 3 -- a full reading with the same z-scores never classifies
+      veiled_presence. Population kept low (unlike the other naboo fixtures above) so civil_unrest's own
+      z_dark > 1.5 AND population > 1e9 AND ABS(z_kyber) < 1.5 rule -- an earlier rule in doc 03's order --
+      can't also fire on this row and mask what's actually being tested here.
     model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
     given:
       - input: ref('silver_probe_reading')
         rows:
-          - event_id: "01UNIT0000000000000000044"
-            sector_id: "naboo"
-            scan_id: "01UNIT0000000000000000045"
-            z_midi: 0.5
-            z_kyber: 0.0
-            z_dark: 2.5
-            channels_present: 3
+          - {event_id: "01UNIT0000000000000000118", sector_id: "naboo", scan_id: "01UNIT0000000000000000119", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 0.5, kyber_resonance: 0.0, dark_side_activity: 2.5, channels_present: 3}
       - input: ref('gold_sector_baseline')
-        rows: []
+        rows:
+          - {sector_id: "naboo", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "naboo", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "naboo", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "naboo", population: 200000}
     expect:
       rows:
-        - sector_id: "naboo"
-          signature: "unclassified"
+        - {sector_id: "naboo", signature: "unclassified"}
+
+  # imbalance_score: a full row (three channels), a dark-only STEALTH row (one channel, doubled weight,
+  # SQRT(3/1) scaling), and a row with NULL channels producing a non-NULL score (COALESCE-to-zero per term,
+  # doc 03).
+  - name: unit_test_imbalance_score_full_row
+    description: "z = (1, 1, 1) on all three channels: SQRT(1 + 1 + 2) * SQRT(3/3) = SQRT(4) = 2.0."
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000120", sector_id: "tatooine", scan_id: "01UNIT0000000000000000121", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 1.0, kyber_resonance: 1.0, dark_side_activity: 1.0, channels_present: 3}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", imbalance_score: 2.0}
+
+  - name: unit_test_imbalance_score_dark_only_stealth_row
+    description: "z_dark = 2.0 only, channels_present = 1: SQRT(2 * 4) * SQRT(3/1) = SQRT(8) * SQRT(3) = SQRT(24) ~= 4.89898."
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000122", sector_id: "naboo", scan_id: "01UNIT0000000000000000123", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: null, kyber_resonance: null, dark_side_activity: 2.0, channels_present: 1}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "naboo", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "naboo", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "naboo", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "naboo", population: 4500000000}
+    expect:
+      rows:
+        - {sector_id: "naboo", imbalance_score: 4.898979485566357}
+
+  - name: unit_test_imbalance_score_null_channels_still_non_null_score
+    description: "Both midi and kyber NULL (STEALTH), dark present: COALESCE-to-zero per term keeps the score computable, never NULL, even though two of three inputs are missing."
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000124", sector_id: "naboo", scan_id: "01UNIT0000000000000000125", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: null, kyber_resonance: null, dark_side_activity: 0.5, channels_present: 1}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "naboo", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "naboo", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "naboo", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "naboo", population: 4500000000}
+    expect:
+      rows:
+        - {sector_id: "naboo", imbalance_score: 1.2247448713915892}
+
+  # gold_disturbance: these fixtures stub gold_sector_reading's own OUTPUT directly (imbalance_score,
+  # signature already computed), since z-scoring is gold_sector_reading's job, already covered above --
+  # these four are about the run-detection and cooldown logic gold_disturbance adds on top of it.
+
+  - name: unit_test_disturbance_two_sustained_scans_fire
+    description: "2 consecutive scans over the emergency threshold for one sector -- exactly one incident row."
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000200", sector_id: "tatooine", scan_id: "01UNIT0000000000000000201", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
+          - {event_id: "01UNIT0000000000000000202", sector_id: "tatooine", scan_id: "01UNIT0000000000000000203", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.2, z_midi: 0.0, z_kyber: -2.1, z_dark: 3.1, signature: "sith_presence", channels_present: 3}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", signature: "sith_presence", sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_one_scan_does_not_fire
+    description: "A single scan over the emergency threshold, with no second consecutive scan -- no incident."
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000204", sector_id: "tatooine", scan_id: "01UNIT0000000000000000205", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows: []
+
+  - name: unit_test_disturbance_cooldown_suppresses_a_second_onset_and_flags_the_first
+    description: >
+      Two separate sustained runs (each 2 consecutive scans) for the same sector, 30 minutes apart onset to
+      onset -- doc 07 checkpoint C4's own fixture shape. A below-threshold scan between them breaks them into
+      two distinct runs, not one continuous four-scan run. Covers two of this round's four disturbance cases
+      at once: the cooldown suppresses the second run entirely (only one row in the output), and that
+      survivor's cooldown_conflict is set to true because a later onset did fall inside its cooldown.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000206", sector_id: "tatooine", scan_id: "01UNIT0000000000000000207", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
+          - {event_id: "01UNIT0000000000000000208", sector_id: "tatooine", scan_id: "01UNIT0000000000000000209", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
+          - {event_id: "01UNIT0000000000000000210", sector_id: "tatooine", scan_id: "01UNIT0000000000000000211", event_time: "2026-09-30T12:30:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3}
+          - {event_id: "01UNIT0000000000000000212", sector_id: "tatooine", scan_id: "01UNIT0000000000000000213", event_time: "2026-09-30T12:45:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
+          - {event_id: "01UNIT0000000000000000214", sector_id: "tatooine", scan_id: "01UNIT0000000000000000215", event_time: "2026-09-30T13:00:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", sustained_scans: 2, cooldown_conflict: true}
