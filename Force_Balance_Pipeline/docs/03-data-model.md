@@ -196,6 +196,11 @@ baseline. Add a dbt test asserting `sample_count` matches the probe-only row cou
 Cold start is handled by the Phase 2 synthetic backfill — 90 days of history exist before the
 first live scan.
 
+**Window anchor, decided Phase 4:** `computed_at` is `current_timestamp()`, captured once per build in a CTE so every row
+in one build shares the same anchor, not the run's calendar date. The window is `[computed_at - 90 days, computed_at)`.
+This model is built by hand this phase (excluded from Job 1, which only runs the 15-minute models) and rebuilt daily once
+scheduled, so the anchor drifts forward with wall-clock time rather than snapping to midnight.
+
 ### `gold.sector_reading`
 
 Grain: one row per planet per scan. No windowing — at one scan per planet per 15 minutes, the
@@ -203,12 +208,14 @@ scan *is* the grain.
 
 | Column | Notes |
 |---|---|
+| `event_id` | Not originally listed here — added Phase 4. The merge key in practice: 1:1 with (`sector_id`, `scan_id`) once silver has deduplicated |
 | `sector_id`, `scan_id`, `event_time`, `source_type` | |
 | `midichlorian_ppm`, `kyber_resonance`, `dark_side_activity` | |
 | `z_midi`, `z_kyber`, `z_dark` | **Signed.** Direction matters |
 | `imbalance_score` | Composite magnitude |
 | `signature` | Classified pattern |
 | `channels_present` | |
+| `_gold_built_at` | Not originally listed here — added Phase 4. Bookkeeping only, not part of the doc's original contract: this build's `current_timestamp()`, stamped on every row, the same way bronze stamps `_ingest_ts`. The recompute-window formula below needs "which silver rows arrived since the last time this model ran," which nothing else in the warehouse tracks |
 
 **Composite deviation score:**
 
@@ -287,16 +294,31 @@ this table is affected. `veiled_presence` stays unproducible by the control-topi
 | `is_report_sourced` | BOOLEAN |
 | `report_description` | Verbatim text, null for probe-sourced |
 | `report_relevance` | null for probe-sourced |
-| `sustained_scans` | consecutive scans above threshold |
+| `sustained_scans` | consecutive scans above threshold — see "Consecutive," below, for what that means across sectors with different cadences |
 | `agent_processed` | BOOLEAN, default false |
 | `cooldown_conflict` | BOOLEAN, default false. Set on an **existing** incident's row when a later-replayed onset for the same sector would have fired inside that incident's 2-hour cooldown. The late onset itself never gets its own row — see "Firing rules" below |
 
 **Deviation from `generate_ulid.sql`:** `disturbance_id` is **deterministic**, not randomly generated — 48 bits of the onset
-scan's `event_time` (epoch ms) followed by 80 bits from a hash of (`sector_id`, onset `event_time`), laid out in ULID's own
-base-32 encoding so it stays sortable and ULID-shaped. A random id would make two dbt runs over the same onset produce two
+scan's `event_time` (epoch ms) followed by a hash of (`sector_id`, onset `event_time`), laid out in ULID's own base-32
+encoding so it stays sortable and ULID-shaped. A random id would make two dbt runs over the same onset produce two
 different ids, breaking the merge key the incremental `gold.disturbance` needs. `gold.deployment.deployment_id` is unaffected —
 it isn't built until Phase 6, which decides its own id scheme then. `macros/generate_ulid.sql` is renamed
 `deterministic_id.sql` in doc 05's layout, scoped to `disturbance_id` only.
+
+**Deviation, established on Databricks (2026-09-30, a build failure, not guessed):** the hash portion is 64 bits (16 hex
+characters of a sha2-256 digest), not the originally documented 80. `conv()` on Databricks operates on a 64-bit integer
+internally and raises `ARITHMETIC_OVERFLOW` past that — confirmed live: a 16-hex-char (64-bit) input works, the same call
+on a 20-hex-char (80-bit) input fails every time. The id is now 48 (timestamp) + 64 (hash) = 112 bits, not the full 128 a
+real ULID carries, which also shortens its encoded length (the hash segment is 13 base-32 characters, not 16). 64 bits of
+hash entropy is still far beyond any collision risk this project will ever produce (a few hundred incidents, total, ever)
+— accepted as a permanent design point, not a placeholder to revisit.
+
+**"Consecutive," decided Phase 4 — doc did not say:** consecutive *rows* for a sector in `gold.sector_reading`, ordered by
+`event_time`, not consecutive 15-minute clock slots. This is what lets "2 consecutive scans" mean the same thing for a
+`STEALTH` sector (hourly cadence — 2 hours of wall-clock time) as for a `CONNECTED` one (30 minutes), and what makes a
+missing scan (no row at all) invisible to a run rather than a below-threshold reading that would break it. A genuine
+below-threshold *reading*, by contrast, does break a run even if immediately followed by another above-threshold one —
+only a true gap is transparent to this definition.
 
 ```sql
 severity = imbalance_score * (1 + LOG10(GREATEST(population, 10)) / 10)
@@ -307,7 +329,8 @@ Population-weighted, so the same reading over Coruscant outranks one over a barr
 **Firing rules — probe-sourced:**
 
 - `imbalance_score > 5.75`
-- Sustained across at least 2 consecutive scans (30 minutes)
+- Sustained across at least 2 consecutive scans — 30 minutes for a `CONNECTED` sector at its 15-minute cadence, 2 hours
+  for a `STEALTH` sector at its hourly one (see "Consecutive," above)
 - Cooldown: no new incident for the same `sector_id` within 2 hours
 
 **Late-replayed onset inside an existing cooldown.** A `BURST` drain can insert an onset scan older than an incident already
@@ -315,6 +338,20 @@ recorded for that sector. If the older onset would itself have fired within the 
 recompute does not create a second incident and does not rewrite the existing one's detection fields: it sets
 `cooldown_conflict = true` on the **existing incident's row** and stops. Treat `cooldown_conflict = true` as needing manual
 review, not as a suppressed duplicate.
+
+**Known limitation, current implementation:** the cooldown check compares each run only to the *immediately preceding* run
+for the same sector (a `LAG()`, not a walk carrying the last **accepted** incident forward), because Databricks SQL was
+believed not to support `WITH RECURSIVE`. That belief was wrong — confirmed live, 2026-09-30, on this project's serverless
+SQL warehouse (DBSQL 2026.36): a recursive CTE runs correctly, including the sequential "carry a running pointer forward
+per sector" shape this fix needs. The bug this causes is the opposite of what an earlier draft of this note claimed: a
+run that itself gets suppressed can still be a *long* one, and its own `detected_at` (used as the next run's `LAG` basis)
+can fall later than the true last-accepted incident's `detected_at` would — which makes the cooldown window for the run
+after it *too long*, not too short. Concretely, verified with a 3-run fixture (accepted run, then a long suppressed run,
+then a run that should be a clear, new incident once past the *original* accepted incident's cooldown): the current
+`LAG`-based check incorrectly suppresses that third run, where a true last-accepted-incident walk correctly accepts it. A
+recursive-CTE rewrite (walk runs per sector in onset order, carrying the last accepted incident's `detected_at` forward
+instead of the immediately preceding run's) has been proposed but not applied as of this note; see
+`docs/ENGINEERING-LOG.md`, "Stage 2 follow-up."
 
 **Firing rules — report-sourced:**
 

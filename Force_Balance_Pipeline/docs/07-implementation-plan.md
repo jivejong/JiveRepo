@@ -162,7 +162,12 @@ power-loss test".
   appears with the correct `signature` and `sustained_scans >= 2`. **Depends on Job 1's 15-minute rebuild
   actually running** (step 9) — two scans is 30 minutes of wall-clock time only if the pipeline runs on that
   cadence; a manually-triggered `dbt build` does not exercise it.
-- Trigger two disturbances in one sector 30 minutes apart. One incident row — cooldown works.
+- Trigger two disturbances in one sector 30 minutes apart. One incident row — cooldown works. **Known limitation:**
+  `gold.disturbance`'s cooldown compares each run only to the immediately preceding one (`LAG()`), not to the last
+  *accepted* incident, so this two-run case (and the doc's own checkpoint C4 shape) is handled correctly, but a third
+  rapid run following a long suppressed second run is not, always — see doc 03, "Known limitation, current
+  implementation," under `gold.disturbance`. Databricks SQL does support `WITH RECURSIVE` (confirmed, contrary to an
+  earlier assumption here); a recursive-CTE rewrite has been proposed but not applied.
 - Fault injection reconciles: rejects table count matches the injection log, with matching
   `reject_reason` values.
 - `STEALTH` readings score correctly with `channels_present = 1` and are not rejected.

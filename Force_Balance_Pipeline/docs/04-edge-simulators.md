@@ -74,11 +74,19 @@ control-topic injection) is active on it. On a hit, ramp toward `baseline + (4 t
 2–4 scans, hold 1–2 scans, then decay over 3–5 scans. That ramp-hold-decay shape is what produces
 `sustained_scans >= 2` and fires a real emergency.
 
-Two planets cannot fire one. Mustafar and Dathomir have dark baselines of 95 and 90 (sigma 6 and 7),
+Two planets cannot fire one **from a spike**. Mustafar and Dathomir have dark baselines of 95 and 90 (sigma 6 and 7),
 so a spike to `baseline + (4 to 7) * sigma` would reach 118 to 139, above the dark ceiling of 100
 (doc 02). Their readings clamp at 100 and their spike episodes stay below the emergency threshold
 (doc 03): the highest sustained composite of any of their 13 episodes in the backfill is 4.04. That is
 a property of the frozen seed and the valid range, not a fault of the generator.
+
+**This guarantee is about the upward direction only — confirmed on real gold data, Phase 4.** `imbalance_score` squares
+the signed `z_dark`, so an unusually *low* dark reading (well below baseline, on ordinary noise, not a generated
+"spike") contributes to the composite exactly as much as an unusually high one, and nothing clamps that direction. On
+the real Mustafar backfill (baseline mean 94.14, stddev 4.89), 5 real scans exceeded 5.75 this way, `z_dark` around
+-3.2 to -4.2 on each, producing one genuine 2-scan `unclassified` disturbance on 2026-09-22. Not a bug — the clamp
+claim above was always specifically about spikes, not about the channel reading unusually low — but worth stating
+explicitly since "Two planets cannot fire one" reads as a blanket claim if this direction isn't spelled out.
 
 Expose a control topic `force/control/probe-01` accepting `{"inject": "spike", "sector_id": "...",
 "signature": "sith_presence"}` so a demo can trigger a specific signature on demand. Implement it

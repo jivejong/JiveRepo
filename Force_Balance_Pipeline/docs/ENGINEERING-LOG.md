@@ -358,6 +358,122 @@ against a documented tolerance of -2 s; **derived**, not a doc number: `unix_tim
 timestamp to whole seconds before subtracting rather than rounding the true sub-second difference, which can
 land a truly ~-1.95 s lag at -1 instead of -2. Still inside the documented `>= -2` tolerance, not a violation.
 
+### Stage 2: gold
+
+Three models, on top of Stage 1's silver: `gold_sector_baseline` (a plain `table`), `gold_sector_reading`
+(`incremental`, `merge` on `event_id`), and `gold_disturbance` (`incremental`, `merge` on a deterministic
+`disturbance_id`). Notes here are for a reader learning dbt from this code, not just a record of what happened.
+
+`gold_sector_baseline` computes rolling 90-day mean/stddev per sector per channel, probe-only, anchored to
+`computed_at` (a `current_timestamp()` captured once in a CTE so every row in one build shares the same
+anchor — doc 03, "Window anchor"). It's a `table`, rebuilt whole each time, and built by hand this stage —
+Job 1 excludes it, since it's meant to run daily, not every 15 minutes.
+
+`gold_sector_reading` is the first model where `is_incremental()` branches the *entire* CTE chain, not just a
+`WHERE` clause, because the first build has no `{{ this }}` to query yet. On later builds, the recompute
+window is `LEAST(now - 48h, MIN(event_time) of silver rows arrived since gold's own last build)` — the normal
+case just replays the trailing 48 hours, but a late-arriving replay pulls the window back far enough to
+recompute that replay's own historical scan too. That "own last build" timestamp doesn't exist anywhere else
+in the warehouse, so this model stamps a new bookkeeping column, `_gold_built_at`, the same way bronze stamps
+`_ingest_ts`. Z-scores are `(reading - mean_90d) / NULLIF(stddev_90d, 0)` per channel against the baseline
+pivoted long→wide; `imbalance_score` and `signature` come from macros (`imbalance_score.sql`,
+`classify_signature.sql`), not inline SQL, so a separate Python-side parity test can check them against doc 03
+independently.
+
+`gold_disturbance` finds runs of consecutive above-threshold scans per sector with the classic "gaps and
+islands" trick — two `ROW_NUMBER()`s, one over every row and one over only qualifying rows; where they stay in
+lockstep, the difference is constant, and that's one run. `disturbance_id` comes from a new macro,
+`deterministic_id`: 48 bits of the onset's `event_time` plus a hash of `(sector_id, onset_event_time)`, so
+recomputing the same onset twice always produces the same id and merges as an update. (Originally spec'd at 80
+hash bits; Databricks' `conv()` overflows past 64 bits internally, caught by a real build failure and fixed by
+trimming to 64 — doc 03 has the full deviation note.) `agent_processed` is protected two ways:
+`merge_exclude_columns='agent_processed'` on the incremental config, and a
+`COALESCE(MAX(existing.agent_processed), false)` self-join in the SELECT — belt and suspenders, so a future
+bug in one layer can't silently start overwriting an agent's work. (The self-join needs `MAX()`, not a bare
+column, because Databricks requires every correlated scalar subquery to be aggregated — caught on the
+*second* build, since the first build never takes the incremental branch at all; this is exactly why building
+twice and comparing row counts is the checkpoint, not just building once.)
+
+**Cost note, candidate for the Job 1 quota measurement:** `gold_disturbance` deliberately rescans *all* of
+`gold_sector_reading` on every build, not just a recent window (doc 03's own "Known limitation" note has the
+reasoning — a run can span an arbitrary number of scans, and doc 05's "simpler is safer" philosophy applies).
+At the current data volume (530,460 `gold_sector_reading` rows and growing by 60 rows per 15-minute Job 1
+cycle) this costs ~6 seconds per build; worth watching once Job 1 is running continuously, since this is the
+one Stage 2 model whose cost grows with total history rather than with the 15-minute increment.
+
+**Real-data checks, against Databricks (`--target prod --select gold`), two consecutive `dbt build` runs,
+identical both times:** `gold_sector_baseline` 180 rows (60 sectors x 3 channels); `gold_sector_reading`
+530,460 (matches `silver_probe_reading` exactly on a first build, 0 null scores or signatures);
+`gold_disturbance` 49. All 40 build-time checks passed both runs (3 models, 21 data tests including
+`assert_baseline_probe_only` and `assert_cooldown_respected`, 16 new unit tests).
+
+Six real-data checks: baseline is probe-only (`assert_baseline_probe_only` passes; `sample_count = 8455`
+uniformly across all 60 sectors, 97.9% of the 8,640-scan theoretical max — consistent with the manifest's
+known gaps). The 4 injected backfill emergencies (tatooine `sith_presence`, dantooine `nexus_awakening`,
+kamino `force_drain`, coruscant `civil_unrest`) all fire on their manifest days with `sustained_scans >= 2`
+and scores matching the manifest's own recorded composites closely. mon_cala: last backfill day mean
+`imbalance_score = 2.52` (< 4.0), 0 disturbances. The 2026-09-28 19:00Z `STEALTH` scan: 60 rows,
+`channels_present = 1` on all of them, 0 null scores (found only after widening a literal timestamp-equality
+filter to a 15-second window — the synthetic rows carry sub-second jitter, same pattern as the manifest's
+`.950`-second timestamps). 49 total disturbances, 45 outside the 4 named emergencies, against doc 03's own
+design-time prediction of 9 noise-only + 32 ambient-episode-driven = 41 — a reasonably close match, though the
+45 can't be cleanly split into those two buckets from `gold_disturbance` alone (that label lives in
+`edge/backfill_texture.json`'s per-scan episode data, not joined here).
+
+**A genuine, doc-03-consistent-but-previously-undocumented finding:** Mustafar can exceed the 5.75 emergency
+threshold even though its dark-side *spikes* are clamped at 100 (doc 04's "two planets cannot fire one") —
+because a large enough *drop* in dark-side activity relative to its own (unusually high) baseline produces an
+equally large `z_dark`, and the composite formula squares it regardless of sign. Five real scans do this; one
+produced a genuine 2-scan `unclassified` disturbance (2026-09-22, `z_dark` around -4.16). Not a bug — the
+doc's clamp guarantee was always specifically about the upward direction; doc 04 now says so explicitly.
+
+### Stage 2 follow-up: the cooldown's `WITH RECURSIVE` assumption was never checked
+
+`gold_disturbance`'s header comment originally asserted that Databricks SQL doesn't support `WITH RECURSIVE`,
+as the reason its cooldown check uses `LAG()` (compare each run only to the immediately preceding one) instead
+of a true "last accepted incident" walk. That assumption was never actually tested — it was corrected this
+round.
+
+**Finding, verified live against the project's own serverless SQL warehouse (DBSQL 2026.36), 2026-09-30:**
+`WITH RECURSIVE` works, including the specific shape this fix needs — a sequential per-sector walk carrying a
+running value (the last accepted incident's `detected_at`) forward row by row, not just simple counting
+recursion. Source: two inline `dbt show` queries run directly against `prod`, not a doc lookup; the second
+constructs the exact "carry a pointer forward per sector" pattern and confirms it executes correctly.
+
+**The bug's actual direction is the opposite of what the original comment guessed.** A 3-run fixture (an
+accepted run; a long suppressed run whose own `detected_at` lands well after the accepted run's; a third run
+whose onset is clear of the *original* accepted incident's cooldown but still within the *suppressed* run's
+own, later `detected_at` + cooldown) shows the current `LAG`-based check incorrectly **suppresses** that third
+run, where a true last-accepted-incident walk correctly **accepts** it. The original comment guessed the
+opposite (incorrect acceptance) without verifying — corrected in doc 03 and in the model's own header comment.
+
+**Proposed rewrite (not applied this round):** replace the `LAG()`-based `with_cooldown`/`accepted` CTEs with
+a recursive CTE that walks `runs` per sector in onset order, carrying a `last_accepted_detected_at` value
+forward — updated only when a run is itself accepted, left unchanged (not reset to the intervening run's own
+`detected_at`) when a run is suppressed. Sketch:
+
+```sql
+with recursive walked as (
+    select *, detected_at as last_accepted_detected_at, true as accepted
+    from runs where seq_in_sector = 1
+
+    union all
+
+    select r.*,
+        case when r.onset_event_time < w.last_accepted_detected_at + interval 2 hours
+             then w.last_accepted_detected_at else r.detected_at end,
+        case when r.onset_event_time < w.last_accepted_detected_at + interval 2 hours
+             then false else true end
+    from walked w
+    join runs r on r.sector_id = w.sector_id and r.seq_in_sector = w.seq_in_sector + 1
+)
+```
+
+Needs a unit test for the three-rapid-runs case above (accepted, then a long suppressed run, then a run that
+should be a new incident once clear of the *first* run's cooldown) before it ships — the existing
+`unit_test_disturbance_cooldown_suppresses_a_second_onset_and_flags_the_first` fixture only covers the
+two-run case and would not have caught this. Deferred, not applied, per this round's scope.
+
 ## Open items
 
 | Item | Status |
@@ -371,6 +487,8 @@ land a truly ~-1.95 s lag at -1 instead of -2. Still inside the documented `>= -
 | Composite score scaling on partial (STEALTH) readings | `SQRT(3/channels_present)` gives a dark-only STEALTH reading about 1.5x the score variance of a full reading with the same dark deviation — it trips 5.75 at `z_dark ≈ 2.35` instead of `≈ 4.07`. `SQRT(4/present_weight)` would remove the gap. Kept as-is for Phase 4; `edge/analyze_thresholds.py` gets a STEALTH-series comparison before the Phase 6 threshold retune decides between them. |
 | Fault injection still at `--fault-rate 0` | Deliberately deferred a few days after the mode schedule, so a scheduled outage and an injected fault are never running at once; becomes its own period in a later commit. |
 | Persistent-journal fix (2026-09-30) | Not yet confirmed to survive an actual Pi reboot — the next real test of it. |
+| `gold_disturbance` cooldown uses `LAG()`, not a last-accepted-incident walk | Recursive-CTE rewrite proposed (doc 03, "Known limitation, current implementation"; sketch in "Stage 2 follow-up," above), confirmed `WITH RECURSIVE` works on this warehouse, but not applied. Needs a three-rapid-runs unit test before it ships. |
+| 45 non-emergency `gold_disturbance` rows can't be split into ambient-episode-driven vs. pure-noise | The label lives in `edge/backfill_texture.json`'s per-scan episode data, not joined against `gold_disturbance`. Doc 03's own 9-noise / 32-ambient design-time split (0.7/week target) can't be independently re-derived from gold alone yet. |
 
 ## Lessons (beyond this project)
 

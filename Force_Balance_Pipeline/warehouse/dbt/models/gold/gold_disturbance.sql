@@ -35,11 +35,19 @@
 
   Cooldown -- KNOWN LIMITATION, not silently glossed over: each run's cooldown check compares only against
   its immediately preceding run for the same sector (a LAG(), not a running "last accepted incident"
-  pointer), because a true "last accepted" walk needs sequential/recursive logic Databricks SQL does not
-  support (no WITH RECURSIVE). This correctly handles the documented fixture (two runs 30 minutes apart, one
-  incident, doc 07 checkpoint C4) and the general two-run case, but a THIRD run arriving soon after a
-  second run that was itself suppressed could be incorrectly accepted as a new incident instead of also being
-  caught by the first run's cooldown. Not fixed this round; noted for a future one.
+  pointer). This correctly handles the documented fixture (two runs 30 minutes apart, one incident, doc 07
+  checkpoint C4) and the general two-run case, but not every three-run case: a run that itself gets
+  suppressed can still be a long one, and its own detected_at (the next run's LAG basis) can land later
+  than the true last-accepted incident's detected_at would -- which makes the following run's cooldown
+  window too LONG, not too short, and can incorrectly SUPPRESS a run that is genuinely clear of the
+  original accepted incident's cooldown. (An earlier version of this comment guessed the opposite direction
+  -- incorrect acceptance -- without checking; verified wrong by a 3-run fixture, 2026-09-30.)
+
+  CORRECTION, 2026-09-30: Databricks SQL DOES support WITH RECURSIVE (confirmed live on this project's
+  serverless warehouse, DBSQL 2026.36) -- the assumption that it didn't, in an earlier version of this
+  comment, was never actually checked. A recursive-CTE rewrite (walk runs per sector in onset order,
+  carrying the last ACCEPTED incident's detected_at forward instead of the immediately preceding run's) is
+  proposed in docs/ENGINEERING-LOG.md, "Stage 2 follow-up," but not applied here yet.
 
   Contract:
   - Inputs: ref('gold_sector_reading'), ref('dim_sector') (population, for severity).
