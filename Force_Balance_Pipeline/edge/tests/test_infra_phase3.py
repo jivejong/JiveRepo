@@ -277,9 +277,14 @@ class DocParityTests(unittest.TestCase):
         self.assertIn("sudo sqlite3 -readonly", self.doc5)
 
     def test_doc_05_makes_the_journal_persistent_before_anything_else_needs_it(self):
-        # a real Pi power loss (Phase 3) lost the boot's own logs: journald defaults to volatile storage
-        self.assertLess(self.doc5.index("systemd-tmpfiles --create --prefix /var/log/journal"), self.doc5.index("sudo mkdir -p /opt/force-probe"))
+        # a real Pi power loss (Phase 3) lost the boot's own logs; this Pi OS image ships its own drop-in forcing
+        # Storage=volatile outright, so `mkdir /var/log/journal` alone (Storage=auto's usual rule) has no effect --
+        # an overriding drop-in of our own is required
+        self.assertLess(self.doc5.index("journald.conf.d/90-force-persistent.conf"), self.doc5.index("sudo mkdir -p /opt/force-probe"))
+        self.assertIn("Storage=persistent", self.doc5)
+        self.assertIn("SystemMaxUse=100M", self.doc5)
         self.assertIn("sudo systemctl restart systemd-journald", self.doc5)
+        self.assertIn("journalctl --flush", self.doc5)
 
     def test_doc_05_copies_the_password_file_into_a_docker_volume_not_a_windows_bind_mount(self):
         # tested on the desktop (Step 3): Mosquitto 2.1.2 cannot open a password file mounted straight from Windows

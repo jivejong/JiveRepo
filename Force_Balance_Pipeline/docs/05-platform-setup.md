@@ -589,14 +589,24 @@ sudo apt update && sudo apt install -y git python3-venv sqlite3 nftables
 timedatectl status        # "System clock synchronized: yes" and "NTP service: active"
 ```
 
-**Persistent journal.** By default (`Storage=auto`) journald keeps logs only in `/run/log/journal`, wiped on every reboot — found the
-hard way, in Phase 3, when a Pi power loss lost the boot's own logs. Give it a real directory once, before anything else needs it:
+**Persistent journal.** journald keeps logs only in `/run/log/journal`, wiped on every reboot — found the hard way, in Phase 3, when
+a Pi power loss lost the boot's own logs. `Storage=auto`'s usual rule (persistent if `/var/log/journal` exists, volatile otherwise)
+does not apply on this Pi OS image: it ships its own drop-in setting `Storage=volatile` outright, so creating that directory alone
+has no effect. Override it with a drop-in of your own, which take precedence in filename order:
 ```bash
-sudo mkdir -p /var/log/journal
-sudo systemd-tmpfiles --create --prefix /var/log/journal
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/90-force-persistent.conf >/dev/null <<'EOF'
+[Journal]
+Storage=persistent
+SystemMaxUse=100M
+EOF
 sudo systemctl restart systemd-journald
+sudo journalctl --flush
 ```
-Journals from before this point are not recovered. After the next reboot, `journalctl --list-boots` shows more than one boot.
+Verify: `ls /var/log/journal` shows a machine-id directory (empty means it didn't take — check for another drop-in still forcing
+`volatile`, with `systemctl cat systemd-journald | grep Storage` or `find /*/systemd/journald.conf.d`), and `journalctl --disk-usage`
+reports non-trivial size. Journals from before this point are not recovered. After the next reboot, `journalctl --list-boots` shows
+more than one boot, and the 100M cap keeps it off the SD card's free space regardless of how long the Pi has been up.
 
 `/opt` is root-owned, so create the target directory and hand it to yourself before cloning into it — `deploy.sh` does the same
 `mkdir`/`chown` itself and is safe to run again, but the first, manual clone below needs it done first:

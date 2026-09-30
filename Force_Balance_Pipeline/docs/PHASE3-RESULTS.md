@@ -151,11 +151,22 @@ this boot was lost, because journald was volatile (fixed below).
 | # | Check | Actual |
 |---|---|---|
 | N1 | Boot time | `uptime -s`: **2026-09-28 09:22:09 EDT (13:22:09Z)**. |
-| N2 | The Pi's own journal for this boot | **Lost** — `journald` was on volatile storage (`/run/log/journal`, wiped every reboot). Fixed for the future: doc 05, "Persistent journal", added below. |
+| N2 | The Pi's own journal for this boot | **Lost** — `journald` was on volatile storage (`/run/log/journal`, wiped every reboot). Fixed for the future: doc 05, "Persistent journal". |
 | N3 | Last file landed before the loss, from the desktop bridge's log | `2026-09-28T13:15:03Z`, 60 lines. |
 | N4 | First file landed after the loss | `2026-09-28T13:30:03Z`, 60 lines. |
 | N5 | Gap between them | 900 s — exactly one normal quarter-hour cadence step. **0 scans missed**: the 13:15Z scan was taken and published before the loss, and the Pi booted, reconnected and took the 13:30Z scan normally, inside the same 15-minute window. |
 | N6 | Recovery | `force-probe` starts at boot unattended (`systemctl enable`, confirmed already in Step 4/5); reconnected without intervention; quarter-hour scans resumed. Buffer count 0 after recovery (reported), nothing stranded. |
+
+**N2's fix, corrected 2026-09-30.** The first fix (`sudo mkdir -p /var/log/journal` + `systemd-tmpfiles`, relying on `Storage=auto`'s
+usual "persistent if the directory exists" rule) does not work on this Pi OS image: it ships its own drop-in forcing
+`Storage=volatile` outright, which overrides that rule regardless of the directory. Doc 05 now uses an overriding drop-in
+(`/etc/systemd/journald.conf.d/90-force-persistent.conf`, `Storage=persistent` and `SystemMaxUse=100M`) instead; the lint test
+(`test_infra_phase3.py`) checks for the drop-in, not the old `mkdir`.
+
+**Verified on the Pi, 2026-09-30** (run by the developer, not from an offline check): `ls /var/log/journal` shows one directory,
+`1f549fec124b410d9a10bcb4ad72d0c2` (the machine ID) — persistent storage took effect. `journalctl --disk-usage`: "Archived and
+active journals take up 16M in the file system," comfortably under the 100M cap. Not yet tested across an actual reboot — that
+still needs its own boot cycle to confirm.
 
 **A real bug found from this incident, not from a test:** the mode log's `startup` entry for this boot is stamped
 `2026-09-28T13:19:43.xxxZ` — *before* `uptime -s`'s `13:22:09Z`, which is impossible for a boot that happened at 13:22:09. Cause: the
