@@ -147,7 +147,9 @@ power-loss test".
 8. `docker-compose.yml` and `make demo` against the Postgres target.
 
 **Checkpoint:**
-- `dbt build` passes all tests on both `prod` and `local`.
+- `dbt build` passes all tests on `prod`. **Deviation (Phase 4):** the `local` target and the `extract_payload` Postgres branch
+  move to Phase 8 with the rest of the local stack (07:266-268's own fallback, taken) — `local` raises a compiler error rather
+  than running untested SQL until then.
 - **The baseline test passes:** `gold.sector_baseline` contains zero report-sourced data.
 - Trigger `sith_presence` via the control topic. Within two scans a `gold.disturbance` row
   appears with the correct `signature` and `sustained_scans >= 2`.
@@ -279,4 +281,7 @@ is itself an artifact.
 
 Every phase ends with an entry in `docs/ENGINEERING-LOG.md` (goal, decisions and why, issues with
 cause/fix/how found, checkpoint result, commit SHAs), committed after that phase's own results
-commit — the results files are the evidence; this file is the narrative connecting them.
+commit — the results files are the evidence; this file is the narrative connecting them. A session
+handoff is also produced or refreshed at each phase close, kept **outside the repository**
+(`~/.force_balance_pipeline/handoffs/`, gitignored) — a pointer document with real machine
+details, not a committed artifact.

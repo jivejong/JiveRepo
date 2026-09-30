@@ -83,7 +83,7 @@ class NotebookContentTests(unittest.TestCase):
         expected = doc03_bronze_columns()
         self.assertEqual(columns[:len(expected) - 1], expected[:-1], "every column but the last, in doc 03's order")
         self.assertEqual(columns, expected)
-        self.assertEqual(len(columns), 16)
+        self.assertEqual(len(columns), 17)
 
     def test_the_streaming_options_the_docs_require(self):
         for needle in ('.option("cloudFiles.format", "json")', '.option("cloudFiles.inferColumnTypes", "false")',

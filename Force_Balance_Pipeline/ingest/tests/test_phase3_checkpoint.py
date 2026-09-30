@@ -108,13 +108,13 @@ class ClaimTests(unittest.TestCase):
                          "1860 to 1960", "reconnect backoff"):
             self.assertIn(expected, b)
 
-    def test_doc_03_records_the_ingest_ts_finding_as_open_and_does_not_implement_the_proposal(self):
-        note = DOC03.split("**OPEN:** `_ingest_ts`")[1].split("---")[0]
-        for needle in ("current_timestamp()", "not the time the file arrived", "_metadata.file_modification_time", "Not implemented",
-                       "Decide before silver is built"):
+    def test_doc_03_records_the_arrival_timestamp_decision_and_the_notebook_implements_it(self):
+        note = DOC03.split("**Decided, Phase 4:** `_ingest_ts` remains")[1].split("---")[0]
+        for needle in ("current_timestamp()", "_file_modified_ts", "_metadata.file_modification_time",
+                       "one-time backfill MERGE", "COALESCE(_file_modified_ts, _ingest_ts)"):
             self.assertIn(needle, note)
         notebook = (S.ROOT / "ingest" / "autoloader_bronze.py").read_text(encoding="utf-8")
-        self.assertNotIn("file_modification_time", notebook)                   # a proposal, not implemented
+        self.assertIn("file_modification_time", notebook)                      # decided and implemented
 
     def test_no_gaps_compares_seen_slots_with_expected_slots_on_15_minute_boundaries(self):
         b = blocks()["p3-4"]

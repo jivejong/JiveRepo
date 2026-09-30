@@ -31,7 +31,7 @@ RULES = (
     ("force_drain",     (("z_midi", "<", -2.0), ("z_kyber", "<", -2.0))),
     ("kyber_cache",     (("z_kyber", ">", 2.5), ("z_midi", "abs<", 1.5), ("z_dark", "abs<", 1.5))),
     ("civil_unrest",    (("z_dark", ">", 1.5), ("population", ">", 1e9), ("z_kyber", "abs<", 1.5))),
-    ("veiled_presence", (("z_midi", "abs<", 1.0), ("z_dark", ">", 2.0), ("channels_present", "<", 3))),
+    ("veiled_presence", (("z_midi", "coalesce_abs<", 1.0), ("z_dark", ">", 2.0), ("channels_present", "<", 3))),
 )
 ORDER = tuple(name for name, _ in RULES)
 
@@ -83,6 +83,8 @@ class InjectionRefused(ValueError):
 
 
 def _holds(op, value, x):
+    if op == "coalesce_abs<":  # rule-local: an absent channel counts as 0, unlike every other operator here
+        return abs(0.0 if x is None else x) < value
     if x is None:  # SQL NULL semantics: a comparison with NULL is not true
         return False
     if op == ">":

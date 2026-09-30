@@ -33,6 +33,7 @@ df = (
 out = (
     df.withColumn("_source_file", F.col("_metadata.file_path"))
       .withColumn("_ingest_ts", F.current_timestamp())
+      .withColumn("_file_modified_ts", F.col("_metadata.file_modification_time"))
       .withColumn("event_time", F.to_timestamp("event_time"))
       .withColumn("schema_version", F.col("schema_version").cast("int"))
       .withColumn("dt", F.to_date("dt"))
@@ -42,7 +43,7 @@ out = (
       .withColumn("payload", F.expr("try_parse_json(payload)"))
       .select("event_id", "source_id", "source_type", "mode", "scan_id", "sector_id",
               "schema_version", "event_time", "is_synthetic", "synthetic_ingest_ts", "payload",
-              "dt", "hh", "_source_file", "_ingest_ts", "_rescued_data")
+              "dt", "hh", "_source_file", "_ingest_ts", "_file_modified_ts", "_rescued_data")
 )
 
 # COMMAND ----------

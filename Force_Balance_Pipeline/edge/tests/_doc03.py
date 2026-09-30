@@ -8,6 +8,7 @@ from pathlib import Path
 DOC = Path(__file__).resolve().parents[2] / "docs" / "03-data-model.md"
 
 _CONDITION = re.compile(r"^(ABS\()?(\w+)\)?\s*([<>])\s*(-?\d+(?:\.\d+)?(?:e\d+)?)$")
+_COALESCE_ABS_CONDITION = re.compile(r"^COALESCE\(ABS\((\w+)\),\s*0\)\s*<\s*(-?\d+(?:\.\d+)?)$")
 
 
 def text():
@@ -30,6 +31,11 @@ def signature_table():
             continue
         conditions = []
         for segment in re.findall(r"`([^`]+)`", pattern):
+            m = _COALESCE_ABS_CONDITION.fullmatch(segment)
+            if m:
+                variable, value = m.groups()
+                conditions.append((variable, "coalesce_abs<", float(value)))
+                continue
             m = _CONDITION.fullmatch(segment)
             if not m:
                 raise ValueError(f"cannot parse doc 03 condition {segment!r}")
@@ -49,7 +55,9 @@ def evaluate(rows, fallback_name, z_midi, z_kyber, z_dark, population, channels_
         ok = True
         for variable, op, value in conditions:
             x = env[variable]
-            if x is None:
+            if op == "coalesce_abs<":  # rule-local: an absent channel counts as 0, unlike every other operator here
+                ok = ok and abs(0.0 if x is None else x) < value
+            elif x is None:
                 ok = False
             elif op == ">":
                 ok = ok and x > value

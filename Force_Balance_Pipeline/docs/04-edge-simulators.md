@@ -149,7 +149,10 @@ less, is worth writing.
 `fault_injection.jsonl` in the probe's state directory before its event is buffered, one JSON object per line: `event_id`,
 `scan_id`, `fault`, `expected_reject_reason` (a doc 03 reason), `event_time` and `sector_id` as emitted, the channel, the original
 and injected values, and `logged_utc`. The count of rejects must equal the count in this log. The log is pulled off the Pi by hand
-(`scp`) and never travels on the telemetry topic; how it reaches Databricks for the reconciliation is decided in Phase 4.
+(`scp`) and never travels on the telemetry topic. **Decided, Phase 4:** the pulled `fault_injection.jsonl` is converted to a
+frozen dbt seed (`fault_injection_<period>.csv`, `scripts/faultlog_to_seed.py`, with a test) rather than uploaded to a volume —
+one seed per reconciliation period, committed like the enrichment seeds, and joined against `silver.rejects` on `event_id` in a
+dbt test.
 
 Fault injection is its own period, run separately from the mode schedule (doc 07's checkpoint used `--fault-rate 0` so the outage
 rows stayed clean). The Pi's unit stays at `--fault-rate 0` a few days after the mode schedule (above) goes on, so a scheduled

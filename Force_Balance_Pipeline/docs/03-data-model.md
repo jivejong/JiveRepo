@@ -56,8 +56,9 @@ at seed time, not at runtime.
 
 ### `bronze.events`
 
-Append-only, one row per ingested event. No deduplication — bronze is a faithful record of what
-arrived, duplicates included.
+Append-only from Auto Loader; a live row is never updated by the ingestion notebook itself. One documented exception: a single,
+one-time backfill MERGE (doc 05) that fills `_file_modified_ts` on existing live rows. No deduplication otherwise — bronze is a
+faithful record of what arrived, duplicates included.
 
 | Column | Type |
 |---|---|
@@ -71,17 +72,19 @@ arrived, duplicates included.
 | `hh` | INT |
 | `_source_file` | STRING |
 | `_ingest_ts` | TIMESTAMP |
+| `_file_modified_ts` | TIMESTAMP (NULL on rows ingested before this column existed; silver never reads it for `is_synthetic` rows) |
 | `_rescued_data` | STRING (Auto Loader `rescue` mode; null when nothing was rescued) |
 
-**OPEN:** `_ingest_ts` is `current_timestamp()` in the Auto Loader notebook (`ingest/autoloader_bronze.py`): the time the notebook
-processed the file, not the time the file arrived. It approximates arrival only while the notebook runs close behind the landing.
-Found in Phase 3: a batch-triggered run stamps every row it ingests alike, so a replayed row and a live row from the same run cannot
-be told apart by `_ingest_ts`. `silver.probe_reading.ingest_lag_seconds` and `is_replayed` (below) are defined on it for live rows, so
-as written they measure how late the notebook ran, not how late the data arrived. Proposal for Phase 4: capture the file's
-modification time, `_metadata.file_modification_time`, as a bronze column (for example `_file_modified_ts`, TIMESTAMP), and define
-`ingest_lag_seconds` for live rows on it, leaving `_ingest_ts` as the notebook's own processing time. Decide before silver is built.
-Not implemented; until then the Phase 3 checkpoint proves arrival from the landed files themselves (`ingest/phase3_checkpoint.sql`,
-p3-3b).
+**Decided, Phase 4:** `_ingest_ts` remains `current_timestamp()`, unaffected. A new column, `_file_modified_ts`, captures
+`_metadata.file_modification_time` for every row ingested from this point on. `silver.probe_reading.ingest_lag_seconds` is
+defined on `COALESCE(_file_modified_ts, _ingest_ts)` for live rows, and unchanged (`synthetic_ingest_ts`) for `is_synthetic`
+rows. A one-time backfill MERGE, run once and recorded in `docs/ENGINEERING-LOG.md`, fills `_file_modified_ts` on every existing
+**live** row: it joins a `read_files(..., format => 'text')` scan of the landing volume's `_metadata.file_path` (the same value
+Auto Loader already stores as `_source_file`) directly against `force.bronze.events._source_file`. `is_synthetic` rows are left
+NULL — their lag is never read from this column. Run only while `ingest_bronze` (Job 1) is not active, so the MERGE's
+transaction never overlaps the Auto Loader writer's. This means `force.bronze.events`'s Delta history is no longer pure-append
+from that point on: nothing today reads this table as a stream, but any future consumer that does would need to handle
+non-append changes (`skipChangeCommits`/`ignoreChanges`, or read a snapshot).
 
 ---
 
@@ -95,14 +98,23 @@ Typed, validated, deduplicated. Incremental with `merge` on `event_id`.
 
 | Added column | Definition |
 |---|---|
-| `ingest_lag_seconds` | `unix_timestamp(CASE WHEN is_synthetic THEN synthetic_ingest_ts ELSE _ingest_ts END) - unix_timestamp(event_time)` |
+| `ingest_lag_seconds` | `unix_timestamp(CASE WHEN is_synthetic THEN synthetic_ingest_ts ELSE COALESCE(_file_modified_ts, _ingest_ts) END) - unix_timestamp(event_time)` |
 | `is_replayed` | `ingest_lag_seconds > 1800` |
+| `was_buffered` | `mode = 'DISCONNECTED'` — the reading's own mode when taken (doc 02), carried straight from bronze |
 | `is_synthetic` | carried from bronze, so the dashboard can tell backfill from live |
 | `is_partial` | any of the three channels null — true in `STEALTH` |
 | `channels_present` | int, 1–3 |
 
-`is_replayed` flags data recovered from a `DISCONNECTED` buffer. Surface it on the dashboard —
-it is the visible proof the late-arriving path works.
+`is_replayed` means "arrived more than 30 minutes after it was taken" — a lag threshold, not a direct signal that the row came
+from the buffer. `was_buffered` is that direct signal: every `DISCONNECTED`-mode row was buffered and later drained, regardless
+of how quickly the drain caught up to it (a row buffered for under 30 minutes has `was_buffered = true` but `is_replayed =
+false`). Surface both on the dashboard — `was_buffered` is the proof the late-arriving path works; `is_replayed` is the
+operational lag signal.
+
+Deduplicated insert-only on `event_id`: when the same event lands twice (the known 2026-09-27 23:45Z scan, 13 ids — see
+`docs/ENGINEERING-LOG.md`), the copy with the earliest arrival wins and later copies are never merged over it, so a
+later-arriving, higher-latency copy of an already-landed row can never flip `is_replayed`/`was_buffered` on a row already
+scored.
 
 ### `silver.force_report`
 
@@ -115,11 +127,24 @@ Validation failures with a reason. Fed by the 2–3% fault injection during `CON
 
 | `reject_reason` | Trigger |
 |---|---|
-| `null_required_field` | A channel is null outside of `STEALTH` |
-| `out_of_range` | Channel value outside its valid range |
+| `unknown_schema_version` | `schema_version` not `1` (no fault currently produces this — `schema_version` is static until a real payload change) |
+| `impossible_timestamp` | `event_time` more than 10 minutes ahead of arrival (`COALESCE(_file_modified_ts, _ingest_ts)`, or `synthetic_ingest_ts` for backfill rows), or more than 90 days behind it |
 | `unknown_sector` | `sector_id` not in `dim_sector` |
-| `unknown_schema_version` | |
-| `impossible_timestamp` | `event_time` in the future or absurdly old |
+| `null_required_field` | A channel is null outside of `STEALTH`, or `payload` itself is NULL (a malformed event, doc 05) |
+| `out_of_range` | Channel value outside its valid range |
+
+Checked in this order — first match wins, the same evaluation style as signature classification (below). The four
+fault-injected categories (`edge/probe/faults.py`) map one-to-one onto four of these five reasons under this order: each
+injected reading carries exactly one fault and never collides with another check. `unknown_schema_version` has no
+corresponding fault — it is exercised only by a future real schema bump, and the fault-reconciliation checkpoint does not (and
+cannot) cover it. A non-null `_rescued_data` (an unexpected field Auto Loader could not place) is **not** a reject — Auto
+Loader already got the row into bronze either way — but is asserted empty by a warn-severity dbt test. `sensor_temp_c` and
+`battery_pct` are not range-checked in Phase 4: no fault touches them (`faults.py`'s `SCIENCE_CHANNELS` covers only the three
+science channels), so nothing requires it for the fault-reconciliation checkpoint.
+
+Deduplicated the same way as `silver.probe_reading`, insert-only on `event_id`, earliest arrival wins — so doc 04's "the count
+of rejects must equal the count in this log" stays a true 1:1 comparison even if a faulted reading is somehow ingested more
+than once.
 
 Validation must be `STEALTH`-aware: nulls on midichlorian and kyber are expected in that mode and
 must route to `probe_reading` with `is_partial = true`, not to rejects. This distinction is a
@@ -188,6 +213,11 @@ Weighted Euclidean distance from the planet's normal state, dark side double-wei
 `SQRT(3/channels_present)` term scales partial readings so a `STEALTH` reading with one channel
 isn't automatically lower-scoring than a full one.
 
+**Deferred to Phase 6:** the scaling factor above gives a dark-only `STEALTH` reading about 1.5x the score variance of a full
+reading with the same dark deviation, so it trips the 5.75 emergency threshold at `z_dark ≈ 2.35` instead of `≈ 4.07`. An
+alternative, `SQRT(4/present_weight)`, would remove that gap. `edge/analyze_thresholds.py` gets a STEALTH-series comparison of
+both factors before Phase 6's threshold retuning decides between them; the formula above is unchanged for Phase 4.
+
 Keep the signed z-scores as columns. The composite gives magnitude; the signed triple gives
 direction, which is what signature classification reads.
 
@@ -214,7 +244,7 @@ Jedi selection non-arbitrary and testable.
 | `force_drain` | `z_midi < -2.0` and `z_kyber < -2.0` | `investigation` |
 | `kyber_cache` | `z_kyber > 2.5` and `ABS(z_midi) < 1.5` and `ABS(z_dark) < 1.5` | `diplomacy` |
 | `civil_unrest` | `z_dark > 1.5` and `population > 1e9` and `ABS(z_kyber) < 1.5` | `diplomacy` |
-| `veiled_presence` | `ABS(z_midi) < 1.0` and `z_dark > 2.0` and `channels_present < 3` | `stealth` |
+| `veiled_presence` | `COALESCE(ABS(z_midi), 0) < 1.0` and `z_dark > 2.0` and `channels_present < 3` | `stealth` |
 | `unclassified` | fallback | any |
 
 Evaluate in the order listed; first match wins. Implement as a `CASE` expression in a dbt macro
@@ -223,16 +253,18 @@ so it is testable in isolation and shared between the Databricks and Postgres ta
 `unclassified` must remain reachable — an incident the system can't categorize is a real
 outcome, and the agent should handle it.
 
-**OPEN:** `veiled_presence` requires `ABS(z_midi) < 1.0`, but a `STEALTH` reading has no midichlorian value, so `z_midi` is NULL and
-the condition is not true in SQL (a comparison with NULL is not true). As written the signature cannot fire. Decide in Phase 4 how a
-missing z-score is treated in the classification (for example, drop that condition when the channel is absent) and how the
-injection targets follow; `edge/forcesim/signatures.py` marks `veiled_presence` unproducible until then.
+**Decided, Phase 4:** a `STEALTH` reading has no midichlorian value, so plain `ABS(z_midi) < 1.0` was never true and the
+signature could not fire. Fixed rule-locally, not globally: `COALESCE(ABS(z_midi), 0) < 1.0` treats an absent midi channel as
+satisfying this one zero-bound condition, since it is the only condition in the table that bounds *toward* zero rather than
+asserting a direction. A directional condition (`>`/`<`) on an absent channel is still NULL, still false — no other rule in
+this table is affected. `veiled_presence` stays unproducible by the control-topic injector this phase
+(`edge/forcesim/signatures.py`); making it injectable is deferred.
 
 ### `gold.disturbance`
 
 | Column | Notes |
 |---|---|
-| `disturbance_id` | ULID |
+| `disturbance_id` | **Deterministic**, not a random ULID — see below |
 | `sector_id`, `detected_at`, `scan_id` | |
 | `imbalance_score`, `z_midi`, `z_kyber`, `z_dark` | |
 | `signature` | |
@@ -242,6 +274,14 @@ injection targets follow; `edge/forcesim/signatures.py` marks `veiled_presence` 
 | `report_relevance` | null for probe-sourced |
 | `sustained_scans` | consecutive scans above threshold |
 | `agent_processed` | BOOLEAN, default false |
+| `cooldown_conflict` | BOOLEAN, default false. Set on an **existing** incident's row when a later-replayed onset for the same sector would have fired inside that incident's 2-hour cooldown. The late onset itself never gets its own row — see "Firing rules" below |
+
+**Deviation from `generate_ulid.sql`:** `disturbance_id` is **deterministic**, not randomly generated — 48 bits of the onset
+scan's `event_time` (epoch ms) followed by 80 bits from a hash of (`sector_id`, onset `event_time`), laid out in ULID's own
+base-32 encoding so it stays sortable and ULID-shaped. A random id would make two dbt runs over the same onset produce two
+different ids, breaking the merge key the incremental `gold.disturbance` needs. `gold.deployment.deployment_id` is unaffected —
+it isn't built until Phase 6, which decides its own id scheme then. `macros/generate_ulid.sql` is renamed
+`deterministic_id.sql` in doc 05's layout, scoped to `disturbance_id` only.
 
 ```sql
 severity = imbalance_score * (1 + LOG10(GREATEST(population, 10)) / 10)
@@ -254,6 +294,12 @@ Population-weighted, so the same reading over Coruscant outranks one over a barr
 - `imbalance_score > 5.75`
 - Sustained across at least 2 consecutive scans (30 minutes)
 - Cooldown: no new incident for the same `sector_id` within 2 hours
+
+**Late-replayed onset inside an existing cooldown.** A `BURST` drain can insert an onset scan older than an incident already
+recorded for that sector. If the older onset would itself have fired within the existing incident's 2-hour cooldown, the
+recompute does not create a second incident and does not rewrite the existing one's detection fields: it sets
+`cooldown_conflict = true` on the **existing incident's row** and stops. Treat `cooldown_conflict = true` as needing manual
+review, not as a suppressed duplicate.
 
 **Firing rules — report-sourced:**
 

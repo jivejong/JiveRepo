@@ -144,6 +144,7 @@ df = (
 out = (
     df.withColumn("_source_file", F.col("_metadata.file_path"))
       .withColumn("_ingest_ts", F.current_timestamp())
+      .withColumn("_file_modified_ts", F.col("_metadata.file_modification_time"))
       .withColumn("event_time", F.to_timestamp("event_time"))
       .withColumn("schema_version", F.col("schema_version").cast("int"))
       .withColumn("dt", F.to_date("dt"))
@@ -151,7 +152,7 @@ out = (
       .withColumn("payload", F.expr("try_parse_json(payload)"))
       .select("event_id", "source_id", "source_type", "mode", "scan_id", "sector_id",
               "schema_version", "event_time", "is_synthetic", "synthetic_ingest_ts", "payload",
-              "dt", "hh", "_source_file", "_ingest_ts", "_rescued_data")
+              "dt", "hh", "_source_file", "_ingest_ts", "_file_modified_ts", "_rescued_data")
 )
 
 (
@@ -201,6 +202,53 @@ confirms they are there). Run everything below as yourself, the owner of `force`
    about a minute with no error. Running it again is safe and adds nothing while no new file has
    landed.
 5. **Run the first query below**, in the SQL editor or a notebook SQL cell.
+
+### The one-time arrival-timestamp backfill (Phase 4)
+
+Run once, after the notebook change above has ingested at least one new file, and only while Job 1's `ingest_bronze` task is
+not running (pause the job, or run this between scheduled ticks — the MERGE below and the streaming writer must never hold
+open transactions against `force.bronze.events` at the same time).
+
+`_source_file` was stamped from `_metadata.file_path` at ingest time (the notebook above); this MERGE reads the same
+`_metadata.file_path` field from `read_files()` over the same files, so the join predicate is a direct equality with no path
+rewriting. Both sides come from the same Databricks `_metadata` column on the same underlying files, but the exact string this
+workspace's `read_files()` produces for a Unity Catalog volume path has not been checked against a live table here — confirm
+with the dry run below before running the real update:
+
+```sql
+-- Dry run: confirms read_files' _metadata.file_path matches what the notebook stored in _source_file. If matched_files is
+-- less than distinct_source_files, the two differ (for example a dbfs: prefix on one side) and the join predicate below needs
+-- adjusting before the real MERGE runs.
+WITH landed AS (
+  SELECT DISTINCT _metadata.file_path AS file_path, _metadata.file_modification_time AS landed_at
+  FROM read_files('/Volumes/force/raw/telemetry/', format => 'text')
+)
+SELECT
+  (SELECT count(DISTINCT _source_file) FROM force.bronze.events WHERE NOT is_synthetic) AS distinct_source_files,
+  count(DISTINCT l.file_path) AS matched_files
+FROM landed l
+JOIN (SELECT DISTINCT _source_file FROM force.bronze.events WHERE NOT is_synthetic) b ON l.file_path = b._source_file;
+```
+
+Once `matched_files = distinct_source_files`:
+
+```sql
+MERGE INTO force.bronze.events AS tgt
+USING (
+  SELECT DISTINCT _metadata.file_path AS file_path, _metadata.file_modification_time AS landed_at
+  FROM read_files('/Volumes/force/raw/telemetry/', format => 'text')
+) AS src
+ON src.file_path = tgt._source_file AND tgt._file_modified_ts IS NULL AND NOT tgt.is_synthetic
+WHEN MATCHED THEN UPDATE SET tgt._file_modified_ts = src.landed_at;
+```
+
+`read_files()` on a directory path (no wildcard) recurses into the `dt=`/`hh=` subfolders the same way Auto Loader's own
+`cloudFiles` reader already does when pointed at the same top-level `LANDING` path (`/Volumes/force/raw/telemetry`, proven by
+every Phase 2/3 checkpoint ingesting rows from files nested under those subfolders). `read_files()` isn't independently
+exercised against this specific volume in this repo before now, so confirm the dry run above returns a match before running
+the update.
+
+Confirm afterward: `SELECT count(*) FROM force.bronze.events WHERE NOT is_synthetic AND _file_modified_ts IS NULL` is 0.
 
 ### The first query: does `payload` hold real numbers?
 
@@ -342,6 +390,7 @@ warehouse/dbt/
 │   ├── dim_jedi.csv                # prequel roster, SWAPI + AI enrichment
 │   ├── dim_species.csv
 │   ├── dim_starship.csv
+│   ├── fault_injection_<period>.csv   # converted from the Pi's fault_injection.jsonl, one seed per reconciliation period
 │   └── ENRICHMENT_PROVENANCE.md
 ├── models/
 │   ├── silver/
@@ -349,7 +398,7 @@ warehouse/dbt/
 │   │   ├── silver_probe_reading.sql
 │   │   ├── silver_force_report.sql
 │   │   ├── silver_rejects.sql
-│   │   └── silver_device_heartbeat.sql
+│   │   └── silver_source_health.sql
 │   ├── gold/
 │   │   ├── _gold__models.yml
 │   │   ├── gold_sector_baseline.sql
@@ -358,9 +407,9 @@ warehouse/dbt/
 │   │   └── gold_deployment.sql
 │   └── sources.yml
 ├── macros/
-│   ├── extract_payload.sql      # VARIANT on Databricks, JSONB on Postgres
+│   ├── extract_payload.sql      # VARIANT on Databricks; raises on `local` until Phase 8
 │   ├── classify_signature.sql   # deterministic CASE on signed z-scores
-│   └── generate_ulid.sql
+│   └── deterministic_id.sql     # onset-time + sector hash, ULID-shaped (doc 03: disturbance_id only; deployment_id is Phase 6)
 └── tests/
     ├── assert_cooldown_respected.sql
     └── assert_imbalance_in_range.sql
@@ -368,19 +417,26 @@ warehouse/dbt/
 
 ### Portability macro
 
-The one place the two targets genuinely diverge is payload extraction. Isolate it:
+**Phase 4 ships the Databricks branch only** — the Postgres branch, and the rest of the local stack, move to Phase 8 (doc 07's
+own fallback, taken). The macro fails loudly on `local` rather than running untested SQL:
 
 ```sql
 {% macro extract_payload(column, field, type) %}
   {% if target.type == 'databricks' %}
-    CAST({{ column }}:{{ field }} AS {{ type }})
+    CAST(try_variant_get({{ column }}, '$.{{ field }}', '{{ type }}') AS {{ type }})
   {% else %}
-    CAST({{ column }} ->> '{{ field }}' AS {{ type }})
+    {{ exceptions.raise_compiler_error("extract_payload: the Postgres branch is deferred to Phase 8 (doc 07); `local` cannot build silver/gold yet") }}
   {% endif %}
 {% endmacro %}
 ```
 
-Every silver model uses this rather than raw syntax. Keeps the local demo honest.
+(`try_variant_get` rather than a plain `CAST` — a bare `CAST(variant AS DOUBLE)` on a non-numeric value raises under ANSI mode;
+`try_variant_get` returns NULL instead, matching bronze's own "malformed becomes NULL" convention above. Whether a numeric
+*string* value returns NULL or the parsed number is not asserted yet — establish it against Databricks in the scaffolding
+round, not assumed here.)
+
+Every silver model uses this rather than raw syntax. The `local` target, `docker-compose.yml`, `make demo` and the Postgres
+`extract_payload` branch move to Phase 8.
 
 ### Incremental strategy
 
@@ -390,10 +446,12 @@ Silver models are incremental with `merge` on `event_id`:
 {{ config(
     materialized='incremental',
     unique_key='event_id',
-    incremental_strategy='merge',
-    partition_by=['dt']
+    incremental_strategy='merge'
 ) }}
 ```
+
+No `partition_by` — the tables are well under the size where Delta partitioning pays for itself, and partitioning by `dt`
+(ingest date, not event date) would fight the recompute window below rather than help it.
 
 `gold_sector_reading` cannot be a simple append. Replayed events from a `BURST` drain land in
 historical periods, so affected rows must be recomputed. Use a lookback:
@@ -418,11 +476,11 @@ against that limit concurrently**, so a four-task linear job is well within budg
 
 ### Job 1 — `force_pipeline` (every 15 minutes, offset +3 from scan)
 
-| Task              | Type                                          | Depends on      |
-| ----------------- | --------------------------------------------- | --------------- |
-| `ingest_bronze`   | Notebook (Auto Loader)                        | —               |
-| `transform`       | dbt (`dbt build`, catalog=force, schema=gold) | `ingest_bronze` |
-| `publish_serving` | Notebook                                      | `transform`     |
+| Task              | Type                                                                          | Depends on      |
+| ----------------- | -------------------------------------------------------------------------------- | --------------- |
+| `ingest_bronze`   | Notebook (Auto Loader)                                                        | —               |
+| `transform`       | dbt (`dbt build --exclude gold_sector_baseline`, catalog=force, schema=gold) | `ingest_bronze` |
+| `publish_serving` | Notebook                                                                      | `transform`     |
 
 Signature classification and detection live inside the dbt DAG as `gold_sector_reading` and
 `gold_disturbance`, so neither needs its own task.
@@ -441,8 +499,9 @@ schedule. The pull direction is preferred anyway — it keeps the work off the D
 | `rebuild_baseline` | dbt — `dbt run --select gold_sector_baseline --full-refresh` |
 
 Rolling 90-day statistics per planet per channel. **Probe-only** — the model must filter
-`source_type = 'probe'`. Daily rather than per-run because baselines should be stable within a day;
-recomputing them every 15 minutes would make z-scores drift under the detector.
+`source_type = 'probe'`. Excluded from Job 1's `transform` task (above) for exactly this reason: daily rather than per-run
+because baselines should be stable within a day; recomputing them every 15 minutes would make z-scores drift under the
+detector.
 
 ### Job 3 — `maintenance` (weekly)
 
@@ -489,6 +548,21 @@ That's a deliberate property: someone reading the repo sees the actual productio
 ---
 
 ## Phase 3 staging: the desktop broker and the Pi
+
+Committed docs use `<DESKTOP_IP>`, `<PI_IP>`, `<PI_HOSTNAME>` and `<PI_MACHINE_ID>` placeholders — never a real address,
+hostname or machine ID. `edge/tests/test_no_sensitive_addresses.py` guards RFC 1918 addresses unconditionally, and the
+hostname/machine ID against an untracked, per-developer list at `~/.force_balance_pipeline/sensitive-strings.txt`: one literal
+per line, blank lines and lines starting with `#` ignored, e.g.
+
+```
+# ~/.force_balance_pipeline/sensitive-strings.txt
+# example only -- replace with this Pi's real hostname and machine ID
+<the-pi-hostname>
+<the-pi-machine-id>
+```
+
+If that file doesn't exist, the hostname/machine-id half of the guard skips with a visible reason rather than silently
+passing; the address check runs either way.
 
 In Phase 3 the broker (Mosquitto in Docker) and the bridge (workspace mode) run on the developer's Windows desktop, and the Pi
 publishes to the broker over the LAN (both on Ethernet, both with DHCP reservations on the router). There is no TLS: the broker
@@ -671,6 +745,9 @@ out the way a real outage does. To stop early: `sudo nft delete table inet force
 ---
 
 ## Local development stack
+
+**Deferred to Phase 8** (doc 07 deviation note: `dbt build` is proven on `prod` only in Phase 4; `extract_payload`'s Postgres
+branch raises a compiler error until then). The design below is unchanged, just not built yet.
 
 `docker-compose.yml` brings up:
 

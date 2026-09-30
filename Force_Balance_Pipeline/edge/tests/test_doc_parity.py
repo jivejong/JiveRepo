@@ -29,8 +29,9 @@ class SignatureTableParity(unittest.TestCase):
 
     def test_classify_agrees_with_an_independent_evaluation_of_the_doc_table(self):
         grid = [x / 2.0 for x in range(-8, 9)]  # -4 to +4 sigma in 0.5 steps
+        midi_grid = grid + [None]               # None: a STEALTH reading's missing midichlorian channel
         checked = 0
-        for z_midi, z_kyber, z_dark in itertools.product(grid, repeat=3):
+        for z_midi, z_kyber, z_dark in itertools.product(midi_grid, grid, grid):
             for population in (None, 5e8, 1e9, 2e9):
                 for present in (1, 2, 3):
                     expected = _doc03.evaluate(self.rows, "unclassified", z_midi, z_kyber, z_dark, population, present)
