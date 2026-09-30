@@ -276,3 +276,7 @@ the objective.
 Commit at every checkpoint minimum. Incremental commits across weeks read as sustained
 engineering; three large commits read as a dump. Given the recruiting purpose, the commit history
 is itself an artifact.
+
+Every phase ends with an entry in `docs/ENGINEERING-LOG.md` (goal, decisions and why, issues with
+cause/fix/how found, checkpoint result, commit SHAs), committed after that phase's own results
+commit — the results files are the evidence; this file is the narrative connecting them.
