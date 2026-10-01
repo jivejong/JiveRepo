@@ -13,6 +13,13 @@
 # it doesn't exist yet. The Postgres/local-demo stack it depends on is deferred to Phase 8 (doc 07:157-158's own
 # fallback, taken in Phase 4: "the local target ... moves to Phase 8"). Add it as this job's third task once
 # that stack lands, depends_on: transform, same as doc 05's table already shows.
+#
+# timeout_seconds, added Stage 3d: 2026-09-30's quota exhaustion (docs/ENGINEERING-LOG.md, "Stage 3d") left two
+# stuck transform runs sitting for ~28 minutes each before a human cancelled them by hand -- Databricks itself
+# never auto-cancels a run with no timeout configured. 2400s (40 min) is a safety margin over the worst backlog
+# run actually observed (Jong's manual catch-up, ~18-20 min), not a tight fit to it -- long enough that a normal
+# backlog recovery always finishes first, short enough that a genuinely stuck run doesn't sit holding capacity
+# for hours.
 
 resources:
   jobs:
@@ -29,16 +36,16 @@ resources:
       schedule:
         quartz_cron_expression: "0 3,18,33,48 * * * ?"
         timezone_id: UTC
-        # Unpaused 2026-09-30 in the UI, after the manual run on commit 19cdba2 passed (doc 05, "Deploying Job 1
-        # and Job 2"). Kept in sync here so a later `bundle deploy` can't silently re-pause a running job --
-        # bundle deploy always applies whatever this file says, overwriting any pause-state change made by hand
-        # in the workspace UI.
+        # Set back to PAUSED by Jong on 2026-10-01 after the quota exhaustion (docs/ENGINEERING-LOG.md, "Stage
+        # 3d"). Set to UNPAUSED again here, Stage 3d, alongside the task timeouts and Job 2's moved schedule
+        # below -- Jong reviews this diff and redeploys when ready; not deployed by this round itself.
         pause_status: UNPAUSED
       tasks:
         - task_key: ingest_bronze
           notebook_task:
             notebook_path: Force_Balance_Pipeline/ingest/autoloader_bronze.py
             source: GIT
+          timeout_seconds: 2400
         - task_key: transform
           depends_on:
             - task_key: ingest_bronze
@@ -52,6 +59,7 @@ resources:
             warehouse_id: ${var.warehouse_id}
             source: GIT
           environment_key: dbt_env
+          timeout_seconds: 2400
       environments:
         - environment_key: dbt_env
           spec:

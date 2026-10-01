@@ -796,6 +796,24 @@ the repo root (above), read by the bridge process itself at startup -- the sched
 `Unregister-ScheduledTask -TaskName ForceBridge` (prompts for confirmation; stop the running bridge process first if one is
 up, the same way you would before closing a manually-started one).
 
+**No administrator elevation is required.** Checked, Stage 3d, not assumed: the task is registered to run as, and triggered
+at the logon of, the current user (no `-User`/`-Password` targeting a different account, no `RunLevel Highest`) -- both are
+standard-user operations in Windows Task Scheduler. Run the script as yourself, in an ordinary (non-elevated) PowerShell
+window; an elevated one gains nothing here.
+
+Every cmdlet that can fail (`Register-ScheduledTask`, `Start-ScheduledTask`, the `New-ScheduledTask*` builders) now carries
+an explicit `-ErrorAction Stop`, on top of the script's own `$ErrorActionPreference = "Stop"` -- belt and suspenders, so the
+"Registered..." / "Started..." success messages can only print after the thing they describe actually succeeded. The
+running-bridge guard (`Get-RunningBridgeProcesses`) also fails closed now: an earlier version swallowed a failed process-list
+query (`-ErrorAction SilentlyContinue`) and would have silently treated "couldn't check" as "nothing is running" -- exactly
+backwards for a safety check. It now lets that error propagate and stop the script instead.
+
+**Tested:** `infra/desktop/register-bridge-task.Tests.ps1` (Pester 3.4.0, ships with Windows PowerShell 5.1 -- no new
+dependency) exercises the running-bridge guard against a faked process list, never a real one. `Get-RunningBridgeProcesses`
+takes an injectable `-Processes` parameter for exactly this; the script's own top-level registration logic is skipped when
+dot-sourced (`$MyInvocation.InvocationName -eq '.'`), so the test file can load just the functions. Run with
+`Invoke-Pester infra\desktop\register-bridge-task.Tests.ps1`.
+
 ### The Pi
 
 Raspberry Pi OS Lite, 64-bit, on Ethernet, with an SSH login as `<PI_USER>`.
@@ -950,7 +968,7 @@ minutes apart. One incident row — cooldown works" (C4). The commands below are
 **(a) C3 — one injection.** Pick any sector other than Mustafar or Dathomir (doc 04, their dark baseline clamps at 100 and
 can't reach the emergency threshold via a spike — doc 03's own "Resolved, 2026-09-30" note on `gold.disturbance` has the
 unclamped-direction nuance, irrelevant here since this is a spike, not a dip). Fire it a minute or two before a `:00/:15/:30/:45`
-scan boundary, so that boundary is the injection's first (`ramp`) scan:
+scan boundary, so that boundary (`T`) is the injection's first (`ramp`) scan:
 
 ```bash
 python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence
@@ -958,14 +976,21 @@ python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence
 
 (It prompts for the `operator` MQTT password — `getpass`, never echoed, never read from `.env.mqtt`; or set
 `OPERATOR_MQTT_PASSWORD` first.) Defaults apply: `ramp=2, hold=4, decay=3` scans (doc 04:96). **What to note:** the wall-clock
-boundary of the scan right after you send it (that is `onset_event_time`) and the sector you chose.
+boundary of the scan right after you send it (`T`, that is `onset_event_time` *if* `T` itself already qualifies) and the
+sector you chose.
 
-**Timed against Job 1 (`:03/:18/:33/:48`, 3 minutes behind each scan):** doc 04's own backfill texture (the tatooine
-`sith_presence` episode in `edge/backfill_manifest.json`) shows the ramp's own two scans and the hold phase's first two scans
-already exceeding 5.75 — so `sustained_scans >= 2` is typically reached by the **4th scan after injection** (2 ramp + 2 hold),
-not the literal 2nd. If the injection's first scan lands on boundary `T`, expect the qualifying pair at `T+30` and `T+45`,
-and the `gold.disturbance` row to appear after Job 1's `transform` task following `T+45` — i.e., wait for the `:48`-pattern run
-after `T+45`, not the one right after `T`.
+**Timed against Job 1 (`:03/:18/:33/:48`, 3 minutes behind each scan) — corrected, Stage 3d (doc 07's C3 bullet has the same
+correction and the reasoning).** Onset (the first scan actually at or above 5.75) is not a fixed ramp/hold boundary — a real
+run (naboo, 2026-10-01, injected at `T`) crossed threshold on `T+15`, still inside the default 2-scan `ramp`, not only once
+`hold` began. **Under healthy Job 1 operation, expect `sustained_scans = 2` and the `gold.disturbance` row within 1-2 scans
+of onset** — in that real run, onset `T+15` would have given `detected_at` ≈ `T+30` with a prompt pipeline. Watch the actual
+scores (`gold_sector_reading`, not just the countdown) to find onset for your own run rather than assuming a fixed count.
+**Separately, `detected_at` can run much later than onset if Job 1 misses a cycle** — it is `max(event_time)` of the run as
+of whenever `gold_disturbance` last rebuilt (`gold_disturbance.sql`'s own definition), not the onset, so a missed build
+reports whatever was the LAST qualifying scan by the time a build finally ran, with `sustained_scans` to match. This is
+exactly what happened in the real run above: a quota outage (`ingest/job1_quota_watch.sql`; docs/ENGINEERING-LOG.md,
+"Stage 3d") meant no build ran between `T+3` and a manual catch-up at `T+75`, so the row that finally appeared showed
+`sustained_scans = 5` and `detected_at` at the run's last scan, not its second.
 
 ```sql
 -- p4-9, filled in: <inject_sector> = the sector you chose, <inject_ts_utc> = T above (the injection's first scan boundary)
@@ -973,36 +998,58 @@ SELECT sector_id, detected_at, signature, sustained_scans
 FROM force.gold.gold_disturbance
 WHERE sector_id = '<inject_sector>' AND detected_at >= TIMESTAMP '<inject_ts_utc>'
 ORDER BY detected_at LIMIT 1;
--- Expected: 1 row, signature = 'sith_presence', sustained_scans >= 2, detected_at around T+45 (not literally T + 2 scans).
+-- Expected: 1 row, signature = 'sith_presence', sustained_scans >= 2, detected_at within 1-2 scans of onset under a
+-- healthy pipeline -- see phase4_checkpoint.sql's own p4-9 comment for the real 2026-10-01 result (75 minutes, not ~30,
+-- due to a Job 1 outage, not the detection logic).
 ```
 
-**(b) C4 — two injections, 30 minutes apart, same sector.** Same command, fired twice:
+**(b) C4 — two SEPARATE runs, both inside the 2-hour cooldown, same sector.** Redesigned, Stage 3d: the original version
+(two injections 30 minutes apart with their defaults) left how `forcesim` handles a second injection landing mid-episode
+undefined, since the first episode's own `ramp+hold+decay` (2+4+3 = 9 scans, ~2h15m with defaults) was still active when
+the second would fire. This version shortens the first episode with `probe_ctl.py`'s own documented flags (`--hold`,
+`--decay` — `edge/probe_ctl.py`'s docstring and `argparse` block; doc 04:96, "may override them (`ramp`, `hold`, `decay`)"
+— no undocumented flag invented) so it fully completes, with at least one confirmed below-threshold scan, before the
+second injection fires — genuinely two separate runs, not one continued episode:
 
 ```bash
-python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence   # at boundary T
-# ... wait 30 minutes (2 scans) ...
-python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence   # at boundary T+30
+# injection 1, at boundary T
+python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence --hold 2 --decay 1
 ```
 
-**What to note:** both injection times, and whether the second command's own `sent to force/control/probe-01: ...` confirmation
-looks the same as the first's — `probe_ctl.py` validates locally before sending (its own docstring) but doc 04 doesn't say what
-`forcesim` does with a second injection landing on a sector whose first episode (ramp 2 + hold 4 + decay 3 = 9 scans, ~2h15m)
-is still active. If the second injection visibly has no effect, or a different effect than the first, that is itself a real
-finding worth recording here, not a step to silently retry past.
+`--hold 2` is doc 04:114's own documented minimum ("injection holds at least 2 scans, because a disturbance needs 2
+consecutive scans above the threshold"); `--decay 1` is a fast, single-scan return toward baseline, to keep episode 1 as
+short as possible: `ramp` (2, default) + `hold` (2) + `decay` (1) = 5 scans, `T` through `T+60`. **Watch `gold_sector_reading`
+for `T+60`'s own score to confirm it has genuinely dropped below 5.75 before firing the second injection** — doc 04 doesn't
+give the exact decay curve shape, so this is a check, not an assumption. Once confirmed:
+
+```bash
+# injection 2, at boundary T+75 (one scan of margin past the confirmed-below-threshold T+60)
+python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence --hold 2 --decay 1
+```
+
+**What to note:** both injection times, `T+60`'s confirmed below-threshold score (the gap that makes these two runs, not
+one), and episode 2's own onset the same way as C3. Episode 2's onset (`T+75` at the earliest) is well inside episode 1's
+2-hour cooldown (`T+30`-ish detected_at, under a healthy pipeline, +120 minutes = `T+150`ish) — `T+75` is only 45-75 minutes
+after episode 1's own likely `detected_at`, comfortably inside that window.
 
 ```sql
--- p4-10, filled in the same way
+-- p4-10, filled in the same way; <inject_ts_utc> = T (injection 1's own boundary)
 SELECT count(*) AS incidents_in_window
 FROM force.gold.gold_disturbance
 WHERE sector_id = '<inject_sector>'
   AND detected_at >= TIMESTAMP '<inject_ts_utc>' AND detected_at < dateadd(hour, 2, TIMESTAMP '<inject_ts_utc>');
--- Expected: 1 (the cooldown, var('cooldown_hours') = 2, suppresses the second onset -- doc 03, "Late-replayed onset inside
--- an existing cooldown"). Check cooldown_conflict = true on that one row too, same query plus the column.
+-- Expected: 1 (the cooldown, var('cooldown_hours') = 2, suppresses episode 2's onset -- doc 03, "Late-replayed onset
+-- inside an existing cooldown"). Check cooldown_conflict = true on that one row too, same query plus the column --
+-- **open question, not yet resolved (docs/ENGINEERING-LOG.md, "Stage 3d"): doc 03's own wording ties
+-- cooldown_conflict specifically to a REPLAYED late onset, but the current implementation (and its unit test) sets
+-- it for any suppressed onset, including this live, non-replayed one. Treat a `cooldown_conflict = false` result
+-- here as a possible doc/implementation mismatch worth re-checking, not an automatic fail.**
 ```
 
-Run both p4-9 and p4-10 after a Job 1 `transform` run has completed following `T+30`'s own qualifying scans — Job 1's own
-per-run log (`ingest/job1_quota_watch.sql`) or the workspace UI's run history has the exact completion time if the `:48`-style
-schedule isn't precise enough to tell by wall clock alone.
+Run both p4-9 and p4-10 after a Job 1 `transform` run has completed following the relevant onset's own qualifying scans —
+Job 1's own per-run log (`ingest/job1_quota_watch.sql`) or the workspace UI's run history has the exact completion time if
+the `:03/:18/:33/:48` schedule isn't precise enough to tell by wall clock alone, and confirm no run was missed in between
+(the same quota risk C3's real run hit).
 
 ---
 

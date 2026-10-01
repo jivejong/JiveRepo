@@ -11,12 +11,18 @@ Refuses to register -- or, with -StartNow, to start -- a second bridge if one is
 connects with a fixed MQTT client id ("force-bridge", doc 05: "a fixed client id and clean_session=false", so the
 broker queues QoS 1 messages for it while it's down). Two processes sharing that client id would kick each other
 off the broker the moment the second one connects, silently, with no error from either side -- exactly the
-failure mode this check exists to prevent.
+failure mode this check exists to prevent. The check itself fails CLOSED: if the process list can't be read at
+all, this script stops rather than silently treating "couldn't check" as "nothing is running".
 
 No secrets and no real network addresses live in this file or get written into the registered task's own
 definition: the broker address is a required parameter (or $env:BRIDGE_MQTT_HOST), and the bridge's own MQTT
 credentials still come from .env.mqtt at the repo root (doc 05), read by the bridge process itself at startup --
 never passed on this script's command line or the scheduled task's.
+
+No administrator elevation is required or requested. Registering a Scheduled Task that runs as, and is triggered
+at the logon of, the CURRENT user (this script does both -- no -User/-Password targeting a different account, no
+RunLevel Highest) is a standard-user operation; running this script elevated gains nothing and is not supported
+by anything here.
 
 .PARAMETER MqttHost
 The broker's address (a LAN IP or hostname). Required unless $env:BRIDGE_MQTT_HOST is already set. Never given a
@@ -52,6 +58,32 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Test-IsBridgeCommandLine {
+    # The one piece of matching logic the running-bridge guard depends on, pulled out so a test can exercise it
+    # directly without a real process list: true only when the command line actually names bridge.py -- matching
+    # on the executable name alone (python.exe) would false-positive on every other Python process on the box.
+    param([string]$CommandLine)
+    [bool]($CommandLine -and $CommandLine -like "*bridge.py*")
+}
+
+function Get-RunningBridgeProcesses {
+    # -Processes lets a test inject a fake process list; omitted (the real path), it queries Win32_Process live.
+    # No -ErrorAction SilentlyContinue here, on purpose: if the live query itself fails, this must surface as a
+    # terminating error (via $ErrorActionPreference above), not be swallowed into "no bridge found" -- a failed
+    # check is not the same thing as a clean check that found nothing, and only the second one is safe to act on.
+    param([Parameter(ValueFromPipeline)][object[]]$Processes)
+    if (-not $PSBoundParameters.ContainsKey('Processes')) {
+        $Processes = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'"
+    }
+    $Processes | Where-Object { Test-IsBridgeCommandLine $_.CommandLine }
+}
+
+if ($MyInvocation.InvocationName -eq '.') {
+    # Dot-sourced (a test importing the functions above) -- stop here, before any of the real registration logic
+    # below runs or any parameter is validated.
+    return
+}
+
 if (-not $VenvPath) {
     $VenvPath = Join-Path $RepoPath "edge\.venv"
 }
@@ -71,13 +103,6 @@ if (-not (Test-Path $bridgeScript)) {
     throw "bridge.py not found at $bridgeScript -- check -RepoPath (expected the Force_Balance_Pipeline folder)."
 }
 
-function Get-RunningBridgeProcesses {
-    # Matches on the command line, not the executable name alone -- python.exe is shared by every Python task on
-    # the machine, so only a command line that actually names bridge.py counts as a running bridge.
-    Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and $_.CommandLine -like "*bridge.py*" }
-}
-
 $existing = Get-RunningBridgeProcesses
 if ($existing) {
     $pids = ($existing | ForEach-Object { $_.ProcessId }) -join ", "
@@ -88,20 +113,20 @@ if ($existing) {
 
 $action = New-ScheduledTaskAction -Execute $pythonExe `
     -Argument ("`"{0}`" --mqtt-host {1}" -f $bridgeScript, $MqttHost) `
-    -WorkingDirectory $RepoPath
+    -WorkingDirectory $RepoPath -ErrorAction Stop
 
-$trigger = New-ScheduledTaskTrigger -AtLogOn
+$trigger = New-ScheduledTaskTrigger -AtLogOn -ErrorAction Stop
 
 # Restart on failure: up to 999 times, one minute apart, no overall time limit -- a long-running bridge is meant
 # to just keep going. AllowStartIfOnBatteries / DontStopIfGoingOnBatteries: a desktop normally has no battery, but
 # this covers a laptop running the Phase 3 staging setup without the bridge dying when it's unplugged.
 $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
-    -ExecutionTimeLimit (New-TimeSpan -Days 0) -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries
+    -ExecutionTimeLimit (New-TimeSpan -Days 0) -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -ErrorAction Stop
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
     -Description ("Starts the Force Balance Pipeline MQTT bridge (ingest/bridge/bridge.py) at logon; " +
                   "restarts on failure. Registered by register-bridge-task.ps1.") `
-    -Force | Out-Null
+    -Force -ErrorAction Stop | Out-Null
 
 Write-Host "Registered scheduled task '$TaskName'. It will start the bridge at your next logon."
 
@@ -110,7 +135,7 @@ if ($StartNow) {
     if ($existing) {
         throw "A bridge process started between the check above and now -- not starting a second one. Re-run this script."
     }
-    Start-ScheduledTask -TaskName $TaskName
+    Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
     Write-Host "Started '$TaskName' now."
 } else {
     Write-Host "Not started now (pass -StartNow to also start it immediately), or run:"

@@ -123,13 +123,29 @@ WHERE event_time >= TIMESTAMP '<replay_window_start_utc>' AND event_time < TIMES
 -- Expected: n = distinct_event_ids (no duplicates). Compare bronze/silver/gold row counts before and after the NEXT
 -- dbt build runs (ingest/job1_quota_watch.sql's own per-day run log has the run timestamps); expect zero movement.
 
--- (p4-9) sith_presence via the control-topic injector: within 2 scans, a gold.disturbance row for the injected
---        sector with the right signature.
+-- (p4-9) sith_presence via the control-topic injector: a gold.disturbance row for the injected sector with the
+--        right signature, sustained_scans >= 2, detected_at within 2 scans of the ONSET (the first qualifying
+--        scan, found empirically -- doc 07's C3 bullet, "Clarification, Phase 4 Stage 3d") -- not of
+--        <inject_ts_utc> itself, and not guaranteed to be prompt: detected_at is whichever scan was LAST
+--        qualifying as of whenever gold_disturbance actually rebuilt (gold_disturbance.sql's own
+--        `max(event_time) as detected_at`), so a missed Job 1 cycle can push both detected_at and
+--        sustained_scans well past the healthy-pipeline minimum.
 SELECT sector_id, detected_at, signature, sustained_scans
 FROM force.gold.gold_disturbance
 WHERE sector_id = '<inject_sector>' AND detected_at >= TIMESTAMP '<inject_ts_utc>'
 ORDER BY detected_at LIMIT 1;
--- Expected: 1 row, signature = 'sith_presence', sustained_scans >= 2, detected_at within 2 scans of <inject_ts_utc>.
+-- Expected: 1 row, signature = 'sith_presence', sustained_scans >= 2, detected_at within 2 scans of the onset
+-- under healthy Job 1 operation (not a fixed offset from <inject_ts_utc> -- see above).
+--
+-- Real result, 2026-10-01 (Stage 3d): naboo, injected 02:59Z (T = 03:00Z boundary). Onset (first scan >= 5.75)
+-- was 03:15Z (T+15, score 6.729 -- inside the default 2-scan `ramp`, not only once `hold` began; onset is found
+-- empirically, per sector, not assumed from ramp/hold scan counts). A healthy pipeline would have shown
+-- detected_at ~03:30Z, sustained_scans=2. The actual row: detected_at = 2026-10-01T04:15:01.650Z,
+-- sustained_scans = 5 -- 75 minutes after T, not ~30 -- because Job 1's 03:18Z and 03:33Z runs both failed
+-- (RESOURCE_EXHAUSTED, docs/ENGINEERING-LOG.md "Stage 3d"), so no build incorporated the injection until a
+-- manual catch-up run well after the signature had already decayed back down (04:30Z, score 3.867). The row is
+-- correct (signature, sustained_scans, the onset's own scan_id) -- the pass/fail criterion held; only the
+-- wall-clock latency was abnormal, from infrastructure, not detection logic.
 
 -- (p4-10) Cooldown: two control-topic injections on the same sector 30 minutes apart produce one incident row, not
 --        two -- the singular test (assert_cooldown_respected) already covers this structurally; this is the same

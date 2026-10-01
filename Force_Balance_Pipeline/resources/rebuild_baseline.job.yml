@@ -1,11 +1,22 @@
-# Job 2 -- doc 05, "Job topology". Daily, 03:00 UTC -- a quiet hour for this project (no real users, no
-# timezone-of-record; picked as a low-traffic overnight UTC slot, consistent with doc 05's existing choice, and
-# clear of Job 1's continuous :03/:18/:33/:48 cadence so the two never overlap).
+# Job 2 -- doc 05, "Job topology". Daily, 03:10 UTC -- a quiet hour for this project (no real users, no
+# timezone-of-record; picked as a low-traffic overnight UTC slot).
+#
+# Schedule corrected, Stage 3d: originally 03:00 UTC, on the mistaken claim that this "never overlaps" Job 1's
+# :03/:18/:33/:48 cadence -- that claim was never actually checked. 03:00 is only 3 minutes before Job 1's own
+# :03 run, so the two jobs' serverless compute requests land close enough together to leave no real safety
+# margin -- checked directly (system.lakeflow.job_run_timeline) for 2026-09-30's quota-exhaustion day
+# (docs/ENGINEERING-LOG.md, "Stage 3d"): that specific day's Job 2 run (03:00-03:02) finished just before Job 1's
+# (03:03-03:07) started, so they were adjacent rather than literally overlapping that one time, not proof they
+# never would on a slower day. 03:10 sits squarely in the middle of the 15-minute gap between Job 1's :03 and
+# :18 runs -- clear of both under normal (4-6 minute) run durations, with real margin on either side.
 #
 # Separate job, not a task bundled into Job 1: gold_sector_baseline is explicitly excluded from Job 1's
 # transform task (doc 05:546-548, "recomputing them every 15 minutes would make z-scores drift under the
 # detector") -- keeping it in its own job makes that exclusion visible in the job topology itself, not just in
 # a dbt --exclude flag someone has to go read.
+#
+# timeout_seconds, added Stage 3d: same reasoning as force_pipeline.job.yml -- a stuck run should auto-cancel,
+# not sit holding capacity until a human notices.
 
 resources:
   jobs:
@@ -19,10 +30,11 @@ resources:
         git_provider: gitHub
         git_branch: main
       schedule:
-        quartz_cron_expression: "0 0 3 * * ?"
+        quartz_cron_expression: "0 10 3 * * ?"
         timezone_id: UTC
-        # Unpaused 2026-09-30 in the UI, after Job 1's manual run on commit 19cdba2 passed (doc 05, "Deploying
-        # Job 1 and Job 2"). Kept in sync here so a later `bundle deploy` can't silently re-pause a running job.
+        # Set back to PAUSED by Jong on 2026-10-01 after the quota exhaustion (docs/ENGINEERING-LOG.md, "Stage
+        # 3d"). Set to UNPAUSED again here, Stage 3d, alongside the moved schedule and the task timeout below --
+        # Jong reviews this diff and redeploys when ready; not deployed by this round itself.
         pause_status: UNPAUSED
       tasks:
         - task_key: rebuild_baseline
@@ -36,6 +48,7 @@ resources:
             warehouse_id: ${var.warehouse_id}
             source: GIT
           environment_key: dbt_env
+          timeout_seconds: 2400
       environments:
         - environment_key: dbt_env
           spec:

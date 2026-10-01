@@ -162,16 +162,32 @@ power-loss test".
   appears with the correct `signature` and `sustained_scans >= 2`. **Depends on Job 1's 15-minute rebuild
   actually running** (step 9) — a manually-triggered `dbt build` does not exercise it.
 
-  **Clarification, Phase 4 Stage 3c (doc 05, "Runbook: C3/C4"): "two scans" counts from the first scan actually AT
-  emergency level, not from when the injection command is sent — not a deviation, since `sustained_scans >= 2`
-  itself is unchanged; only the wall-clock expectation needed correcting.** An injection's `ramp` phase (2 scans
-  by default) is a buildup, not yet guaranteed to clear the threshold; doc 04 is explicit that it's specifically
-  the `hold` phase that does: "injection holds at least 2 scans, because a disturbance needs 2 consecutive scans
-  above the threshold" (04:114). With the default `ramp=2, hold=4`, the earliest the signature is actually at
-  emergency level is the 3rd scan after injection (hold's own first scan), so the 2 consecutive qualifying scans
-  land on the 3rd and 4th — about 45 minutes after injection, not 30. Job 1's own `+3` minute offset (doc 05) adds
-  up to one more run's latency on top before the row is actually visible in `gold.disturbance` — so budget roughly
-  45-50 minutes end to end, not a literal 30.
+  **Clarification, Phase 4 Stage 3d: "two scans" counts from the onset scan (the first scan actually at or above
+  the emergency threshold), not from when the injection command is sent or a fixed ramp/hold boundary — not a
+  deviation, since `sustained_scans >= 2` itself is unchanged; only the wall-clock expectation needed
+  correcting.** `gold_disturbance.sql`'s own `detected_at` is `max(event_time)` of the run — the run's *last*
+  qualifying scan as of whenever that build happened to run, not the onset — so how long after injection it
+  appears depends on two independent things: where onset actually falls, and how promptly Job 1 rebuilds after
+  it.
+
+  **Where onset falls is not a fixed rule.** An earlier draft of this note assumed the `ramp` phase (2 scans by
+  default) never clears the threshold and only `hold` does (doc 04:114's "injection holds at least 2 scans,
+  because a disturbance needs 2 consecutive scans above the threshold" was read as implying this). A real C3 run
+  (naboo, `sith_presence`, injected 2026-10-01 02:59Z, onset boundary `T` = 03:00Z) showed otherwise: `T`'s own
+  scan (03:00Z) scored 3.981, under threshold, but `T+15` (03:15Z, still inside the default 2-scan `ramp`) already
+  scored 6.729, over it — doc 04:73's own "ramp toward `baseline + (4 to 7) * sigma` over 2-4 scans" reaches full
+  severity by ramp's last scan here, not only once `hold` begins. Onset is therefore found empirically, per
+  injection and per sector's own baseline, not assumed from `ramp`/`hold` scan counts. Under prompt Job 1
+  operation, expect the 2 consecutive qualifying scans (and so the `gold.disturbance` row) within 1-2 scans of
+  onset — here, that would have been ~03:30Z, 30 minutes after `T`.
+
+  **How promptly Job 1 rebuilds can dominate the latency.** The same real run's `detected_at` was actually
+  `2026-10-01T04:15:01.650Z` — 75 minutes after `T`, not ~30 — because Job 1's 03:18Z and 03:33Z runs both failed
+  (`RESOURCE_EXHAUSTED`, doc 05 "Stage 3d: quota") and no build ran again until a manual catch-up well after the
+  injection's `decay` phase had already ended. That delayed build saw the full, already-completed 5-scan run
+  (03:15Z-04:15Z) at once and reported its last scan and `sustained_scans = 5`, not the 2 that would have shown
+  under a healthy pipeline. This is real, demonstrated latency from an infrastructure outage, not a property of
+  the detection logic itself — see `docs/ENGINEERING-LOG.md`, "Stage 3d," for the full build-timeline evidence.
 - Trigger two disturbances in one sector 30 minutes apart. One incident row — cooldown works. **Resolved, 2026-09-30:**
   `gold.disturbance`'s cooldown now walks runs per sector with a recursive CTE, comparing each one against the last
   *accepted* incident rather than just the immediately preceding one (a `LAG()`-based bug that could wrongly suppress a

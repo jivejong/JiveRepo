@@ -692,6 +692,127 @@ newer one connects. `-MqttHost` has no default; the bridge's own MQTT credential
 read by the bridge process itself, never passed on the task's command line. Not registered or run this round --
 written, not deployed, per this round's own scope.
 
+### Stage 3d: close Stage 3 — C3's real result, the quota outage, C4's redesign
+
+**C3's real result, verbatim (naboo, `gold_sector_reading`, 2026-10-01 02:30Z-06:00Z):**
+
+| event_time | score | z_dark | signature |
+|---|---|---|---|
+| 02:30Z | 1.627 | 0.946 | unclassified |
+| 02:45Z | 2.609 | 1.778 | civil_unrest |
+| 03:00Z | 3.981 | 2.777 | civil_unrest |
+| 03:15Z | **6.729** | 4.442 | sith_presence |
+| 03:30Z | 6.292 | 3.943 | sith_presence |
+| 03:45Z | 6.311 | 3.943 | sith_presence |
+| 04:00Z | 6.303 | 3.943 | sith_presence |
+| 04:15Z | 6.315 | 3.943 | sith_presence |
+| 04:30Z | 3.867 | 2.278 | unclassified |
+| 04:45Z-05:45Z | falling further | — | unclassified |
+
+Injected 02:59Z, onset boundary `T` = 03:00Z. **Onset** (first scan `>= 5.75`) was **03:15Z** (`T+15`, score 6.729) — inside
+the default 2-scan `ramp`, not only once `hold` began; this disproves an earlier assumption (Stage 3c) that onset is always
+`hold`'s own first scan. The 5 consecutive qualifying scans run 03:15Z-04:15Z; 04:30Z is the first scan back under
+threshold. `gold_disturbance.sql`'s own `detected_at = max(event_time)` of the run, **not** the onset — `onset_event_time`
+only survives internally (it's what `scan_id` in the final output is aliased from: `onset_scan_id as scan_id`), so the
+exposed row's `scan_id` is the ONSET's scan, while its `detected_at` is the LAST qualifying scan's time — two different
+scans' fields on one row, worth knowing when reading one.
+
+**The real row:** `detected_at = 2026-10-01T04:15:01.650Z`, `sustained_scans = 5` — 75 minutes after `T`, not the ~30 a naive
+"within two scans" reading would suggest. The gap splits cleanly into two causes, not one: ~15 minutes is the onset delay
+itself (ramp doesn't clear threshold on its very first scan here), and the other ~60 minutes is **Job 1 simply not running**
+— see the quota outage below. A healthy pipeline, rebuilding every cycle, would have shown `detected_at` ≈ 03:30Z,
+`sustained_scans = 2`. Doc 07's C3 bullet and doc 05's C3/C4 runbook are both corrected to match (the runbook's own two
+paragraphs previously disagreed with each other, `T+45` vs `T+30`); `phase4_checkpoint.sql`'s p4-9 carries the full result.
+
+**The quota outage, as a first data point, not a conclusion.** `system.lakeflow.job_run_timeline`, 2026-10-01 02:50Z-05:00Z:
+
+| job | run | result | window |
+|---|---|---|---|
+| rebuild_baseline (Job 2) | ONETIME? no, scheduled | SUCCEEDED | 03:00-03:02Z |
+| force_pipeline (Job 1) | scheduled | SUCCEEDED | 03:03-03:07Z (4m) |
+| force_pipeline | scheduled | **CANCELLED** | 03:18-03:46Z (28m before cancel) |
+| force_pipeline | scheduled | **CANCELLED** | 03:33-03:55Z |
+| force_pipeline | scheduled | **CANCELLED** | 03:48-03:54Z |
+| force_pipeline | ONETIME (manual) | SUCCEEDED | 13:05-13:25Z (20m, the backlog catch-up) |
+
+Task log for the cancelled runs: `"Request to create a cluster failed ... RESOURCE_EXHAUSTED: You've hit the limit for
+serverless compute for free usage."` All scheduled Job 1 runs 00:03Z-03:03Z that day had already succeeded cleanly in
+4-6 minutes each; the failures start exactly at 03:18Z. Jong's own note: that day "also had heavy development use (many
+dbt builds and full refreshes)" — a confounded day, not a clean Job-1-alone measurement. **Recorded here as the first
+quota-measurement-week data point (`ingest/job1_quota_watch.sql`), not as a diagnosis** — a single event, on a day with
+known extra load, isn't enough to conclude Job 1's own 15-minute cadence is unsustainable on its own.
+
+**Cadence recommendation: keep 15 minutes, provisionally.** Reasons: (1) only one outage, on a day independently described
+as heavy-dev-load, so there's no clean evidence yet that 15 minutes alone exceeds the free-tier quota under ordinary
+conditions; (2) the checkpoint criteria (doc 07's own C3 "within two scans") and the whole near-real-time design intent
+both assume 15 minutes — halving to 30 would roughly double C3/C4's detection latency (two scans at 30-minute cadence is
+~60 minutes of wall clock, not ~30) as a standing cost, not a one-time one; (3) the actual fix for *this* outage is
+resilience (a timeout so a stuck run doesn't sit holding capacity, and removing Job 2's own contention with Job 1 — both
+below), not necessarily a slower cadence. **Revisit after the measurement week**: if quota exhaustion recurs on a day
+*without* unusual concurrent dev load, that is the trigger to drop to 30 minutes, not this one data point alone.
+
+**Resilience changes, `resources/*.job.yml` (not yet deployed — `pause_status: UNPAUSED`, for Jong to review and
+redeploy):**
+- `timeout_seconds: 2400` (40 minutes) on every task in both jobs. The two cancelled runs above sat for ~28 minutes each
+  before a human cancelled them by hand; Databricks never auto-cancels a run with no timeout configured. 2400s is a real
+  margin over the worst backlog run actually observed (the 20-minute catch-up), not a tight fit to it.
+- Job 2 moved from 03:00 UTC to **03:10 UTC**. The original choice was justified as "clear of Job 1's cadence so the two
+  never overlap" — never actually checked, and wrong: 03:00 is only 3 minutes before Job 1's own `:03` run. The two runs
+  that day were adjacent (Job 2 finished 03:02Z, Job 1 started 03:03Z), not literally overlapping that one time, but with
+  no margin at all. 03:10 sits in the middle of the 15-minute gap between Job 1's `:03` and `:18` runs.
+
+**`gold_disturbance`, a proposed cost reduction — not built.** The literal idea floated ("recompute only sectors with new
+readings since the last build") **would save close to nothing**: the probe sweeps all 60 planets every single scan, so
+under normal operation every sector has a fresh reading every 15-minute cycle — there is no "sectors with nothing new" set
+to skip in the first place. The real cost driver is total row count (530,000+ and growing ~5,760 rows/day), not which
+sectors have fresh data. A genuinely effective version bounds the recompute *window* per sector instead — e.g. the last 7
+days, comfortably beyond the 2-hour cooldown and every documented episode's own ramp+hold+decay length — which would cut
+the rows `gold_disturbance` rescans by roughly 90%+ (≈40,000 vs. 530,000+) and keep that cost constant as history grows,
+rather than unbounded. **Not built, because it reintroduces exactly the correctness risk the current full-rescan design
+was built to avoid** (`gold_disturbance.sql`'s own header: a bounded window "risks cutting a real run in half") — a window
+needs to be proven wide enough for every real case before it's safe, which this round's scope didn't include doing.
+
+**C4 redesigned** (doc 05, "Runbook: C3/C4"): the original two-injections-30-minutes-apart design left undefined what
+`forcesim` does when a second injection lands mid-episode, since the first episode's own default `ramp+hold+decay` (9
+scans, ~2h15m) was still active 30 minutes in. The new version uses `probe_ctl.py`'s own documented `--hold`/`--decay`
+flags (`edge/probe_ctl.py`; doc 04:96, "may override them") to shorten episode 1 to 5 scans (`ramp` 2 default + `--hold 2`,
+doc 04:114's own documented minimum + `--decay 1`), confirms a below-threshold scan before firing episode 2, and fires it
+at `T+75` — comfortably inside episode 1's 2-hour cooldown, with a genuine gap between the two runs instead of one
+continued episode.
+
+**`cooldown_conflict`: a real doc 03 / implementation mismatch, not resolved this round.** Doc 03's own wording ("Late-
+replayed onset inside an existing cooldown... A `BURST` drain can insert an onset scan older than an incident already
+recorded... it sets `cooldown_conflict = true`") describes a REPLAYED, out-of-order onset specifically. The actual
+implementation (and the Stage 3a unit test, `unit_test_disturbance_cooldown_suppresses_a_second_onset_and_flags_the_first`)
+sets `cooldown_conflict = true` for *any* suppressed onset, replayed or not — including a live, in-order second injection
+like C4's own. The underlying computation is identical either way (does a later onset fall inside an earlier incident's
+cooldown?), so this may just be the doc describing its motivating example without meaning to exclude the general case —
+but doc 03's literal words do name the replay scenario specifically, so this is a genuine ambiguity, not a clear-cut doc
+violation. Per this round's own instruction (align with doc 03 unless ambiguous, in which case propose wording and stop):
+**stopping here, not changing code or the test.** Proposed wording, either direction, for a future round to pick:
+- **(a) Narrow doc 03 to match a narrower implementation** (would need an actual behavior change): "`cooldown_conflict`
+  is set only when the suppressed onset arrived via a replay (`is_replayed = true` on its own constituent rows), not for
+  an in-order live onset that happens to fall inside an existing cooldown."
+- **(b) Broaden doc 03 to match the current, general implementation** (doc-only change, no behavior change; this round's
+  preference, not a decision): "`cooldown_conflict` is set whenever ANY later onset for the same sector — replayed or
+  live — would have fired inside an existing incident's cooldown. The replayed case is the one that needs it most (a
+  late-arriving onset can't be told apart from a genuinely new incident without it), but the flag's meaning doesn't
+  depend on how the onset arrived."
+
+**`register-bridge-task.ps1` hardened.** `-ErrorAction Stop` added explicitly to every cmdlet that can fail (on top of the
+existing `$ErrorActionPreference`), so a success message can only print after the thing it describes actually succeeded.
+Checked whether registering an at-logon, run-as-current-user Scheduled Task needs elevation: it doesn't (no `-User`
+targeting another account, no `RunLevel Highest`) — documented in doc 05 rather than guessed at. Found and fixed a real
+safety bug while reviewing: the running-bridge guard's `Get-CimInstance` call had `-ErrorAction SilentlyContinue`, which
+would have silently treated a *failed* process-list query the same as a *successful* query that found nothing running --
+backwards for a safety check whose whole job is refusing to proceed when it can't be sure. Refactored the guard into an
+injectable `Get-RunningBridgeProcesses -Processes <list>` plus a pure `Test-IsBridgeCommandLine`, with the script's main
+body skipped when dot-sourced, so `infra/desktop/register-bridge-task.Tests.ps1` (Pester 3.4.0, pre-installed with Windows
+PowerShell 5.1, no new dependency) can exercise the real matching logic against a faked process list. Two mutations
+checked (match-on-executable-name-alone, and the same with the empty/null case) — the first broke 3 of 7 tests as
+expected; the second (dropping the now-redundant `-and $CommandLine` null guard) broke none, since PowerShell's `-like`
+already handles `$null` safely on its own — the guard is kept for clarity, not because a test can prove it's load-bearing.
+
 ## Open items
 
 | Item | Status |
@@ -708,6 +829,10 @@ written, not deployed, per this round's own scope.
 | `gold_disturbance` cooldown uses `LAG()`, not a last-accepted-incident walk | **Resolved, 2026-09-30.** See "Stage 3a: cooldown rewrite," below. |
 | 45 non-emergency `gold_disturbance` rows can't be split into ambient-episode-driven vs. pure-noise | The label lives in `edge/backfill_texture.json`'s per-scan episode data, not joined against `gold_disturbance`. Doc 03's own 9-noise / 32-ambient design-time split (0.7/week target) can't be independently re-derived from gold alone yet. |
 | `publish_serving` task not built | Waits on the Postgres/local demo stack (Phase 8). Add to Job 1, `depends_on: transform`, once it exists (doc 05). |
+| `cooldown_conflict` scope: replayed onsets only (doc 03's literal words) or any suppressed onset (current implementation) | Genuine ambiguity, not resolved — see "Stage 3d," above, for both proposed wordings. Needs a decision before changing either the doc or the code/test. |
+| `gold_disturbance`'s full-history rescan, cost growing with total row count (530,000+ and climbing) | A bounded recompute window (e.g. 7 days) would cut this ~90%+ and keep it constant, but risks cutting a real run in half if the window isn't proven wide enough first. Proposed, not built — see "Stage 3d," above. |
+| Job 1 cadence (15 vs. 30 minutes) | Kept at 15 minutes provisionally after one quota-exhaustion event on a day with confounding heavy dev load — not enough evidence alone to justify halving it. Revisit after the quota measurement week (`ingest/job1_quota_watch.sql`) if exhaustion recurs on an otherwise-ordinary day. |
+| `resources/*.job.yml`'s resilience changes (task timeouts, Job 2's moved schedule, `pause_status: UNPAUSED`) | Written, not deployed — Jong reviews and runs `databricks bundle deploy`. |
 
 ## Lessons (beyond this project)
 
