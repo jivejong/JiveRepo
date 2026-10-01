@@ -29,7 +29,11 @@ resources:
       schedule:
         quartz_cron_expression: "0 3,18,33,48 * * * ?"
         timezone_id: UTC
-        pause_status: PAUSED
+        # Unpaused 2026-09-30 in the UI, after the manual run on commit 19cdba2 passed (doc 05, "Deploying Job 1
+        # and Job 2"). Kept in sync here so a later `bundle deploy` can't silently re-pause a running job --
+        # bundle deploy always applies whatever this file says, overwriting any pause-state change made by hand
+        # in the workspace UI.
+        pause_status: UNPAUSED
       tasks:
         - task_key: ingest_bronze
           notebook_task:

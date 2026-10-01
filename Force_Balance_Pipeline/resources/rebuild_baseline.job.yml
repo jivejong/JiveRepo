@@ -21,7 +21,9 @@ resources:
       schedule:
         quartz_cron_expression: "0 0 3 * * ?"
         timezone_id: UTC
-        pause_status: PAUSED
+        # Unpaused 2026-09-30 in the UI, after Job 1's manual run on commit 19cdba2 passed (doc 05, "Deploying
+        # Job 1 and Job 2"). Kept in sync here so a later `bundle deploy` can't silently re-pause a running job.
+        pause_status: UNPAUSED
       tasks:
         - task_key: rebuild_baseline
           dbt_task:

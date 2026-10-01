@@ -169,6 +169,28 @@ class JournaldLoggingTests(unittest.TestCase):
             p._on_disconnect(p.client, None, None, "keepalive")
         self.assertIn(f"probe: MQTT disconnected: {p.disconnect_reason}", buf.getvalue())
 
+    def test_two_disconnect_callbacks_for_the_same_drop_print_only_one_line(self):
+        # paho can call on_disconnect twice for one real disconnection (a keepalive timeout, seen on the Pi).
+        # Only the first should log; the second finds the link already down and says nothing.
+        p = publisher()
+        connect(p)
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            p._on_disconnect(p.client, None, None, "keepalive")
+            p._on_disconnect(p.client, None, None, "keepalive")
+        self.assertEqual(buf.getvalue().count("probe: MQTT disconnected:"), 1)
+
+    def test_two_full_connect_disconnect_cycles_print_two_lines(self):
+        # A genuine second disconnection, after a real reconnect in between, is not a duplicate -- it must log.
+        p = publisher()
+        connect(p)
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            p._on_disconnect(p.client, None, None, "keepalive")
+            connect(p)
+            p._on_disconnect(p.client, None, None, "keepalive")
+        self.assertEqual(buf.getvalue().count("probe: MQTT disconnected:"), 2)
+
 
 class PublishTests(unittest.TestCase):
     def setUp(self):

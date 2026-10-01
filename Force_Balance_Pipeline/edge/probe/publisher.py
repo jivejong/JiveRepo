@@ -76,12 +76,19 @@ class MqttPublisher:
             client.subscribe(self.control_topic, qos=1)
 
     def _on_disconnect(self, client, userdata, disconnect_flags=None, reason_code=None, properties=None):
+        # paho can call on_disconnect more than once for the same disconnection (seen via a keepalive timeout on
+        # the Pi, journalctl showed two "MQTT disconnected" lines a split second apart with no connect between
+        # them). was_connected is true only the FIRST time -- a second callback for the same already-down state
+        # finds _connected already False and prints nothing. _on_connect's own self._connected = True on success
+        # is what re-arms this for the NEXT disconnection; no separate reset is needed.
         reason = f"client_disconnected:{reason_code}"
         with self._lock:
+            was_connected = self._connected
             self._connected = False
             self.disconnect_reason = reason
         self._forget_inflight()
-        print(f"probe: MQTT disconnected: {reason}", file=sys.stderr, flush=True)
+        if was_connected:
+            print(f"probe: MQTT disconnected: {reason}", file=sys.stderr, flush=True)
 
     def _on_publish(self, client, userdata, mid, reason_code=None, properties=None):
         # Runs on paho's network thread, sometimes while paho's own internal lock is held (_handle_pubackcomp calls this directly).

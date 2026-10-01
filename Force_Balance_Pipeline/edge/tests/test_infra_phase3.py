@@ -35,11 +35,18 @@ class LanBrokerTests(unittest.TestCase):
     def test_anonymous_access_is_off_and_credentials_and_acl_files_are_set(self):
         self.assertEqual(self.conf["allow_anonymous"], ["false"])
         self.assertEqual(self.conf["password_file"], ["/mosquitto/secrets/passwd"])
-        self.assertEqual(self.conf["acl_file"], ["/mosquitto/config/acl"])
+        self.assertEqual(self.conf["acl_file"], ["/mosquitto/secrets/acl"])
 
     def test_the_password_file_is_outside_the_repository_mount(self):
         self.assertNotIn("/mosquitto/config", self.conf["password_file"][0])
         self.assertFalse((INFRA / "mosquitto" / "passwd").exists())
+
+    def test_the_acl_file_is_deployed_from_a_volume_copy_not_the_bind_mount(self):
+        # The ACL's committed source (infra/mosquitto/acl, asserted below to still exist and hold no secrets) is
+        # not what Mosquitto actually reads -- acl_file points at the volume copy, mirroring the password file's
+        # own split between committed/mounted source and the path Mosquitto is told to open.
+        self.assertNotIn("/mosquitto/config", self.conf["acl_file"][0])
+        self.assertTrue((INFRA / "mosquitto" / "acl").exists())
 
     def test_it_declares_one_plain_listener_and_no_tls_yet(self):
         self.assertEqual(self.conf["listener"], ["1883"])
@@ -294,10 +301,15 @@ class DocParityTests(unittest.TestCase):
         self.assertIn("-v force-mosquitto-secrets:/mosquitto/secrets:ro", self.doc5)
         self.assertNotIn("may warn that the password file", self.doc5)                # the old, unverified hedge
 
-    def test_doc_05_flags_the_acl_group_warning_as_open_not_fixed(self):
-        self.assertIn("**OPEN:**", self.doc5)
-        self.assertIn("future versions will refuse to load this file", self.doc5)
-        self.assertNotIn('-v force-mosquitto-secrets:/mosquitto/config', self.doc5)    # the acl fix itself is not applied
+    def test_doc_05_copies_the_acl_file_into_the_same_docker_volume_as_the_password_file(self):
+        # Resolved, Phase 4 Stage 3b: the acl group-ownership warning got the password file's own volume-copy
+        # fix, not left open -- mirrors test_doc_05_copies_the_password_file_into_a_docker_volume_not_a_windows_
+        # bind_mount above, for the acl file instead of the password file.
+        self.assertIn("cp /fromrepo/acl /to/acl", self.doc5)
+        self.assertIn("chown mosquitto:mosquitto /to/passwd /to/acl", self.doc5)
+        self.assertIn("chmod 0600 /to/passwd /to/acl", self.doc5)
+        self.assertIn("future versions will refuse to load this file", self.doc5)      # why -- the warning's own text, kept
+        self.assertNotIn("**OPEN:**", self.doc5)                                       # no longer open
 
     def test_doc_05_names_docker_desktop_backend_as_the_lan_exposure_and_says_never_block(self):
         # tested on the desktop (Step 3): two enabled Private-profile Allow rules for Docker Desktop Backend overrode the

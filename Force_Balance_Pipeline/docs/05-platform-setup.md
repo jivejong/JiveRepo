@@ -580,18 +580,31 @@ warehouse id). The YAML in the repo is what's deployed — no workspace-UI edits
 itself pulls from Git rather than a workspace copy (below): someone reading the repo sees the actual deployed
 configuration.
 
-**Both jobs were created PAUSED** (`schedule.pause_status: PAUSED`) and stay that way until unpaused by hand in the
-workspace UI or via `databricks jobs update` — deploying or redeploying the bundle does not change an existing job's
-pause state. **The manual notebook run (`ingest_bronze`'s notebook, run by hand per "Auto Loader ingestion" above) is
-retired once Job 1 is unpaused** — from that point, ingestion, transform, and (once it exists) publish happen on Job
-1's own schedule, and the manual run is no longer part of the normal operating path. Job 1's first manual trigger
-(Phase 4 Stage 3a, 2026-09-30) ran clean end to end: `ingest_bronze` 83.6s, `transform` 187.9s, both `SUCCESS`, against
-commit `d923a7c8` (the last commit on `main` at trigger time — Stage 3a's own changes, including this section, landed
-in a later commit and were not yet on `main` when this run fired). Bronze, silver and gold row counts all moved by
-the identical +4,860 (no rows lost or gained at any layer); `gold_disturbance` gained 2 new rows from that real
-backlog. A second `transform` run against the same data (`dbt build --exclude gold_sector_baseline`, run locally,
-same command the task runs) added zero rows at every layer, confirming the second-run-does-nothing property doc 07's
-Phase 4 checkpoint asks for.
+**Both jobs were created PAUSED** (`schedule.pause_status: PAUSED`), then unpaused by hand in the workspace UI on
+2026-09-30 (Phase 4 Stage 3b) after Job 1's manual run on commit `19cdba2` passed.
+
+**Warning, corrected from an earlier, wrong claim in this section:** `resources/*.job.yml` sets `pause_status`
+explicitly, and `databricks bundle deploy` reconciles the *entire* job definition to match the file on every
+deploy — it does **not** leave a hand-set pause state alone. An earlier draft of this section claimed the
+opposite ("deploying or redeploying the bundle does not change an existing job's pause state"); that was never
+actually tested, and is only true for a job whose YAML omits `pause_status` altogether. Because this project's
+YAML sets it explicitly, redeploying with a stale `PAUSED` value in the file **would silently re-pause a job an
+operator had already turned on by hand** — the exact failure mode this warning exists to prevent. **Both files now
+say `UNPAUSED`, matching the live state.** Whoever changes either job going forward must update `pause_status` in
+the YAML to match whatever the live job's state should be *before* redeploying, not rely on the workspace UI's
+current setting surviving a deploy.
+
+**The manual notebook run (`ingest_bronze`'s notebook, run by hand per "Auto Loader ingestion" above) is retired
+now that Job 1 is unpaused** — ingestion, transform, and (once it exists) publish happen on Job 1's own schedule;
+do not run the ingestion notebook by hand while Job 1 is unpaused, since both would then be writing to bronze on
+overlapping schedules. Job 1's first manual trigger (Phase 4 Stage 3a, 2026-09-30) ran clean end to end:
+`ingest_bronze` 83.6s, `transform` 187.9s, both `SUCCESS`, against commit `d923a7c8` (the last commit on `main` at
+trigger time — Stage 3a's own changes, including this section, landed in a later commit and were not yet on
+`main` when this run fired). Bronze, silver and gold row counts all moved by the identical +4,860 (no rows lost or
+gained at any layer); `gold_disturbance` gained 2 new rows from that real backlog (see `docs/ENGINEERING-LOG.md`,
+"Stage 3b," for what they are). A second `transform` run against the same data (`dbt build --exclude
+gold_sector_baseline`, run locally, same command the task runs) added zero rows at every layer, confirming the
+second-run-does-nothing property doc 07's Phase 4 checkpoint asks for.
 
 ### Job 3 — `maintenance` (weekly)
 
@@ -684,12 +697,15 @@ e2-micro come together in a later phase. Nothing below is committed with a real 
 
    Mosquitto 2.1.2 refuses to start against a password file mounted straight from Windows (`Unable to open pwfile`, a crash
    loop): the container's `mosquitto` user cannot read a file the Windows bind mount hands it as root-owned. Copy the password
-   file into a Docker volume it can read instead, before the first run and again whenever a password changes:
+   file into a Docker volume it can read instead, before the first run and again whenever a password changes. **Resolved,
+   Phase 4 Stage 3b: the ACL file (`infra/mosquitto/acl`, committed, no secrets) gets the identical treatment in the same
+   command** — Mosquitto 2.1.2 raises the same class of warning on a Windows-bind-mounted `acl_file`
+   ("future versions will refuse to load this file"), fixed the same way rather than left open:
 
    ```powershell
    docker volume create force-mosquitto-secrets
-   docker run --rm -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/from:ro" -v force-mosquitto-secrets:/to eclipse-mosquitto:2 `
-     sh -c "cp /from/passwd /to/passwd && chown mosquitto:mosquitto /to/passwd && chmod 0600 /to/passwd"
+   docker run --rm -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/from:ro" -v "<REPO>\Force_Balance_Pipeline\infra\mosquitto:/fromrepo:ro" -v force-mosquitto-secrets:/to eclipse-mosquitto:2 `
+     sh -c "cp /from/passwd /to/passwd && cp /fromrepo/acl /to/acl && chown mosquitto:mosquitto /to/passwd /to/acl && chmod 0600 /to/passwd /to/acl"
    ```
 
    ```powershell
@@ -701,9 +717,10 @@ e2-micro come together in a later phase. Nothing below is committed with a real 
      eclipse-mosquitto:2 mosquitto -c /mosquitto/config/mosquitto.lan.conf
    ```
 
-   **OPEN:** the same version also warns that `/mosquitto/config/acl` (still a Windows bind mount) has the wrong group and that
-   "future versions will refuse to load this file". Not fixed yet — the options are the same volume-copy treatment as the
-   password file above, or pinning the image to a version that still accepts it; decide before moving off `eclipse-mosquitto:2`.
+   `mosquitto.lan.conf`'s own `acl_file` now points at the copy (`/mosquitto/secrets/acl`), not the bind-mounted
+   `/mosquitto/config/acl` its committed source lives at — the source of truth stays in the repo; only the deployed path
+   changes, same split as the password file. Re-run the copy command above whenever `infra/mosquitto/acl` changes, the
+   same discipline the password file already needed.
 
 3. **The firewall**, elevated PowerShell. The rule admits TCP 1883 from the Pi only:
 
@@ -835,6 +852,57 @@ sudo tail -n 5 /var/lib/force-probe/mode_transitions.jsonl
 The rule matches only the broker's port, so the SSH session is unaffected, and it drops rather than rejects, so the probe finds
 out the way a real outage does. To stop early: `sudo nft delete table inet forcecut`. The outage the checkpoint queries use is the
 `DISCONNECTED` to `BURST` span in `mode_transitions.jsonl`. Run it with `--fault-rate 0` (doc 07).
+
+### Runbook: Stage 3b deploy and two persistence proofs still owed
+
+Two things this phase has built but never actually proven against the real desktop/Pi: that the broker's own disk persistence
+(not just a client reconnect) survives a restart, and that the Pi's persistent-journal fix (doc 05, journald section, fixed
+2026-09-30) survives an actual reboot, not just a service restart. Both need the desktop and the Pi, so they're a runbook here,
+not something this round's code-and-tests-only scope could do — do them together, in one maintenance window.
+
+**1. Prove the broker's own persistence, not just a reconnect, survives a restart.**
+
+```powershell
+# on the desktop, bridge NOT running (stop it first if it's running as a service/foreground process)
+docker ps --filter name=force-mosquitto           # confirm it's up before starting
+```
+
+With the bridge down, let the probe publish a few scans (the broker queues them for the bridge's persistent session,
+`clean_session=false`, doc 05's own `max_queued_messages 50000`) — a few minutes is enough. Then:
+
+```powershell
+docker restart force-mosquitto                     # the broker process itself restarts, not just a client disconnect
+docker logs force-mosquitto --tail 20               # confirm it reloaded from persistence_location, not a cold start
+```
+
+Start the bridge. **Proof the restart didn't lose anything:** the files that land for the scans published while the bridge was
+down should still appear (check the bridge's own `landed` log lines, or `ls` the telemetry volume), with no gap in `scan_id`s
+against what the probe's own log shows it sent. If any of those scans never land, the broker's disk persistence did not survive
+the restart as configured — a real finding, not a step to silently skip past.
+
+**2. Deploy this round's publisher fix, and use the same trip to test the journal across a real reboot.**
+
+```bash
+# on the Pi, after pulling this round's commit to the clone at /opt/force-probe/repo
+cd /opt/force-probe/repo/Force_Balance_Pipeline/infra/pi
+./deploy.sh <full 40-character commit SHA>          # the commit containing the publisher.py disconnect-guard fix
+journalctl -u force-probe -f                         # confirm it restarts clean on the new code
+```
+
+`deploy.sh` restarts the `force-probe` service, which is enough to pick up the new code, but is **not** enough to prove the
+persistent-journal fix (`Storage=persistent`, `SystemMaxUse=100M`, doc 05's journald section) survives what it's actually for —
+a full power cycle, not a service restart. While already on the Pi for this deploy:
+
+```bash
+sudo reboot
+# after it comes back and you've reconnected:
+journalctl --list-boots                              # more than one boot listed = the journal survived
+journalctl -b -1 -u force-probe | tail -20            # the PREVIOUS boot's own force-probe log is still readable
+```
+
+This closes the "Persistent-journal fix... not yet confirmed to survive an actual Pi reboot" open item either way: a second
+boot listed and the previous boot's log readable is the proof; anything less and the fix needs revisiting, not re-marking as
+done.
 
 ---
 

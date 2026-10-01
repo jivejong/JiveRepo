@@ -435,15 +435,37 @@ def build_client(mqtt, args):
     return mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=args.client_id, clean_session=False)
 
 
-def make_on_connect(topic):
-    """Subscribe at QoS 1 on every connect (a persistent session keeps it, and re-subscribing is harmless)."""
+def _utc_stamp(clock):
+    """A UTC timestamp for a log line, from an injectable clock (time.time by default) -- so a test can fix the
+    time and assert on the exact string, the same pattern Bridge itself uses for last_flush_utc/received_utc."""
+    return datetime.fromtimestamp(clock(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def make_on_connect(topic, clock=time.time):
+    """Subscribe at QoS 1 on every connect (a persistent session keeps it, and re-subscribing is harmless). Logs
+    the reason code and a UTC timestamp on every connect, success or refusal -- previously only a refusal was
+    logged with its reason, which left a successful reconnect's own cause (clean vs. session-resumed vs. a prior
+    disconnect's reason) unavailable from the bridge's own log (ENGINEERING-LOG, "Unplanned-outage bridge
+    reconnect blip")."""
     def on_connect(client, userdata, flags, reason_code, properties=None):
+        ts = _utc_stamp(clock)
         if reason_code.is_failure:
-            print(f"bridge: MQTT connect refused: {reason_code}", flush=True)
+            print(f"bridge: MQTT connect refused: {reason_code} ({ts})", flush=True)
             return
-        print(f"bridge: connected (session present: {bool(getattr(flags, 'session_present', False))})", flush=True)
+        print(f"bridge: connected (session present: {bool(getattr(flags, 'session_present', False))}, "
+              f"reason: {reason_code}, {ts})", flush=True)
         client.subscribe(topic, qos=1)
     return on_connect
+
+
+def make_on_disconnect(clock=time.time):
+    """Previously missing entirely -- the bridge logged nothing on its own disconnect, which is exactly why the
+    2026-09-29 unplanned outage's bridge reconnect blip (19:29:28Z) had no determinable cause from the bridge's
+    own log (ENGINEERING-LOG, same note). A UTC timestamp plus the paho reason code on every disconnect gives a
+    future blip both ends (disconnect and the next connect's own timestamp) to measure a gap from."""
+    def on_disconnect(client, userdata, disconnect_flags=None, reason_code=None, properties=None):
+        print(f"bridge: disconnected: {reason_code} ({_utc_stamp(clock)})", flush=True)
+    return on_disconnect
 
 
 def run(bridge, args):
@@ -480,7 +502,9 @@ def run(bridge, args):
         for batch in bridge.handle_message(message.payload):
             work.put(batch)
 
-    client.on_connect, client.on_subscribe, client.on_message = make_on_connect(args.topic), on_subscribe, on_message
+    client.on_connect = make_on_connect(args.topic, bridge.clock)
+    client.on_disconnect = make_on_disconnect(bridge.clock)
+    client.on_subscribe, client.on_message = on_subscribe, on_message
     try:
         client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
     except OSError as e:

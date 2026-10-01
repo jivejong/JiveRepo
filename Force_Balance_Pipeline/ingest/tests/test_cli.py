@@ -1,6 +1,8 @@
 """Bridge command line and configuration (docs 02, 04, 05): defaults match the docs, workspace mode uses only the
 bridge's own credentials (from the environment or a gitignored .env.bridge that holds only those keys) and never
 the dbt PAT, the MQTT session is persistent, and the broker is configured to queue. Offline."""
+import contextlib
+import io
 import re
 import sys
 import tempfile
@@ -259,6 +261,36 @@ class PersistentSessionTests(unittest.TestCase):
         client = self.FakeClient()
         bridge.make_on_connect("t")(client, None, self.Flags(), self.Reason(failure=True), None)
         self.assertEqual(client.subscriptions, [])
+
+    def test_a_successful_connect_is_logged_with_its_reason_code_and_a_utc_timestamp(self):
+        # Previously only a REFUSED connect logged its reason; a successful one didn't, which left a reconnect's
+        # own cause unavailable from the bridge's own log (ENGINEERING-LOG, "Unplanned-outage bridge reconnect
+        # blip"). clock is fixed so the exact stamp can be asserted, the same injectable-clock pattern Bridge
+        # itself uses for last_flush_utc/received_utc.
+        client, out = self.FakeClient(), io.StringIO()
+        on_connect = bridge.make_on_connect("t", clock=lambda: 1_790_000_000.0)
+        with contextlib.redirect_stdout(out):
+            on_connect(client, None, self.Flags(), self.Reason(), None)
+        self.assertIn("reason: refused", out.getvalue())  # Reason.__str__ above always returns "refused"
+        self.assertIn("2026-09-21T14:13:20.000000Z", out.getvalue())
+
+    def test_a_refused_connect_is_logged_with_a_utc_timestamp_too(self):
+        client, out = self.FakeClient(), io.StringIO()
+        on_connect = bridge.make_on_connect("t", clock=lambda: 1_790_000_000.0)
+        with contextlib.redirect_stdout(out):
+            on_connect(client, None, self.Flags(), self.Reason(failure=True), None)
+        self.assertIn("2026-09-21T14:13:20.000000Z", out.getvalue())
+
+    def test_a_disconnect_is_logged_with_a_reason_code_and_a_utc_timestamp(self):
+        # Previously missing entirely -- the bridge logged nothing on its own disconnect (same ENGINEERING-LOG
+        # note: "it logs nothing on its own disconnect").
+        out = io.StringIO()
+        on_disconnect = bridge.make_on_disconnect(clock=lambda: 1_790_000_000.0)
+        with contextlib.redirect_stdout(out):
+            on_disconnect(self.FakeClient(), None, None, self.Reason(), None)
+        self.assertIn("bridge: disconnected:", out.getvalue())
+        self.assertIn("refused", out.getvalue())  # the reason code's own text, via Reason.__str__
+        self.assertIn("2026-09-21T14:13:20.000000Z", out.getvalue())
 
     def test_the_real_paho_client_is_built_with_a_persistent_session(self):
         try:

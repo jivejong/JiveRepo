@@ -515,13 +515,14 @@ makes a second job). Doc 05, "Deploying Job 1 and Job 2," has the full reasoning
 `publish_serving` (doc 05's third Job 1 task, writing to Postgres) is left out — it depends on the Postgres/local
 demo stack, deferred to Phase 8.
 
-**`environment_version` discrepancy, not fully resolved:** doc 05 already specified `"5"` for the dbt task's
-serverless environment, from an earlier phase's research. `databricks bundle validate` accepts either `"2"` or
-`"5"` as syntactically valid — validation doesn't check the value against the workspace's actual supported
-versions, only its shape. Kept `"5"` to match doc 05's existing, previously-researched number rather than
-substitute an unverified guess; the job's first live run used whatever was deployed at trigger time (see below)
-and completed successfully, which is evidence *a* valid value was in play at that moment, not proof `"5"`
-specifically is correct on this workspace going forward. Flagged, not silently resolved.
+**`environment_version` "5", resolved Stage 3b:** `databricks bundle validate` accepts either `"2"` or `"5"` as
+syntactically valid, so Stage 3a couldn't settle which was actually correct for this workspace from validation
+alone, and a flagged-not-resolved note was left pointing at the job's own run as weak, inconclusive evidence.
+Real evidence already existed and should have been checked first: `docs/PHASE0-RESULTS.md:94-97` records that
+Phase 0's job runs found serverless `environment_version` **defaults to `"5"`** (Python 3.12) — read directly
+from `.phase0_state.json`'s saved run state (`q1`, run `846253185978169`, `"env_version": "5"`), not guessed, and
+confirmed again by later Phase 0 runs reusing that same default. `"5"` is correct, independent of Stage 3a's own
+run succeeding.
 
 **First manual run, 2026-09-30, both jobs created PAUSED as instructed:** `force_pipeline` triggered once via
 `databricks jobs run-now`. `ingest_bronze` (notebook) SUCCESS in 83.6s; `transform` (`dbt build --exclude
@@ -535,6 +536,41 @@ two new real incidents from that backlog. Ran `transform`'s own command locally 
 now-current data: zero row change at every layer across three consecutive runs, confirming doc 07's Phase 4
 checkpoint property ("Affected historical rows are recomputed, not duplicated" extends naturally to "a rerun over
 unchanged data changes nothing").
+
+### Stage 3b: edge items, checkpoint SQL, loose ends
+
+**Pause-state loose end.** `resources/*.job.yml` now says `pause_status: UNPAUSED`, matching the live state after
+Jong unpaused both jobs by hand following the passing run on commit `19cdba2`. See doc 05, "Deploying Job 1 and
+Job 2," for the warning this round added: `bundle deploy` reconciles the whole job definition on every deploy,
+including `pause_status`, so a stale `PAUSED` left in the file would silently re-pause a job an operator had
+already turned on — an earlier draft of that doc section claimed deploying never touches pause state, which was
+never actually tested and is wrong whenever the file sets `pause_status` explicitly, as this project's does.
+
+**The 2 new live disturbances (49 → 51, first seen in Stage 3a):**
+
+| sector | detected_at | signature | sustained_scans | peak score | scan mode |
+|---|---|---|---|---|---|
+| `umbara` | 2026-09-30 06:45Z | `unclassified` | 4 | 6.757 | `CONNECTED` (all 4 scans, 06:00–06:45Z) |
+| `mustafar` | 2026-09-30 19:45Z | `unclassified` | 3 | 6.342 | `CONNECTED` (all 3 scans, 19:15–19:45Z) |
+
+Checked directly against `silver_probe_reading.mode` for every scan in both runs (not inferred from the schedule):
+**neither overlaps a `DISCONNECTED` window or a `STEALTH` hour** — every one of the 7 underlying scans across both
+incidents reads `CONNECTED`. Both are real, ordinary ambient anomalies on live data, same shape as the backfill's
+own ambient episodes (doc 03's noise-driven, non-injected incidents) — unremarkable, and reported here only
+because they're genuinely new since Stage 2's 49-row snapshot, not because anything about them needed explaining.
+
+**Quota watch:** `ingest/job1_quota_watch.sql` — two read-only queries against `system.lakeflow.job_run_timeline`
+and `job_task_run_timeline` (Unity Catalog system tables, not a Jobs API script, so it's a plain `.sql` file like
+every other checkpoint in this project), reporting per day: run count and outcome breakdown, and total task
+execution time. **Derived baseline** (Stage 3a's one manual run): `ingest_bronze` 83.6s + `transform` 187.9s =
+271.5s, **~4.5 minutes per 15-minute cycle**. **Caveat found while testing the queries:** `system.lakeflow`'s own
+`run_duration_seconds` still read 0 for a run already confirmed `SUCCEEDED` — these system tables lag real time
+by some margin Databricks doesn't commit to a number for; don't read a day's numbers as final same-day. **Early
+live signal, not yet the baseline:** the job's first 3 real scheduled-cadence runs today average ~5.96
+minutes/run of total task time (1,072s / 3), noticeably above the single-manual-run baseline above — plausibly
+cold-start overhead on an automatically-provisioned serverless environment versus an already-warm manually
+triggered one, or more backlog per run; three data points, not conclusive, exactly what the measurement week is
+for.
 
 ## Open items
 
@@ -551,7 +587,6 @@ unchanged data changes nothing").
 | Persistent-journal fix (2026-09-30) | Not yet confirmed to survive an actual Pi reboot — the next real test of it. |
 | `gold_disturbance` cooldown uses `LAG()`, not a last-accepted-incident walk | **Resolved, 2026-09-30.** See "Stage 3a: cooldown rewrite," below. |
 | 45 non-emergency `gold_disturbance` rows can't be split into ambient-episode-driven vs. pure-noise | The label lives in `edge/backfill_texture.json`'s per-scan episode data, not joined against `gold_disturbance`. Doc 03's own 9-noise / 32-ambient design-time split (0.7/week target) can't be independently re-derived from gold alone yet. |
-| Job 1/Job 2's dbt task `environment_version` is `"5"` per doc 05, unverified this round | `databricks bundle validate` accepts `"2"` or `"5"` without checking against the workspace's actual supported versions. Kept `"5"` to match doc 05's existing number. The job's one live run so far used whatever was deployed at trigger time and succeeded — not specific proof of `"5"`. |
 | `publish_serving` task not built | Waits on the Postgres/local demo stack (Phase 8). Add to Job 1, `depends_on: transform`, once it exists (doc 05). |
 
 ## Lessons (beyond this project)
