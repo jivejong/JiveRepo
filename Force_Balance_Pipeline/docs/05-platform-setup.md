@@ -615,6 +615,14 @@ second-run-does-nothing property doc 07's Phase 4 checkpoint asks for.
 Small-file compaction. Necessary because the bridge produces a file per scan (96 a day) plus a file
 per 90 seconds of report traffic.
 
+**`VACUUM`'s retention on `silver_probe_reading` must stay at least 1 day (Delta's own default is 7, via
+`delta.deletedFileRetentionDuration` / the `RETAIN n HOURS` clause) and never be shortened with
+`VACUUM ... RETAIN 0 HOURS` or `spark.databricks.delta.retentionDurationCheck.enabled=false`.**
+`ingest/phase4_checkpoint.sql`'s p4-1 depends on Delta time travel (`TIMESTAMP AS OF`) against
+`silver_probe_reading`'s state as of `gold_sector_baseline`'s own `computed_at`, which can be hours old by the
+time anyone runs it (`docs/ENGINEERING-LOG.md`, "Stage 3c"); a shorter retention would let `VACUUM` physically
+delete the file versions that query needs, breaking the checkpoint silently rather than loudly.
+
 ### Job 4 — `refresh_dimensions` (manual trigger only)
 
 | Task          | Type                                                   |
@@ -765,6 +773,29 @@ e2-micro come together in a later phase. Nothing below is committed with a real 
    setting, then test both ways with the VPN on and off: `Test-NetConnection <PI_IP> -Port 22` from the desktop and
    `nc -vz <DESKTOP_IP> 1883` from the Pi. If the desktop sleeps, the Pi sees an outage.
 
+### Bridge auto-start
+
+The bridge has so far only ever been started by hand (a foreground terminal, this session's own maintenance-window restarts).
+`infra/desktop/register-bridge-task.ps1` registers it as a Windows Scheduled Task instead: starts at logon, restarts
+automatically if it exits (up to 999 times, a minute apart), and **refuses to register or start a second bridge if one is
+already running** -- the bridge connects with a fixed MQTT client id (`force-bridge`, above: "a persistent session queues the
+Pi's messages while it is down"), so two running at once would silently kick each other off the broker the moment the newer
+one connects, with no error from either side. The check is a real process-command-line scan (`Win32_Process`, filtered on
+`bridge.py` appearing in the command line), not a lock file the bridge itself has to cooperate with.
+
+```powershell
+# from Force_Balance_Pipeline\infra\desktop
+.\register-bridge-task.ps1 -MqttHost <DESKTOP_IP_or_broker_host>              # registers only
+.\register-bridge-task.ps1 -MqttHost <DESKTOP_IP_or_broker_host> -StartNow    # registers and starts it now
+```
+
+No secrets or real addresses live in the script or in the registered task's own definition: `-MqttHost` (or
+`$env:BRIDGE_MQTT_HOST`) is required with no default, and the bridge's own MQTT credentials still come from `.env.mqtt` at
+the repo root (above), read by the bridge process itself at startup -- the scheduled task's command line never carries them.
+`-VenvPath` defaults to `edge\.venv`; override it if the venv with `paho-mqtt` installed lives elsewhere. Un-register with
+`Unregister-ScheduledTask -TaskName ForceBridge` (prompts for confirmation; stop the running bridge process first if one is
+up, the same way you would before closing a manually-started one).
+
 ### The Pi
 
 Raspberry Pi OS Lite, 64-bit, on Ethernet, with an SSH login as `<PI_USER>`.
@@ -853,12 +884,14 @@ The rule matches only the broker's port, so the SSH session is unaffected, and i
 out the way a real outage does. To stop early: `sudo nft delete table inet forcecut`. The outage the checkpoint queries use is the
 `DISCONNECTED` to `BURST` span in `mode_transitions.jsonl`. Run it with `--fault-rate 0` (doc 07).
 
-### Runbook: Stage 3b deploy and two persistence proofs still owed
+### Runbook: Stage 3b deploy and two persistence proofs — both done, 2026-10-01
 
-Two things this phase has built but never actually proven against the real desktop/Pi: that the broker's own disk persistence
+Two things this phase had built but never actually proven against the real desktop/Pi: that the broker's own disk persistence
 (not just a client reconnect) survives a restart, and that the Pi's persistent-journal fix (doc 05, journald section, fixed
-2026-09-30) survives an actual reboot, not just a service restart. Both need the desktop and the Pi, so they're a runbook here,
-not something this round's code-and-tests-only scope could do — do them together, in one maintenance window.
+2026-09-30) survives an actual reboot, not just a service restart. **Both proofs ran in the 2026-09-30/10-01 maintenance
+window and both passed** — see `docs/ENGINEERING-LOG.md`, "Stage 3b deploy and proofs," for the evidence. The steps below are
+kept as the runbook for next time either needs re-proving (a Mosquitto image upgrade, a journald config change), not because
+either is still outstanding.
 
 **1. Prove the broker's own persistence, not just a reconnect, survives a restart.**
 
@@ -900,9 +933,76 @@ journalctl --list-boots                              # more than one boot listed
 journalctl -b -1 -u force-probe | tail -20            # the PREVIOUS boot's own force-probe log is still readable
 ```
 
-This closes the "Persistent-journal fix... not yet confirmed to survive an actual Pi reboot" open item either way: a second
-boot listed and the previous boot's log readable is the proof; anything less and the fix needs revisiting, not re-marking as
-done.
+This closes the "Persistent-journal fix... not yet confirmed to survive an actual Pi reboot" open item: a second boot listed
+and the previous boot's log readable is the proof. **Proven 2026-10-01 — and by a stronger event than planned:** the Pi was
+accidentally unplugged (a real, uncontrolled power loss, not a graceful `sudo reboot`) during this same window, and
+`journalctl --list-boots` afterward showed 3 boots total (the one that ended in the unplug, the recovery boot, and the
+deliberate test reboot that followed), with the unplug boot's own `force-probe` log still fully readable. A real power cut is
+the harder case `Storage=persistent` exists for; it passed that case along with the planned graceful-reboot test.
+
+### Runbook: C3/C4, the control-topic injection checkpoints
+
+Doc 07's own Phase 4 checkpoint bullets: "Trigger `sith_presence` via the control topic. Within two scans a `gold.disturbance`
+row appears with the correct `signature` and `sustained_scans >= 2`" (C3), and "Trigger two disturbances in one sector 30
+minutes apart. One incident row — cooldown works" (C4). The commands below are `probe_ctl.py`'s own documented syntax
+(`edge/probe_ctl.py`'s own docstring; doc 04:91-98) — no new flags invented.
+
+**(a) C3 — one injection.** Pick any sector other than Mustafar or Dathomir (doc 04, their dark baseline clamps at 100 and
+can't reach the emergency threshold via a spike — doc 03's own "Resolved, 2026-09-30" note on `gold.disturbance` has the
+unclamped-direction nuance, irrelevant here since this is a spike, not a dip). Fire it a minute or two before a `:00/:15/:30/:45`
+scan boundary, so that boundary is the injection's first (`ramp`) scan:
+
+```bash
+python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence
+```
+
+(It prompts for the `operator` MQTT password — `getpass`, never echoed, never read from `.env.mqtt`; or set
+`OPERATOR_MQTT_PASSWORD` first.) Defaults apply: `ramp=2, hold=4, decay=3` scans (doc 04:96). **What to note:** the wall-clock
+boundary of the scan right after you send it (that is `onset_event_time`) and the sector you chose.
+
+**Timed against Job 1 (`:03/:18/:33/:48`, 3 minutes behind each scan):** doc 04's own backfill texture (the tatooine
+`sith_presence` episode in `edge/backfill_manifest.json`) shows the ramp's own two scans and the hold phase's first two scans
+already exceeding 5.75 — so `sustained_scans >= 2` is typically reached by the **4th scan after injection** (2 ramp + 2 hold),
+not the literal 2nd. If the injection's first scan lands on boundary `T`, expect the qualifying pair at `T+30` and `T+45`,
+and the `gold.disturbance` row to appear after Job 1's `transform` task following `T+45` — i.e., wait for the `:48`-pattern run
+after `T+45`, not the one right after `T`.
+
+```sql
+-- p4-9, filled in: <inject_sector> = the sector you chose, <inject_ts_utc> = T above (the injection's first scan boundary)
+SELECT sector_id, detected_at, signature, sustained_scans
+FROM force.gold.gold_disturbance
+WHERE sector_id = '<inject_sector>' AND detected_at >= TIMESTAMP '<inject_ts_utc>'
+ORDER BY detected_at LIMIT 1;
+-- Expected: 1 row, signature = 'sith_presence', sustained_scans >= 2, detected_at around T+45 (not literally T + 2 scans).
+```
+
+**(b) C4 — two injections, 30 minutes apart, same sector.** Same command, fired twice:
+
+```bash
+python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence   # at boundary T
+# ... wait 30 minutes (2 scans) ...
+python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence   # at boundary T+30
+```
+
+**What to note:** both injection times, and whether the second command's own `sent to force/control/probe-01: ...` confirmation
+looks the same as the first's — `probe_ctl.py` validates locally before sending (its own docstring) but doc 04 doesn't say what
+`forcesim` does with a second injection landing on a sector whose first episode (ramp 2 + hold 4 + decay 3 = 9 scans, ~2h15m)
+is still active. If the second injection visibly has no effect, or a different effect than the first, that is itself a real
+finding worth recording here, not a step to silently retry past.
+
+```sql
+-- p4-10, filled in the same way
+SELECT count(*) AS incidents_in_window
+FROM force.gold.gold_disturbance
+WHERE sector_id = '<inject_sector>'
+  AND detected_at >= TIMESTAMP '<inject_ts_utc>' AND detected_at < dateadd(hour, 2, TIMESTAMP '<inject_ts_utc>');
+-- Expected: 1 (the cooldown, var('cooldown_hours') = 2, suppresses the second onset -- doc 03, "Late-replayed onset inside
+-- an existing cooldown"). Check cooldown_conflict = true on that one row too, same query plus the column.
+```
+
+Run both p4-9 and p4-10 after a Job 1 `transform` run has completed following `T+30`'s own qualifying scans — Job 1's own
+per-run log (`ingest/job1_quota_watch.sql`) or the workspace UI's run history has the exact completion time if the `:48`-style
+schedule isn't precise enough to tell by wall clock alone.
 
 ---
 

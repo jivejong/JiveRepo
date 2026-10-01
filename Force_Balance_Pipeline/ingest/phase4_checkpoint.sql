@@ -6,11 +6,15 @@
 -- carry placeholders.
 --
 -- Remaining placeholders, fill in when you run that query:
+--   <baseline_computed_at>                                 gold_sector_baseline's own computed_at, from the first
+--                                                          query of p4-1 itself
 --   <replay_window_start_utc>, <replay_window_end_utc>   the next scheduled DISCONNECTED window's own bounds,
 --                                                          from mode_transitions.jsonl on the Pi (p4-8)
 --   <inject_ts_utc>, <inject_sector>                      the control-topic injection's own timestamp and target (p4-9, p4-10)
---   <fault_period_start_utc>, <fault_period_end_utc>       once fault injection is back on (doc 05, "Fault injection
---                                                          still at --fault-rate 0" open item) -- not available yet (p4-12)
+--   <fault_seed_table>                                     the fault-injection seed's full table name, once
+--                                                          scripts/faultlog_to_seed.py and `dbt seed` have built it
+--                                                          (doc 05, "Fault injection still at --fault-rate 0" open
+--                                                          item) -- not available yet (p4-12)
 
 -- (p4-0) Job 1 green, informational -- not a SQL check, the job run output itself is the evidence. Recorded here so
 --        it's in the same file as everything else: force_pipeline's first manual run (2026-09-30, Stage 3a) --
@@ -22,23 +26,33 @@
 --        source_type column to filter on (it's probe-only by construction in Phase 4 -- silver_force_report is a
 --        separate, still-empty stub model); the real guarantee is sample_count matching the probe-only count for
 --        the model's own window, which is what both this query and the singular test check.
+--
+-- Fixed, Stage 3c: comparing against the CURRENT silver_probe_reading (plain event_time filtering, no further
+-- qualification) only holds right after a fresh gold_sector_baseline build. gold_sector_baseline is a `table`,
+-- deliberately excluded from Job 1 and rebuilt only daily (doc 05) -- its stored computed_at and sample_count are
+-- frozen at the last build, while silver_probe_reading keeps growing underneath it (both from Job 1's own
+-- 15-minute cadence and, independently, from buffered/replayed batches that can land in bronze well before
+-- silver actually incorporates them -- checked directly: Stage 3b found 49 "mismatches" that way, 43 of them
+-- is_replayed=true rows whose arrival predated the gold build by hours, yet weren't in silver_probe_reading as a
+-- TABLE until some later, unrelated dbt run). Neither event_time nor arrival_ts can tell "was this row physically
+-- in the table as of computed_at" -- only Databricks' own Delta time travel (`TIMESTAMP AS OF`) answers that
+-- question exactly, because it reconstructs the table's real historical state rather than approximating it from
+-- any column. Run these two in order:
+
+SELECT max(computed_at) AS computed_at FROM force.gold.gold_sector_baseline;
+-- Paste the result into '<baseline_computed_at>' below (both occurrences must match).
+
 SELECT b.sector_id, b.channel, b.sample_count,
-       (SELECT count(*) FROM force.silver.silver_probe_reading r
+       (SELECT count(*) FROM force.silver.silver_probe_reading TIMESTAMP AS OF '<baseline_computed_at>' r
         WHERE r.sector_id = b.sector_id AND r.event_time >= dateadd(day, -90, b.computed_at) AND r.event_time < b.computed_at
-       ) AS probe_only_count_for_window
+       ) AS probe_only_count_as_of_build
 FROM force.gold.gold_sector_baseline b
-WHERE b.sample_count != (SELECT count(*) FROM force.silver.silver_probe_reading r
+WHERE b.sample_count != (SELECT count(*) FROM force.silver.silver_probe_reading TIMESTAMP AS OF '<baseline_computed_at>' r
                           WHERE r.sector_id = b.sector_id AND r.event_time >= dateadd(day, -90, b.computed_at) AND r.event_time < b.computed_at);
--- Expected: 0 rows -- but only meaningful run right after a fresh gold_sector_baseline build (its own, or
--- Job 2's daily one), not standalone hours later. Verified 2026-09-30 immediately after a build (Stage 2): 0
--- mismatches, sample_count = 8455. Re-run standalone the same day (Stage 3b, ~9.5h after that build, with Job 1
--- live and running in between): 49 "mismatches" -- NOT a probe-only violation. gold_sector_baseline is a `table`,
--- deliberately excluded from Job 1 and rebuilt only daily (doc 05), so its stored computed_at and sample_count
--- are frozen at the last build while silver_probe_reading keeps growing underneath it; checked directly (one
--- sector): 43 of the 49 extra rows in that sector's window are is_replayed = true -- a real buffered/replayed
--- batch landed sometime after the baseline's last build, which is exactly the kind of event the baseline won't
--- see again until Job 2 next runs. A persistent, non-shrinking gap day over day would be the real signal to
--- investigate; a same-day gap that tracks Job 1's own uptime since the last baseline build is expected staleness.
+-- Expected: 0 rows, at any time, since this reconstructs the exact table state the baseline's own build saw.
+-- Re-verified live, 2026-10-01 (Stage 3c), ~11h after the build this time-travels to: 0 mismatches, where the
+-- plain-event_time version above still showed 49. Any mismatch here (not just elapsed time since the build) would
+-- be a genuine finding, not expected staleness.
 
 -- (p4-2) Dedup, the known 13-vs-47 fixture: the 2026-09-27 23:45Z scan had 13 ids land early (the partial file),
 --        the other 47 only via the later drain. A bare "=" against the scan boundary misses most rows -- they
@@ -139,13 +153,18 @@ SELECT
 
 -- (p4-12) Fault reconciliation (last, per doc 07's own ordering): rejects match the fault-injection log exactly,
 --        reason for reason, over the fault period. NOT YET AVAILABLE -- fault injection is still at --fault-rate 0
---        (doc 05 open item); the frozen-seed design this needs (docs/ENGINEERING-LOG.md, decision table (i)) isn't
---        built yet either. Placeholder, not a guess at numbers that don't exist.
+--        (doc 05 open item), so the seed named below (<fault_seed_table>, built by scripts/faultlog_to_seed.py
+--        and `dbt seed` once a real fault_injection.jsonl exists -- doc 04, "Fault injection") doesn't exist yet.
+--        Its two columns, event_id and expected_reject_reason, are exactly what this full outer join needs.
 SELECT
-  (SELECT count(*) FROM force.silver.silver_rejects r
-   WHERE r.event_id IN (SELECT event_id FROM force.silver.silver_probe_reading)  -- placeholder shape only
-     AND EXISTS (SELECT 1 FROM force.bronze.events b WHERE b.event_id = r.event_id
-                 AND b.event_time >= TIMESTAMP '<fault_period_start_utc>' AND b.event_time < TIMESTAMP '<fault_period_end_utc>')
-  ) AS rejects_in_fault_period;
--- Expected, once the fault seed exists: rejects_in_fault_period = the seed's own row count for that period, 0 reason
--- mismatches on a full outer join against it (doc 05, decision table (i): "Frozen seed (seeds/fault_injection_<period>.csv)").
+  count_if(f.event_id IS NOT NULL AND r.event_id IS NOT NULL) AS matched,
+  count_if(f.event_id IS NOT NULL AND r.event_id IS NULL) AS fault_not_rejected,
+  count_if(f.event_id IS NULL AND r.event_id IS NOT NULL) AS rejected_not_a_logged_fault,
+  count_if(f.event_id IS NOT NULL AND r.event_id IS NOT NULL AND f.expected_reject_reason <> r.reject_reason) AS reason_mismatches
+FROM <fault_seed_table> f
+FULL OUTER JOIN force.silver.silver_rejects r ON r.event_id = f.event_id;
+-- Expected, once the seed exists: fault_not_rejected = 0, reason_mismatches = 0. rejected_not_a_logged_fault > 0
+-- is NOT necessarily a problem -- silver_rejects also catches real, non-injected bad data (doc 03's own 5 reject
+-- reasons exist independently of fault injection); only fault_not_rejected and reason_mismatches are the actual
+-- reconciliation claim doc 04 makes ("the count of rejects must equal the count in this log" -- read as "every
+-- logged fault appears in rejects with its expected reason," not "every reject came from a logged fault").

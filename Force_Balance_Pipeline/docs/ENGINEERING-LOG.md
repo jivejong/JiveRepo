@@ -572,19 +572,139 @@ cold-start overhead on an automatically-provisioned serverless environment versu
 triggered one, or more backlog per run; three data points, not conclusive, exactly what the measurement week is
 for.
 
+### Stage 3b deploy and proofs
+
+Jong's own maintenance window, 2026-09-30/10-01 (times as pasted; the Pi's journal shows EDT, everything else UTC
+— EDT is UTC-4, so a derived UTC value is labelled as such).
+
+**ACL fix, confirmed deployed and working.** `force-mosquitto-secrets` holds both `acl` (775 bytes) and `passwd`,
+owned `mosquitto:mosquitto`, mode `-rw-------` — the volume-copy treatment applied correctly to both files. The
+broker restarted (01:16:36Z) with no ACL group-ownership warning in its log — the fix this round made.
+
+**Broker persistence, proven end to end.** The same restart's log shows `Restored 60 base messages`, `Restored 1
+clients`, `Restored 1 subscriptions`, `Restored 60 client messages` — Mosquitto's own startup log confirming it
+reloaded the bridge's queued session and its 60 queued QoS 1 messages from disk, not a cold start. The bridge
+then reconnected (`connected (session present: True, reason: Success, 2026-10-01T01:17:17.213018Z)` — this
+round's own `make_on_connect` logging, working exactly as built) and received all 60: one landed file,
+`dt=2026-10-01/hh=01`, 60 lines, 23,977 bytes, `dead_lettered=0 retries=0 failed_batches=0`. Nothing was lost
+across the broker's own restart. **The "two persistence proofs still owed" runbook item (doc 05) is closed —
+both proofs passed.**
+
+**Persistent-journal fix, proven by a stronger event than planned.** The Pi was accidentally unplugged during the
+same window — a real, uncontrolled power loss, not the planned graceful `sudo reboot`. The previous boot's last
+entry was 21:00:33 EDT, right after the 21:00Z scan published and was acknowledged (60 rows) — a clean stopping
+point, not a scan caught mid-flight. The recovery boot (still running the Pi's then-current commit, `5e9cb8f` —
+`deploy.sh` hadn't been re-run yet) came up normally: `mode None -> CONNECTED` at startup, and its first scan
+landed with a late lag (see "The off-boundary scan," below). Jong then ran `deploy.sh e6242f4` (this round's own
+commit) and did the planned `sudo reboot` as a second, deliberate test: that boot also came up clean, MQTT
+connected at 21:24:05 EDT, `mode None -> CONNECTED` at 21:25:13 EDT (~70 s of clock-sync wait, consistent with
+doc 04's clock gate). **`journalctl --list-boots` afterward showed 3 boots — the one that ended in the unplug,
+the recovery boot, and the deliberate test reboot — with the unplug boot's own `force-probe` log still fully
+readable.** A real power cut is the harder case `Storage=persistent` exists for, and it passed that case as well
+as the planned one. **The "Persistent-journal fix... not yet confirmed to survive an actual Pi reboot" open item
+is closed.**
+
+**The off-boundary scan.** The recovery boot's first scan, `scan_id 01M3TGEVH0SB04KV733M20PVY2`, appeared in the
+Pi's own journal at 21:20:58 EDT (2026-10-01T01:20:58Z, derived) — not aligned to a `:00/:15/:30/:45` boundary,
+which doc 04 says scans always are (04:37, "Scans align to :00, :15, :30 and :45 UTC"). Queried directly rather
+than guessed at: `silver_probe_reading` has exactly 60 rows for this `scan_id`, `event_time = 2026-10-01
+01:15:00Z` (the aligned boundary, not the late journal time), `mode = CONNECTED`, `ingest_lag_seconds` 358-360
+across the 60 rows. The surrounding window (00:45Z through 01:30Z, four scans total) shows no gap: 00:45Z and
+01:30Z both lag 3-5s (normal), the 01:00Z scan (the one taken just before the unplug) lags 1,037-1,039s (the
+pipeline, not the probe, was disrupted around the restart — the probe's own log already confirms that scan
+published and was acked normally), and the 01:15Z scan alone lags ~360s. **So: not skipped, not stamped with a
+guessed time, and not off its true boundary either — "21:20:58 EDT" is when the scan was physically taken and
+published, roughly 6 minutes after its 01:15:00Z target; `event_time` itself is correctly the boundary.** This
+matches the scheduler's own code, not a bug: `runtime.py`'s `_retime` computes `next_scan` via
+`clock.boundary_at_or_after(now, interval)` on the very first tick after a (re)start, which rounds UP to the
+next aligned boundary from whatever the clock reads at that moment; the tick loop then simply waits for real
+`now` to reach `next_scan + SCAN_DURATION` and for `ClockGate.check()` to report synced before firing, and when
+it fires, `_scan(boundary, now)` stamps readings using `boundary` (the target), never the late `now`. Doc 04
+describes the two outcomes a reader would expect — on time, or skipped if still unsynced (04:33-35) — but not
+this third, real one: a boundary already computed before the process was fully up and synced still fires,
+correctly stamped, once the gate opens, even if that is several minutes later. Worth adding to doc 04 as its own
+case in a future round; not changed here, since this round's scope was "query and report, change no probe code."
+**Caveat on the journal timestamp itself:** per the maintenance window's own framing, any journal line written
+before NTP sync completed could carry a clock-skewed timestamp; `event_time` (written only after
+`ClockGate.check()` passes) does not have that problem, which is exactly why it, not the journal line, is the
+figure trusted above.
+
+### Stage 3c: checkpoint fixes, the fault-log converter, Mustafar's clamp, bridge auto-start
+
+**p4-1 fixed properly, not patched around.** Comparing `gold_sector_baseline` against a plain `event_time`-windowed
+recount of `silver_probe_reading` only holds immediately after a fresh baseline build (Stage 3b found 49
+apparent "mismatches" running it hours later, all explained by real staleness, not a bug). Neither `event_time`
+nor `arrival_ts` can answer "was this row physically in the table as of the baseline's `computed_at`" -- arrival
+in bronze and incorporation into the silver *table* are governed by two different, independently-lagging
+processes. Databricks' own Delta time travel (`TIMESTAMP AS OF`) answers the question exactly, because it
+reconstructs the table's real historical state rather than approximating it from any column. Re-verified live,
+~11 hours after the build it time-travels to: 0 mismatches, where the plain-`event_time` version still showed 49.
+
+**`scripts/faultlog_to_seed.py`**, the Phase 4 fault-log-to-seed converter doc 04 names
+(`fault_injection_<period>.csv`, "Decided, Phase 4"). Writes only `event_id` and `expected_reject_reason` -- the
+two columns `ingest/phase4_checkpoint.sql`'s p4-12 actually joins and compares on, not the full fault record
+(`fault`, `channel`, `original`, `injected`, `logged_utc` stay in the pulled log, not the committed seed). Refuses
+to overwrite an existing seed without `--force`, the same discipline the enrichment seeds use. Seven tests, one
+fixture covering all four doc 04 fault types (`null_channel`, `out_of_range`, `unknown_sector`,
+`future_event_time`), four mutations checked: wrong source field, no blank-line skip, no overwrite guard, and a
+missing `newline=""` on the CSV write -- that last one is not theoretical: it reproduced a real CRLF corruption on
+this very machine the moment the fix was reverted, confirming the standing Windows-CRLF discipline applies here
+too. p4-12 itself rewritten from a placeholder-shaped query to a real `FULL OUTER JOIN` against
+`<fault_seed_table>` on `event_id`, distinguishing "a logged fault never got rejected" (the real failure) from "a
+reject wasn't a logged fault" (expected and fine -- `silver.rejects` also catches real bad data doc 04's fault
+injector never touches).
+
+**`ingest/tests/test_phase4_checkpoint.py`**, in `test_phase3_checkpoint.py`'s own style: labels `p4-0` through
+`p4-12` present and in order, every statement read-only, no credentials or hosts, every placeholder documented
+and no undocumented one used, plus a claim test per block checking its real content (the known 13/47 and 180/60
+and 300/180 figures, all four backfill emergencies with their real days and signatures, the cooldown window is
+literally 2 hours, the fault seed's join columns match what the converter actually writes). 18 tests, 3 mutations
+checked: a renamed label, a `DELETE` statement in real SQL (not a comment -- the first attempt mutated inside a
+comment and the read-only test correctly ignored it, confirming the test strips comments before checking, not
+that it's blind to them), and an undocumented placeholder rename.
+
+**Mustafar's clamp: a cleaner, more complete picture, and the hypothesis it disproves.** The 2026-09-30 19:45Z
+live incident's own `z_dark` per scan (verbatim): 19:00Z −1.869 (below threshold), 19:15Z −4.097, 19:30Z −4.179,
+19:45Z −4.199 (the three sustained, qualifying scans), 20:00Z −3.504 (below threshold again) -- `dark_side_activity`
+73.6-74.1 across the sustained run, against a 90-day baseline mean of 94.14. Checked whether the dark-side ceiling
+(100) might be artificially *compressing* the measured stddev the z-score depends on, which would make a downward
+dip look more extreme than it should. **It does not -- if anything, mildly the opposite.** Over the full 90-day
+window: Mustafar has 19.6% of all `dark_side_activity` readings sitting at exactly 100 (1,750 of 8,935); Dathomir
+7.8% (697 of 8,935); two unclamped comparison planets (naboo, alderaan -- doc 07's own low-dark anchors), 0%.
+Excluding the clamped-at-100 pile, Mustafar's stddev is 4.452 (mean 92.647); *including* it, 4.945 (mean 94.087)
+-- about 11% larger, not smaller, because the pile sits further from the bulk of readings than the mean does, not
+closer. Dathomir shows the same direction (6.134 excluding vs. 6.638 including, +8%). The practical effect on
+Mustafar's actual incident: using the official (clamp-inclusive) baseline, z_dark for the 73.6 reading is −4.199,
+matching the real figure above; recomputed against the clamp-*excluded* stats instead, the same absolute reading
+would score roughly −4.27 -- a *slightly larger* magnitude, not smaller. **No Phase 6 open item added** -- the
+task's own premise (the clamp compresses the stddev) doesn't hold; the measured effect runs the other way, and
+is small (about 2% difference in the resulting z for this specific dip) either way. The ~20%-of-readings-at-the-
+ceiling fact itself is still worth knowing for Phase 6 (doc 04's "two planets cannot fire one" framing undersells
+how often Mustafar is sitting right at its physical limit), but it isn't the stddev-compression risk it might
+have been. No model, macro, or threshold changed.
+
+**Bridge auto-start.** `infra/desktop/register-bridge-task.ps1` -- a Windows Scheduled Task, at-logon trigger,
+restart on failure (999 times, 1 minute apart). Refuses to register, or (with `-StartNow`) to start, a second
+bridge: a real process-command-line scan (`Win32_Process`, filtered on `bridge.py`), not a lock file the bridge
+has to cooperate with -- the risk it guards against is real, not theoretical, since the bridge's fixed MQTT
+client id (`force-bridge`, doc 05) means two running copies would silently disconnect each other the moment the
+newer one connects. `-MqttHost` has no default; the bridge's own MQTT credentials still come from `.env.mqtt`,
+read by the bridge process itself, never passed on the task's command line. Not registered or run this round --
+written, not deployed, per this round's own scope.
+
 ## Open items
 
 | Item | Status |
 |---|---|
-| Mosquitto ACL file group-ownership warning (doc 05, S2) | Not applied. Proposed: volume-copy like the password file, or pin the image version. |
+| Mosquitto ACL file group-ownership warning (doc 05, S2) | **Resolved, Stage 3b (code) and 2026-10-01 (proven live).** Volume-copied like the password file; the broker restart in the Stage 3b deploy window logged no ACL warning. |
 | `veiled_presence` signature unproducible in `STEALTH` | No midi channel present → `z_midi` NULL → `ABS(z_midi)<1.0` can't be true in SQL. Decide in Phase 4 how a missing z-score is treated. |
 | `bronze._ingest_ts` is notebook run time, not landing time | Doc 03 OPEN item. Proposed: `_metadata.file_modification_time` as a future bronze column. |
-| Duplicate `MQTT disconnected` log line | Diagnosed (paho can call `on_disconnect` from more than one internal path around a keepalive timeout); fix proposed (a guard that resets on every connect), deferred to Phase 4. Two tests required, not built. |
-| Unplanned-outage bridge reconnect blip (`19:29:28Z`) | Cause undetermined from the bridge's own log; it logs nothing on its own disconnect. |
+| Duplicate `MQTT disconnected` log line | **Resolved, Stage 3b.** `publisher.py`'s `_on_disconnect` now guards against the duplicate callback, reset on every connect; two tests, both mutation-checked. |
+| Unplanned-outage bridge reconnect blip (`19:29:28Z`) | **Partially resolved, Stage 3b:** `bridge.py` now logs its own disconnects and connects with a reason code and a UTC timestamp, so a *future* blip is diagnosable from the bridge's own log. This specific historical blip's cause is still undetermined — the fix couldn't be applied retroactively to a log that already happened. |
 | Phase 4 `is_replayed` cutoff (1,800 s) edge case | **Derived, corrected <date>.** The five buffered scans lag roughly 4,190/3,290/2,390/1,788/888 s at replay; the 1,800 s cutoff undercounts this outage by two scans, flagging 180 replayed rows out of the true 300 (previously recorded here as 240 — see the dated correction in PHASE3-RESULTS.md). Worth a silver test — `ingest/phase4_checkpoint.sql` p4-3. |
 | Composite score scaling on partial (STEALTH) readings | `SQRT(3/channels_present)` gives a dark-only STEALTH reading about 1.5x the score variance of a full reading with the same dark deviation — it trips 5.75 at `z_dark ≈ 2.35` instead of `≈ 4.07`. `SQRT(4/present_weight)` would remove the gap. Kept as-is for Phase 4; `edge/analyze_thresholds.py` gets a STEALTH-series comparison before the Phase 6 threshold retune decides between them. |
 | Fault injection still at `--fault-rate 0` | Deliberately deferred a few days after the mode schedule, so a scheduled outage and an injected fault are never running at once; becomes its own period in a later commit. |
-| Persistent-journal fix (2026-09-30) | Not yet confirmed to survive an actual Pi reboot — the next real test of it. |
+| Persistent-journal fix (2026-09-30) | **Resolved, 2026-10-01.** Proven by a real, accidental power loss (not just the planned graceful reboot) during the Stage 3b maintenance window — `journalctl --list-boots` showed 3 boots, the unplug boot's own log still readable. See "Stage 3b deploy and proofs," above. |
 | `gold_disturbance` cooldown uses `LAG()`, not a last-accepted-incident walk | **Resolved, 2026-09-30.** See "Stage 3a: cooldown rewrite," below. |
 | 45 non-emergency `gold_disturbance` rows can't be split into ambient-episode-driven vs. pure-noise | The label lives in `edge/backfill_texture.json`'s per-scan episode data, not joined against `gold_disturbance`. Doc 03's own 9-noise / 32-ambient design-time split (0.7/week target) can't be independently re-derived from gold alone yet. |
 | `publish_serving` task not built | Waits on the Postgres/local demo stack (Phase 8). Add to Job 1, `depends_on: transform`, once it exists (doc 05). |

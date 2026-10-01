@@ -160,8 +160,18 @@ power-loss test".
 - **The baseline test passes:** `gold.sector_baseline` contains zero report-sourced data.
 - Trigger `sith_presence` via the control topic. Within two scans a `gold.disturbance` row
   appears with the correct `signature` and `sustained_scans >= 2`. **Depends on Job 1's 15-minute rebuild
-  actually running** (step 9) — two scans is 30 minutes of wall-clock time only if the pipeline runs on that
-  cadence; a manually-triggered `dbt build` does not exercise it.
+  actually running** (step 9) — a manually-triggered `dbt build` does not exercise it.
+
+  **Clarification, Phase 4 Stage 3c (doc 05, "Runbook: C3/C4"): "two scans" counts from the first scan actually AT
+  emergency level, not from when the injection command is sent — not a deviation, since `sustained_scans >= 2`
+  itself is unchanged; only the wall-clock expectation needed correcting.** An injection's `ramp` phase (2 scans
+  by default) is a buildup, not yet guaranteed to clear the threshold; doc 04 is explicit that it's specifically
+  the `hold` phase that does: "injection holds at least 2 scans, because a disturbance needs 2 consecutive scans
+  above the threshold" (04:114). With the default `ramp=2, hold=4`, the earliest the signature is actually at
+  emergency level is the 3rd scan after injection (hold's own first scan), so the 2 consecutive qualifying scans
+  land on the 3rd and 4th — about 45 minutes after injection, not 30. Job 1's own `+3` minute offset (doc 05) adds
+  up to one more run's latency on top before the row is actually visible in `gold.disturbance` — so budget roughly
+  45-50 minutes end to end, not a literal 30.
 - Trigger two disturbances in one sector 30 minutes apart. One incident row — cooldown works. **Resolved, 2026-09-30:**
   `gold.disturbance`'s cooldown now walks runs per sector with a recursive CTE, comparing each one against the last
   *accepted* incident rather than just the immediately preceding one (a `LAG()`-based bug that could wrongly suppress a
