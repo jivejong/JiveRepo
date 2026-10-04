@@ -310,8 +310,8 @@ unit_tests:
     given:
       - input: ref('gold_sector_reading')
         rows:
-          - {event_id: "01UNIT0000000000000000200", sector_id: "tatooine", scan_id: "01UNIT0000000000000000201", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000202", sector_id: "tatooine", scan_id: "01UNIT0000000000000000203", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.2, z_midi: 0.0, z_kyber: -2.1, z_dark: 3.1, signature: "sith_presence", channels_present: 3}
+          - {event_id: "01UNIT0000000000000000200", sector_id: "tatooine", scan_id: "01UNIT0000000000000000201", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000202", sector_id: "tatooine", scan_id: "01UNIT0000000000000000203", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.2, z_midi: 0.0, z_kyber: -2.1, z_dark: 3.1, signature: "sith_presence", channels_present: 3, is_replayed: false}
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
@@ -328,20 +328,22 @@ unit_tests:
     given:
       - input: ref('gold_sector_reading')
         rows:
-          - {event_id: "01UNIT0000000000000000204", sector_id: "tatooine", scan_id: "01UNIT0000000000000000205", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
+          - {event_id: "01UNIT0000000000000000204", sector_id: "tatooine", scan_id: "01UNIT0000000000000000205", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
     expect:
       rows: []
 
-  - name: unit_test_disturbance_cooldown_suppresses_a_second_onset_and_flags_the_first
+  - name: unit_test_disturbance_cooldown_suppresses_an_in_order_second_onset_no_conflict
     description: >
-      Two separate sustained runs (each 2 consecutive scans) for the same sector, 30 minutes apart onset to
-      onset -- doc 07 checkpoint C4's own fixture shape. A below-threshold scan between them breaks them into
-      two distinct runs, not one continuous four-scan run. Covers two of this round's four disturbance cases
-      at once: the cooldown suppresses the second run entirely (only one row in the output), and that
-      survivor's cooldown_conflict is set to true because a later onset did fall inside its cooldown.
+      Stage 4a, "definition B", case (a). Two separate sustained runs (each 2 consecutive scans) for the same
+      sector, 30 minutes apart onset to onset -- doc 07 checkpoint C4's own fixture shape. A below-threshold
+      scan between them breaks them into two distinct runs, not one continuous four-scan run. The cooldown
+      suppresses the second run entirely (only one row in the output) -- but it arrives IN ORDER, is_replayed
+      false on every row, so this is the cooldown working exactly as designed, not a conflict:
+      cooldown_conflict stays false. (Before Stage 4a, this test asserted cooldown_conflict: true for this
+      same ordinary, non-replayed case -- that was the doc 03 / implementation mismatch "definition B" fixes.)
     model: gold_disturbance
     overrides:
       macros:
@@ -349,17 +351,17 @@ unit_tests:
     given:
       - input: ref('gold_sector_reading')
         rows:
-          - {event_id: "01UNIT0000000000000000206", sector_id: "tatooine", scan_id: "01UNIT0000000000000000207", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000208", sector_id: "tatooine", scan_id: "01UNIT0000000000000000209", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000210", sector_id: "tatooine", scan_id: "01UNIT0000000000000000211", event_time: "2026-09-30T12:30:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000212", sector_id: "tatooine", scan_id: "01UNIT0000000000000000213", event_time: "2026-09-30T12:45:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000214", sector_id: "tatooine", scan_id: "01UNIT0000000000000000215", event_time: "2026-09-30T13:00:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
+          - {event_id: "01UNIT0000000000000000206", sector_id: "tatooine", scan_id: "01UNIT0000000000000000207", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000208", sector_id: "tatooine", scan_id: "01UNIT0000000000000000209", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000210", sector_id: "tatooine", scan_id: "01UNIT0000000000000000211", event_time: "2026-09-30T12:30:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000212", sector_id: "tatooine", scan_id: "01UNIT0000000000000000213", event_time: "2026-09-30T12:45:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000214", sector_id: "tatooine", scan_id: "01UNIT0000000000000000215", event_time: "2026-09-30T13:00:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
     expect:
       rows:
-        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", sustained_scans: 2, cooldown_conflict: true}
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", sustained_scans: 2, cooldown_conflict: false}
 
   - name: unit_test_disturbance_third_rapid_run_is_accepted
     description: >
@@ -371,8 +373,11 @@ unit_tests:
       imply (03:00 < 04:30). The old LAG()-based check compared run 3 against run 2's detected_at regardless of
       run 2's own suppression and wrongly suppressed it; the recursive walk compares run 3 against the last
       ACCEPTED incident (run 1, detected_at 00:15, cooldown ends 02:15) and correctly accepts it. Expect run 1
-      and run 3 as two separate incidents, run 1 flagged cooldown_conflict (run 2 was suppressed against it),
-      run 3 not (nothing was suppressed against it).
+      and run 3 as two separate incidents, run 3 not flagged (nothing was suppressed against it). Every row is
+      is_replayed: false -- this test is about the LAG-vs-recursive-walk mechanics, not replay detection, so
+      under "definition B" (Stage 4a) run 1 is NOT flagged either: run 2's suppression is ordinary, in-order,
+      not a replay (contrast unit_test_disturbance_cooldown_replayed_onset_flags_the_existing_incident, below,
+      which is the same shape with run 2 replayed).
     model: gold_disturbance
     overrides:
       macros:
@@ -380,24 +385,126 @@ unit_tests:
     given:
       - input: ref('gold_sector_reading')
         rows:
-          - {event_id: "01UNIT0000000000000000300", sector_id: "tatooine", scan_id: "01UNIT0000000000000000301", event_time: "2026-09-30T00:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000302", sector_id: "tatooine", scan_id: "01UNIT0000000000000000303", event_time: "2026-09-30T00:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000304", sector_id: "tatooine", scan_id: "01UNIT0000000000000000305", event_time: "2026-09-30T00:30:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000306", sector_id: "tatooine", scan_id: "01UNIT0000000000000000307", event_time: "2026-09-30T00:45:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000308", sector_id: "tatooine", scan_id: "01UNIT0000000000000000309", event_time: "2026-09-30T01:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000310", sector_id: "tatooine", scan_id: "01UNIT0000000000000000311", event_time: "2026-09-30T01:15:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000312", sector_id: "tatooine", scan_id: "01UNIT0000000000000000313", event_time: "2026-09-30T01:30:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000314", sector_id: "tatooine", scan_id: "01UNIT0000000000000000315", event_time: "2026-09-30T01:45:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000316", sector_id: "tatooine", scan_id: "01UNIT0000000000000000317", event_time: "2026-09-30T02:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000318", sector_id: "tatooine", scan_id: "01UNIT0000000000000000319", event_time: "2026-09-30T02:15:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000320", sector_id: "tatooine", scan_id: "01UNIT0000000000000000321", event_time: "2026-09-30T02:30:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000322", sector_id: "tatooine", scan_id: "01UNIT0000000000000000323", event_time: "2026-09-30T02:45:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000324", sector_id: "tatooine", scan_id: "01UNIT0000000000000000325", event_time: "2026-09-30T03:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
-          - {event_id: "01UNIT0000000000000000326", sector_id: "tatooine", scan_id: "01UNIT0000000000000000327", event_time: "2026-09-30T03:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3}
+          - {event_id: "01UNIT0000000000000000300", sector_id: "tatooine", scan_id: "01UNIT0000000000000000301", event_time: "2026-09-30T00:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000302", sector_id: "tatooine", scan_id: "01UNIT0000000000000000303", event_time: "2026-09-30T00:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000304", sector_id: "tatooine", scan_id: "01UNIT0000000000000000305", event_time: "2026-09-30T00:30:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000306", sector_id: "tatooine", scan_id: "01UNIT0000000000000000307", event_time: "2026-09-30T00:45:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000308", sector_id: "tatooine", scan_id: "01UNIT0000000000000000309", event_time: "2026-09-30T01:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000310", sector_id: "tatooine", scan_id: "01UNIT0000000000000000311", event_time: "2026-09-30T01:15:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000312", sector_id: "tatooine", scan_id: "01UNIT0000000000000000313", event_time: "2026-09-30T01:30:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000314", sector_id: "tatooine", scan_id: "01UNIT0000000000000000315", event_time: "2026-09-30T01:45:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000316", sector_id: "tatooine", scan_id: "01UNIT0000000000000000317", event_time: "2026-09-30T02:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000318", sector_id: "tatooine", scan_id: "01UNIT0000000000000000319", event_time: "2026-09-30T02:15:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000320", sector_id: "tatooine", scan_id: "01UNIT0000000000000000321", event_time: "2026-09-30T02:30:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000322", sector_id: "tatooine", scan_id: "01UNIT0000000000000000323", event_time: "2026-09-30T02:45:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000324", sector_id: "tatooine", scan_id: "01UNIT0000000000000000325", event_time: "2026-09-30T03:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000326", sector_id: "tatooine", scan_id: "01UNIT0000000000000000327", event_time: "2026-09-30T03:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
     expect:
       rows:
-        - {sector_id: "tatooine", detected_at: "2026-09-30T00:15:00Z", sustained_scans: 2, cooldown_conflict: true}
+        - {sector_id: "tatooine", detected_at: "2026-09-30T00:15:00Z", sustained_scans: 2, cooldown_conflict: false}
         - {sector_id: "tatooine", detected_at: "2026-09-30T03:15:00Z", sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_cooldown_replayed_onset_flags_the_existing_incident
+    description: >
+      Stage 4a, "definition B", case (b). Same shape as
+      unit_test_disturbance_cooldown_suppresses_an_in_order_second_onset_no_conflict (run 1 accepted, a
+      below-threshold gap, run 2 suppressed by run 1's cooldown) -- but run 2's own rows are is_replayed: true
+      this time: its onset scan arrived via a buffer replay, discovered only after run 1 was already accepted
+      and recorded. This IS the case doc 03's "Late-replayed onset inside an existing cooldown" describes --
+      cooldown_conflict is true on run 1's row.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000400", sector_id: "tatooine", scan_id: "01UNIT0000000000000000401", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000402", sector_id: "tatooine", scan_id: "01UNIT0000000000000000403", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000404", sector_id: "tatooine", scan_id: "01UNIT0000000000000000405", event_time: "2026-09-30T12:30:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000406", sector_id: "tatooine", scan_id: "01UNIT0000000000000000407", event_time: "2026-09-30T12:45:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: true}
+          - {event_id: "01UNIT0000000000000000408", sector_id: "tatooine", scan_id: "01UNIT0000000000000000409", event_time: "2026-09-30T13:00:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: true}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", sustained_scans: 2, cooldown_conflict: true}
+
+  - name: unit_test_disturbance_replayed_onset_with_no_recorded_incident_no_conflict
+    description: >
+      Stage 4a, "definition B", case (c). A single sustained run, is_replayed: true on every row -- but there is
+      no earlier incident for it to overlap (it's the sector's first and only run, always accepted). Being
+      replayed by itself is not enough: cooldown_conflict requires BOTH a replayed onset AND an existing
+      incident whose cooldown it falls inside. Neither condition alone is sufficient.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000420", sector_id: "tatooine", scan_id: "01UNIT0000000000000000421", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: true}
+          - {event_id: "01UNIT0000000000000000422", sector_id: "tatooine", scan_id: "01UNIT0000000000000000423", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: true}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_c4_shape_shortened_episode_suppresses_in_order_no_conflict
+    description: >
+      Stage 4a, "definition B", case (d) -- the redesigned C4 runbook's own shape (doc 05, "Runbook: C3/C4"):
+      episode 1 shortened with --hold 2 --decay 1 (ramp 2 default + hold 2 + decay 1 = 5 scans, onset 00:15,
+      qualifying through 00:45, decay confirms below-threshold at 01:00), episode 2 injected at 01:15 (~75
+      minutes after T = 00:00, well inside episode 1's 2-hour cooldown from its detected_at 00:45). Episode 2 is
+      a live control-topic injection, not a replay (is_replayed: false throughout) -- ordinary in-order
+      suppression, so cooldown_conflict stays false on episode 1's row, matching the runbook's own "Expected: 1"
+      for p4-10.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000440", sector_id: "tatooine", scan_id: "01UNIT0000000000000000441", event_time: "2026-09-30T00:00:00Z", imbalance_score: 3.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 1.5, signature: "unclassified", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000442", sector_id: "tatooine", scan_id: "01UNIT0000000000000000443", event_time: "2026-09-30T00:15:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000444", sector_id: "tatooine", scan_id: "01UNIT0000000000000000445", event_time: "2026-09-30T00:30:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000446", sector_id: "tatooine", scan_id: "01UNIT0000000000000000447", event_time: "2026-09-30T00:45:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000448", sector_id: "tatooine", scan_id: "01UNIT0000000000000000449", event_time: "2026-09-30T01:00:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000450", sector_id: "tatooine", scan_id: "01UNIT0000000000000000451", event_time: "2026-09-30T01:15:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000452", sector_id: "tatooine", scan_id: "01UNIT0000000000000000453", event_time: "2026-09-30T01:30:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T00:45:00Z", sustained_scans: 3, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_detected_at_is_the_latest_qualifying_scan
+    description: >
+      Stage 4a, detected_at semantics decided (doc 03, "detected_at semantics -- decided Stage 4a"): detected_at is
+      the run's LATEST qualifying scan, not its onset and not its second scan -- pinned here with 3 qualifying scans
+      so all three are distinct. scan_id must still be the ONSET scan (min(scan_id)), proving the two columns
+      deliberately refer to different scans in the same row.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000000500", sector_id: "tatooine", scan_id: "01UNIT0000000000000000501", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000502", sector_id: "tatooine", scan_id: "01UNIT0000000000000000503", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000000504", sector_id: "tatooine", scan_id: "01UNIT0000000000000000505", event_time: "2026-09-30T12:30:00Z", imbalance_score: 6.2, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", scan_id: "01UNIT0000000000000000501", detected_at: "2026-09-30T12:30:00Z", sustained_scans: 3, cooldown_conflict: false}

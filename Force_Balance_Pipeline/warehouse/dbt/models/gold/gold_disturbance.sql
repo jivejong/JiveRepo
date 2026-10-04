@@ -41,10 +41,27 @@
   with a 3-run fixture, 2026-09-30, before this fix). WITH RECURSIVE is supported on this project's serverless
   SQL warehouse (confirmed live, DBSQL 2026.36) -- an earlier version of this comment assumed otherwise without
   checking. `basis_detected_at` on each row of `walked` records which accepted incident's detected_at a run was
-  actually tested against (NULL for the sector's first run, which is never suppressed); `cooldown_conflict`
-  below is set on an accepted incident whenever any later, suppressed run's `basis_detected_at` matches its own
+  actually tested against (NULL for the sector's first run, which is never suppressed).
+
+  `detected_at` semantics -- decided Stage 4a, doc 03 (current behavior is intended, not an oversight): it is the
+  `event_time` of the run's latest qualifying scan at build time, so it advances on every rebuild while the incident is
+  still ongoing. `onset_scan_id` (-> `scan_id` in the final SELECT) is unaffected -- always the run's onset scan, never
+  moving -- so the two columns deliberately refer to different scans in the same row. The 2-hour cooldown (below) is
+  measured from `detected_at`, i.e. from the end of the qualifying run so far, not from its onset. A fixed `confirmed_at`
+  (stamped once, at the run's second qualifying scan) was considered and is deferred to Phase 6 -- a schema change, not a
+  correction to this behavior.
+
+  `cooldown_conflict` -- "definition B", decided Stage 4a (doc 03's own wording describes a replayed onset
+  specifically; the PRE-Stage-4a implementation set this flag for ANY suppressed run, replayed or not -- a
+  genuine doc/code mismatch, now resolved in the doc's favor). Set true on an accepted incident only when BOTH:
+  (1) a later run was suppressed by this incident's cooldown (its `basis_detected_at` matches this row's own
   `detected_at` -- correct even across a chain of several consecutive suppressed runs, since they all carry the
-  same original `basis_detected_at` forward unchanged.
+  same original `basis_detected_at` forward unchanged), AND (2) that suppressed run's own ONSET scan arrived via
+  replay (`onset_is_replayed`, from `gold_sector_reading.is_replayed`, itself from `silver_probe_reading` --
+  `min_by(is_replayed, event_time)` in the `runs` CTE picks the EARLIEST scan's flag, not any scan's). An
+  ordinary, in-order second onset suppressed by an active cooldown is the cooldown working exactly as designed,
+  not a conflict -- only a replayed onset, discovered late after the suppressing incident was already accepted,
+  is the case doc 03's "Late-replayed onset inside an existing cooldown" actually describes.
 
   Contract:
   - Inputs: ref('gold_sector_reading'), ref('dim_sector') (population, for severity).
@@ -56,10 +73,11 @@
   - Firing rule (probe-sourced, doc 03): imbalance_score > var('emergency_threshold'), sustained across at
     least var('sustained_scans') consecutive rows (see "Consecutive" above), cooldown of var('cooldown_hours')
     hours per sector.
-  - cooldown_conflict = true on the ACCEPTED incident whose cooldown a later run's onset would otherwise have
-    qualified within (doc 03, "Late-replayed onset inside an existing cooldown") -- the later run never gets
-    its own row at all. Correct across a chain of several suppressed runs in a row, not just a single pair
-    (see "Cooldown -- RESOLVED" above).
+  - cooldown_conflict = true on the ACCEPTED incident whose cooldown a later, REPLAYED run's onset would
+    otherwise have qualified within (doc 03, "Late-replayed onset inside an existing cooldown" -- "definition
+    B", Stage 4a) -- an ordinary in-order suppression is not a conflict. The later run never gets its own row at
+    all either way. Correct across a chain of several suppressed runs in a row, not just a single pair (see
+    "`cooldown_conflict`" above).
   - severity = imbalance_score * (1 + LOG10(GREATEST(population, 10)) / 10), doc 03's own formula.
   - agent_processed: defaults false for a row never seen before; carried forward unchanged for a row already
     in the table (both the SELECT's own LEFT JOIN against `this` and merge_exclude_columns enforce this).
@@ -104,6 +122,7 @@ runs as (
         run_id,
         min(event_time) as onset_event_time,
         min(scan_id) as onset_scan_id,  -- ULIDs sort lexically = chronologically, so MIN() picks the earliest
+        min_by(is_replayed, event_time) as onset_is_replayed,  -- doc 03, cooldown_conflict "definition B"
         count(*) as sustained_scans,
         max(imbalance_score) as peak_imbalance_score,
         max_by(z_midi, imbalance_score) as z_midi,
@@ -133,7 +152,7 @@ walked as (
 
     -- base case: each sector's first candidate run has nothing before it, so it's always accepted.
     select
-        sector_id, run_seq, onset_event_time, onset_scan_id, detected_at, sustained_scans,
+        sector_id, run_seq, onset_event_time, onset_scan_id, onset_is_replayed, detected_at, sustained_scans,
         peak_imbalance_score, z_midi, z_kyber, z_dark, signature,
         cast(null as timestamp) as basis_detected_at,
         detected_at as last_accepted_detected_at,
@@ -147,15 +166,15 @@ walked as (
     -- detected_at (w.last_accepted_detected_at), not the immediately preceding run's own -- see the header's
     -- "Cooldown -- RESOLVED" note for why that distinction matters.
     select
-        sector_id, run_seq, onset_event_time, onset_scan_id, detected_at, sustained_scans,
+        sector_id, run_seq, onset_event_time, onset_scan_id, onset_is_replayed, detected_at, sustained_scans,
         peak_imbalance_score, z_midi, z_kyber, z_dark, signature,
         basis_detected_at,
         case when suppressed then basis_detected_at else detected_at end as last_accepted_detected_at,
         not suppressed as accepted
     from (
         select
-            r.sector_id, r.run_seq, r.onset_event_time, r.onset_scan_id, r.detected_at, r.sustained_scans,
-            r.peak_imbalance_score, r.z_midi, r.z_kyber, r.z_dark, r.signature,
+            r.sector_id, r.run_seq, r.onset_event_time, r.onset_scan_id, r.onset_is_replayed, r.detected_at,
+            r.sustained_scans, r.peak_imbalance_score, r.z_midi, r.z_kyber, r.z_dark, r.signature,
             w.last_accepted_detected_at as basis_detected_at,
             r.onset_event_time < dateadd(hour, {{ var('cooldown_hours') }}, w.last_accepted_detected_at) as suppressed
         from walked w
@@ -179,13 +198,18 @@ final as (
         a.signature,
         d.population,
         -- true on an accepted incident whenever a later, suppressed run was tested against (and fell inside
-        -- the cooldown of) THIS row's own detected_at -- correct across a chain of several suppressed runs,
-        -- since they all carry the same original basis_detected_at forward unchanged.
+        -- the cooldown of) THIS row's own detected_at, AND that suppressed run's own onset arrived via replay
+        -- (doc 03, cooldown_conflict "definition B", Stage 4a) -- an ORDINARY in-order onset suppressed by the
+        -- cooldown is the cooldown working as designed, not a conflict; only a replayed onset discovered late,
+        -- after this incident was already accepted, is the "late-replayed onset" case doc 03 actually means.
+        -- Correct across a chain of several suppressed runs, since they all carry the same original
+        -- basis_detected_at forward unchanged.
         exists (
             select 1 from walked later
             where later.sector_id = a.sector_id
               and not later.accepted
               and later.basis_detected_at = a.detected_at
+              and later.onset_is_replayed
         ) as cooldown_conflict
     from walked a
     left join {{ ref('dim_sector') }} d on a.sector_id = d.sector_id

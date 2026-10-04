@@ -198,7 +198,7 @@ first live scan.
 
 **Window anchor, decided Phase 4:** `computed_at` is `current_timestamp()`, captured once per build in a CTE so every row
 in one build shares the same anchor, not the run's calendar date. The window is `[computed_at - 90 days, computed_at)`.
-This model is built by hand this phase (excluded from Job 1, which only runs the 15-minute models) and rebuilt daily once
+This model is built by hand this phase (excluded from Job 1's own transform task) and rebuilt daily once
 scheduled, so the anchor drifts forward with wall-clock time rather than snapping to midnight.
 
 ### `gold.sector_reading`
@@ -215,6 +215,7 @@ scan *is* the grain.
 | `imbalance_score` | Composite magnitude |
 | `signature` | Classified pattern |
 | `channels_present` | |
+| `is_replayed` | Not originally listed here — added Phase 4. Carried straight through from `silver.probe_reading` (above), unchanged. Needed so `gold.disturbance` can tell whether a run's onset scan arrived via replay (`cooldown_conflict`, "definition B") -- this table is the only place that information can reach `gold.disturbance` from, since it never reads silver directly |
 | `_gold_built_at` | Not originally listed here — added Phase 4. Bookkeeping only, not part of the doc's original contract: this build's `current_timestamp()`, stamped on every row, the same way bronze stamps `_ingest_ts`. The recompute-window formula below needs "which silver rows arrived since the last time this model ran," which nothing else in the warehouse tracks |
 
 **Composite deviation score:**
@@ -287,7 +288,9 @@ this table is affected. `veiled_presence` stays unproducible by the control-topi
 | Column | Notes |
 |---|---|
 | `disturbance_id` | **Deterministic**, not a random ULID — see below |
-| `sector_id`, `detected_at`, `scan_id` | |
+| `sector_id` | |
+| `detected_at` | `event_time` of the incident's most recent qualifying scan **at build time** -- not a fixed moment. Because this model rescans all history every build, an incident that is still ongoing (more qualifying scans keep landing) has `detected_at` advance on every rebuild, right along with `sustained_scans`. The 2-hour cooldown (below) is measured from `detected_at` -- a quiet period after the run's last qualifying scan so far, not from its onset |
+| `scan_id` | the run's **onset** scan (`min(scan_id)`) -- by design, a different scan from the one `detected_at` reflects (above). A fixed `confirmed_at` (stamped once, at the run's second qualifying scan, never moved again) was considered Stage 4a and is **deferred to Phase 6**: it is a new column on an already-incremental model with `on_schema_change: fail`, and nothing in the current checkpoints requires it |
 | `imbalance_score`, `z_midi`, `z_kyber`, `z_dark` | |
 | `signature` | |
 | `severity` | see below |
@@ -296,7 +299,7 @@ this table is affected. `veiled_presence` stays unproducible by the control-topi
 | `report_relevance` | null for probe-sourced |
 | `sustained_scans` | consecutive scans above threshold — see "Consecutive," below, for what that means across sectors with different cadences |
 | `agent_processed` | BOOLEAN, default false |
-| `cooldown_conflict` | BOOLEAN, default false. Set on an **existing** incident's row when a later-replayed onset for the same sector would have fired inside that incident's 2-hour cooldown. The late onset itself never gets its own row — see "Firing rules" below |
+| `cooldown_conflict` | BOOLEAN, default false. Set on an **existing** incident's row only when a later onset for the same sector both (a) would have fired inside that incident's 2-hour cooldown AND (b) arrived via **replay** — an ordinary, in-order onset suppressed by an active cooldown is the cooldown working as designed, not a conflict. The late onset itself never gets its own row either way — see "Firing rules" below |
 
 **Deviation from `generate_ulid.sql`:** `disturbance_id` is **deterministic**, not randomly generated — 48 bits of the onset
 scan's `event_time` (epoch ms) followed by a hash of (`sector_id`, onset `event_time`), laid out in ULID's own base-32
@@ -333,11 +336,16 @@ Population-weighted, so the same reading over Coruscant outranks one over a barr
   for a `STEALTH` sector at its hourly one (see "Consecutive," above)
 - Cooldown: no new incident for the same `sector_id` within 2 hours
 
-**Late-replayed onset inside an existing cooldown.** A `BURST` drain can insert an onset scan older than an incident already
-recorded for that sector. If the older onset would itself have fired within the existing incident's 2-hour cooldown, the
-recompute does not create a second incident and does not rewrite the existing one's detection fields: it sets
-`cooldown_conflict = true` on the **existing incident's row** and stops. Treat `cooldown_conflict = true` as needing manual
-review, not as a suppressed duplicate.
+**Late-replayed onset inside an existing cooldown — "definition B", decided Stage 4a.** A `BURST` drain can insert an onset
+scan older than an incident already recorded for that sector. If that onset would itself have fired within the existing
+incident's 2-hour cooldown, the recompute does not create a second incident and does not rewrite the existing one's
+detection fields: it sets `cooldown_conflict = true` on the **existing incident's row** and stops. **This is specifically
+about a *replayed* onset** — one whose own scan arrived via replay (`is_replayed = true`, doc 03's own `silver.probe_reading`
+definition, carried through `gold.sector_reading`), not merely "arrived after" in wall-clock build order. An **ordinary**
+second onset for the same sector, arriving in order and falling inside an active cooldown, is the cooldown mechanism working
+exactly as intended — no flag, nothing to review, not a suppressed duplicate. `cooldown_conflict = true` means something
+more specific: a replayed onset was discovered late, *after* the incident whose cooldown it falls inside had already been
+accepted and potentially already acted on — that is what needs manual review, not suppression by itself.
 
 **Resolved, 2026-09-30.** The cooldown check previously compared each run only to the *immediately preceding* run for the
 same sector (a `LAG()`, not a walk carrying the last **accepted** incident forward), on the mistaken belief that
@@ -357,6 +365,15 @@ byte-identical disturbance list as before the fix (same sectors, `detected_at`, 
 why: the minimum gap between any two accepted incidents for the same sector, anywhere in the real data, is 47.5 hours
 (`kalee`) — far beyond the 2-hour cooldown the bug needs to matter, so the bug was real (and is now fixed, and
 regression-tested) but never actually fired on this dataset.
+
+**`detected_at` semantics -- decided Stage 4a.** The current behavior is intended, not an oversight: `detected_at` is the
+`event_time` of the incident's latest qualifying scan at build time, so it advances on every rebuild while the incident
+is still ongoing. `scan_id` is unaffected by this -- it is always the run's onset scan and does not move -- so the two
+columns deliberately refer to different scans in the same row. The 2-hour cooldown above is measured from `detected_at`,
+i.e. from the end of the qualifying run so far, not from its onset: a sector only leaves cooldown once its readings have
+actually gone quiet for 2 hours, not 2 hours after the anomaly first began. A fixed `confirmed_at`, stamped once at the
+run's second qualifying scan and never moved again, would pin a single moment instead -- that's deferred to Phase 6 (see
+`gold.disturbance`'s column table, above) because it's a schema change, not because the current behavior is wrong.
 
 **Firing rules — report-sourced:**
 

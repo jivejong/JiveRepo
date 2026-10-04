@@ -21,6 +21,12 @@
     "which silver rows arrived since the last time THIS model ran," and dbt/Databricks have no built-in
     concept of "the last build's timestamp" -- so this model stamps its own, the same way bronze stamps
     _ingest_ts. A pending doc 03 edit, not silently assumed away.
+  - `is_replayed`, added Stage 4a: carried straight through from silver_probe_reading, unchanged. Needed so
+    gold_disturbance can tell whether a run's onset scan arrived via replay (doc 03, cooldown_conflict
+    "definition B") -- this model is the only place that information can reach gold_disturbance from, since
+    gold_disturbance never reads silver directly. SCHEMA CHANGE: this is a new column on an existing
+    incremental model with on_schema_change: fail (dbt_project.yml) -- requires a --full-refresh of
+    gold_sector_reading after this lands on main, not just a plain incremental run.
 
   Contract:
   - Inputs: ref('silver_probe_reading'), ref('gold_sector_baseline'), ref('dim_sector') (population, for
@@ -115,6 +121,8 @@ zscored as (
         c.kyber_resonance,
         c.dark_side_activity,
         c.channels_present,
+        c.is_replayed,  -- doc 03, gold.disturbance's cooldown_conflict (definition B, Stage 4a): needs to know
+                         -- whether an onset scan arrived via replay, which only silver_probe_reading tracks
         (c.midichlorian_ppm - b.mean_90d_midi) / nullif(b.stddev_90d_midi, 0) as z_midi,
         (c.kyber_resonance - b.mean_90d_kyber) / nullif(b.stddev_90d_kyber, 0) as z_kyber,
         (c.dark_side_activity - b.mean_90d_dark) / nullif(b.stddev_90d_dark, 0) as z_dark,
@@ -140,5 +148,6 @@ select
     {{ imbalance_score('z_midi', 'z_kyber', 'z_dark', 'channels_present') }} as imbalance_score,
     {{ classify_signature('z_midi', 'z_kyber', 'z_dark', 'population', 'channels_present') }} as signature,
     channels_present,
+    is_replayed,
     current_timestamp() as _gold_built_at
 from zscored
