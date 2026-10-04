@@ -31,7 +31,7 @@
 -- qualification) only holds right after a fresh gold_sector_baseline build. gold_sector_baseline is a `table`,
 -- deliberately excluded from Job 1 and rebuilt only daily (doc 05) -- its stored computed_at and sample_count are
 -- frozen at the last build, while silver_probe_reading keeps growing underneath it (both from Job 1's own
--- 15-minute cadence and, independently, from buffered/replayed batches that can land in bronze well before
+-- scheduled cadence and, independently, from buffered/replayed batches that can land in bronze well before
 -- silver actually incorporates them -- checked directly: Stage 3b found 49 "mismatches" that way, 43 of them
 -- is_replayed=true rows whose arrival predated the gold build by hours, yet weren't in silver_probe_reading as a
 -- TABLE until some later, unrelated dbt run). Neither event_time nor arrival_ts can tell "was this row physically
@@ -124,18 +124,20 @@ WHERE event_time >= TIMESTAMP '<replay_window_start_utc>' AND event_time < TIMES
 -- dbt build runs (ingest/job1_quota_watch.sql's own per-day run log has the run timestamps); expect zero movement.
 
 -- (p4-9) sith_presence via the control-topic injector: a gold.disturbance row for the injected sector with the
---        right signature, sustained_scans >= 2, detected_at within 2 scans of the ONSET (the first qualifying
---        scan, found empirically -- doc 07's C3 bullet, "Clarification, Phase 4 Stage 3d") -- not of
---        <inject_ts_utc> itself, and not guaranteed to be prompt: detected_at is whichever scan was LAST
---        qualifying as of whenever gold_disturbance actually rebuilt (gold_disturbance.sql's own
---        `max(event_time) as detected_at`), so a missed Job 1 cycle can push both detected_at and
---        sustained_scans well past the healthy-pipeline minimum.
+--        right signature, sustained_scans >= 2, detected_at from the FIRST Job 1 run at or after the ONSET's
+--        second qualifying scan (the first qualifying scan is found empirically -- doc 07's C3 bullet,
+--        "Clarification, Phase 4 Stage 3d") -- not of <inject_ts_utc> itself, and not guaranteed to be prompt:
+--        detected_at is whichever scan was LAST qualifying as of whenever gold_disturbance actually rebuilt
+--        (gold_disturbance.sql's own `max(event_time) as detected_at`), so a missed Job 1 cycle -- or simply
+--        Job 1's own 30-minute cadence (Stage 4b; was 15) -- can push both detected_at and sustained_scans past
+--        the two-scan healthy-pipeline minimum even with no outage at all.
 SELECT sector_id, detected_at, signature, sustained_scans
 FROM force.gold.gold_disturbance
 WHERE sector_id = '<inject_sector>' AND detected_at >= TIMESTAMP '<inject_ts_utc>'
 ORDER BY detected_at LIMIT 1;
--- Expected: 1 row, signature = 'sith_presence', sustained_scans >= 2, detected_at within 2 scans of the onset
--- under healthy Job 1 operation (not a fixed offset from <inject_ts_utc> -- see above).
+-- Expected: 1 row, signature = 'sith_presence', sustained_scans >= 2, detected_at from the first Job 1 run at or
+-- after onset's second qualifying scan, under healthy Job 1 operation (not a fixed offset from <inject_ts_utc>,
+-- and not reliably "within 2 scans" at the current 30-minute cadence -- see above).
 --
 -- Real result, 2026-10-01 (Stage 3d): naboo, injected 02:59Z (T = 03:00Z boundary). Onset (first scan >= 5.75)
 -- was 03:15Z (T+15, score 6.729 -- inside the default 2-scan `ramp`, not only once `hold` began; onset is found

@@ -12,7 +12,8 @@ matching is fully testable, and the model is only doing the part that genuinely 
 
 ## Runtime
 
-Cloud Run job, Cloud Scheduler every 15 minutes, offset ~4 minutes behind the pipeline job.
+Cloud Run job, Cloud Scheduler every 30 minutes, offset ~4 minutes behind the pipeline job (Stage 4b; follows
+Job 1's own cadence, was 15 minutes -- see `docs/ENGINEERING-LOG.md`).
 Polls `gold.disturbance` for `agent_processed = false`, processes each, writes
 `gold.deployment`, marks processed.
 

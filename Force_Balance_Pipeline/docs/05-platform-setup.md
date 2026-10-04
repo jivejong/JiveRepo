@@ -518,7 +518,7 @@ only if it becomes slow.
 Free Edition allows 5 concurrent job tasks. **Sequential tasks within one job do not count
 against that limit concurrently**, so a four-task linear job is well within budget.
 
-### Job 1 — `force_pipeline` (every 15 minutes, offset +3 from scan)
+### Job 1 — `force_pipeline` (every 30 minutes, offset +3 from scan)
 
 | Task              | Type                                                                          | Depends on      |
 | ----------------- | -------------------------------------------------------------------------------- | --------------- |
@@ -537,11 +537,17 @@ landed-file timestamps show files arriving about 3 *seconds* after their scan bo
 at :15:03Z and :30:03Z). A 3-minute offset is therefore a 60x margin over the measured normal case,
 not a tight fit to it.
 
+**Cadence changed 15 -> 30 min (every other scan), Stage 4b:** the Free Edition serverless quota was exhausted on
+two separate days under the 15-minute (96-run) cadence — see `docs/ENGINEERING-LOG.md`, "Stage 3d" and "Stage 4a".
+Halving the run count is the direct lever available without a paid warehouse. This is **provisional**, pending a
+`ingest/job1_quota_watch.sql` measurement week at the new cadence; the scan cycle itself stays 15 minutes
+unchanged, so a run now processes roughly two scans' worth of new rows instead of one.
+
 `publish_serving` writes gold aggregates to Postgres. If outbound egress to your Postgres host is
 blocked, invert it: have a Cloud Run job pull via the SQL Statement Execution API on the same
 schedule. The pull direction is preferred anyway — it keeps the work off the Databricks quota.
 
-### Job 2 — `rebuild_baseline` (daily, 03:00 UTC)
+### Job 2 — `rebuild_baseline` (daily, 03:18 UTC)
 
 | Task               | Type                                                         |
 | ------------------ | ------------------------------------------------------------ |
@@ -549,9 +555,13 @@ schedule. The pull direction is preferred anyway — it keeps the work off the D
 
 Rolling 90-day statistics per planet per channel. **Probe-only** — the model must filter
 `source_type = 'probe'`. Excluded from Job 1's `transform` task (above) for exactly this reason: daily rather than per-run
-because baselines should be stable within a day; recomputing them every 15 minutes would make z-scores drift under the
-detector. 03:00 UTC: a quiet overnight UTC hour, clear of Job 1's continuous :03/:18/:33/:48 cadence — this project has no
-timezone of record, so "quiet" means only "doesn't collide with Job 1."
+because baselines should be stable within a day; recomputing them every Job 1 run would make z-scores drift under the
+detector. 03:18 UTC (moved from 03:00, Stage 3d, then 03:10 -> 03:18, Stage 4b — see `docs/ENGINEERING-LOG.md`): a quiet
+overnight UTC hour, clear of Job 1's `:03/:33` cadence — this project has no timezone of record, so "quiet" means only
+"doesn't collide with Job 1." Job 1's cadence halving to 30 minutes freed `:18` back up as a Job 1 run time, and 03:18
+now sits squarely in the middle of the new 30-minute gap between Job 1's `:03` and `:33` runs — restoring the same kind
+of real margin on both sides that 03:10 gave under the old 15-minute cadence (03:10 itself was left with only ~7
+minutes' margin once Job 1's gap widened to 30 minutes, not changed before this move).
 
 ### Deploying Job 1 and Job 2
 
@@ -645,7 +655,7 @@ columns only, and should be run with care that it does not clobber enriched colu
 - **Commands:** `dbt deps`, `dbt build` (or `dbt run --select ...` for Job 2), no `--target`. **Deviation, Phase 4
   Stage 3a:** `dbt seed` is NOT in Job 1's or Job 2's commands, despite an earlier draft of this bullet listing it
   generically — seeds are static, enrichment-backed CSVs that change only via Job 4's own explicit `dbt seed
-  --full-refresh` (manual trigger only, above); reseeding on every 15-minute Job 1 run would spend warehouse compute
+  --full-refresh` (manual trigger only, above); reseeding on every Job 1 run would spend warehouse compute
   reproducing identical rows every time.
 - **Profile:** the task uses the profile Databricks generates, whose only target is
   `databricks_cluster` (verified in the Phase 0 q3 run log). The task's `catalog` and
@@ -979,12 +989,16 @@ python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence
 boundary of the scan right after you send it (`T`, that is `onset_event_time` *if* `T` itself already qualifies) and the
 sector you chose.
 
-**Timed against Job 1 (`:03/:18/:33/:48`, 3 minutes behind each scan) — corrected, Stage 3d (doc 07's C3 bullet has the same
-correction and the reasoning).** Onset (the first scan actually at or above 5.75) is not a fixed ramp/hold boundary — a real
-run (naboo, 2026-10-01, injected at `T`) crossed threshold on `T+15`, still inside the default 2-scan `ramp`, not only once
-`hold` began. **Under healthy Job 1 operation, expect `sustained_scans = 2` and the `gold.disturbance` row within 1-2 scans
-of onset** — in that real run, onset `T+15` would have given `detected_at` ≈ `T+30` with a prompt pipeline. Watch the actual
-scores (`gold_sector_reading`, not just the countdown) to find onset for your own run rather than assuming a fixed count.
+**Timed against Job 1 (`:03/:33`, 3 minutes behind every other scan — Stage 4b; was `:03/:18/:33/:48` at Stage 3d's
+original correction, same reasoning otherwise, doc 07's C3 bullet too).** Onset (the first scan actually at or above
+5.75) is not a fixed ramp/hold boundary — a real run (naboo, 2026-10-01, injected at `T`, under the 15-minute Job 1
+cadence that existed then) crossed threshold on `T+15`, still inside the default 2-scan `ramp`, not only once `hold`
+began. **Under healthy Job 1 operation at the current 30-minute cadence, expect `sustained_scans = 2` and the
+`gold.disturbance` row to appear on the first Job 1 run at or after onset's second qualifying scan** — since Job 1 now
+builds only every other scan, that can be up to ~30 minutes after that scan, not the ~15 minutes a 15-minute cadence
+would give; the real naboo run (onset `T+15`) would have given `detected_at` ≈ `T+30` only under the OLD cadence —
+expect somewhat later now. Watch the actual scores (`gold_sector_reading`, not just the countdown) to find onset for
+your own run rather than assuming a fixed count.
 **Separately, `detected_at` can run much later than onset if Job 1 misses a cycle** — it is `max(event_time)` of the run as
 of whenever `gold_disturbance` last rebuilt (`gold_disturbance.sql`'s own definition), not the onset, so a missed build
 reports whatever was the LAST qualifying scan by the time a build finally ran, with `sustained_scans` to match. This is
@@ -998,9 +1012,10 @@ SELECT sector_id, detected_at, signature, sustained_scans
 FROM force.gold.gold_disturbance
 WHERE sector_id = '<inject_sector>' AND detected_at >= TIMESTAMP '<inject_ts_utc>'
 ORDER BY detected_at LIMIT 1;
--- Expected: 1 row, signature = 'sith_presence', sustained_scans >= 2, detected_at within 1-2 scans of onset under a
+-- Expected: 1 row, signature = 'sith_presence', sustained_scans >= 2, detected_at appearing on the first Job 1 run at
+-- or after onset's second qualifying scan (up to ~30 minutes after it, at the current 30-minute cadence) under a
 -- healthy pipeline -- see phase4_checkpoint.sql's own p4-9 comment for the real 2026-10-01 result (75 minutes, not ~30,
--- due to a Job 1 outage, not the detection logic).
+-- due to a Job 1 outage, not the detection logic, and timed under the since-changed 15-minute cadence).
 ```
 
 **(b) C4 — two SEPARATE runs, both inside the 2-hour cooldown, same sector.** Redesigned, Stage 3d: the original version
@@ -1029,8 +1044,9 @@ python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence --
 
 **What to note:** both injection times, `T+60`'s confirmed below-threshold score (the gap that makes these two runs, not
 one), and episode 2's own onset the same way as C3. Episode 2's onset (`T+75` at the earliest) is well inside episode 1's
-2-hour cooldown (`T+30`-ish detected_at, under a healthy pipeline, +120 minutes = `T+150`ish) — `T+75` is only 45-75 minutes
-after episode 1's own likely `detected_at`, comfortably inside that window.
+2-hour cooldown (`T+30`-to-`T+60`-ish detected_at at the current 30-minute Job 1 cadence — see C3's note above on the
+wider range this cadence now gives — +120 minutes = `T+150`-to-`T+180`ish) — `T+75` stays comfortably inside that window
+either way; the margin just isn't as wide as the old 15-minute-cadence estimate implied.
 
 ```sql
 -- p4-10, filled in the same way; <inject_ts_utc> = T (injection 1's own boundary)
@@ -1039,16 +1055,17 @@ FROM force.gold.gold_disturbance
 WHERE sector_id = '<inject_sector>'
   AND detected_at >= TIMESTAMP '<inject_ts_utc>' AND detected_at < dateadd(hour, 2, TIMESTAMP '<inject_ts_utc>');
 -- Expected: 1 (the cooldown, var('cooldown_hours') = 2, suppresses episode 2's onset -- doc 03, "Late-replayed onset
--- inside an existing cooldown"). Check cooldown_conflict = true on that one row too, same query plus the column --
--- **open question, not yet resolved (docs/ENGINEERING-LOG.md, "Stage 3d"): doc 03's own wording ties
--- cooldown_conflict specifically to a REPLAYED late onset, but the current implementation (and its unit test) sets
--- it for any suppressed onset, including this live, non-replayed one. Treat a `cooldown_conflict = false` result
--- here as a possible doc/implementation mismatch worth re-checking, not an automatic fail.**
+-- inside an existing cooldown"). Check cooldown_conflict on that one row too, same query plus the column --
+-- **decided, "definition B", Stage 4a (doc 03, docs/ENGINEERING-LOG.md "Stage 4a"): cooldown_conflict is true only
+-- for a REPLAYED onset older (by event_time) than an incident already recorded for the same sector -- an ordinary,
+-- in-order second onset suppressed by the cooldown, which is exactly what episode 2's live control-topic injection
+-- is here, is the cooldown working as designed, not a conflict. Expected for this runbook: cooldown_conflict =
+-- false on the one incident row.**
 ```
 
 Run both p4-9 and p4-10 after a Job 1 `transform` run has completed following the relevant onset's own qualifying scans —
 Job 1's own per-run log (`ingest/job1_quota_watch.sql`) or the workspace UI's run history has the exact completion time if
-the `:03/:18/:33/:48` schedule isn't precise enough to tell by wall clock alone, and confirm no run was missed in between
+the `:03/:33` schedule isn't precise enough to tell by wall clock alone, and confirm no run was missed in between
 (the same quota risk C3's real run hit).
 
 ---

@@ -1,17 +1,23 @@
-# Job 2 -- doc 05, "Job topology". Daily, 03:10 UTC -- a quiet hour for this project (no real users, no
+# Job 2 -- doc 05, "Job topology". Daily, 03:18 UTC -- a quiet hour for this project (no real users, no
 # timezone-of-record; picked as a low-traffic overnight UTC slot).
 #
 # Schedule corrected, Stage 3d: originally 03:00 UTC, on the mistaken claim that this "never overlaps" Job 1's
-# :03/:18/:33/:48 cadence -- that claim was never actually checked. 03:00 is only 3 minutes before Job 1's own
-# :03 run, so the two jobs' serverless compute requests land close enough together to leave no real safety
+# then-cadence (:03/:18/:33/:48) -- that claim was never actually checked. 03:00 is only 3 minutes before Job 1's
+# own :03 run, so the two jobs' serverless compute requests land close enough together to leave no real safety
 # margin -- checked directly (system.lakeflow.job_run_timeline) for 2026-09-30's quota-exhaustion day
 # (docs/ENGINEERING-LOG.md, "Stage 3d"): that specific day's Job 2 run (03:00-03:02) finished just before Job 1's
 # (03:03-03:07) started, so they were adjacent rather than literally overlapping that one time, not proof they
-# never would on a slower day. 03:10 sits squarely in the middle of the 15-minute gap between Job 1's :03 and
-# :18 runs -- clear of both under normal (4-6 minute) run durations, with real margin on either side.
+# never would on a slower day. Moved to 03:10, which sat squarely in the middle of the then-15-minute gap between
+# Job 1's :03 and :18 runs -- clear of both under normal (4-6 minute) run durations, with real margin either side.
+#
+# Moved again, 03:10 -> 03:18, Stage 4b (force_pipeline.job.yml; docs/ENGINEERING-LOG.md, "Stage 4a"): Job 1's
+# cadence halved to 30 minutes (:03/:33), so :18 no longer exists as a Job 1 run time and is free again -- 03:18
+# sits squarely in the middle of the new 30-minute gap between Job 1's :03 and :33 runs, restoring the same kind
+# of real margin on both sides that 03:10 gave under the old 15-minute cadence, rather than the ~7-minute margin
+# 03:10 was left with once Job 1's gap widened.
 #
 # Separate job, not a task bundled into Job 1: gold_sector_baseline is explicitly excluded from Job 1's
-# transform task (doc 05:546-548, "recomputing them every 15 minutes would make z-scores drift under the
+# transform task (doc 05, "recomputing them every Job 1 run would make z-scores drift under the
 # detector") -- keeping it in its own job makes that exclusion visible in the job topology itself, not just in
 # a dbt --exclude flag someone has to go read.
 #
@@ -30,11 +36,12 @@ resources:
         git_provider: gitHub
         git_branch: main
       schedule:
-        quartz_cron_expression: "0 10 3 * * ?"
+        quartz_cron_expression: "0 18 3 * * ?"
         timezone_id: UTC
         # Set back to PAUSED by Jong on 2026-10-01 after the quota exhaustion (docs/ENGINEERING-LOG.md, "Stage
         # 3d"). Set to UNPAUSED again here, Stage 3d, alongside the moved schedule and the task timeout below --
-        # Jong reviews this diff and redeploys when ready; not deployed by this round itself.
+        # pause_status and timeout_seconds confirmed deployed, Stage 4a (live `jobs/get` matched this file's
+        # values exactly). The cron above moved again, Stage 4b (03:10 -> 03:18) -- not yet deployed.
         pause_status: UNPAUSED
       tasks:
         - task_key: rebuild_baseline

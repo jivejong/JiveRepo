@@ -15,7 +15,12 @@
 -- Free Edition quota context (doc 05, "Job 1 timing"): no daily/monthly serverless compute quota number is
 -- published anywhere found; the only known signal if one is ever hit is compute shutting down for the rest of
 -- the day or month. These two queries are how you'd notice that happening -- a day with far fewer runs than the
--- 96 a 15-minute cadence implies, or a sudden run of FAILED/SKIPPED results -- not a way to see the quota itself.
+-- 48 a 30-minute cadence implies, or a sudden run of FAILED/SKIPPED results -- not a way to see the quota itself.
+--
+-- Cadence changed 15 -> 30 min, Stage 4b (docs/ENGINEERING-LOG.md, "Stage 3d" and "Stage 4a"): the Free Edition
+-- quota was exhausted on two separate days under the 15-minute (96-run) cadence. This file's own expected-run
+-- count and baseline below are updated to the new 48-run cadence; this is what the week this file watches for is
+-- now measuring against.
 
 -- (quota-1) per-day run count and outcome, Job 1 only
 SELECT
@@ -32,10 +37,10 @@ ORDER BY 1;
 
 -- (quota-2) per-day total task execution time, Job 1 only -- sum across both tasks (ingest_bronze, transform),
 -- every run that day. Derived baseline (Phase 4 Stage 3a's one manual run, 2026-09-30): ingest_bronze 83.6s +
--- transform 187.9s = 271.5s, ~4.5 minutes per 15-minute cycle -- about 30% of the cycle's own wall-clock budget,
--- with room to spare before a 15-minute cadence would start overlapping itself. Compare each day's
--- total_task_execution_minutes / runs against this ~4.5 baseline; a sustained rise is the signal to watch for,
--- not a single day's number.
+-- transform 187.9s = 271.5s, ~4.5 minutes per run -- about 15% of a 30-minute cycle's own wall-clock budget
+-- (was ~30% of the old 15-minute cycle), with more room to spare before the cadence would start overlapping
+-- itself than before the Stage 4b change. Compare each day's total_task_execution_minutes / runs against this
+-- ~4.5 baseline; a sustained rise is the signal to watch for, not a single day's number.
 SELECT
     date(period_start_time) AS day,
     count(*) AS task_runs,

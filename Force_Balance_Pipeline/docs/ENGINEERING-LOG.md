@@ -813,6 +813,32 @@ checked (match-on-executable-name-alone, and the same with the empty/null case) 
 expected; the second (dropping the now-redundant `-and $CommandLine` null guard) broke none, since PowerShell's `-like`
 already handles `$null` safely on its own — the guard is kept for clarity, not because a test can prove it's load-bearing.
 
+### Stage 4a — schema isolation incident, corrected timeline
+
+`generate_schema_name.sql` resolved every model's `+schema:` config literally regardless of target, so `--target dev`
+gave no real isolation. A stray `dbt build --select gold_sector_baseline gold_sector_reading --target dev --full-refresh`
+landed directly in prod around 17:03:10Z, concurrent with Job 1's own 17:03Z run. Both of that run's task attempts
+(17:03–17:09Z) and the following 17:18Z run failed identically on `on_schema_change: fail` ("Target columns not in
+source: [is_replayed]"); 17:33Z was the first clean run after restoration. Restored `gold_sector_reading`/`gold_disturbance`
+via a `git worktree` build of `main` targeting `prod --full-refresh`, verified byte-identical to the pre-incident 51-row
+`gold_disturbance` snapshot. `gold_sector_baseline` was not in the restore's scope and still reflects the incident
+build's `computed_at`; it self-corrects at Job 2's next scheduled run. Fixed `generate_schema_name` to isolate only
+`target.name == 'dev'`, verified via `dbt compile` manifest inspection before any further build.
+
+A full `--full-refresh` of `gold_sector_reading`/`gold_disturbance` recomputes every historical z-score against
+whichever `gold_sector_baseline` snapshot exists at build time, so a disturbance's onset scan — and therefore its
+deterministic `disturbance_id` — can shift for any run whose firing score sits close to the 5.75 threshold; this is
+expected, not a bug, and was observed directly in a boundary case (sector `tund`, 2026-07-15) during this stage's
+dev-vs-prod comparison. `gold_sector_baseline`'s rolling window is also sensitive to exactly which `silver_probe_reading`
+rows have landed by build time — a late arrival can enter a window that, at an earlier build, didn't yet cover it. This
+is the **likely**, not proven, source of `tund`'s one unreconciled row (`sample_count` 8503 prod vs. 8504 dev): a 3-row
+swap at the window's trailing edge was confirmed and explains the mean/stddev shift, but it alone doesn't fully
+reconcile the net +1, so a late-arrival is the leading explanation, not a confirmed one.
+
+`cooldown_conflict` redefined to "definition B" (replayed, late-discovered onset only — not an ordinary in-order cooldown
+suppression). `is_replayed` added to `gold_sector_reading`, and to doc 03's own column list for that table (previously
+missing). detected_at semantics decided: current behavior documented as intended; confirmed_at deferred to Phase 6.
+
 ## Open items
 
 | Item | Status |
@@ -831,7 +857,7 @@ already handles `$null` safely on its own — the guard is kept for clarity, not
 | `publish_serving` task not built | Waits on the Postgres/local demo stack (Phase 8). Add to Job 1, `depends_on: transform`, once it exists (doc 05). |
 | `cooldown_conflict` scope: replayed onsets only (doc 03's literal words) or any suppressed onset (current implementation) | Genuine ambiguity, not resolved — see "Stage 3d," above, for both proposed wordings. Needs a decision before changing either the doc or the code/test. |
 | `gold_disturbance`'s full-history rescan, cost growing with total row count (530,000+ and climbing) | A bounded recompute window (e.g. 7 days) would cut this ~90%+ and keep it constant, but risks cutting a real run in half if the window isn't proven wide enough first. Proposed, not built — see "Stage 3d," above. |
-| Job 1 cadence (15 vs. 30 minutes) | Kept at 15 minutes provisionally after one quota-exhaustion event on a day with confounding heavy dev load — not enough evidence alone to justify halving it. Revisit after the quota measurement week (`ingest/job1_quota_watch.sql`) if exhaustion recurs on an otherwise-ordinary day. |
+| Job 1 cadence (15 vs. 30 minutes) | **Changed to 30 minutes, Stage 4b**, after a second quota-exhaustion event (2026-10-01, overnight, scheduled runs only — ruling out the first event's "confounding heavy dev load" explanation). Provisional, pending a quota-watch week (`ingest/job1_quota_watch.sql`) at the new cadence; if exhaustion recurs even at 30 minutes, the next lever is a longer interval or a paid warehouse tier, not reverting to 15. |
 | `resources/*.job.yml`'s resilience changes (task timeouts, Job 2's moved schedule, `pause_status: UNPAUSED`) | Written, not deployed — Jong reviews and runs `databricks bundle deploy`. |
 
 ## Lessons (beyond this project)

@@ -7,7 +7,7 @@
   DBT CONCEPTS USED HERE:
   - materialized='table', no incremental config: this model is rebuilt from scratch every run
     (`CREATE OR REPLACE TABLE ... AS`), by design -- doc 05, Job 2, rebuilds it daily, full refresh, and it is
-    explicitly excluded from Job 1's 15-minute transform task (doc 05, Job 1 table; Q11). "Rolling 90-day"
+    explicitly excluded from Job 1's transform task (doc 05, Job 1 table; Q11). "Rolling 90-day"
     means the WINDOW rolls with each rebuild, not that the table itself is incremental.
   - CTE chain (anchor -> windowed -> sector_counts / stats -> final select): each step named for what it
     computes, so the query reads like the doc 03 spec it implements.

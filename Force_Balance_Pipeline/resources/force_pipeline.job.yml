@@ -1,6 +1,15 @@
-# Job 1 -- doc 05, "Job topology". Every 15 minutes, offset +3 minutes from the probe's own :00/:15/:30/:45
-# scan boundary (doc 02) so the bridge's ndjson files have landed in the telemetry volume before Auto Loader
-# looks for them.
+# Job 1 -- doc 05, "Job topology". Every 30 minutes (:03, :33), offset +3 minutes from the probe's own
+# :00/:15/:30/:45 scan boundary (doc 02) so the bridge's ndjson files have landed in the telemetry volume
+# before Auto Loader looks for them. The probe's own scan interval is unchanged at 15 minutes -- this is the
+# JOB's cadence, not the scan's; a 30-minute job run now picks up two scans' worth of new rows per run instead
+# of one.
+#
+# Cadence changed 15 -> 30 min, Stage 4b: Databricks Free Edition's serverless SQL warehouse exhausted its daily
+# quota on two separate days (2026-09-30 and 2026-10-01, the second after a full overnight of scheduled-run-only
+# load, no interactive dev queries) -- see docs/ENGINEERING-LOG.md, "Stage 3d" and "Stage 4a". Halving the run
+# count is the direct lever available without a paid warehouse. This is PROVISIONAL, not a final tuning decision
+# -- `ingest/job1_quota_watch.sql` is the measurement this is pending; if a quota-watch week at 30 minutes still
+# shows exhaustion, the next lever is a longer interval still or a different warehouse tier, not reverting to 15.
 #
 # Offset justification, from Phase 3's own measured data (docs/PHASE3-RESULTS.md): under normal CONNECTED
 # operation, files land about 3 SECONDS after their scan boundary, not minutes (e.g. the 2026-09-28T19:00:00Z
@@ -34,11 +43,12 @@ resources:
         git_provider: gitHub
         git_branch: main
       schedule:
-        quartz_cron_expression: "0 3,18,33,48 * * * ?"
+        quartz_cron_expression: "0 3,33 * * * ?"
         timezone_id: UTC
         # Set back to PAUSED by Jong on 2026-10-01 after the quota exhaustion (docs/ENGINEERING-LOG.md, "Stage
         # 3d"). Set to UNPAUSED again here, Stage 3d, alongside the task timeouts and Job 2's moved schedule
-        # below -- Jong reviews this diff and redeploys when ready; not deployed by this round itself.
+        # below -- pause_status and timeout_seconds confirmed deployed, Stage 4a (live `jobs/get` matched this
+        # file's values exactly). The cron above changed again, Stage 4b (15 -> 30 min) -- not yet deployed.
         pause_status: UNPAUSED
       tasks:
         - task_key: ingest_bronze

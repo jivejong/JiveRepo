@@ -150,8 +150,9 @@ power-loss test".
 8. `docker-compose.yml` and `make demo` against the Postgres target.
 9. **Deviation (this round):** build and schedule Job 1 (`force_pipeline`, doc 05 "Job topology"), once the gold
    models (steps 4-6) exist. Ingestion has been a manual notebook run for the rest of this phase (doc 05, "The
-   one-time arrival-timestamp backfill"); the checkpoint below needs the 15-minute ingest → transform → publish
-   cycle actually running on its own schedule, not a one-off `dbt build`.
+   one-time arrival-timestamp backfill"); the checkpoint below needs the ingest → transform → publish cycle
+   actually running on its own schedule (30 minutes, Stage 4b; was 15 — Free Edition quota, see
+   `docs/ENGINEERING-LOG.md`), not a one-off `dbt build`.
 
 **Checkpoint:**
 - `dbt build` passes all tests on `prod`. **Deviation (Phase 4):** the `local` target and the `extract_payload` Postgres branch
@@ -159,8 +160,9 @@ power-loss test".
   than running untested SQL until then.
 - **The baseline test passes:** `gold.sector_baseline` contains zero report-sourced data.
 - Trigger `sith_presence` via the control topic. Within two scans a `gold.disturbance` row
-  appears with the correct `signature` and `sustained_scans >= 2`. **Depends on Job 1's 15-minute rebuild
-  actually running** (step 9) — a manually-triggered `dbt build` does not exercise it.
+  appears with the correct `signature` and `sustained_scans >= 2`. **Depends on Job 1's own scheduled rebuild
+  actually running** (step 9, currently every 30 minutes — Stage 4b) — a manually-triggered `dbt build` does not
+  exercise it.
 
   **Clarification, Phase 4 Stage 3d: "two scans" counts from the onset scan (the first scan actually at or above
   the emergency threshold), not from when the injection command is sent or a fixed ramp/hold boundary — not a
@@ -199,6 +201,11 @@ power-loss test".
 - `STEALTH` readings score correctly with `channels_present = 1` and are not rejected.
 - Replay a `DISCONNECTED` buffer. Affected historical rows are recomputed, not duplicated.
 
+**Stage 4a status:** `cooldown_conflict` "definition B" done (doc 03, `gold.disturbance`). dev/prod schema isolation
+fixed (`generate_schema_name.sql` now isolates only `target=dev`; see `docs/ENGINEERING-LOG.md`, "Stage 4a"). `detected_at`
+semantics decided: current behavior (the run's latest qualifying scan, advancing on each rebuild) documented as
+intended, not a defect; a fixed `confirmed_at` is deferred to Phase 6.
+
 ---
 
 ## Phase 5 — Web intake and inference · 10–14h
@@ -226,7 +233,7 @@ remain probe-only — re-run that test.
 3. Gemini wiring with function calling.
 4. ~24 fixtures from doc 06.
 5. `make test-agent`, 3 runs per fixture.
-6. Cloud Run job, scheduled 15 minutes offset 4.
+6. Cloud Run job, scheduled 30 minutes offset 4 (Stage 4b; follows Job 1's own cadence, was 15 minutes).
 
 **Checkpoint:** fixture suite passes on decision class and constraint compliance across 3 runs
 each. A real disturbance from Phase 4 produces a `gold.deployment` row with populated
