@@ -1,15 +1,23 @@
-# Job 1 -- doc 05, "Job topology". Every 30 minutes (:03, :33), offset +3 minutes from the probe's own
-# :00/:15/:30/:45 scan boundary (doc 02) so the bridge's ndjson files have landed in the telemetry volume
-# before Auto Loader looks for them. The probe's own scan interval is unchanged at 15 minutes -- this is the
-# JOB's cadence, not the scan's; a 30-minute job run now picks up two scans' worth of new rows per run instead
-# of one.
+# Job 1 -- doc 05, "Job topology". Every hour (:03), offset +3 minutes from the probe's own :00/:15/:30/:45
+# scan boundary (doc 02) so the bridge's ndjson files have landed in the telemetry volume before Auto Loader
+# looks for them. The probe's own scan interval is unchanged at 15 minutes -- this is the JOB's cadence, not
+# the scan's; an hourly job run now picks up four scans' worth of new rows per run instead of one.
 #
-# Cadence changed 15 -> 30 min, Stage 4b: Databricks Free Edition's serverless SQL warehouse exhausted its daily
-# quota on two separate days (2026-09-30 and 2026-10-01, the second after a full overnight of scheduled-run-only
-# load, no interactive dev queries) -- see docs/ENGINEERING-LOG.md, "Stage 3d" and "Stage 4a". Halving the run
-# count is the direct lever available without a paid warehouse. This is PROVISIONAL, not a final tuning decision
-# -- `ingest/job1_quota_watch.sql` is the measurement this is pending; if a quota-watch week at 30 minutes still
-# shows exhaustion, the next lever is a longer interval still or a different warehouse tier, not reverting to 15.
+# Cadence changed 15 -> 30 min, Stage 4b, then 30 -> 60 min, Stage 4c (both see docs/ENGINEERING-LOG.md): the
+# 30-minute cadence (Stage 4b) was itself measured for 3 days (2026-10-02 to 2026-10-04, `ingest/job1_quota_watch.sql`,
+# the week this file names) and still exhausted the Free Edition serverless quota every one of those 3 days.
+# From that measurement (all inference, not confirmed against a published Databricks number):
+#   - Quota exhaustion is SILENT -- no run is created at all once the budget is spent that day, not a failed run
+#     with a visible error. The daily cutoff time itself varies (observed 13:03Z, 20:03Z, ~21:03Z on the three
+#     days), consistent with a cumulative usage cap rather than a fixed clock-time cutoff.
+#   - The daily reset is inferred to land between 03:03Z and 03:18Z -- the 03:03Z Job 1 run never happens either,
+#     and Job 2 (rebuild_baseline.job.yml) succeeded at 03:18Z, all 3 days observed.
+#   - The daily transform budget is inferred at roughly 3.5-3.8 hours of cumulative transform-task time (measured:
+#     3.82h, 3.56h, 3.39h on the three cutoff days) before exhaustion.
+# Hourly halves the run count again (24 runs/day instead of ~45-48), bringing cumulative transform time to roughly
+# 2-2.5 hours/day at the per-run durations observed -- real margin under the ~3.5-3.8h inferred budget, not a
+# tight fit to it. Still PROVISIONAL: if a quota-watch stretch at hourly still exhausts, the next lever is a
+# paid warehouse tier, not a shorter interval than this.
 #
 # Offset justification, from Phase 3's own measured data (docs/PHASE3-RESULTS.md): under normal CONNECTED
 # operation, files land about 3 SECONDS after their scan boundary, not minutes (e.g. the 2026-09-28T19:00:00Z
@@ -43,12 +51,14 @@ resources:
         git_provider: gitHub
         git_branch: main
       schedule:
-        quartz_cron_expression: "0 3,33 * * * ?"
+        quartz_cron_expression: "0 3 * * * ?"
         timezone_id: UTC
         # Set back to PAUSED by Jong on 2026-10-01 after the quota exhaustion (docs/ENGINEERING-LOG.md, "Stage
         # 3d"). Set to UNPAUSED again here, Stage 3d, alongside the task timeouts and Job 2's moved schedule
         # below -- pause_status and timeout_seconds confirmed deployed, Stage 4a (live `jobs/get` matched this
-        # file's values exactly). The cron above changed again, Stage 4b (15 -> 30 min) -- not yet deployed.
+        # file's values exactly). Stage 4b's :03/:33 cron was deployed and ran live 2026-10-03 through 2026-10-05
+        # (confirmed via `jobs/runs/list`). The cron above changed again, Stage 4c (30 -> 60 min) -- not yet
+        # deployed.
         pause_status: UNPAUSED
       tasks:
         - task_key: ingest_bronze
@@ -61,9 +71,30 @@ resources:
             - task_key: ingest_bronze
           dbt_task:
             project_directory: Force_Balance_Pipeline/warehouse/dbt
+            # resource_type:seed and test_type:unit added, Stage 4c (doc 05, "dbt task configuration"): `dbt build`
+            # selects seeds and unit tests by default, so despite never calling `dbt seed` literally, every
+            # scheduled run was reseeding gold.dim_jedi/dim_sector/phase0_seed from scratch every time. Seeds are
+            # static, enrichment-backed CSVs that should only change via Job 4's own explicit
+            # `dbt seed --full-refresh`. Unit tests run against mock data, never touch the warehouse's real
+            # tables, and exist to catch a code change before it's committed/deployed, not to verify anything
+            # about the live data on every scheduled run -- they're exercised in dev before a commit, not here.
+            #
+            # --indirect-selection cautious + the explicit assert_baseline_probe_only re-exclude, same round:
+            # plain `--exclude resource_type:seed` (eager, dbt's default) doesn't just drop the 28 tests that are
+            # purely ABOUT a seed table -- it also silently drops any test with a seed as just ONE of several
+            # parents, including relationships_silver_probe_reading_sector_id__sector_id__ref_dim_sector_, a real
+            # referential-integrity check on silver_probe_reading's live data, not a seed self-check. `cautious`
+            # only drops a test when ALL its parents are excluded, which correctly keeps that one test -- but
+            # cautious is a single global setting, so it also loosens the UNRELATED `--exclude gold_sector_baseline`
+            # (assert_baseline_probe_only has gold_sector_baseline as only one of two parents too, and would
+            # otherwise come back testing a table this job never rebuilds). assert_baseline_probe_only is
+            # re-excluded explicitly, by name, to cancel exactly that one side effect. Proven with `dbt ls` before
+            # changing this command: old (`--exclude gold_sector_baseline` alone) = 10 models, 3 seeds, 72 data
+            # tests, 30 unit tests; new (this line) = 10 models, 0 seeds, 44 data tests (the 28 seed-only tests
+            # dropped, the 1 cross-reference test kept, assert_baseline_probe_only still out), 0 unit tests.
             commands:
               - "dbt deps"
-              - "dbt build --exclude gold_sector_baseline"
+              - "dbt build --exclude gold_sector_baseline resource_type:seed test_type:unit assert_baseline_probe_only --indirect-selection cautious"
             catalog: force
             schema: gold
             warehouse_id: ${var.warehouse_id}

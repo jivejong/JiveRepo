@@ -14,13 +14,19 @@
 --
 -- Free Edition quota context (doc 05, "Job 1 timing"): no daily/monthly serverless compute quota number is
 -- published anywhere found; the only known signal if one is ever hit is compute shutting down for the rest of
--- the day or month. These two queries are how you'd notice that happening -- a day with far fewer runs than the
--- 48 a 30-minute cadence implies, or a sudden run of FAILED/SKIPPED results -- not a way to see the quota itself.
+-- the day or month -- and even that signal is unreliable: exhaustion has been observed to be SILENT (no run
+-- created at all once the day's budget is spent, not a failed run with a visible error -- see docs/ENGINEERING-LOG.md,
+-- "Stage 4c", and the new open item on monitoring needing a freshness/gap check, not a failure count, for exactly
+-- this reason). These two queries are how you'd notice a day with far fewer runs than the 24 an hourly cadence
+-- implies, or a sudden run of FAILED/SKIPPED results -- neither is a direct view of the quota itself, and a day
+-- with ZERO runs after some point won't show as FAILED/SKIPPED at all, only as missing rows.
 --
--- Cadence changed 15 -> 30 min, Stage 4b (docs/ENGINEERING-LOG.md, "Stage 3d" and "Stage 4a"): the Free Edition
--- quota was exhausted on two separate days under the 15-minute (96-run) cadence. This file's own expected-run
--- count and baseline below are updated to the new 48-run cadence; this is what the week this file watches for is
--- now measuring against.
+-- Cadence changed 15 -> 30 min, Stage 4b, then 30 -> 60 min, Stage 4c (docs/ENGINEERING-LOG.md, "Stage 3d",
+-- "Stage 4a"): the Free Edition quota was exhausted on two separate days under the original 15-minute (96-run)
+-- cadence; halving to 30 minutes (48-run) was itself measured for 3 days by THIS file and still exhausted every
+-- day (2026-10-02 through 2026-10-04) -- that 3-day measurement is what moved Job 1 to hourly (24-run). This
+-- file's own expected-run count and baseline below are updated to the new 24-run cadence; this is what the next
+-- measurement week watches for.
 
 -- (quota-1) per-day run count and outcome, Job 1 only
 SELECT
@@ -37,10 +43,13 @@ ORDER BY 1;
 
 -- (quota-2) per-day total task execution time, Job 1 only -- sum across both tasks (ingest_bronze, transform),
 -- every run that day. Derived baseline (Phase 4 Stage 3a's one manual run, 2026-09-30): ingest_bronze 83.6s +
--- transform 187.9s = 271.5s, ~4.5 minutes per run -- about 15% of a 30-minute cycle's own wall-clock budget
--- (was ~30% of the old 15-minute cycle), with more room to spare before the cadence would start overlapping
--- itself than before the Stage 4b change. Compare each day's total_task_execution_minutes / runs against this
--- ~4.5 baseline; a sustained rise is the signal to watch for, not a single day's number.
+-- transform 187.9s = 271.5s, ~4.5 minutes per run -- about 7.5% of an hourly cycle's own wall-clock budget
+-- (was ~15% of the 30-minute cycle, ~30% of the original 15-minute cycle), with more room to spare before the
+-- cadence would start overlapping itself than at either earlier cadence. Compare each day's
+-- total_task_execution_minutes / runs against this ~4.5 baseline; a sustained rise is the signal to watch for,
+-- not a single day's number -- the Stage 4b/4c quota-watch measurements themselves found actual per-run transform
+-- time running 335-378s (5.6-6.3 min), noticeably above this original single-run baseline; worth re-deriving the
+-- baseline from that larger sample rather than the one manual run, in a future round.
 SELECT
     date(period_start_time) AS day,
     count(*) AS task_runs,

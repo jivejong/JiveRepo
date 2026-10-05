@@ -129,7 +129,7 @@ WHERE event_time >= TIMESTAMP '<replay_window_start_utc>' AND event_time < TIMES
 --        "Clarification, Phase 4 Stage 3d") -- not of <inject_ts_utc> itself, and not guaranteed to be prompt:
 --        detected_at is whichever scan was LAST qualifying as of whenever gold_disturbance actually rebuilt
 --        (gold_disturbance.sql's own `max(event_time) as detected_at`), so a missed Job 1 cycle -- or simply
---        Job 1's own 30-minute cadence (Stage 4b; was 15) -- can push both detected_at and sustained_scans past
+--        Job 1's own hourly cadence (Stage 4c; was 30 (Stage 4b), then 15) -- can push both detected_at and sustained_scans past
 --        the two-scan healthy-pipeline minimum even with no outage at all.
 SELECT sector_id, detected_at, signature, sustained_scans
 FROM force.gold.gold_disturbance
@@ -137,7 +137,7 @@ WHERE sector_id = '<inject_sector>' AND detected_at >= TIMESTAMP '<inject_ts_utc
 ORDER BY detected_at LIMIT 1;
 -- Expected: 1 row, signature = 'sith_presence', sustained_scans >= 2, detected_at from the first Job 1 run at or
 -- after onset's second qualifying scan, under healthy Job 1 operation (not a fixed offset from <inject_ts_utc>,
--- and not reliably "within 2 scans" at the current 30-minute cadence -- see above).
+-- and not reliably "within 2 scans" at the current hourly cadence -- see above).
 --
 -- Real result, 2026-10-01 (Stage 3d): naboo, injected 02:59Z (T = 03:00Z boundary). Onset (first scan >= 5.75)
 -- was 03:15Z (T+15, score 6.729 -- inside the default 2-scan `ramp`, not only once `hold` began; onset is found

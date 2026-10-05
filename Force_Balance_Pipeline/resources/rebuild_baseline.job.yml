@@ -1,4 +1,4 @@
-# Job 2 -- doc 05, "Job topology". Daily, 03:18 UTC -- a quiet hour for this project (no real users, no
+# Job 2 -- doc 05, "Job topology". Daily, 03:40 UTC -- a quiet hour for this project (no real users, no
 # timezone-of-record; picked as a low-traffic overnight UTC slot).
 #
 # Schedule corrected, Stage 3d: originally 03:00 UTC, on the mistaken claim that this "never overlaps" Job 1's
@@ -12,9 +12,17 @@
 #
 # Moved again, 03:10 -> 03:18, Stage 4b (force_pipeline.job.yml; docs/ENGINEERING-LOG.md, "Stage 4a"): Job 1's
 # cadence halved to 30 minutes (:03/:33), so :18 no longer exists as a Job 1 run time and is free again -- 03:18
-# sits squarely in the middle of the new 30-minute gap between Job 1's :03 and :33 runs, restoring the same kind
-# of real margin on both sides that 03:10 gave under the old 15-minute cadence, rather than the ~7-minute margin
-# 03:10 was left with once Job 1's gap widened.
+# sat squarely in the middle of the then-30-minute gap between Job 1's :03 and :33 runs. Deployed and ran live
+# 2026-10-03 through 2026-10-05 (confirmed via `jobs/runs/list`, job 38074271722750) -- all 3 runs SUCCEEDED.
+#
+# Moved again, 03:18 -> 03:40, Stage 4c: Job 1 went hourly (:03 only, force_pipeline.job.yml), so "mid-gap between
+# Job 1 runs" no longer constrains this job the way it did -- the new constraint is the quota reset itself. The
+# 3-day Stage 4b quota-watch (docs/ENGINEERING-LOG.md) inferred the daily reset lands between 03:03Z and 03:18Z
+# (not confirmed against a published number) -- Job 2's own 3/3 success at 03:18Z is itself the evidence for that
+# upper bound, meaning its old start time sat right AT the inferred edge, not safely clear of it. 03:40 sits a
+# full 22 minutes past that inferred edge, with real margin. Job 2's own observed run duration is ~17 minutes
+# (03:18Z-03:35Z) -- longer than any single Job 1 transform task; this may itself include a warehouse-start stall
+# like the one found in the Oct 3 11:03Z/11:33Z Job 1 runs, not pure gold_sector_baseline query cost (inference).
 #
 # Separate job, not a task bundled into Job 1: gold_sector_baseline is explicitly excluded from Job 1's
 # transform task (doc 05, "recomputing them every Job 1 run would make z-scores drift under the
@@ -36,12 +44,14 @@ resources:
         git_provider: gitHub
         git_branch: main
       schedule:
-        quartz_cron_expression: "0 18 3 * * ?"
+        quartz_cron_expression: "0 40 3 * * ?"
         timezone_id: UTC
         # Set back to PAUSED by Jong on 2026-10-01 after the quota exhaustion (docs/ENGINEERING-LOG.md, "Stage
         # 3d"). Set to UNPAUSED again here, Stage 3d, alongside the moved schedule and the task timeout below --
         # pause_status and timeout_seconds confirmed deployed, Stage 4a (live `jobs/get` matched this file's
-        # values exactly). The cron above moved again, Stage 4b (03:10 -> 03:18) -- not yet deployed.
+        # values exactly). Stage 4b's 03:18 cron was deployed and ran live 2026-10-03 through 2026-10-05 (3/3
+        # SUCCESS, confirmed via `jobs/runs/list`). The cron above moved again, Stage 4c (03:18 -> 03:40) -- not
+        # yet deployed.
         pause_status: UNPAUSED
       tasks:
         - task_key: rebuild_baseline

@@ -201,16 +201,16 @@ replaces.
    scale. Values are clamped in code.
 3. Collector bridge accumulates and flushes an NDJSON file per completed scan, or on a 4 MB / 90
    second fallback.
-4. Every 30 minutes (offset 3 minutes behind the scan; Stage 4b, was 15 minutes -- Free Edition quota, see
-   `docs/ENGINEERING-LOG.md`), the Lakeflow Job runs:
+4. Every hour (offset 3 minutes behind the scan; Stage 4c, was 30 minutes (Stage 4b), then 15 -- Free Edition
+   quota, see `docs/ENGINEERING-LOG.md`), the Lakeflow Job runs:
    - **Ingest** — Auto Loader reads new files into `bronze.events`, then stops.
    - **Transform** — `dbt build` runs silver and gold plus tests. Signature classification and
      incident detection live inside this DAG.
    - **Publish** — gold aggregates copied to Postgres.
 5. Daily, `gold.sector_baseline` rebuilds from the trailing 90 days of **probe-only** data.
-6. Every 30 minutes (offset 4 minutes behind the pipeline job -- follows Job 1's own cadence, Stage 4b; not yet
-   built, Phase 6), Cloud Run polls `gold.disturbance` for unprocessed incidents. The Yoda agent reasons over
-   context and writes to `gold.deployment`.
+6. Every hour (offset 4 minutes behind the pipeline job -- follows Job 1's own cadence, Stage 4c; not yet built,
+   Phase 6), Cloud Run polls `gold.disturbance` for unprocessed incidents. The Yoda agent reasons over context
+   and writes to `gold.deployment`.
 7. Dashboard polls Postgres. Users can view by region, system, and planet, and deploy manually
    through the shared constraint layer.
 
