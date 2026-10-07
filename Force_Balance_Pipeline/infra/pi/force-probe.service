@@ -8,11 +8,13 @@
 # The Phase 3 checkpoint (doc 07) passed 2026-09-29 (PHASE3-RESULTS.md): the simulated-outage schedule is on (--mode-schedule),
 # doc 04's default (1-3 h, roughly twice a day, its own seed drawn at random on each start).
 #
-# --fault-rate 0: fault injection stays off a few days after the schedule above, so a scheduled outage and an injected fault
-# are never running at the same time and an anomaly's cause is never ambiguous. It becomes its own period at doc 04's default
-# rate later (drop this flag); fault_injection.jsonl in the state directory will be the Phase 4 reconciliation source then.
-# probe.env holds only the three MQTT keys (below) — neither the fault rate nor the mode schedule reads from it, so this file
-# is the one place that turns them on and off.
+# Fault injection is now its own period, at doc 04's default rate (--fault-rate 1.0, explicit -- not the argparse default
+# left to apply itself, so this file states the rate it runs at rather than relying on a number that lives only in
+# edge/probe/main.py). Run separately from the mode schedule above so a scheduled outage and an injected fault are never
+# running at the same time and an anomaly's cause stays unambiguous. fault_injection.jsonl in the state directory is the
+# Phase 4 reconciliation source (doc 04) -- pull it (scp) before it grows unbounded, it has no cap of its own. probe.env
+# holds only the three MQTT keys (below) — neither the fault rate nor the mode schedule reads from it, so this file is
+# the one place that turns them on and off.
 [Unit]
 Description=Force Balance Pipeline probe (Raspberry Pi 3)
 After=network-online.target time-sync.target
@@ -30,7 +32,7 @@ Environment=PROBE_VERSION_FILE=/opt/force-probe/version
 Environment=PYTHONUNBUFFERED=1
 StateDirectory=force-probe
 StateDirectoryMode=0750
-ExecStart=/opt/force-probe/venv/bin/python /opt/force-probe/repo/Force_Balance_Pipeline/edge/probe_sim.py --live --fault-rate 0 --mode-schedule
+ExecStart=/opt/force-probe/venv/bin/python /opt/force-probe/repo/Force_Balance_Pipeline/edge/probe_sim.py --live --fault-rate 1.0 --mode-schedule
 Restart=always
 RestartSec=10
 

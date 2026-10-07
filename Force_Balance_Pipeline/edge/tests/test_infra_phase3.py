@@ -133,11 +133,13 @@ class UnitTests(unittest.TestCase):
         self.assertIn("--mode-schedule", exec_start)
         self.assertNotIn("--assume-clock-synced", exec_start)
 
-    def test_fault_injection_stays_off_a_few_days_after_the_schedule_so_a_cause_is_never_ambiguous(self):
-        # doc 07: the mode schedule went on 2026-09-29; fault injection gets its own period only after a few days of clean
-        # schedule-only running, so a scheduled outage and an injected fault are never confused with each other
+    def test_fault_injection_is_explicitly_on_at_the_default_rate(self):
+        # doc 04: the checkpoint (which needed --fault-rate 0) has passed; fault injection now runs its own period at
+        # doc 04's own default rate, stated explicitly here (--fault-rate 1.0) rather than left to the flag's own
+        # argparse default (edge/probe/main.py) -- this file is the one place that states the rate the Pi runs at.
         exec_start = [l for l in self.lines if l.startswith("ExecStart=")][0]
-        self.assertRegex(exec_start, r"--fault-rate\s+0\b")
+        self.assertRegex(exec_start, r"--fault-rate\s+1\.0\b")
+        self.assertIn("fault_injection.jsonl", self.source)   # the reconciliation source is named in the unit's own comment
 
     def test_the_state_directory_is_persistent_and_secrets_come_from_the_env_file_only(self):
         self.assertIn("StateDirectory=force-probe", self.lines)

@@ -168,10 +168,14 @@ one seed per reconciliation period, committed like the enrichment seeds, and joi
 dbt test.
 
 Fault injection is its own period, run separately from the mode schedule (doc 07's checkpoint used `--fault-rate 0` so the outage
-rows stayed clean). The Pi's unit stays at `--fault-rate 0` a few days after the mode schedule (above) goes on, so a scheduled
-outage and an injected fault are never running at the same time and an anomaly's cause is never ambiguous; only then does fault
-injection get its own period at the default rate. `fault_injection.jsonl` from that period will be the Phase 4 reconciliation
-source — pull it before the state directory is touched again, since the file has no cap of its own and keeps growing.
+rows stayed clean). The Pi's unit stayed at `--fault-rate 0` for a few days after the mode schedule (above) went on, so a
+scheduled outage and an injected fault were never running at the same time and an anomaly's cause was never ambiguous; it now
+runs explicitly at `--fault-rate 1.0` (doc 04's default, stated rather than left to the flag's own default) for its own period.
+
+**This period: 3 days from deployment.** The end date gets filled in here once it ends; `scp`-pulling `fault_injection.jsonl`
+and p4-12's reconciliation (`scripts/faultlog_to_seed.py`, then `dbt seed`, then the join against `silver.rejects`, above)
+follow once it does. `fault_injection.jsonl` is the Phase 4 reconciliation source — pull it before the state directory is
+touched again, since the file has no cap of its own and keeps growing.
 
 ### The four modes
 
