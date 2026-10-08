@@ -217,11 +217,28 @@ class DeployScriptTests(unittest.TestCase):
         self.assertNotIn("scp ", self.source)
         self.assertIn("run from inside that clone", self.source)
 
-    def test_it_never_pipes_a_download_into_a_shell_and_never_starts_or_enables_the_service(self):
+    def test_it_never_pipes_a_download_into_a_shell_and_never_unconditionally_starts_or_enables_the_service(self):
+        # a never-enabled unit must stay manual (probe.env is still just the template at that point) -- but an
+        # ALREADY-RUNNING one is now restarted on redeploy (below), which is the one exception to "never touches
+        # the service," so only the unconditional start/enable forms are forbidden here, not restart itself.
         self.assertNotRegex(self.code, r"(curl|wget)[^\n]*\|\s*(ba)?sh")
         commands = chr(10).join(l for l in self.code.splitlines() if not l.strip().startswith("echo"))     # the closing message names the next step
-        for word in ("systemctl start", "systemctl enable", "systemctl restart", "--now"):
+        for word in ("systemctl start", "systemctl enable", "--now"):
             self.assertNotIn(word, commands)
+
+    def test_restart_is_conditional_on_the_service_already_being_active(self):
+        # found live, 2026-10-06: installing the new unit and running daemon-reload changed what systemd WOULD
+        # run next, but did nothing to the already-forked process still running the old ExecStart -- restart
+        # must be guarded by is-active, not unconditional (an unconditional restart would start-from-cold a
+        # never-enabled unit before probe.env has real credentials in it).
+        self.assertRegex(self.code, r"if systemctl is-active --quiet force-probe; then\n\s+\w+=1\n\s+echo [^\n]*\n\s+\$SUDO systemctl restart force-probe\nfi")
+
+    def test_it_verifies_the_restarted_process_is_newer_than_this_deploy_and_matches_the_requested_sha(self):
+        self.assertIn("DEPLOY_START_EPOCH=", self.code)
+        self.assertIn("ExecMainStartTimestamp", self.code)
+        self.assertRegex(self.code, r'if \[\[ "\$START_EPOCH" -lt "\$DEPLOY_START_EPOCH" \]\]; then\n\s+echo [^\n]*\n\s+exit 1\n\s*fi')
+        self.assertRegex(self.code, r'if \[\[ "\$CHECKED_OUT_SHA" != "\$SHA" \]\]; then\n\s+echo [^\n]*\n\s+exit 1\n\s*fi')
+        self.assertIn("ps -p \"$MAIN_PID\"", self.code)
 
     def test_it_creates_the_env_file_root_owned_0600_and_only_if_missing(self):
         self.assertRegex(self.code, r"if \[\[ ! -f /etc/force-probe/probe\.env \]\]")

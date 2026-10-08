@@ -905,7 +905,8 @@ git checkout <full 40-character commit SHA>
 ```
 
 Then run the deploy script from inside that clone, as yourself, not with `sudo` — it escalates internally with `sudo` only for the
-steps that need it (packages, the service user, the unit, the env file, `daemon-reload`), and reruns the same `mkdir`/`chown` above:
+steps that need it (packages, the service user, the unit, the env file, `daemon-reload`, and — if `force-probe` is already
+running, a redeploy, below — the restart itself), and reruns the same `mkdir`/`chown` above:
 
 ```bash
 cd /opt/force-probe/repo/Force_Balance_Pipeline/infra/pi
@@ -921,6 +922,18 @@ It checks out that commit again itself (so it is safe to rerun after a `git pull
 The unit orders itself `After=time-sync.target`, but that target waits for a real synchronisation only if
 `systemd-time-wait-sync.service` is enabled. The guarantee that nothing is stamped early is the probe's own `NTPSynchronized`
 check (doc 04, Clock), not the unit.
+
+**Redeploying (the service already enabled and running).** `deploy.sh` restarts `force-probe` itself in this case, and then
+verifies the restart actually happened before it exits 0 — it checks `systemctl show -p ExecMainStartTimestamp,MainPID` against
+the time the script itself started, and the checked-out commit against the SHA given, failing loudly (exit 1) if either doesn't
+match. **Found live, 2026-10-06, and this is exactly why the verification exists:** `deploy.sh` installed a new unit file
+(`--fault-rate 1.0`) and ran `daemon-reload` successfully — `systemctl cat` showed the new `ExecStart`, `NeedDaemonReload=no` —
+but the already-running process was never restarted, silently staying on the previous commit's `--fault-rate 0` (PID unchanged,
+original start time unchanged) until a manual `sudo systemctl restart force-probe`. Installing a new unit file and reloading
+systemd changes what it would run *next time*; it does nothing to a process already forked from the old one. On a brand new,
+never-enabled install, `deploy.sh` still does **not** start the service — `probe.env` is still just the template at that point,
+and starting it would crash-loop on missing MQTT credentials; that first start stays the manual `sudo systemctl enable --now
+force-probe` step above.
 
 The service user owns `/var/lib/force-probe/` (the buffer database, `mode_transitions.jsonl`, `fault_injection.jsonl`), so reading
 it from your login needs `sudo`; use `sudo sqlite3 -readonly` for the database so a read cannot touch its WAL files.
@@ -984,7 +997,12 @@ cd /opt/force-probe/repo/Force_Balance_Pipeline/infra/pi
 journalctl -u force-probe -f                         # confirm it restarts clean on the new code
 ```
 
-`deploy.sh` restarts the `force-probe` service, which is enough to pick up the new code, but is **not** enough to prove the
+**Correction, 2026-10-06:** this instruction's own claim that `deploy.sh` restarts `force-probe` was wrong at the time it was
+written — `deploy.sh` never restarted an already-running service until Stage 4d's fix ("Redeploying," above). It's unconfirmed
+whether this specific redeploy actually picked up the publisher.py fix at the time, or silently kept running the pre-fix code
+the same way the fault-rate deploy later did; `journalctl -u force-probe -f`'s own command below would show the actual PID/start
+time either way, but nothing here recorded whether anyone checked it at the time. `deploy.sh` now restarts and verifies this
+itself, so a future redeploy can't repeat it unnoticed. Even with the restart, it's **not** enough to prove the
 persistent-journal fix (`Storage=persistent`, `SystemMaxUse=100M`, doc 05's journald section) survives what it's actually for —
 a full power cycle, not a service restart. While already on the Pi for this deploy:
 

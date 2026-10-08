@@ -172,9 +172,14 @@ rows stayed clean). The Pi's unit stayed at `--fault-rate 0` for a few days afte
 scheduled outage and an injected fault were never running at the same time and an anomaly's cause was never ambiguous; it now
 runs explicitly at `--fault-rate 1.0` (doc 04's default, stated rather than left to the flag's own default) for its own period.
 
-**This period: 3 days from deployment.** The end date gets filled in here once it ends; `scp`-pulling `fault_injection.jsonl`
-and p4-12's reconciliation (`scripts/faultlog_to_seed.py`, then `dbt seed`, then the join against `silver.rejects`, above)
-follow once it does. `fault_injection.jsonl` is the Phase 4 reconciliation source — pull it before the state directory is
+**This period: started 2026-10-07T13:29:35Z, ends about 3 days later (~2026-10-10T13:29:35Z).** The start is the manual
+`sudo systemctl restart force-probe`, not the deploy itself -- `./deploy.sh` on 2026-10-06 installed the new unit (confirmed
+by `systemctl cat` showing `--fault-rate 1.0`) but did not restart the already-running process, which stayed on the previous
+commit's `--fault-rate 0` until the restart (`infra/pi/deploy.sh`, fixed to restart and verify this itself -- doc 05, "Pi
+deploy"). The exact
+end date gets filled in here once it ends; `scp`-pulling `fault_injection.jsonl` and p4-12's reconciliation
+(`scripts/faultlog_to_seed.py`, then `dbt seed`, then the join against `silver.rejects`, above) follow once it does.
+`fault_injection.jsonl` is the Phase 4 reconciliation source — pull it before the state directory is
 touched again, since the file has no cap of its own and keeps growing.
 
 ### The four modes
