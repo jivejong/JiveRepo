@@ -144,7 +144,14 @@ for the stage machine, not a reimplementation of it.
 
 ## Bat bot
 
-Delivered by the `deploy_batbot` technique at stage 4. Appears helpful while probing the user.
+The payload for a cleared run: clearing stage 4, by any technique, delivers the bat bot instead of
+ending on a bare "cleared." A stalled run gets no payload. Appears helpful while probing the user.
+
+`deploy_batbot` remains an ordinary stage-4 catalog technique (T1071, Application Layer Protocol)
+with its own request/attempt chain. It's one route to clearing stage 4, no longer the only route to
+the bat bot. It was kept rather than removed because it's one of the 23 catalog techniques: the
+headless corpus, detection coverage, the mitigation seed, and the published evaluation numbers all
+include it.
 
 ### Consent notice — blocking, before the chat opens
 
@@ -285,6 +292,12 @@ on its own. A failed pipeline still renders a finale: `ATTRIBUTION INCONCLUSIVE 
 TELEMETRY`, in the same BATCOMPUTER voice, not a spinner or an error page. No `GEMINI_API_KEY` is
 not a failure — the rule-based baseline attributes the finale the same way it stands in for the LLM
 everywhere else in this project.
+
+Every finished session starts its own finale, stalled runs included, so two can be in flight at once.
+The warehouse is single-writer, so finales take its phases (dbt run, scoring, triage write) one at a
+time. A queued finale stays on TRANSFORMING... while it waits, about 6 s per finale ahead of it. The
+wait is bounded too: past 120 s it ends as **failed** ("warehouse busy") rather than waiting forever
+(docs/09, 2026-10-08).
 
 ---
 

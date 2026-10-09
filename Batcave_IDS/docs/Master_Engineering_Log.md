@@ -4,14 +4,14 @@ Sep 27, 2026 · @Jong
 
 ## About this log
 
-This log merges four source logs into one record of batcave-ids, from the first idea (before 2026-09-11) to the Track C re-plan (2026-09-25). It is ordered by date where dates are known and by build phase where they are not.
+This log merges four source logs into one record of batcave-ids, from the first idea (before 2026-09-11) to the bat bot becoming the payload for every cleared run (2026-10-08). It is ordered by date where dates are known and by build phase where they are not.
 
 | Tag | Source | Covers | Authoritative for |
 | --- | --- | --- | --- |
 | \[A\] | Planning Chat A | Concept, design, Phases 0–7 as reported, Groq→Gemini swap, Track B handoff, first GCP revision | Design rationale and decisions |
 | \[CC1\] | Claude Code session, 09-17 → 09-21 | Phase 6, Phase 7, Groq→Gemini swap, close-out | Phase 6–7 commit hashes, exact output, test counts |
 | \[C1\] | Track B review chat, ends 09-26 | Phases 8–10, gemini-3.1 swap, CI fixes, GCP checklist | Phase 8 detail and plan-review decisions |
-| \[CC2\] | Claude Code session, 09-22 → 09-26 | Phase 9 close, Phase 10, latency fix, Track C re-plan | Phase 9–10 commit hashes, exact output, test counts |
+| \[CC2\] | Claude Code session, 09-22 → 09-26, resumed 10-08 | Phase 9 close, Phase 10, latency fix, Track C re-plan, bat bot as payload | Phase 9–10 commit hashes, exact output, test counts |
 
 - Where a chat and a Claude Code session describe the same event, the Claude Code log wins on numbers, hashes and command output.
 - Git history was rewritten after the CC1 session. All hashes here are current hashes, mapped by commit subject.
@@ -34,6 +34,7 @@ Track A (headless pipeline) closed at 102 commits by 09-21; Track B (interactive
 | 09-22 → 09-23 | Track B, Phase 9 | Bat bot; four dormant chat-feature bugs fixed | `48e7b04` |
 | 09-23 | Track B, Phase 10 | Counterstrike finale, Batanalytics dashboard, orphan-row finding | `5fc91b1` |
 | 09-25 | Track C planning | Re-plan to GCP + kind; handoff rewritten | `b439944` |
+| 10-08 | Track B change | Bat bot becomes the payload for any cleared run; concurrent-finale collision found and fixed | uncommitted |
 
 \*The Phase 8 + model-swap commit and the ST06 lint fix are not hashed in the sources; `53be19a` is the ST06-era commit named in the CI investigation.
 
@@ -448,6 +449,53 @@ Track C is now a single GCP path funded by the $300 / 90-day trial, integrated f
 - docs/06 Track C rewritten (50–70 hours; all-track total 120–165); docs/01, 05, README and root `ARCHITECTURE.md` reframed as an optional layer.
 - &#91;C1\] also produced a 7-step prerequisites checklist: create the project and link billing, enable APIs, install gcloud + kubectl + `gke-gcloud-auth-plugin`, hand-create a versioned GCS state bucket, a scoped Terraform service account (prefer Workload Identity Federation), a budget alert before the first apply, and record the trial expiry date somewhere durable.
 
+## Part 10 — The bat bot becomes the payload for any cleared run (10-08)
+
+Clearing stage 4 by any technique now delivers the bat bot, instead of ending on a bare “Run complete: CLEARED.” Verified live. A separate concurrency bug in the finale surfaced during the live run and was fixed the same day. Uncommitted as of this entry. Source: \[CC2\] (resumed 10-08).
+
+### Why
+
+- **Jong's request:** the bat bot should be the payload for a successful attack. “Cleared” on its own is a weak reward for clearing the kill chain.
+- Until now, only a `deploy_batbot` success at stage 4 delivered it (Phase 9 decision 3; Part 8's manual pass noted this as expected). That limited it to villains whose intelligence clears the technique's gate (`min_intelligence` 40), and only when the player happened to pick it.
+
+### Decisions
+
+| Topic | Decision |
+| --- | --- |
+| Trigger | Any stage-4 success sets `batbot_pending`. Consent, conversation, reveal and finale unchanged. A stalled run gets no payload. |
+| `deploy_batbot` technique | Kept unchanged, as an ordinary stage-4 technique (T1071). Jong first chose to remove it, then reversed once its reach was measured. |
+| Workflow | Plan stated before any code change, at Jong's request. |
+
+**Why removal was rejected:** it's one of the 23 catalog techniques. The corpus holds 426 attempts of it across 67 runs (76 successes, 19 rows in the committed sample), and `stg_attack_attempts`' `relationships` test to `stg_techniques` would fail on every one. Removing it would also mean regenerating the corpus, invalidating the published docs/04 numbers, and changing every “23” in the docs.
+
+### Build
+
+- One branch in `services/console/app.py`'s `/attempt`: the `technique_id == "deploy_batbot"` check removed, so any stage-4 success sets `batbot_pending`.
+- Comments in `app.py`, `state.py`, `batbot.py` and `console/app.js` no longer name `deploy_batbot` as the trigger. `docs/08` describes the bat bot as the payload for a cleared run and says why `deploy_batbot` stays. `docs/09` has entries for both this change and the concurrency finding below.
+- Tests: the stage-4 helper clears stage 4 with any technique **except** `deploy_batbot`, so `test_clearing_stage_four_delivers_the_bat_bot_instead_of_finishing` proves the new route rather than the old one. The bat bot tests passed 10 out of 10 repeated runs against the unseeded RNG. pytest 281.
+
+### Live verification
+
+1. **First run hit stale code.** A Ra's al Ghul session cleared stage 4 with `exfil_over_c2` and finished as “cleared” with no bat bot: the old behavior. Port 8090 was held by a console backend started during the 09-23 verification (PID 36440), still serving pre-change code. Restarting Docker doesn't touch it, since the console runs on the host. Stopped and restarted on current code.
+2. **The payload worked; the finale failed.** Poison Ivy cleared stage 4 with `screen_capture`; the bat bot appeared and ran five turns to reveal. The finale then failed with `dbt run failed (exit 2):` and an empty reason, rendering the degraded “ATTRIBUTION INCONCLUSIVE” readout. A second run (`audio_capture`) failed identically.
+3. **Clean run.** With finales serialized by the test script, Ra's al Ghul cleared stage 4 with `input_capture`; bat bot through reveal; finale ready in 11.0 s (ingesting 5.0 s). **The baseline accused Scarecrow at 0.9**: another real wrong accusation.
+
+### Concurrent finales collide (found during live verification)
+
+- **Symptom:** `dbt run` exit 2 from the finale, while the identical command succeeded from a shell and from a `uv run python` process launched the same way as the console. Neither failing run appeared in `transform/logs/dbt.log`.
+- **Diagnosis:** every finished session starts its own finale, stalled ones included. In both failing runs, a stalled session finished seconds earlier. Its finale reached **ready**; the cleared session's finale, started while the first was still in its dbt run, **failed**. With finales serialized, the cleared session's finale succeeded. Two `dbt` processes on the single-writer DuckDB file (and, likely, the same `dbt.log` on Windows) can't run at once.
+- **Not caused by the payload change.** It's latent in Phase 10's design: finale pipelines aren't serialized across sessions. Phase 10's verification ran sessions minutes apart, so it never overlapped. A human who stalls and immediately plays again within about 10 s would hit it.
+- **Second gap:** `finale.py` keeps only stderr in the failure reason, but dbt writes its errors to stdout, so the reason was empty and the real error was lost.
+### Fix (10-08, at Jong's go-ahead)
+
+- **Lock:** a process-wide `threading.Lock` in `finale.py` around the warehouse phases (dbt run, scoring, triage write). Finales are threads in one console process, so an in-process lock is enough. A queued finale shows TRANSFORMING... while it waits; the wait is bounded at 120 s, then it fails as “warehouse busy”.
+- **Landing check off the warehouse:** it uses an in-memory DuckDB connection. It only reads raw Parquet, and opening the warehouse read-write every second was a second collision path.
+- **Failure reason:** includes dbt's stdout, with ANSI color codes stripped.
+- **Tests:** three new tests in `tests/test_console_finale.py`: maximum concurrency of 1 across two finales, a bounded wait, and stdout in the reason. With the lock swapped for a no-op, the concurrency test fails (`assert 2 == 1`), so it isn't vacuous. pytest 284.
+- **Live, harsher than the original failure:** four sessions finished within 1.2 s (two stalled, two cleared through the bat bot), and all four finales hit the transform step together. All four reached **ready**, serialized at 13.1, 19.4, 25.5 and 32.0 s.
+- **Not covered:** another *process* holding the warehouse when a finale's dbt run starts, such as the dashboard mid-query or a hand-run `make transform`. The window is short, and the failure would now carry dbt's real error.
+- **Tooling note:** escape sequences in ad-hoc patch scripts were mangled by the shell layer. A regex escape was written as a raw ESC byte, and a test string's newline escape became a real line break. Both were caught and fixed, now by building those characters from byte values instead.
+
 ## Reference
 
 ### LLM results history (same 36 pinned sessions, as published)
@@ -508,6 +556,7 @@ Hashes for Phases 0–5, the Phase 8 + 3.1 swap commit, and the ST06 reorder are
 | Phase 7 CI | 231 | 77/77 |
 | Phase 9 | 260 | 79/79 |
 | Phase 10 | 281 | 82/82 |
+| 10-08 changes | 284 | not re-run; no model changed (the finale's 13-model slice ran clean live) |
 
 ### Final stack
 
@@ -533,6 +582,8 @@ Hashes for Phases 0–5, the Phase 8 + 3.1 swap commit, and the ST06 reorder are
 - **Two-Face / Killer Croc confusion:** dbt test scoping, the baseline discriminator, a partial LLM case under qwen, and again under Gemini.
 - **Docs and prose wrong until measured:** gating narrative, Ra's pivot claim, Croc volume, “two” unmeasurable techniques, the burst procedure, the lineage band, DuckDB “briefly blocks”, the `interactions` API.
 - **Dormant code breaks on first real data:** four chat-feature bugs in Phase 5 models, first exercised in Phase 9.
+- **Stale long-running processes served old code:** ports 8090 and 8501 held by verification instances in Part 8's manual pass, and again on 10-08, when a 15-day-old console backend made a live run show pre-change behavior.
+- **Concurrency assumptions fail on the single-writer warehouse:** the dashboard “briefly blocks” claim (Part 8), then two finales running `dbt` at once (Part 10).
 
 ## Reconciliation notes
 
@@ -549,7 +600,7 @@ Eight places where the four sources disagree, with how this log treats each.
 | Count of contamination events | \[A\] says three; \[C1\] says the 3.1 swap was the third and the orphan finding the fourth | Four, as listed in Recurring patterns; the 264-session separability bug is a separate class |
 | `53be19a` purpose | Its message claims a deprecated-syntax dbt fix; \[C1\] found the actual error was a forward-alias binder issue | Treated as not addressing the root cause; the CTE split did |
 
-## Open items as of 2026-09-27
+## Open items as of 2026-10-08
 
 The most urgent items are the possible cross-project commit, key rotation, and Phase 12; everything else is scheduled or watch-only.
 
@@ -559,6 +610,8 @@ The most urgent items are the possible cross-project commit, key rotation, and P
 - [ ] **Rotate keys:** the Gemini key appeared in plaintext in a session transcript; revoke the unused Groq key.
 - [ ] **Phase 12 — `raw_triage_predictions` snapshot identity:** due after four bites; `make eval` reports n=28 vs the published 36.
 - [ ] **Browser check of the finale:** watch the SIMULATION frame hold and the readout render in a real browser; not yet confirmed.
+- [x] **Serialize finale pipelines (10-08):** fixed the same day with a process-wide lock, an in-memory landing check, and dbt stdout in the failure reason; verified live with four overlapping finales.
+- [ ] **Commit the 10-08 changes:** the bat bot payload change (`services/console/{app,state,batbot}.py`, `console/app.js`, `tests/test_console_api.py`) and the finale fix (`services/console/finale.py`, `tests/test_console_finale.py`), plus docs/08, docs/09 and this log.
 
 ### Scheduled or small
 

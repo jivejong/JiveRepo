@@ -204,7 +204,7 @@ def _session_payload(session: ConsoleSession) -> dict:
         "finished": session.finished,
         "run_outcome": session.run_outcome,
         "counters": _counters(session),
-        # deploy_batbot succeeding sets this instead of finishing the run
+        # Clearing stage 4 sets this instead of finishing the run
         # immediately (services/console/state.py) - the stage-4 menu is
         # stale once it's set (no further stage exists to show), so `stage`
         # goes null here too, same as once the run is actually finished.
@@ -302,16 +302,11 @@ def attempt(console_session_id: str, req: AttemptRequest) -> dict:
     run_finished = False
     if stage_cleared:
         if session.machine.current_stage_num >= 4:
-            if technique.technique_id == "deploy_batbot":
-                # Delivers the bat bot (docs/08) instead of finishing the run
-                # outright - completion is gated on the conversation reaching
-                # reveal (services/console/app.py's /batbot/reply), not on
-                # this stage-4 success by itself. Every OTHER stage-4
-                # technique still finishes the run immediately, unchanged.
-                session.batbot_pending = True
-            else:
-                run_finished = True
-                session.run_outcome = "cleared"
+            # Clearing stage 4 delivers the bat bot as the payload (docs/08),
+            # whichever technique cleared it. Completion is gated on the
+            # conversation reaching reveal (/batbot/reply), not on this
+            # success by itself.
+            session.batbot_pending = True
         else:
             next_candidates = session.machine.enter_stage(session.machine.current_stage_num + 1)
             if next_candidates is None:

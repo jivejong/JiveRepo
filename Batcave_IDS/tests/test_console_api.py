@@ -197,9 +197,8 @@ def _play_to_stage_four(client, console_session_id: str) -> dict | None:
     """Drives a session through stages 1-3 with whatever's offered, stopping
     the instant stage 4 is reached. Returns `None` (not a failure - a real,
     if unlikely, outcome for any villain, since a console session's rng is
-    genuinely unseeded, docs/06 Phase 8) if the run stalls or clears via some
-    other route before ever getting there. Killer Croc specifically can
-    never reach deploy_batbot at all (min_intelligence 40, his is 19)."""
+    genuinely unseeded, docs/06 Phase 8) if the run stalls before ever
+    getting there. Killer Croc specifically never reaches stage 4 (docs/07)."""
     for _ in range(200):
         state = client.get(f"/api/session/{console_session_id}/state").json()
         if state["finished"]:
@@ -218,62 +217,61 @@ def _play_to_stage_four(client, console_session_id: str) -> dict | None:
     pytest.fail("never reached stage 4 or finished within 200 attempts")
 
 
-def _one_attempt_at_stage_four_with_deploy_batbot(
-    client, villain_slug: str
-) -> tuple[str, dict] | None:
-    """One real playthrough: fresh session, played to stage 4, then
-    deploy_batbot attempted up to 3 times (enough to see real retry variance
-    without chasing `retry_penalty`'s own decay into exhausting
-    `failure_tolerance` on its own - each retry lowers deploy_batbot's own
-    success chance, so retrying it in a loop large enough to "guarantee"
-    eventual success can, on a long enough tail, stall the run by itself).
-    Returns `(console_session_id, success_event_body)` on success, `None` on
-    any other outcome (never reached stage 4, deploy_batbot unavailable,
-    stalled) - never fails the test itself, so the caller can retry with a
-    completely independent fresh session instead."""
+def _one_attempt_to_clear_stage_four(client, villain_slug: str) -> tuple[str, dict] | None:
+    """One real playthrough: fresh session, played to stage 4, then stage 4
+    attempted with any technique EXCEPT deploy_batbot - retrying or pivoting
+    through the offered candidates, the same envelope the headless autopilot
+    works in. Excluding deploy_batbot is the point: it proves the bat bot is
+    the payload for clearing stage 4 by any route, not a deploy_batbot side
+    effect. Returns `(console_session_id, success_event_body)` once stage 4
+    clears, `None` if the run stalls first - never fails the test itself, so
+    the caller can retry with a completely independent fresh session."""
     session = client.post("/api/session", json={"villain_slug": villain_slug}).json()
     console_session_id = session["console_session_id"]
-    state = _play_to_stage_four(client, console_session_id)
-    if state is None or not any(
-        t["technique_id"] == "deploy_batbot" for t in state["stage"]["available"]
-    ):
+    if _play_to_stage_four(client, console_session_id) is None:
         return None
-    for _ in range(3):
-        resp = client.post(
-            f"/api/session/{console_session_id}/attempt", json={"technique_id": "deploy_batbot"}
-        )
-        assert resp.status_code == 200, resp.text
+    for _ in range(50):
+        state = client.get(f"/api/session/{console_session_id}/state").json()
+        if state["finished"]:
+            return None
+        resp = None
+        for candidate in state["stage"]["available"]:
+            if candidate["technique_id"] == "deploy_batbot":
+                continue
+            resp = client.post(
+                f"/api/session/{console_session_id}/attempt",
+                json={"technique_id": candidate["technique_id"]},
+            )
+            if resp.status_code == 200:
+                break
+        if resp is None or resp.status_code != 200:
+            return None  # only deploy_batbot left to try - abandon this playthrough
         body = resp.json()
         if body["event"]["outcome"] == "success":
             return console_session_id, body
-        if body["session"]["finished"]:
-            return None
     return None
 
 
-def _succeed_at_deploy_batbot(client, villain_slug: str) -> tuple[str, dict]:
+def _clear_stage_four(client, villain_slug: str) -> tuple[str, dict]:
     """Real playthroughs (real unseeded rng, docs/06 Phase 8) until one
-    reaches stage 4 with deploy_batbot available and succeeds at it within a
-    few real attempts. Each failed playthrough is abandoned outright rather
-    than retried in place, since a stall anywhere (stages 1-3, or
-    deploy_batbot's own retry_penalty decay) ends that session for good -
-    there's nothing left inside it worth retrying. Bounded, not infinite: a
-    villain who gates for deploy_batbot at all should get there this way the
-    overwhelming majority of the time within a handful of fresh tries."""
+    clears stage 4. Each failed playthrough is abandoned outright rather than
+    retried in place, since a stall anywhere ends that session for good.
+    Bounded, not infinite."""
     for _ in range(20):
-        result = _one_attempt_at_stage_four_with_deploy_batbot(client, villain_slug)
+        result = _one_attempt_to_clear_stage_four(client, villain_slug)
         if result is not None:
             return result
-    pytest.fail(f"deploy_batbot never succeeded for {villain_slug} across 20 fresh sessions")
+    pytest.fail(f"{villain_slug} never cleared stage 4 across 20 fresh sessions")
 
 
-def test_deploy_batbot_success_blocks_completion_until_the_bat_bot_finishes(client):
-    """The real bug this test exists to catch: deploy_batbot succeeding at
-    stage 4 must NOT finish the run immediately the way every other stage-4
-    technique does - completion has to wait for the bat bot conversation to
-    reach reveal."""
-    console_session_id, body = _succeed_at_deploy_batbot(client, "538-ras-al-ghul")
+def test_clearing_stage_four_delivers_the_bat_bot_instead_of_finishing(client):
+    """The bat bot is the payload for a cleared run (docs/08): clearing stage
+    4 with any technique - here deliberately not deploy_batbot - must set
+    batbot_pending and must NOT finish the run, because completion waits for
+    the conversation to reach reveal."""
+    console_session_id, body = _clear_stage_four(client, "538-ras-al-ghul")
     assert body["event"]["outcome"] == "success"
+    assert body["event"]["technique_id"] != "deploy_batbot"
     assert body["session"]["batbot_pending"] is True
     assert body["session"]["finished"] is False
     assert body["session"]["stage"] is None  # no stage-5 menu to show
@@ -288,7 +286,7 @@ def test_deploy_batbot_success_blocks_completion_until_the_bat_bot_finishes(clie
 
 
 def test_full_bat_bot_conversation_via_the_api_reaches_reveal_and_finishes_the_run(client):
-    """End-to-end through the real API surface: deploy_batbot succeeds,
+    """End-to-end through the real API surface: stage 4 clears,
     /batbot/start opens the conversation, /batbot/reply is called
     repeatedly with an engaged reply until reveal, and only then does the
     console session finish - with exactly one attack_run published."""
@@ -296,7 +294,7 @@ def test_full_bat_bot_conversation_via_the_api_reaches_reveal_and_finishes_the_r
 
     import services.console.app as console_app
 
-    console_session_id, _body = _succeed_at_deploy_batbot(client, "538-ras-al-ghul")
+    console_session_id, _body = _clear_stage_four(client, "538-ras-al-ghul")
 
     start_resp = client.post(f"/api/session/{console_session_id}/batbot/start")
     assert start_resp.status_code == 200, start_resp.text
@@ -330,8 +328,8 @@ def test_full_bat_bot_conversation_via_the_api_reaches_reveal_and_finishes_the_r
     assert restart_resp.status_code == 409
 
     # Filtered to THIS test's own session_id, not the whole shared producer
-    # log: _succeed_at_deploy_batbot abandons any playthrough that doesn't
-    # reach stage 4 with a deploy_batbot success, and an abandoned session
+    # log: _clear_stage_four abandons any playthrough that doesn't clear
+    # stage 4, and an abandoned session
     # that stalled naturally along the way legitimately published its own
     # real attack_run - that's correct behavior, not a double-finish bug on
     # THIS session, so counting the whole log would be the wrong assertion.
@@ -350,14 +348,14 @@ def test_full_bat_bot_conversation_via_the_api_reaches_reveal_and_finishes_the_r
 
 
 def test_batbot_reply_before_start_is_rejected(client):
-    console_session_id, _body = _succeed_at_deploy_batbot(client, "538-ras-al-ghul")
+    console_session_id, _body = _clear_stage_four(client, "538-ras-al-ghul")
     resp = client.post(
         f"/api/session/{console_session_id}/batbot/reply", json={"user_text": "hello"}
     )
     assert resp.status_code == 409
 
 
-def test_batbot_start_before_deploy_batbot_succeeds_is_rejected(client):
+def test_batbot_start_before_stage_four_is_cleared_is_rejected(client):
     session = client.post("/api/session", json={"villain_slug": "538-ras-al-ghul"}).json()
     resp = client.post(f"/api/session/{session['console_session_id']}/batbot/start")
     assert resp.status_code == 409

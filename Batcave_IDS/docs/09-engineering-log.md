@@ -783,3 +783,111 @@ byte-identical before and after (`console: 13, headless: 397`, 410 total rows, q
 against the rebuilt `stg_attack_runs` both times) - confirming this is a pure structural change with
 zero semantic effect; `sqlfluff lint` clean on the model and the full `models/` tree, confirming the
 CTE split doesn't reintroduce ST06 or trip any other rule; full pytest suite (281) green throughout.
+
+---
+
+## The bat bot became the payload for any cleared run, reversing a Phase 9 decision
+
+**What changed.** Phase 9 delivered the bat bot only when the `deploy_batbot` technique succeeded at
+stage 4 (Phase 9 plan, decision 3: "an ordinary stage-4 option, no UI hint that it leads anywhere").
+Every other stage-4 success ended the run on "Run complete: CLEARED." In practice that made the
+reward for clearing the kill chain a status line, and made the bat bot reachable only by the
+villains whose intelligence clears `deploy_batbot`'s gate (`min_intelligence` 40), and only when the
+player happened to pick it. Now clearing stage 4 by any technique delivers the bat bot as the
+payload. The consent notice, conversation, reveal, and counterstrike finale that follow are
+unchanged. A stalled run still gets no payload.
+
+**What was considered and not done.** Removing `deploy_batbot` from the catalog once it no longer
+triggers anything. It was rejected for its reach: it's one of the 23 catalog techniques, the
+existing corpus holds 426 attempts of it across 67 runs (76 successes, 19 rows in the committed
+sample), and `stg_attack_attempts`' `relationships` test to `stg_techniques` would fail on all of them.
+Removing it would mean regenerating the corpus and making the published docs/04 numbers incomparable.
+So it stays an ordinary stage-4 technique: one route to clearing stage 4, no longer the only route
+to the bat bot.
+
+**The change.** One branch in `services/console/app.py`'s `/attempt`: a stage-4 success sets
+`batbot_pending` regardless of technique, where it used to check
+`technique_id == "deploy_batbot"`. The comments in `app.py`, `state.py`, `batbot.py`, and
+`console/app.js` that named `deploy_batbot` as the trigger were updated. Headless runs are
+unaffected, because the bat bot exists only in the console.
+
+**Effect on data.** Every cleared console run now produces `chat_turn` rows, so the three chat
+features in `int_session_features_observed` are non-zero for more console sessions. Console sessions
+are excluded from the published evaluation by the `session_source` filter (Phase 10), so the
+published numbers don't move.
+
+**Verified.** The tests' stage-4 helper now clears stage 4 with any technique **except**
+`deploy_batbot`, so the main test, `test_clearing_stage_four_delivers_the_bat_bot_instead_of_finishing`,
+proves the new route rather than the old one. The Bat Bot tests passed 10 out of 10 repeated runs
+against the unseeded RNG. Full pytest 281.
+
+**Verified live (2026-10-08).** Ra's al Ghul cleared stage 4 with `input_capture`. The bat bot
+appeared as the payload and ran five turns to reveal, then the finale was ready in 11.0 s, with the
+baseline accusing Scarecrow at 0.9 (another real wrong accusation). Two things got in the way first,
+and both are worth knowing:
+- The first live run showed the *old* behavior, because port 8090 was held by a console backend
+  left running since the 2026-09-23 verification, still serving pre-change code. Restarting Docker
+  doesn't restart it, since the console runs on the host.
+- The next two runs delivered the bat bot correctly, but their finales failed. That was a separate,
+  pre-existing bug, logged in the next entry.
+
+---
+
+## Two finished sessions close together collide in the finale, and the error message was being thrown away
+
+**What happened.** During the live check of the bat-bot-as-payload change (2026-10-08), the bat bot
+worked, but the finale that follows it failed twice with `dbt run failed (exit 2):` and an empty
+reason. Both rendered the degraded "ATTRIBUTION INCONCLUSIVE" readout.
+
+**How it was narrowed down, without changing code.**
+- The identical `dbt run --select …` succeeded when run from a shell, and again from a `uv run python`
+  process launched the same way as the console. So it wasn't the command or the environment.
+- Neither failed run appeared in `transform/logs/dbt.log`.
+- Every finished session starts its own finale, stalled ones included. In both failed runs, a stalled
+  session had finished a few seconds earlier, and its finale reached **ready**. The cleared session's
+  finale, started while the stalled session's `dbt run` was still in progress, **failed**.
+- Rerun with the test script waiting for each finale to finish before starting the next session, the
+  cleared session's finale succeeded (ready in 11.0 s).
+
+The cause is two `dbt` subprocesses running at once against the single-writer DuckDB warehouse, and
+very likely the same `dbt.log` on Windows. The exact failing call isn't pinned down, because of the
+second problem below.
+
+**Not caused by the payload change.** It's latent in Phase 10's design: finale pipelines aren't
+serialized across sessions. Phase 10's own verification ran its sessions minutes apart, so two finales
+never overlapped. A player who stalls and immediately plays again within about 10 s would hit it.
+
+**Second problem: the failure reason was empty.** `services/console/finale.py`'s `_run_dbt_build()`
+puts only `stderr[-2000:]` into the reason, but dbt writes its errors to stdout. So the failure
+surfaced with no message, and the real error was lost.
+
+**Fixed (2026-10-08), in `services/console/finale.py`:**
+- **A process-wide lock** (`_warehouse_lock`) around the warehouse phases: dbt run, scoring check, and
+  triage write. Every finale runs as a thread inside the one console process, so a `threading.Lock` is
+  enough. A queued finale shows "transforming" while it waits. The wait is bounded by
+  `WAREHOUSE_LOCK_TIMEOUT_S` (120 s), after which the finale fails as "warehouse busy", so it's still
+  never an infinite poll.
+- **The landing check no longer opens the warehouse at all.** It only reads raw Parquet, so it uses an
+  in-memory DuckDB connection. Before, it opened the warehouse read-write every second, which was a
+  second collision path: a finale still waiting for landing would fail the moment another finale's dbt
+  run held the file.
+- **The failure reason now includes dbt's stdout**, with ANSI color codes stripped, so a dbt error is
+  no longer lost.
+
+**Verified.**
+- Three new tests in `tests/test_console_finale.py`:
+  - two concurrent finales never run the warehouse phases at once (maximum concurrency 1);
+  - a finale that waits too long fails as busy;
+  - dbt's stdout reaches the failure reason.
+- The concurrency test is not vacuous: with the lock swapped for a no-op, it fails (`assert 2 == 1`).
+- pytest 284.
+- **Live, on a harsher case than the original failure:** four sessions finished within 1.2 s of each
+  other (two stalled, two cleared through the bat bot), and all four finales reached "transforming" at
+  the same moment. All four reached **ready**, one at a time, at 13.1, 19.4, 25.5, and 32.0 s. That's
+  one dbt run, about 6 s, each. Before the fix, two overlapping finales were enough to fail.
+
+**What this doesn't cover.** The lock serializes finales within the console process. A separate
+process holding the warehouse while a finale's dbt run starts can still fail that run: for example, the
+dashboard mid-query, or a `make transform` run by hand. The dashboard opens and closes a read-only
+connection per query, so its window is short. The failure would now come back with dbt's real error
+text rather than an empty reason.

@@ -30,7 +30,9 @@ over a long one.
 
 from __future__ import annotations
 
+import re
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -58,6 +60,17 @@ INGEST_TIMEOUT_S = 45.0  # still comfortably past the 30s default flush, for a
 # console started without `make console`'s 3s flush override
 INGEST_POLL_INTERVAL_S = 1.0  # a glob + one small read - cheap enough to poll tightly
 DBT_BUILD_TIMEOUT_S = 60.0
+
+# Every finished session starts its own finale, on its own thread. Two of them
+# running `dbt` at once against the single-writer warehouse made the second
+# fail (docs/09, 2026-10-08), so the warehouse phases - dbt run, scoring
+# check, triage write - are serialized across every finale in this process.
+# A queued finale waits at most this long before failing as busy, so a wait
+# is still bounded, never an infinite poll.
+WAREHOUSE_LOCK_TIMEOUT_S = 120.0
+_warehouse_lock = threading.Lock()
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 # Only what triage_console_session and build_session_context actually read
 # (fct_attack_runs, int_session_features_observed, mart_threat_scores,
@@ -125,7 +138,8 @@ def _run_dbt_build() -> None:
     """Runs the slice of the dbt graph triage reads (`DBT_SELECT`) as a
     subprocess so the connection it opens is fully closed (and the file
     lock released) before this module opens its own connection again -
-    never held open across this call."""
+    never held open across this call. dbt writes its errors to stdout, not
+    stderr, so the failure reason carries the tail of both."""
     result = subprocess.run(
         ["uv", "run", "--project", "..", "dbt", "run", "--profiles-dir", "."]
         + ["--select", DBT_SELECT],
@@ -135,7 +149,8 @@ def _run_dbt_build() -> None:
         timeout=DBT_BUILD_TIMEOUT_S,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"dbt run failed (exit {result.returncode}): {result.stderr[-2000:]}")
+        output = _ANSI_ESCAPE.sub("", (result.stdout or "") + (result.stderr or "")).strip()
+        raise RuntimeError(f"dbt run failed (exit {result.returncode}): {output[-2000:]}")
 
 
 def _session_scored(con: duckdb.DuckDBPyConnection, session_id: str) -> bool:
@@ -179,7 +194,10 @@ def run_finale_pipeline(
     try:
         landed = False
         while time.monotonic() < deadline:
-            con = duckdb.connect(str(WAREHOUSE_PATH))
+            # In-memory, not the warehouse: this only reads raw Parquet, and
+            # opening the warehouse here would collide with another
+            # finale's dbt run that holds its single-writer lock.
+            con = duckdb.connect()
             try:
                 landed = _session_landed(con, session_id)
             finally:
@@ -194,28 +212,35 @@ def run_finale_pipeline(
 
         result = FinaleResult(state="transforming")
         on_state_change(result)
-        _run_dbt_build()
-
-        result = FinaleResult(state="scoring")
-        on_state_change(result)
-        con = duckdb.connect(str(WAREHOUSE_PATH))
+        if not _warehouse_lock.acquire(timeout=WAREHOUSE_LOCK_TIMEOUT_S):
+            raise TimeoutError(
+                f"warehouse busy: another finale held it for over {WAREHOUSE_LOCK_TIMEOUT_S:.0f}s"
+            )
         try:
-            if not _session_scored(con, session_id):
-                raise RuntimeError(
-                    f"session {session_id!r} landed but produced no mart_threat_scores row "
-                    "after dbt build"
-                )
-        finally:
-            con.close()
+            _run_dbt_build()
 
-        result = FinaleResult(state="attributing")
-        on_state_change(result)
-        con = duckdb.connect(str(WAREHOUSE_PATH))
-        try:
-            prediction = triage_console_session(con, session_id, llm_client)
-            villain_name = _villain_display_name(con, prediction.suspected_villain)
+            result = FinaleResult(state="scoring")
+            on_state_change(result)
+            con = duckdb.connect(str(WAREHOUSE_PATH))
+            try:
+                if not _session_scored(con, session_id):
+                    raise RuntimeError(
+                        f"session {session_id!r} landed but produced no mart_threat_scores row "
+                        "after dbt build"
+                    )
+            finally:
+                con.close()
+
+            result = FinaleResult(state="attributing")
+            on_state_change(result)
+            con = duckdb.connect(str(WAREHOUSE_PATH))
+            try:
+                prediction = triage_console_session(con, session_id, llm_client)
+                villain_name = _villain_display_name(con, prediction.suspected_villain)
+            finally:
+                con.close()
         finally:
-            con.close()
+            _warehouse_lock.release()
 
         confidence = prediction.confidence if prediction.confidence is not None else 0.0
         lines = build_script(

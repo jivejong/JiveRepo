@@ -292,7 +292,7 @@ let logHistory = [];
 function renderStage(session, previousLog) {
   logHistory = previousLog;
 
-  // deploy_batbot succeeding sets this instead of finishing the run
+  // Clearing stage 4 sets this instead of finishing the run
   // (services/console/app.py) - the player must go through the consent
   // notice and the conversation before reaching "run complete." There is no
   // decline path (docs/08: "not dismissible by clicking away").

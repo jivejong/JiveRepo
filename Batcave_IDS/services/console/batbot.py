@@ -1,11 +1,11 @@
 """The bat bot conversation engine (Phase 9, docs/06 Track B, docs/08).
 
-Delivered by `deploy_batbot`'s success at stage 4 (docs/08). Console-only, by
-design (Phase 9 plan): the honeypot and `deploy_batbot`'s existing
-request/attempt chain are untouched — its detection_signature is just "chat
-session initiated against the assistant endpoint," evidence the existing 404
-stand-in traffic already produces. The actual conversation is a separate
-mechanism entirely, published directly by the console backend the same way
+The payload delivered when a run clears stage 4, whichever technique cleared
+it (docs/08). Console-only, by design (Phase 9 plan): the honeypot and the
+stage machine are untouched. The `deploy_batbot` technique stays an ordinary
+stage-4 catalog entry with its own request/attempt chain; it is no longer the
+only route to the bat bot. The conversation is a separate mechanism entirely,
+published directly by the console backend the same way
 `services/simulator/machine.py`'s `AttemptEvent`/`AttackRunEvent` are, never
 routed through the honeypot's HTTP layer.
 
