@@ -1077,7 +1077,30 @@ undefined, since the first episode's own `ramp+hold+decay` (2+4+3 = 9 scans, ~2h
 the second would fire. This version shortens the first episode with `probe_ctl.py`'s own documented flags (`--hold`,
 `--decay` — `edge/probe_ctl.py`'s docstring and `argparse` block; doc 04:96, "may override them (`ramp`, `hold`, `decay`)"
 — no undocumented flag invented) so it fully completes, with at least one confirmed below-threshold scan, before the
-second injection fires — genuinely two separate runs, not one continued episode:
+second injection fires — genuinely two separate runs, not one continued episode.
+
+**Lessons from the actual runs (attempt 1, dagobah, void; p4-10, bespin, succeeded):**
+- **Set `T` on the hour.** Job 1 is now hourly at `:03`. If `T` isn't on the hour, `T+60` (episode 1's nominal decay scan)
+  can land just after the `:03` run that would have covered it, costing a full extra hour's wait before you can even
+  check it. `T` on the hour means `T+60` is also on the hour, and the very next `:03` run (3 minutes later) covers it.
+- **Confirm `control_applied` in `probe_events.jsonl` within a minute of each inject, before assuming it landed.**
+  Attempt 1 (dagobah, injection 1 applied 2026-10-05T21:59:49Z) went void because injection 2 was simply never sent —
+  nothing wrong with the probe or the schedule, an operator step was missed. Check the log, don't assume the command
+  succeeded just because `probe_ctl.py` printed `sent to ...` (that confirms the broker acknowledged the publish, not
+  that the probe applied it).
+- **If `T+60`'s own decay scan still qualifies (`imbalance_score >= 5.75`), don't fire injection 2 at `T+75` as planned
+  — wait one more scan to re-confirm, then fire at `T+90`.** This happened for real in the bespin run: `T+60` (15:00Z)
+  scored 5.777, still just over threshold, so decay hadn't actually finished; `T+75` (15:15Z) came in at 3.945, clearly
+  below, and injection 2 fired at `T+90` (15:30Z) — one scan of margin past the scan that actually confirmed it, not
+  past the nominal `T+60`.
+- **Date-stamp every query — don't reuse an earlier day's.** `<inject_ts_utc>` needs the full date every time; a C4
+  attempt run on a different day than planned (as both of these were) makes a bare time-of-day placeholder silently
+  wrong.
+- **The final check must cover `detected_at >= T` with no upper bound**, not `< T + 2 hours` as originally written —
+  below. A delayed or re-attempted run can push `detected_at` past a fixed window and produce a false "0 incidents."
+- **`journalctl --since` needs an explicit `UTC`, or it's interpreted in the Pi's own local time.** The Pi's system
+  clock runs EDT; every `T` in this runbook is UTC. `journalctl -u force-probe --since "2026-10-06 14:00 UTC"`, not
+  `--since "2026-10-06 14:00"` (which would be read as 14:00 EDT, 4 hours off).
 
 ```bash
 # injection 1, at boundary T
@@ -1091,7 +1114,8 @@ for `T+60`'s own score to confirm it has genuinely dropped below 5.75 before fir
 give the exact decay curve shape, so this is a check, not an assumption. Once confirmed:
 
 ```bash
-# injection 2, at boundary T+75 (one scan of margin past the confirmed-below-threshold T+60)
+# injection 2, at boundary T+75 (one scan of margin past the confirmed-below-threshold scan) -- T+90 instead if T+60
+# itself still qualified and T+75 was the scan that actually confirmed below-threshold (see "Lessons," above)
 python edge/probe_ctl.py --host <DESKTOP_IP> inject <sector_id> sith_presence --hold 2 --decay 1
 ```
 
@@ -1102,11 +1126,13 @@ wider range this cadence now gives — +120 minutes = `T+150`-to-`T+210`ish) —
 either way; the margin just isn't as wide as the original 15-minute-cadence estimate implied.
 
 ```sql
--- p4-10, filled in the same way; <inject_ts_utc> = T (injection 1's own boundary)
+-- p4-10, filled in the same way; <inject_ts_utc> = T (injection 1's own boundary, full date -- don't reuse an earlier
+-- day's). No upper bound on detected_at: a delayed or re-attempted run can push it past a fixed +2h window and
+-- produce a false "0 incidents" -- see "Lessons," above.
 SELECT count(*) AS incidents_in_window
 FROM force.gold.gold_disturbance
 WHERE sector_id = '<inject_sector>'
-  AND detected_at >= TIMESTAMP '<inject_ts_utc>' AND detected_at < dateadd(hour, 2, TIMESTAMP '<inject_ts_utc>');
+  AND detected_at >= TIMESTAMP '<inject_ts_utc>';
 -- Expected: 1 (the cooldown, var('cooldown_hours') = 2, suppresses episode 2's onset -- doc 03, "Late-replayed onset
 -- inside an existing cooldown"). Check cooldown_conflict on that one row too, same query plus the column --
 -- **decided, "definition B", Stage 4a (doc 03, docs/ENGINEERING-LOG.md "Stage 4a"): cooldown_conflict is true only

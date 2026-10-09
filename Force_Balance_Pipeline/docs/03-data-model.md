@@ -111,6 +111,15 @@ of how quickly the drain caught up to it (a row buffered for under 30 minutes ha
 false`). Surface both on the dashboard — `was_buffered` is the proof the late-arriving path works; `is_replayed` is the
 operational lag signal.
 
+**The reverse combination is also real, found live, 2026-10-05.** `was_buffered` records the probe's own mode *at the moment
+the reading was taken* (doc 02), not how the reading actually reached the broker. A link can die silently between one scan
+and the next: the probe takes the next scan still believing it is `CONNECTED` (no keep-alive timeout has fired yet), so that
+reading is captured and labelled `was_buffered = false` — but its actual publish never completes until the link recovers and
+the buffered backlog drains, which can be hours later. The observed case: the 2026-10-05 06:45Z scan, 60 rows, all
+`was_buffered = false` (captured `CONNECTED`) yet `is_replayed = true` (arrival lag ~23,320 s, well over the 1,800 s
+threshold) — the opposite pairing from the paragraph above, and just as real. `was_buffered` is still a true record of the
+probe's own mode at capture; it was never meant to answer "did this arrive late," which is exactly what `is_replayed` is for.
+
 **Lag precision.** `_file_modified_ts` has 1-second resolution, so `ingest_lag_seconds` carries roughly ±1 s of rounding
 on its own, on top of whatever clock skew exists between the device that wrote `event_time` and the volume's own clock.
 A live row can legitimately read a small *negative* lag — arrival appearing to precede the reading — without anything

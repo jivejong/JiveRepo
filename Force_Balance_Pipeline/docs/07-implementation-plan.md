@@ -206,6 +206,10 @@ fixed (`generate_schema_name.sql` now isolates only `target=dev`; see `docs/ENGI
 semantics decided: current behavior (the run's latest qualifying scan, advancing on each rebuild) documented as
 intended, not a defect; a fixed `confirmed_at` is deferred to Phase 6.
 
+**Phase 4 checkpoint status, 2026-10-08:** p4-0 through p4-11 (`ingest/phase4_checkpoint.sql`) have passed. p4-12 (fault
+reconciliation) is pending the fault period itself, 2026-10-07T13:29:35Z to about 2026-10-10T13:29:35Z
+(`docs/04-edge-simulators.md`) — the seed, the conversion, and the final join all wait until it ends.
+
 ---
 
 ## Phase 5 — Web intake and inference · 10–14h

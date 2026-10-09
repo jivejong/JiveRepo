@@ -117,9 +117,14 @@ WHERE event_id IN (SELECT event_id FROM force.silver.silver_probe_reading
 --        has exactly one row per event_id (no duplicates from the recompute), and running dbt build again changes
 --        no row counts anywhere. Needs <replay_window_start_utc>/<replay_window_end_utc> from mode_transitions.jsonl
 --        once a scheduled outage has actually happened and replayed since Job 1 went live.
+--        The upper bound pads +10s past <replay_window_end_utc> itself, not the literal boundary -- found live,
+--        2026-10-05/06: a scan's own 60 rows spread ~3s of sub-second jitter around their nominal event_time, so a
+--        literal "< <replay_window_end_utc>" clips most of the LAST scan's rows if that boundary lands exactly on
+--        one. Confirmed against the real backlog figure both times (1560, then 300) only after padding.
 SELECT count(*) AS n, count(DISTINCT event_id) AS distinct_event_ids
 FROM force.gold.gold_sector_reading
-WHERE event_time >= TIMESTAMP '<replay_window_start_utc>' AND event_time < TIMESTAMP '<replay_window_end_utc>';
+WHERE event_time >= TIMESTAMP '<replay_window_start_utc>'
+  AND event_time < dateadd(second, 10, TIMESTAMP '<replay_window_end_utc>');
 -- Expected: n = distinct_event_ids (no duplicates). Compare bronze/silver/gold row counts before and after the NEXT
 -- dbt build runs (ingest/job1_quota_watch.sql's own per-day run log has the run timestamps); expect zero movement.
 
@@ -152,10 +157,14 @@ ORDER BY detected_at LIMIT 1;
 -- (p4-10) Cooldown: two control-topic injections on the same sector 30 minutes apart produce one incident row, not
 --        two -- the singular test (assert_cooldown_respected) already covers this structurally; this is the same
 --        check against a real, live-injected pair instead of a dbt fixture.
+--        No upper bound on detected_at (removed, found live, 2026-10-05/06, same session as the p4-8 padding fix
+--        above): a delayed or re-attempted run can push detected_at past a fixed "+2h" window and produce a false
+--        "0 incidents" that is really just a timing artifact, not the cooldown failing. doc 05's own copy of this
+--        query (C4 runbook) carries the same fix.
 SELECT count(*) AS incidents_in_window
 FROM force.gold.gold_disturbance
 WHERE sector_id = '<inject_sector>'
-  AND detected_at >= TIMESTAMP '<inject_ts_utc>' AND detected_at < dateadd(hour, 2, TIMESTAMP '<inject_ts_utc>');
+  AND detected_at >= TIMESTAMP '<inject_ts_utc>';
 -- Expected: 1.
 
 -- (p4-11) Housekeeping: silver_probe_event's count should equal bronze's own payload:kind-tagged row count, with

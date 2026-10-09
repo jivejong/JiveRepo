@@ -112,6 +112,13 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("<replay_window_start_utc>", b)
         self.assertIn("<replay_window_end_utc>", b)
 
+    def test_p4_8_pads_the_upper_bound_for_sub_second_scan_jitter(self):
+        # found live, 2026-10-05/06: a scan's own 60 rows spread ~3s of sub-second jitter around their nominal
+        # event_time, so a literal "< <replay_window_end_utc>" clips most of the LAST scan's rows -- the real
+        # backlog figure (1560, then 300) only matched after padding the upper bound by 10s.
+        b = blocks()["p4-8"]
+        self.assertIn("dateadd(second, 10, TIMESTAMP '<replay_window_end_utc>')", b)
+
     def test_p4_9_checks_sith_presence_and_sustained_scans(self):
         b = blocks()["p4-9"]
         self.assertIn("sith_presence", b)
@@ -119,9 +126,14 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("<inject_sector>", b)
         self.assertIn("<inject_ts_utc>", b)
 
-    def test_p4_10_checks_the_cooldown_window_is_two_hours(self):
+    def test_p4_10_has_no_upper_bound_on_detected_at(self):
+        # a fixed "+2h" upper bound was removed, found live 2026-10-05/06: a delayed or re-attempted run can push
+        # detected_at past it and produce a false "0 incidents" that is really just a timing artifact -- the
+        # cooldown's own 2-hour width is still enforced by the data (assert_cooldown_respected, the dbt unit
+        # tests), not by this query's own window math, so no dateadd(hour, 2, ...) should reappear here.
         b = blocks()["p4-10"]
-        self.assertIn("dateadd(hour, 2,", b)
+        self.assertNotIn("dateadd(hour, 2,", b)
+        self.assertIn("detected_at >= TIMESTAMP '<inject_ts_utc>';", b)
         self.assertIn("Expected: 1.", b)
 
     def test_p4_11_compares_silver_probe_event_against_bronze_housekeeping_rows(self):
