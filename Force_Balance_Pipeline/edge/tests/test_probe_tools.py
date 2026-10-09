@@ -107,6 +107,25 @@ class ProbeCtlValidationTests(CtlBase):
                 self.assertIn("refused, nothing sent", text)
                 self.assertEqual(got, [])
 
+    def test_a_mode_with_no_for_seconds_is_refused_unless_indefinite_is_given(self):
+        # doc 04: a mode override with no for_seconds has no expiry and suppresses --mode-schedule entirely until
+        # another control message changes it, and there is no "resume the schedule" message -- found live,
+        # 2026-10-06, when exactly this silently overrode the schedule for 12 minutes during a C4 run.
+        b = broker()
+        got = self.probe_listener(b)
+        code, text = self.run_ctl(["mode", "CONNECTED"], b=b)
+        self.assertEqual(code, 2, text)
+        self.assertIn("refused, nothing sent", text)
+        self.assertIn("--indefinite", text)
+        self.assertEqual(got, [])
+
+    def test_indefinite_sends_a_mode_message_with_no_for_seconds_key(self):
+        b = broker()
+        got = self.probe_listener(b)
+        code, text = self.run_ctl(["mode", "CONNECTED", "--indefinite"], b=b)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(got, [(CONTROL, b'{"mode":"CONNECTED"}')])
+
     def test_dry_run_prints_the_topic_and_message_and_never_connects(self):
         lines, out = collect()
         exploding = mock.Mock()
@@ -119,30 +138,30 @@ class ProbeCtlValidationTests(CtlBase):
 
 class ProbeCtlPasswordTests(CtlBase):
     def test_the_environment_password_is_used_without_a_prompt(self):
-        code, _ = self.run_ctl(["mode", "STEALTH"], prompt=lambda t: self.fail("must not prompt when the environment has it"))
+        code, _ = self.run_ctl(["mode", "STEALTH", "--indefinite"], prompt=lambda t: self.fail("must not prompt when the environment has it"))
         self.assertEqual(code, 0)
 
     def test_without_the_environment_it_prompts_and_names_the_user_not_the_value(self):
         asked = []
-        code, text = self.run_ctl(["mode", "STEALTH"], environ={}, prompt=lambda t: asked.append(t) or PASSWORDS["operator"])
+        code, text = self.run_ctl(["mode", "STEALTH", "--indefinite"], environ={}, prompt=lambda t: asked.append(t) or PASSWORDS["operator"])
         self.assertEqual(code, 0, text)
         self.assertEqual(asked, ["password for MQTT user operator: "])
 
     def test_a_wrong_password_is_reported_as_a_refused_login_and_is_never_printed(self):
-        code, text = self.run_ctl(["mode", "STEALTH"], environ={"OPERATOR_MQTT_PASSWORD": "guess-DDD444"})
+        code, text = self.run_ctl(["mode", "STEALTH", "--indefinite"], environ={"OPERATOR_MQTT_PASSWORD": "guess-DDD444"})
         self.assertEqual(code, 1)
         self.assertIn("refused the operator login", text)
         self.assertNotIn("guess-DDD444", text)
 
     def test_no_password_appears_in_any_output(self):
-        for argv in (["mode", "STEALTH"], ["inject", "tatooine", "sith_presence"], ["inject", "nowhere", "sith_presence"]):
+        for argv in (["mode", "STEALTH", "--indefinite"], ["inject", "tatooine", "sith_presence"], ["inject", "nowhere", "sith_presence"]):
             _, text = self.run_ctl(argv)
             for pw in PASSWORDS.values():
                 self.assertNotIn(pw, text)
 
     def test_an_unreachable_broker_is_reported_without_a_traceback(self):
         b = broker(reachable=False)
-        code, text = self.run_ctl(["mode", "STEALTH"], b=b)
+        code, text = self.run_ctl(["mode", "STEALTH", "--indefinite"], b=b)
         self.assertEqual(code, 1)
         self.assertIn("cannot reach the broker", text)
 
@@ -156,7 +175,7 @@ class ProbeCtlPasswordTests(CtlBase):
         b = broker()
         original = F.Client.username_pw_set
         with mock.patch.object(F.Client, "username_pw_set", lambda self, u, p=None: (seen.append(u), original(self, u, p))[1]):
-            self.run_ctl(["mode", "STEALTH"], b=b)
+            self.run_ctl(["mode", "STEALTH", "--indefinite"], b=b)
         self.assertEqual(seen, ["operator"])
 
 

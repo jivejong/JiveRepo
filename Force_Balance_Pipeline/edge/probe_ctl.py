@@ -4,11 +4,19 @@
     python edge/probe_ctl.py --host <DESKTOP_IP> inject tatooine sith_presence [--ramp 2 --hold 4 --decay 3]
     python edge/probe_ctl.py --host <DESKTOP_IP> mode STEALTH --for-seconds 3600
     python edge/probe_ctl.py --host <DESKTOP_IP> mode DISCONNECTED --for-seconds 2700 --dry-run
+    python edge/probe_ctl.py --host <DESKTOP_IP> mode CONNECTED --indefinite       # on purpose only -- see below
 
 The message is validated locally with the probe's own parser before it is sent, so a mistake is refused here with the same reason the
 probe would give. It connects as the `operator` broker user; the password is asked for at a prompt (getpass), or read from
 OPERATOR_MQTT_PASSWORD if that is set, and is never stored or printed, and never read from .env.mqtt. Publishes at QoS 1 and waits for the
 acknowledgement. Only the operator user may write the control topic (infra/mosquitto/acl).
+
+`mode` with no `--for-seconds` is refused unless `--indefinite` is also given: the probe's own override (doc 04,
+edge/probe/modes.py) has no expiry when for_seconds is omitted, which also suppresses --mode-schedule entirely until
+another control message changes it -- and there is no "resume the schedule" message, only ever another mode command.
+Found live, 2026-10-06: a `mode CONNECTED` sent without `--for-seconds` during a C4 run silently overrode the schedule
+for 12 minutes before anyone noticed; recovery was `mode CONNECTED --for-seconds 1` (a deliberately short override that
+expires almost immediately and falls through to the schedule again on the next tick).
 """
 import argparse
 import getpass
@@ -88,8 +96,16 @@ def main(argv=None, sectors=None, mqtt=None, prompt=getpass.getpass, environ=Non
     m = sub.add_parser("mode", help="force a mode for a period")
     m.add_argument("mode")
     m.add_argument("--for-seconds", type=int)
+    m.add_argument("--indefinite", action="store_true",
+                   help="force the mode with no --for-seconds, on purpose -- this overrides the schedule until "
+                        "another control message changes it; there is no resume command (doc 04)")
     args = p.parse_args(argv)
     environ = os.environ if environ is None else environ
+    if args.command == "mode" and args.for_seconds is None and not args.indefinite:
+        out("refused, nothing sent: mode with no --for-seconds overrides the schedule indefinitely -- there is no "
+            "resume command, only a later control message (recovery: mode CONNECTED --for-seconds 1); pass "
+            "--indefinite if that is really what you want")
+        return 2
     message = build_message(args)
     payload = json.dumps(message, separators=(",", ":"))
     try:

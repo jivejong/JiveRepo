@@ -96,6 +96,22 @@ The topic also accepts `{"mode": "DISCONNECTED" | "STEALTH" | "CONNECTED", "for_
 An injection defaults to ramp 2, hold 4 and decay 3 scans and may override them (`ramp`, `hold`, `decay`). Only the `operator`
 user may publish to the topic (broker ACL); `probe_ctl.py` asks for that password at a prompt and never stores it.
 `veiled_presence` is not injectable in Phase 3.
+
+**A `mode` message with no `for_seconds` is indefinite, not a short-lived override.** `for_seconds` omitted means the forced
+mode has no expiry (`edge/probe/modes.py`'s `_requested`: `until is None or now < until` is always true when `until is None`)
+— it also fully suppresses `--mode-schedule` while active, since the override check runs before the schedule is even
+consulted. There is no "resume the schedule" message; the only way back is another `mode` command, with a real
+`--for-seconds`, that eventually expires and falls through to the schedule again — in practice, `mode CONNECTED
+--for-seconds 1`. Found live, 2026-10-06: a `mode CONNECTED` sent without `--for-seconds` during a C4 run overrode the
+schedule for 12 minutes before anyone noticed. `probe_ctl.py` now refuses a `mode` command with no `--for-seconds` unless
+`--indefinite` is also given explicitly, so sending one by accident is no longer possible — this is a client-side guard,
+not a probe-side one (the probe's own `control.parse` still accepts a bare `{"mode": ...}` with no `for_seconds` key, since
+that's what a deliberate `--indefinite` send still produces on the wire).
+
+**Where control events land.** The probe records `control_applied`/`control_rejected` for every message it receives — but
+to `/var/lib/force-probe/probe_events.jsonl` (one JSON line per event, via `runtime.py`'s `on_control`/`_event`), not to the
+journal. `journalctl -u force-probe` shows mode *transitions* (`modes.py`'s own `_record`, which does print to stderr), but
+nothing about whether a given control message was accepted or rejected — check the file for that, not the journal.
 An injection produces an emergency-level reading; the control message carries no severity field
 yet. Targets are computed, not listed, in `edge/forcesim/signatures.py`, and shared with the
 backfill's historical emergencies. The target of a signature is the smallest whole-sigma point whose
