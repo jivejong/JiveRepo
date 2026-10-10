@@ -7,6 +7,23 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Chart Manager</title>
+    <script>
+      (() => {
+        let preference = 'system';
+        try {
+          const stored = localStorage.getItem('ccm-theme-preference');
+          if (stored === 'light' || stored === 'dark' || stored === 'system') preference = stored;
+        } catch { /* Use the system theme when storage is unavailable. */ }
+        let prefersDark = false;
+        try { prefersDark = matchMedia('(prefers-color-scheme: dark)').matches; } catch {}
+        const theme = preference === 'system' ? (prefersDark ? 'dark' : 'light') : preference;
+        const root = document.documentElement;
+        root.dataset.theme = theme;
+        root.style.colorScheme = theme;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute('content',
+          theme === 'dark' ? '#1A1A1F' : '#F5F3EE');
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

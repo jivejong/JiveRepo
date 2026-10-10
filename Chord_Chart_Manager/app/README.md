@@ -26,6 +26,16 @@ left/right song navigation remain available. A frame delay over 1,000 ms while
 scrolling is treated as suspended time: the current position is held and the
 normal selected speed resumes on the next frame without a catch-up jump.
 
+### Appearance themes
+
+Choose **Light**, **Dark**, or **System** under **Settings → Appearance**. The
+default is System, which follows the device color-scheme setting while the app
+is open. A Light or Dark choice overrides the device. The preference is stored
+in this browser on this device and works offline; it is not synced with the
+server. If browser storage is unavailable or unreadable, the app falls back to
+System for the current session. Theme changes affect colors only, so chart
+anchors, pipe groups, spacers, and auto-scroll positioning are preserved.
+
 Paired chord and lyric rows use the same monospace character grid. They stay
 unwrapped and scroll together horizontally on narrow screens. Overlapping chord
 labels appear in original order on one row separated by pipes. Each group starts

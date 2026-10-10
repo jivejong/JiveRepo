@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MusicIcon, ListIcon, SettingsIcon } from './components/Icons';
 import HomeView     from './views/HomeView';
 import ChartView    from './views/ChartView';
@@ -7,6 +7,8 @@ import SetlistView  from './views/SetlistView';
 import EditView     from './views/EditView';
 import SettingsView from './views/SettingsView';
 import { useOnline, useSync } from './hooks';
+import { applyTheme, getSystemPrefersDark, readThemePreference, resolveTheme,
+  subscribeToSystemTheme, writeThemePreference } from './lib/theme';
 
 /**
  * Navigation state machine:
@@ -22,6 +24,21 @@ import { useOnline, useSync } from './hooks';
 export default function App() {
   const online = useOnline();
   const { syncing, lastSync, dirty, conflicts, syncError, syncNow } = useSync(online);
+  const [themePreference, setThemePreference] = useState(readThemePreference);
+  const [systemPrefersDark, setSystemPrefersDark] = useState(getSystemPrefersDark);
+
+  useEffect(() => subscribeToSystemTheme(setSystemPrefersDark), []);
+  useLayoutEffect(() => {
+    applyTheme(document, resolveTheme(themePreference, systemPrefersDark));
+  }, [themePreference, systemPrefersDark]);
+
+  const chooseTheme = preference => {
+    if (!writeThemePreference(preference)) {
+      setThemePreference('system');
+      return;
+    }
+    setThemePreference(preference);
+  };
 
   const [tab,  setTab]  = useState('songs');
   const [view, setView] = useState(null);
@@ -160,6 +177,8 @@ export default function App() {
         conflicts={conflicts}
         syncError={syncError}
         onSync={syncNow}
+        themePreference={themePreference}
+        onThemeChange={chooseTheme}
       />
     );
   } else {

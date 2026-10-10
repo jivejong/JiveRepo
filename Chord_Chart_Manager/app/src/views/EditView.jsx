@@ -192,7 +192,7 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
       <div style={{ padding: '16px 16px 80px' }}>
         {error && (
           <div style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12,
-                        padding: '8px 12px', background: 'rgba(224,92,92,0.1)',
+                        padding: '8px 12px', background: 'var(--danger-surface)',
                         borderRadius: 'var(--radius-sm)' }}>
             {error}
           </div>

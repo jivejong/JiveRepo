@@ -52,7 +52,7 @@ export default function HomeView({ online, onSelectSong, onNewSong }) {
           Filter
           {activeTags.length > 0 && (
             <span style={{
-              background: 'var(--accent)', color: '#1A1A1F',
+              background: 'var(--accent)', color: 'var(--text-on-accent)',
               borderRadius: 10, fontSize: 10, fontWeight: 600,
               padding: '1px 6px', marginLeft: 2,
             }}>

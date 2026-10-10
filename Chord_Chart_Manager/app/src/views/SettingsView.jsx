@@ -4,6 +4,7 @@ import * as api from '../lib/api';
 
 export default function SettingsView({
   online, syncing, lastSync, dirty, conflicts, syncError, onSync,
+  themePreference = 'system', onThemeChange = () => {},
 }) {
   const [stats,    setStats]    = useState(null);
   const [checking, setChecking] = useState(false);
@@ -31,6 +32,25 @@ export default function SettingsView({
 
       <div style={{ padding: '16px 16px 80px' }}>
 
+        <fieldset className="theme-preference">
+          <legend className="form-label">Appearance</legend>
+          <div className="theme-options">
+            {['light', 'dark', 'system'].map(choice => (
+              <label className="theme-option" key={choice}>
+                <input
+                  type="radio"
+                  name="theme-preference"
+                  value={choice}
+                  checked={themePreference === choice}
+                  onChange={() => onThemeChange(choice)}
+                />
+                <span>{choice[0].toUpperCase() + choice.slice(1)}</span>
+              </label>
+            ))}
+          </div>
+          <p className="theme-help">System follows this device’s appearance setting.</p>
+        </fieldset>
+
         {/* Sync status */}
         <div style={{ marginBottom: 24 }}>
           <div className="form-label" style={{ marginBottom: 12 }}>Sync</div>
@@ -55,7 +75,7 @@ export default function SettingsView({
             </div>
             {dirty.length > 0 && (
               <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)',
-                            background: 'rgba(232,168,56,0.06)' }}>
+                            background: 'var(--warning-surface)' }}>
                 <div style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 500, marginBottom: 4 }}>
                   {dirty.length} tablet change{dirty.length !== 1 ? 's' : ''} waiting to sync
                 </div>
@@ -66,7 +86,7 @@ export default function SettingsView({
             )}
             {conflicts.length > 0 && (
               <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)',
-                            background: 'rgba(224,92,92,0.08)' }}>
+                            background: 'var(--danger-surface)' }}>
                 <div style={{ fontSize: 13, color: 'var(--danger)', fontWeight: 500, marginBottom: 4 }}>
                   {conflicts.length} tablet change{conflicts.length !== 1 ? 's were' : ' was'} replaced
                 </div>
