@@ -91,12 +91,38 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
       }
       if (online) {
         const isOfflineCreate = song?._sync?.operation === 'create';
+        if (isOfflineCreate) {
+          const preserveStructured = isGeneratedSourceUnchanged(
+            originalChartSource.current, originalChartContent.current, payload.chart_source,
+          );
+          const patched = {
+            ...song,
+            ...payload,
+            era: eraForYear(payload.release_year),
+            genre: payload.genres.find(tag => tag.is_primary)?.name || payload.genres[0]?.name || null,
+            feel: payload.vibes[0] || null,
+            chart_content: preserveStructured ? originalChartContent.current : parseChartBody(payload.chart_source),
+            _sync: { ...song._sync, operation: 'create' },
+          };
+          await cache.savePendingSong(patched, song._sync?.operation_id);
+          const result = await cache.syncWithServer({
+            library: api.library, setlists: api.setlists, songs: api.songs,
+          });
+          if (!result.ok) throw new Error(result.error || 'The pending song could not be synced.');
+          const serverId = await cache.getRedirectedSongId(song.id);
+          if (String(serverId) === String(song.id)) throw new Error('The song remains queued for sync.');
+          onSaved(await cache.getCachedSong(serverId));
+          return;
+        }
         const saved = song?.id && !isOfflineCreate
           ? await api.songs.update(song.id, {
             ...payload,
             base_updated_at: song?._sync?.base_updated_at ?? song?.updated_at ?? null,
           })
-          : await api.songs.create(payload);
+          : await api.songs.create({
+            ...payload,
+            operation_id: cache.makeMutationId(),
+          });
         if (song?.id) {
           await cache.deleteCachedSong(song.id);
           await cache.updateCachedSong(saved);
@@ -124,13 +150,15 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
             : parsedContent,
           _sync: {
             operation,
+            operation_id: operation === 'create'
+              ? (song?._sync?.operation_id || cache.makeMutationId())
+              : song?._sync?.operation_id,
             base_updated_at: operation === 'create'
               ? null
               : (song?._sync?.base_updated_at ?? song?.updated_at ?? null),
           },
         };
-        await cache.updateCachedSong(patched);
-        await cache.markDirty(id);
+        await cache.savePendingSong(patched, patched._sync.operation_id);
         onSaved(patched);
       }
     } catch (err) {
@@ -149,8 +177,7 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
         onDeleted(song.id);
       } else {
         if (song._sync?.operation === 'create') {
-          await cache.deleteCachedSong(song.id);
-          await cache.clearDirty(song.id);
+          await cache.cancelPendingLocalSong(song.id);
         } else {
           await cache.updateCachedSong({
             ...song,

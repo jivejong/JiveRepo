@@ -174,10 +174,13 @@ export function useSetlists(online) {
 
   const load = useCallback(async () => {
     try {
+      const cached = await cache.getCachedSetlists();
+      setSetlists(cached || []);
       const data = online
         ? await api.setlists.all()
         : await cache.getCachedSetlists();
-      setSetlists(data || []);
+      if (online) await cache.cacheSetlists(data || []);
+      setSetlists(online ? await cache.getCachedSetlists() : (data || []));
     } catch {
       const cached = await cache.getCachedSetlists().catch(() => []);
       setSetlists(cached);
@@ -187,6 +190,7 @@ export function useSetlists(online) {
   }, [online]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => cache.onCacheChange(load), [load]);
 
   return { setlists, loading, refresh: load };
 }
@@ -203,7 +207,7 @@ export function useSync(online) {
   const refreshSyncState = useCallback(async () => {
     const [timestamp, pending, lastConflicts] = await Promise.all([
       cache.getMeta('last_synced'),
-      cache.getDirtySongs(),
+      cache.getPendingMutations(),
       cache.getMeta('last_sync_conflicts'),
     ]);
     setLastSync(timestamp || null);

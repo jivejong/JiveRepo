@@ -16,7 +16,7 @@ function formatGigDate(value) {
   });
 }
 
-export default function SetlistView({ setlistId, online, onBack, onDeleted, onSelectSong }) {
+export default function SetlistView({ setlistId, online, onSync, onBack, onDeleted, onSelectSong }) {
   const [setlist, setSetlist] = useState(null);
   const [loading, setLoading] = useState(true);
   const [allSongs, setAllSongs] = useState([]);
@@ -31,14 +31,17 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
 
   const load = async () => {
     try {
-      const data = online
-        ? await api.setlists.get(setlistId)
-        : await cache.getCachedSetlist(setlistId);
-      if (online && data) {
-        try { await cache.cacheSetlists([data]); } catch { /* Online viewing still works if storage is unavailable. */ }
+      const cached = await cache.getCachedSetlist(setlistId);
+      let data = cached;
+      if (online && !cached?._pending) {
+        const resolvedId = await cache.getRedirectedSetlistId(setlistId);
+        data = await api.setlists.get(resolvedId);
+        if (data) await cache.cacheSetlists([data]);
       }
+      if (!data && !online) throw new Error('Setlist is not available in the offline cache.');
       setSetlist(data);
     } catch (err) {
+      setSetlist(null);
       setError(err.message);
     } finally {
       setLoading(false);
@@ -46,21 +49,29 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
   };
 
   useEffect(() => { load(); }, [setlistId, online]);
+  useEffect(() => cache.onCacheChange(() => { void load(); }), [setlistId, online]);
 
   useEffect(() => {
-    if (!online) return;
-    api.songs.search()
-      .then(result => setAllSongs(result.songs || []))
-      .catch(err => setError(err.message));
+    let cancelled = false;
+    cache.getCachedSongs().then(cached => { if (!cancelled) setAllSongs(cached || []); });
+    if (online) api.songs.search()
+      .then(result => cache.cacheSongs(result.songs || []))
+      .then(() => cache.getCachedSongs())
+      .then(songs => { if (!cancelled) setAllSongs(songs || []); })
+      .catch(err => { if (!cancelled) setError(err.message); });
+    return () => { cancelled = true; };
   }, [online]);
 
-  const applyUpdatedSetlist = async (updated) => {
-    setSetlist(updated);
-    try {
-      await cache.cacheSetlists([updated]);
-    } catch {
-      setError('Saved on the app server, but the offline copy could not be refreshed. Stay connected and sync again before using it offline.');
+  const saveMutation = async (type, payload = {}) => {
+    const updated = await cache.queueSetlistMutation({ type, setlistId, payload });
+    if (updated?._deleted) setSetlist(null);
+    else setSetlist(updated);
+    if (online) {
+      const result = await onSync?.();
+      if (result && !result.ok) setError('Saved locally; sync will retry when the app server is available.');
+      else await load();
     }
+    return updated;
   };
 
   const startMetadataEdit = () => {
@@ -75,7 +86,7 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
 
   const saveMetadata = async (event) => {
     event.preventDefault();
-    if (!online || busy) return;
+    if (busy) return;
     let payload;
     try {
       payload = buildSetlistMetadataPayload(metadata);
@@ -86,8 +97,7 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
     setBusy(true);
     setError(null);
     try {
-      const updated = await api.setlists.update(setlistId, payload);
-      await applyUpdatedSetlist(updated);
+      await saveMutation('metadata', payload);
       setEditingMetadata(false);
     } catch (err) {
       setError(setlistWriteError(err));
@@ -97,18 +107,12 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
   };
 
   const deleteCurrentSetlist = async () => {
-    if (!online || busy) return;
+    if (busy) return;
     if (!window.confirm(`Delete “${setlist.name}” and its entries? The songs in your library will remain.`)) return;
     setBusy(true);
     setError(null);
     try {
-      await api.setlists.remove(setlistId);
-      try {
-        await cache.deleteCachedSetlist(setlistId);
-      } catch {
-        setError('The setlist was deleted on the app server, but its offline cache could not be cleared. Sync again before using the setlist list offline.');
-        return;
-      }
+      await saveMutation('delete');
       onDeleted?.();
     } catch (err) {
       setError(setlistWriteError(err));
@@ -118,7 +122,7 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
   };
 
   const startEntryEdit = (song) => {
-    setEditingPosition(song.position);
+    setEditingPosition(song.entry_id);
     setEntryDraft({
       transposed_key: song.transposed_key ?? '',
       capo_fret: song.capo_fret == null ? '' : String(song.capo_fret),
@@ -127,8 +131,8 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
     setError(null);
   };
 
-  const saveEntry = async (position) => {
-    if (!online || busy) return;
+  const saveEntry = async (entryId) => {
+    if (busy) return;
     let payload;
     try {
       payload = buildSetlistEntryPayload(entryDraft);
@@ -139,8 +143,7 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
     setBusy(true);
     setError(null);
     try {
-      const updated = await api.setlists.updateSong(setlistId, position, payload);
-      await applyUpdatedSetlist(updated);
+      await saveMutation('entry_edit', { ...payload, entry_id: entryId });
       setEditingPosition(null);
       setEntryDraft({});
     } catch (err) {
@@ -150,13 +153,11 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
     }
   };
 
-  const removeSong = async (position) => {
-    if (!online) return;
+  const removeSong = async (entryId) => {
     setBusy(true);
     setError(null);
     try {
-      const updated = await api.setlists.removeSong(setlistId, position);
-      await applyUpdatedSetlist(updated);
+      await saveMutation('entry_remove', { entry_id: entryId });
     } catch (err) {
       setError(setlistWriteError(err));
     } finally {
@@ -172,13 +173,12 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
     setBusy(true);
     setError(null);
     try {
-      const updated = await api.setlists.addSong(setlistId, {
-        song_id: Number(entry.song_id),
+      await saveMutation('entry_add', {
+        song_id: entry.song_id,
         transposed_key: entry.transposed_key.trim() || null,
         capo_fret: entry.capo_fret === '' ? null : Number(entry.capo_fret),
         notes: entry.notes.trim() || null,
       });
-      await applyUpdatedSetlist(updated);
       setEntry(EMPTY_ENTRY);
       setAdding(false);
     } catch (err) {
@@ -192,17 +192,13 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
 
   const moveSong = async (index, delta) => {
     const target = index + delta;
-    if (!online || target < 0 || target >= songs.length) return;
+    if (target < 0 || target >= songs.length) return;
     const reordered = [...songs];
     [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
     setBusy(true);
     setError(null);
     try {
-      const updated = await api.setlists.reorder(
-        setlistId,
-        reordered.map(song => song.song_id),
-      );
-      await applyUpdatedSetlist(updated);
+      await saveMutation('reorder', { entry_ids: reordered.map(song => song.entry_id) });
     } catch (err) {
       setError(setlistWriteError(err));
     } finally {
@@ -213,8 +209,8 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
   if (loading) return <div className="loading">Loading…</div>;
   if (!setlist) return <div className="loading">Setlist not found</div>;
 
-  const songIds = new Set(songs.map(song => song.song_id));
-  const availableSongs = allSongs.filter(song => !songIds.has(song.id));
+  const songIds = new Set(songs.map(song => String(song.song_id)));
+  const availableSongs = allSongs.filter(song => !songIds.has(String(song.id)));
 
   return (
     <div className="screen">
@@ -230,39 +226,31 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
         </div>
       </div>
 
-      {!online && (
-        <div className="form-help setlist-connection-help" role="status">
-          Setlist changes require a connection to the app server.
-        </div>
-      )}
-
       {setlist.notes && <div className="setlist-notes">{setlist.notes}</div>}
 
       <div className="setlist-actions setlist-management-actions">
         <button
           className="btn btn-ghost btn-sm"
           onClick={startMetadataEdit}
-          disabled={!online || busy}
+          disabled={busy}
         >
           <EditIcon size={15} /> Edit setlist
         </button>
         <button
           className="btn btn-danger btn-sm"
           onClick={deleteCurrentSetlist}
-          disabled={!online || busy}
+          disabled={busy}
         >
           <TrashIcon size={15} /> Delete setlist
         </button>
-        {online && (
-          <button
+        <button
             className="btn btn-ghost btn-sm"
             onClick={() => { setAdding(value => !value); setError(null); }}
             disabled={busy}
           >
             {adding ? <XIcon size={16} /> : <PlusIcon size={16} />}
             {adding ? 'Cancel' : 'Add song'}
-          </button>
-        )}
+        </button>
       </div>
 
       {editingMetadata && (
@@ -275,7 +263,7 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
               value={metadata.name}
               onChange={event => setMetadata(current => ({ ...current, name: event.target.value }))}
               required
-              disabled={!online || busy}
+              disabled={busy}
             />
           </div>
           <div className="form-group">
@@ -286,7 +274,7 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
               type="date"
               value={metadata.gig_date}
               onChange={event => setMetadata(current => ({ ...current, gig_date: event.target.value }))}
-              disabled={!online || busy}
+              disabled={busy}
             />
           </div>
           <div className="form-group">
@@ -296,12 +284,12 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
               className="form-input"
               value={metadata.notes}
               onChange={event => setMetadata(current => ({ ...current, notes: event.target.value }))}
-              disabled={!online || busy}
+              disabled={busy}
             />
           </div>
           <div className="setlist-form-actions">
             <button className="btn btn-ghost btn-sm" type="button" onClick={() => { setEditingMetadata(false); setError(null); }} disabled={busy}>Cancel</button>
-            <button className="btn btn-primary btn-sm" type="submit" disabled={!online || busy}>Save setlist</button>
+            <button className="btn btn-primary btn-sm" type="submit" disabled={busy}>Save setlist</button>
           </div>
         </form>
       )}
@@ -356,7 +344,7 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
           <button
             className="btn btn-primary btn-full"
             onClick={addSong}
-            disabled={!online || busy || !availableSongs.length}
+            disabled={busy || !availableSongs.length}
           >
             Add to setlist
           </button>
@@ -380,7 +368,7 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
       )}
 
       {songs.map((song, index) => (
-        <React.Fragment key={`${song.song_id}-${song.position}`}>
+        <React.Fragment key={song.entry_id || `${song.song_id}-${song.position}`}>
           <div
             className="song-row"
             onClick={() => onSelectSong(song, songs)}
@@ -411,12 +399,11 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
                   className="icon-btn"
                   onClick={event => { event.stopPropagation(); startEntryEdit(song); }}
                   aria-label={`Edit ${song.title} entry`}
-                  disabled={!online || busy}
+                  disabled={busy}
                 >
                   <EditIcon size={14} />
                 </button>
-                {online && (
-                  <>
+                <>
                     <button
                       className="icon-btn"
                       onClick={event => { event.stopPropagation(); moveSong(index, -1); }}
@@ -435,18 +422,17 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
                     </button>
                     <button
                       className="icon-btn"
-                      onClick={event => { event.stopPropagation(); removeSong(song.position); }}
+                      onClick={event => { event.stopPropagation(); removeSong(song.entry_id); }}
                       aria-label={`Remove ${song.title}`}
                       disabled={busy}
                     >
                       <TrashIcon size={14} />
                     </button>
-                  </>
-                )}
+                </>
               </div>
             </div>
           </div>
-          {editingPosition === song.position && (
+          {editingPosition === song.entry_id && (
             <div className="setlist-form setlist-entry-editor">
               <div className="setlist-entry-grid">
                 <div className="form-group">
@@ -457,7 +443,7 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
                     value={entryDraft.transposed_key}
                     placeholder="Song default"
                     onChange={event => setEntryDraft(current => ({ ...current, transposed_key: event.target.value }))}
-                    disabled={!online || busy}
+                    disabled={busy}
                   />
                 </div>
                 <div className="form-group">
@@ -471,7 +457,7 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
                     value={entryDraft.capo_fret}
                     placeholder="Song default"
                     onChange={event => setEntryDraft(current => ({ ...current, capo_fret: event.target.value }))}
-                    disabled={!online || busy}
+                    disabled={busy}
                   />
                 </div>
               </div>
@@ -482,12 +468,12 @@ export default function SetlistView({ setlistId, online, onBack, onDeleted, onSe
                   className="form-input"
                   value={entryDraft.notes}
                   onChange={event => setEntryDraft(current => ({ ...current, notes: event.target.value }))}
-                  disabled={!online || busy}
+                  disabled={busy}
                 />
               </div>
               <div className="setlist-form-actions">
                 <button className="btn btn-ghost btn-sm" onClick={() => { setEditingPosition(null); setError(null); }} disabled={busy}>Cancel</button>
-                <button className="btn btn-primary btn-sm" onClick={() => saveEntry(song.position)} disabled={!online || busy}>Save entry</button>
+                <button className="btn btn-primary btn-sm" onClick={() => saveEntry(song.entry_id)} disabled={busy}>Save entry</button>
               </div>
             </div>
           )}

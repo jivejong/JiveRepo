@@ -275,14 +275,15 @@ test('Genre and Vibe edits work offline and stale sync keeps the server version'
         open.onerror = () => reject(open.error);
       });
       const read = store => new Promise((resolve, reject) => {
-        const request = db.transaction(store).objectStore(store).get(store === 'songs' ? id : 'dirty_songs');
+        const request = db.transaction(store).objectStore(store).get(store === 'songs' ? id : 'pending_mutations');
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       });
       const song = await read('songs');
       const dirty = await read('meta');
       db.close();
-      return { base: song?._sync?.base_updated_at, dirty: dirty?.value?.includes(id) };
+      return { base: song?._sync?.base_updated_at,
+        dirty: dirty?.value?.some(item => item.entity === 'song' && item.id === id) };
     }, songId);
     expect(queued).toEqual({ base: legacyToken, dirty: true });
     const legacyConflict = page.waitForResponse(response =>

@@ -11,7 +11,7 @@ export function buildPerformanceSaveTarget(context, key, capo) {
     return {
       kind: 'setlist',
       setlistId: context.setlistId,
-      position: context.setlistEntry.position,
+      entryId: context.setlistEntry.entry_id,
       payload: { transposed_key: key, capo_fret: capo },
     };
   }

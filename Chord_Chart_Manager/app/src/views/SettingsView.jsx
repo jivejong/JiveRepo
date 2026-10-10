@@ -23,6 +23,8 @@ export default function SettingsView({
   const lastSyncStr = lastSync
     ? new Date(lastSync).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
     : 'Never';
+  const pendingSongCount = dirty.filter(item => item.entity === 'song').length;
+  const pendingSetlistCount = dirty.filter(item => item.entity === 'setlist').length;
 
   return (
     <div className="screen">
@@ -77,7 +79,7 @@ export default function SettingsView({
               <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)',
                             background: 'var(--warning-surface)' }}>
                 <div style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 500, marginBottom: 4 }}>
-                  {dirty.length} tablet change{dirty.length !== 1 ? 's' : ''} waiting to sync
+                  {pendingSongCount} song change{pendingSongCount === 1 ? '' : 's'}, {pendingSetlistCount} setlist change{pendingSetlistCount === 1 ? '' : 's'} waiting to sync
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                   They will be pushed before the latest server copy is downloaded.
@@ -91,8 +93,7 @@ export default function SettingsView({
                   {conflicts.length} tablet change{conflicts.length !== 1 ? 's were' : ' was'} replaced
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  The desktop changed {conflicts.length === 1 ? 'that song' : 'those songs'} first,
-                  so the desktop version was kept.
+                  Server versions were kept for {conflicts.filter(item => item.entity !== 'setlist').length} song and {conflicts.filter(item => item.entity === 'setlist').length} setlist conflicts.
                 </div>
               </div>
             )}

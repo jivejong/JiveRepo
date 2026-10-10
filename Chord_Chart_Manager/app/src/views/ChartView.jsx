@@ -26,7 +26,7 @@ import { AUTO_SCROLL_DEFAULT_SPEED, AUTO_SCROLL_MAX_SPEED, AUTO_SCROLL_MIN_SPEED
  */
 export default function ChartView({
   songId, songList = [], setlistId = null, setlistEntry = null,
-  online, onBack, onEdit, onNavigateSong, onSetlistUpdated,
+  online, onSync, onBack, onEdit, onNavigateSong, onSetlistUpdated,
 }) {
   const { song, loading, setSong } = useSong(songId, online);
 
@@ -94,7 +94,7 @@ export default function ChartView({
     setCapoOverride(null);
     setSaveError(null);
   }, [song?.id, song?.preferred_key, song?.chart_written_key,
-    song?.default_capo, song?.capo_fret, setlistId, setlistEntry?.position,
+    song?.default_capo, song?.capo_fret, setlistId, setlistEntry?.entry_id,
     setlistEntry?.transposed_key, setlistEntry?.capo_fret]);
 
   // Navigation within song list
@@ -186,23 +186,24 @@ export default function ChartView({
   const saveTransposition = async () => {
     if (!hasChanges || saving) return;
     setSaveError(null);
-    if (inSetlist && !online) {
-      setSaveError('Saving setlist overrides requires an internet connection.');
-      return;
-    }
     const target = buildPerformanceSaveTarget({ song, setlistId, setlistEntry }, currentWrittenKey, capo);
     setSaving(true);
     try {
       if (target.kind === 'setlist') {
-        const updatedSetlist = await api.setlists.updateSong(
-          target.setlistId, target.position, target.payload,
-        );
+        const updatedSetlist = await cache.queueSetlistMutation({
+          type: 'entry_edit', setlistId: target.setlistId,
+          payload: { ...target.payload, entry_id: target.entryId },
+        });
         onSetlistUpdated?.(updatedSetlist);
-        let cacheWarning = null;
-        try {
-          await cache.cacheSetlists([updatedSetlist]);
-        } catch {
-          cacheWarning = 'Saved to the setlist, but the offline copy could not be refreshed.';
+        let cacheWarning = 'Saved on this device.';
+        if (online) {
+          const result = await onSync?.();
+          const resolved = await cache.getCachedSetlist(target.setlistId);
+          if (resolved) onSetlistUpdated?.(resolved);
+          if (result?.conflicts?.some(conflict => String(conflict.id) === String(target.setlistId))) {
+            cacheWarning = 'The server setlist changed; its version was kept.';
+          } else if (result?.ok) cacheWarning = null;
+          else cacheWarning = 'Saved on this device; sync will retry when the app server is available.';
         }
         setInitialOffset(semiOffset);
         setInitialCapo(capo);
@@ -210,7 +211,16 @@ export default function ChartView({
         setSaveError(cacheWarning);
       } else {
         if (online) {
-          await api.songs.update(target.songId, target.payload);
+          if (song._sync?.operation === 'create') {
+            const patched = { ...song, ...target.payload, _sync: song._sync };
+            await cache.savePendingSong(patched, song._sync.operation_id);
+            const result = await cache.syncWithServer({
+              library: api.library, setlists: api.setlists, songs: api.songs,
+            });
+            if (!result.ok) throw new Error(result.error || 'The pending song could not be synced.');
+            const redirectedId = await cache.getRedirectedSongId(song.id);
+            setSong(await cache.getCachedSong(redirectedId));
+          } else await api.songs.update(target.songId, target.payload);
         } else {
           const patched = {
             ...song,
@@ -222,8 +232,7 @@ export default function ChartView({
                   base_updated_at: song._sync?.base_updated_at ?? song.updated_at ?? null,
                 },
           };
-          await cache.updateCachedSong(patched);
-          await cache.markDirty(song.id);
+          await cache.savePendingSong(patched, song._sync?.operation_id);
           setSong(patched);
         }
         setInitialOffset(semiOffset);
@@ -282,17 +291,12 @@ export default function ChartView({
             className="btn btn-ghost btn-sm"
             style={{ marginLeft: 'auto', fontSize: 12 }}
             onClick={() => { void saveTransposition(); }}
-            disabled={saving || (inSetlist && !online)}
+            disabled={saving}
           >
             {inSetlist ? 'Save to setlist' : 'Save key'}
           </button>
         )}
       </div>
-      {inSetlist && !online && hasChanges && (
-        <div className="form-help" role="status">
-          Saving setlist overrides requires a connection to the app server.
-        </div>
-      )}
       {saveError && <div className="form-error" role="alert">{saveError}</div>}
 
       {/* Transpose + capo controls */}

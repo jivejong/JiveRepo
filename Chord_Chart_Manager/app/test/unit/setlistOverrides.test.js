@@ -64,11 +64,11 @@ describe('performance save target', () => {
     expect(buildPerformanceSaveTarget({
       song,
       setlistId: 9,
-      setlistEntry: { position: 2 },
+      setlistEntry: { position: 2, entry_id: 'local-entry-uuid' },
     }, 'Bb', 0)).toEqual({
       kind: 'setlist',
       setlistId: 9,
-      position: 2,
+      entryId: 'local-entry-uuid',
       payload: { transposed_key: 'Bb', capo_fret: 0 },
     });
   });

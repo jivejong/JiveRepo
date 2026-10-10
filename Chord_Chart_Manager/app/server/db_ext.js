@@ -14,6 +14,7 @@
  *   chart_content is the derived structure.
  */
 const { pool } = require("./db");
+const crypto = require("crypto");
 const {
   parseChartBody, chartToText, isGeneratedSourceUnchanged, isGeneratedChartSource,
 } = require("./chartParser");
@@ -165,7 +166,13 @@ const EDITABLE = {
   chart_source: "chart_source",
 };
 
-async function createSong(patch) {
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+async function createSong(patch, operationId = null) {
   const genres = patch.genres === undefined ? null : normalizeTagSet(patch.genres, "Genres");
   const vibes = patch.vibes === undefined ? null : normalizeTagSet(patch.vibes, "Vibes");
   if (genres?.length) {
@@ -175,6 +182,22 @@ async function createSong(patch) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    let requestHash = null;
+    if (operationId) {
+      if (typeof operationId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operationId)) {
+        const error = new Error("operation_id must be a UUID"); error.status = 400; throw error;
+      }
+      requestHash = crypto.createHash("sha256").update(canonicalJson(patch)).digest("hex");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [operationId]);
+      const prior = await client.query("SELECT request_hash,response FROM public.mutation_receipts WHERE operation_id=$1", [operationId]);
+      if (prior.rowCount) {
+        if (prior.rows[0].request_hash !== requestHash) {
+          const error = new Error("Operation ID was already used for a different request"); error.status = 409; throw error;
+        }
+        await client.query("COMMIT");
+        return prior.rows[0].response;
+      }
+    }
     const artistId = await getOrCreate(client, "artists", patch.artist || "Unknown");
     // Derive structured content from the edited text.
     const source = patch.chart_source || "";
@@ -200,8 +223,15 @@ async function createSong(patch) {
     );
     if (genres !== null) await replaceSongTagSet(client, rows[0].id, "genres", "song_genres", "genre_id", genres);
     if (vibes !== null) await replaceSongTagSet(client, rows[0].id, "vibes", "song_vibes", "vibe_id", vibes);
+    const saved = await getSongFull(rows[0].id, client);
+    if (operationId) {
+      await client.query(
+        `INSERT INTO public.mutation_receipts(operation_id,request_hash,entity_type,resource_id,response)
+         VALUES($1,$2,'song',$3,$4::jsonb)`,
+        [operationId, requestHash, String(rows[0].id), JSON.stringify(saved)]);
+    }
     await client.query("COMMIT");
-    return getSongFull(rows[0].id);
+    return saved;
   } catch (e) {
     await client.query("ROLLBACK");
     throw e;
@@ -303,6 +333,12 @@ async function deleteSong(id, baseUpdatedAt = null) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // Match the setlist entry trigger's parent-before-song lock order. The
+    // cascade then bumps each affected setlist without a lock-order inversion.
+    await client.query(
+      `SELECT sl.id FROM public.setlists sl
+       JOIN public.setlist_songs ss ON ss.setlist_id = sl.id
+       WHERE ss.song_id = $1 ORDER BY sl.id FOR UPDATE OF sl`, [id]);
     const locked = await client.query(
       `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
        FROM songs WHERE id = $1 FOR UPDATE`, [id]
@@ -326,8 +362,8 @@ async function deleteSong(id, baseUpdatedAt = null) {
 }
 
 // Full single song incl. editable text + genres/vibes/era, app-mapped.
-async function getSongFull(id) {
-  const { rows } = await pool.query(
+async function getSongFull(id, queryable = pool) {
+  const { rows } = await queryable.query(
     `SELECT s.*, to_char(s.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,
             a.name AS artist,
             (s.release_year / 10 * 10)::text || 's' AS era
@@ -337,10 +373,10 @@ async function getSongFull(id) {
   if (!rows.length) return null;
   const song = rows[0];
   const [g, v] = await Promise.all([
-    pool.query(
+    queryable.query(
       `SELECT g.name, sg.is_primary FROM song_genres sg JOIN genres g ON g.id = sg.genre_id
        WHERE sg.song_id = $1 ORDER BY sg.is_primary DESC, g.name`, [id]),
-    pool.query(
+    queryable.query(
       `SELECT v.name FROM song_vibes sv JOIN vibes v ON v.id = sv.vibe_id
        WHERE sv.song_id = $1 ORDER BY v.name`, [id]),
   ]);
@@ -503,7 +539,9 @@ function requireSetlistData(data) {
 
 async function listSetlists() {
   const { rows } = await pool.query(
-    `SELECT sl.*, count(ss.song_id)::int AS song_count
+    `SELECT sl.id, sl.name, to_char(sl.gig_date,'YYYY-MM-DD') AS gig_date, sl.notes, sl.created_at,
+            to_char(sl.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,
+            count(ss.song_id)::int AS song_count
      FROM setlists sl LEFT JOIN setlist_songs ss ON ss.setlist_id = sl.id
      GROUP BY sl.id ORDER BY sl.gig_date DESC NULLS LAST, sl.name`
   );
@@ -511,24 +549,26 @@ async function listSetlists() {
 }
 
 async function getSetlist(id) {
-  const { rows } = await pool.query("SELECT * FROM setlists WHERE id = $1", [id]);
-  if (!rows.length) return null;
-  const setlist = rows[0];
-  const songs = await pool.query(
-    `SELECT ss.position, ss.transposed_key, ss.capo_fret, ss.notes,
-            s.id AS song_id, s.title, a.name AS artist,
-            s.performance_key AS chart_written_key, s.capo_fret AS default_capo,
-            s.bb_structure AS beatbuddy_structure, s.bpm,
-            (SELECT v.name FROM song_vibes sv JOIN vibes v ON v.id=sv.vibe_id
-             WHERE sv.song_id = s.id ORDER BY v.name LIMIT 1) AS feel
-     FROM setlist_songs ss
-     JOIN songs s ON s.id = ss.song_id
-     JOIN artists a ON a.id = s.artist_id
-     WHERE ss.setlist_id = $1 ORDER BY ss.position`,
-    [id]
-  );
-  setlist.songs = songs.rows;
-  return setlist;
+  const { rows } = await pool.query(
+    `SELECT sl.id, sl.name, to_char(sl.gig_date,'YYYY-MM-DD') AS gig_date, sl.notes, sl.created_at,
+            to_char(sl.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,
+            COALESCE((
+              SELECT json_agg(to_jsonb(entry_row) ORDER BY entry_row.position)
+                FROM (
+                  SELECT ss.id::text AS entry_id, ss.position, ss.transposed_key, ss.capo_fret, ss.notes,
+                         s.id AS song_id, s.title, a.name AS artist,
+                         s.performance_key AS chart_written_key, s.capo_fret AS default_capo,
+                         s.bb_structure AS beatbuddy_structure, s.bpm,
+                         (SELECT v.name FROM song_vibes sv JOIN vibes v ON v.id=sv.vibe_id
+                          WHERE sv.song_id = s.id ORDER BY v.name LIMIT 1) AS feel
+                    FROM public.setlist_songs ss
+                    JOIN public.songs s ON s.id = ss.song_id
+                    JOIN public.artists a ON a.id = s.artist_id
+                   WHERE ss.setlist_id = sl.id
+                ) AS entry_row
+            ), '[]'::json) AS songs
+       FROM public.setlists sl WHERE sl.id = $1`, [id]);
+  return rows[0] || null;
 }
 
 async function createSetlist(data) {

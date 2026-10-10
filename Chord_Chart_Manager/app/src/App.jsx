@@ -97,13 +97,14 @@ export default function App() {
     activeView = (
       <ChartView
         key={view.setlistEntry
-          ? `${view.setlistId}:${view.setlistEntry.position}`
+          ? `${view.setlistId}:${view.setlistEntry.entry_id}`
           : view.songId}
         songId={view.songId}
         songList={view.songList}
         setlistId={view.setlistId}
         setlistEntry={view.setlistEntry}
         online={online}
+        onSync={syncNow}
         onBack={goBack}
         onEdit={openEdit}
         onNavigateSong={(item) => {
@@ -115,7 +116,7 @@ export default function App() {
         onSetlistUpdated={(updatedSetlist) => {
           setView(current => {
             const entry = updatedSetlist.songs?.find(
-              item => item.position === current.setlistEntry?.position,
+              item => String(item.entry_id) === String(current.setlistEntry?.entry_id),
             );
             return {
               ...current,
@@ -150,6 +151,7 @@ export default function App() {
       <SetlistView
         setlistId={view.setlistId}
         online={online}
+        onSync={syncNow}
         onBack={goBack}
         onDeleted={() => setView(null)}
         onSelectSong={(entry, songs) => openChart(
@@ -185,6 +187,7 @@ export default function App() {
     activeView = (
       <SetlistListView
         online={online}
+        onSync={syncNow}
         onSelectSetlist={openSetlist}
       />
     );

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { ChevronRight, MusicIcon, PlusIcon, XIcon } from '../components/Icons';
 import { useSetlists } from '../hooks';
-import * as api from '../lib/api';
+import * as cache from '../lib/cache';
 import { buildSetlistMetadataPayload, setlistWriteError } from '../setlistMutations';
 
 function formatGigDate(value, options) {
@@ -9,7 +9,7 @@ function formatGigDate(value, options) {
   return new Date(`${dateOnly}T12:00:00`).toLocaleDateString(undefined, options);
 }
 
-export default function SetlistListView({ online, onSelectSetlist }) {
+export default function SetlistListView({ online, onSync, onSelectSetlist }) {
   const { setlists, loading, refresh } = useSetlists(online);
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -26,11 +26,19 @@ export default function SetlistListView({ online, onSelectSetlist }) {
     setSaving(true);
     setError(null);
     try {
-      const created = await api.setlists.create(buildSetlistMetadataPayload(form));
+      const created = await cache.queueSetlistMutation({
+        type: 'create', payload: buildSetlistMetadataPayload(form),
+      });
       setForm({ name: '', gig_date: '', notes: '' });
       setCreating(false);
       await refresh();
       onSelectSetlist(created);
+      if (online) {
+        const result = await onSync?.();
+        if (result?.ok) {
+          await refresh();
+        }
+      }
     } catch (err) {
       setError(setlistWriteError(err));
     } finally {
@@ -42,22 +50,14 @@ export default function SetlistListView({ online, onSelectSetlist }) {
     <div className="screen">
       <div className="topbar">
         <div className="topbar-title" style={{ flex: 1 }}>Setlists</div>
-        {online && (
-          <button
+        <button
             className="icon-btn"
             onClick={() => { setCreating(value => !value); setError(null); }}
             aria-label={creating ? 'Cancel new setlist' : 'Create a setlist'}
           >
             {creating ? <XIcon size={20} /> : <PlusIcon size={20} />}
-          </button>
-        )}
+        </button>
       </div>
-
-      {!online && (
-        <div className="form-help setlist-connection-help" role="status">
-          Setlist changes require a connection to the app server.
-        </div>
-      )}
 
       {creating && (
         <div className="setlist-form">
@@ -69,7 +69,7 @@ export default function SetlistListView({ online, onSelectSetlist }) {
               onChange={event => set('name', event.target.value)}
               placeholder="Friday night set"
               autoFocus
-              disabled={!online || saving}
+              disabled={saving}
             />
           </div>
           <div className="form-group">
@@ -79,7 +79,7 @@ export default function SetlistListView({ online, onSelectSetlist }) {
               type="date"
               value={form.gig_date}
               onChange={event => set('gig_date', event.target.value)}
-              disabled={!online || saving}
+              disabled={saving}
             />
           </div>
           <div className="form-group">
@@ -89,11 +89,11 @@ export default function SetlistListView({ online, onSelectSetlist }) {
               value={form.notes}
               onChange={event => set('notes', event.target.value)}
               placeholder="Optional"
-              disabled={!online || saving}
+              disabled={saving}
             />
           </div>
           {error && <div className="form-error" role="alert">{error}</div>}
-          <button className="btn btn-primary btn-full" onClick={createSetlist} disabled={!online || saving}>
+          <button className="btn btn-primary btn-full" onClick={createSetlist} disabled={saving}>
             {saving ? 'Creating…' : 'Create setlist'}
           </button>
         </div>

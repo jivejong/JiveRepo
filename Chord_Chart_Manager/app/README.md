@@ -215,8 +215,8 @@ cd server && npm audit --omit=dev
 - Opening a chart from a setlist uses that entry's key and capo overrides;
   missing fields fall back to the song's preferred key and default capo.
 - In a setlist chart, **Save to setlist** stores the displayed key and capo on
-  that entry without changing the song's defaults or chart source. Saving
-  setlist overrides requires a connection.
+  that entry without changing the song's defaults or chart source. Setlist
+  changes are queued offline and synchronize with the next successful sync.
 - **Edit setlist** changes its required name, gig date, and notes. Blank date
   and notes clear those optional values; date-only values remain date-only.
 - **Delete setlist** asks for confirmation, removes the setlist and its entries,
@@ -224,10 +224,10 @@ cd server && npm audit --omit=dev
 - The edit control beside an entry updates its key override, capo override,
   and performance note in place. Blank key/capo fields clear those overrides
   so chart opening falls back to the song; capo `0` remains an explicit value.
-- Cached setlists retain their overrides for offline chart reading. Setlist
-  writes remain online-only until T10; song mutations use the existing offline
-  queue. Setlist management controls are disabled offline with a connection-to-
-  app-server message.
+- Cached setlists retain their overrides for offline chart reading and editing.
+  Setlist and song changes use the existing mutation queue; list/detail/chart
+  views update immediately, and a stale setlist is resolved server-wins during
+  synchronization.
 
 ### Offline sync
 
@@ -245,7 +245,13 @@ Existing-song updates and deletions include the server `updated_at` value on
 which the tablet change was based. The API checks that version while holding a
 row lock. A stale mutation receives HTTP 409, the server copy is kept, and
 Settings reports that the tablet change was replaced. Offline-created songs
-use temporary `local-*` IDs until the server assigns permanent IDs.
+use temporary `local-*` IDs until the server assigns permanent IDs. A dispatched
+create keeps its exact payload under its operation ID so a lost response can be
+replayed safely. Edits made while that request is in flight remain queued as a
+follow-up update, and acknowledging the create rewrites dependent cached
+setlist entries to the server song ID. A pull keeps local projections that
+still have queued work. Deleting a local song with an uncertain dispatched
+setlist-entry request is blocked until sync resolves it.
 Song version tokens use UTC with six fractional digits and are compared as
 exact strings. Older queued three-digit tokens are ambiguous and receive 409;
 the queued request is sent first, then server-wins recovery refreshes the
@@ -257,6 +263,10 @@ base_updated_at}` in its JSON body. `category` is `Genre` or `Feel` (`Vibe`
 is an alias). Missing or malformed tokens return 400; stale or ambiguous
 tokens return 409. The song filter sends `tag_filters` as a JSON list of
 `{category,name}` values; every selected Genre, Feel, or Era must match.
+Setlist conflict notices are stored in IndexedDB and remain visible after a
+later sync failure or reload. When Web Locks are unavailable, another tab
+waits once for the active IndexedDB lease to expire, then rechecks ownership
+and its fencing token before pushing.
 
 Service workers require HTTPS, except on `localhost`. A separate tablet cannot
 use the secure-context exception by visiting `http://<computer-ip>:3000`; the

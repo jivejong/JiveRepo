@@ -6,16 +6,29 @@
  * first, the queued tablet mutation is discarded and the server copy wins.
  */
 import { matchesSongTagFilters } from '../tagMutations';
+import { discardSetlistOperations, enqueueSetlistOperation, rebaseSetlistOperations,
+  resolveSetlistOperationIds } from '../setlistQueue';
 
 const DB_NAME = 'chart-manager';
 const DB_VERSION = 1;
 const CACHE_CHANGE_EVENT = 'chart-cache-change';
 
 let _db = null;
+let _changeChannel = null;
+
+function ensureChangeChannel() {
+  if (typeof window === 'undefined' || typeof window.BroadcastChannel !== 'function') return null;
+  _changeChannel ||= new window.BroadcastChannel('ccm-cache-change');
+  if (!_changeChannel.onmessage) {
+    _changeChannel.onmessage = () => window.dispatchEvent(new Event(CACHE_CHANGE_EVENT));
+  }
+  return _changeChannel;
+}
 
 function notifyCacheChange() {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(CACHE_CHANGE_EVENT));
+    ensureChangeChannel()?.postMessage({ at: Date.now() });
   }
 }
 
@@ -62,6 +75,67 @@ function transactionDone(store) {
   });
 }
 
+function mutationId() {
+  return globalThis.crypto?.randomUUID?.()
+    || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, character => {
+      const random = Math.floor(Math.random() * 16);
+      return (character === 'x' ? random : (random & 0x3) | 0x8).toString(16);
+    });
+}
+
+export function makeMutationId() { return mutationId(); }
+
+function transact(storeNames, mode, body) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      await openDb();
+      const transaction = _db.transaction(storeNames, mode);
+      let value;
+      let failed = false;
+      transaction.oncomplete = () => failed ? undefined : resolve(value);
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted'));
+      try { body(transaction, next => { value = next; }, error => {
+        failed = true;
+        try { transaction.abort(); } catch { /* already inactive */ }
+        reject(error);
+      }); } catch (error) {
+        failed = true;
+        try { transaction.abort(); } catch { /* already inactive */ }
+        reject(error);
+      }
+    } catch (error) { reject(error); }
+  });
+}
+
+function queueMetaValue(meta, key, value) { meta.put({ key, value, updatedAt: Date.now() }); }
+
+function pendingQueueRequest(meta, callback, deferPersist = false) {
+  const queueRequest = meta.get('pending_mutations');
+  const legacyRequest = meta.get('dirty_songs');
+  let queue;
+  let legacy;
+  let done = 0;
+  const ready = () => {
+    done += 1;
+    if (done !== 2) return;
+    queue ||= { key: 'pending_mutations', value: [] };
+    if (!Array.isArray(queue.value)) queue.value = [];
+    if (legacy?.value?.length) {
+      for (const id of legacy.value) {
+        if (!queue.value.some(item => item.entity === 'song' && item.id === id)) {
+          queue.value.push({ entity: 'song', id, op_id: mutationId() });
+        }
+      }
+      meta.delete('dirty_songs');
+    }
+    callback(queue.value, () => queueMetaValue(meta, 'pending_mutations', queue.value));
+    if (!deferPersist) queueMetaValue(meta, 'pending_mutations', queue.value);
+  };
+  queueRequest.onsuccess = () => { queue = queueRequest.result; ready(); };
+  legacyRequest.onsuccess = () => { legacy = legacyRequest.result; ready(); };
+}
+
 function cleanServerSong(song) {
   const { _sync, ...clean } = song;
   return clean;
@@ -78,10 +152,24 @@ export async function cacheSongs(songList) {
 
 async function replaceCachedSongs(songList) {
   await openDb();
-  const store = tx('songs', 'readwrite');
-  store.clear();
-  for (const song of songList) store.put(cleanServerSong(song));
-  return transactionDone(store);
+  return transact(['songs', 'meta'], 'readwrite', transaction => {
+    const songs = transaction.objectStore('songs');
+    const meta = transaction.objectStore('meta');
+    const existingRequest = songs.getAll();
+    const queueRequest = meta.get('pending_mutations');
+    const ready = () => {
+      if (existingRequest.readyState !== 'done' || queueRequest.readyState !== 'done') return;
+      const pendingIds = new Set((queueRequest.result?.value || [])
+        .filter(item => item.entity === 'song').map(item => String(item.id)));
+      const pendingSongs = existingRequest.result.filter(song => pendingIds.has(String(song.id)));
+      songs.clear();
+      for (const song of songList) songs.put(cleanServerSong(song));
+      // A mutation queued while the push phase was in flight must survive the
+      // pull. Its local projection wins until a later push acknowledges it.
+      for (const song of pendingSongs) songs.put(song);
+    };
+    existingRequest.onsuccess = queueRequest.onsuccess = ready;
+  });
 }
 
 export async function getCachedSongs() {
@@ -99,14 +187,111 @@ export async function updateCachedSong(song) {
   return wrap(tx('songs', 'readwrite').put(song));
 }
 
+// Commit the local projection and its queue revision together. This closes the
+// window where an in-flight create acknowledgement could otherwise clear a
+// just-saved edit before markDirty recorded it.
+export async function savePendingSong(song, operationId = null) {
+  await openDb();
+  return transact(['songs', 'meta'], 'readwrite', transaction => {
+    const songs = transaction.objectStore('songs');
+    const meta = transaction.objectStore('meta');
+    const allSongsRequest = songs.getAll();
+    const queueRequest = meta.get('pending_mutations');
+    const redirectsRequest = meta.get('song_id_redirects');
+    let readyCount = 0;
+    const ready = () => {
+      readyCount += 1;
+      if (readyCount !== 3) return;
+      const allSongs = allSongsRequest.result;
+      const redirects = redirectsRequest.result?.value || {};
+      const redirectedId = redirects[song.id];
+      const current = redirectedId
+        ? allSongs.find(item => String(item.id) === String(redirectedId))
+        : null;
+      const targetId = redirectedId ?? song.id;
+      const patch = current
+        ? { ...current, ...song, id: targetId,
+          _sync: { ...song._sync, operation: 'update', base_updated_at: current.updated_at } }
+        : song;
+      songs.put(patch);
+      const queue = queueRequest.result?.value || [];
+      let operation = queue.find(item => item.entity === 'song'
+        && (String(item.id) === String(song.id) || String(item.id) === String(targetId)));
+      if (!operation) {
+        operation = { entity: 'song', id: targetId, op_id: operationId || mutationId(), local_revision: 0 };
+        queue.push(operation);
+      }
+      if (redirectedId) {
+        operation.id = targetId;
+        operation.op_id = mutationId();
+        operation.sent = false;
+        delete operation.sent_payload;
+        delete operation.sent_revision;
+      }
+      operation.local_revision = (operation.local_revision || 0) + 1;
+      meta.put({ key: 'pending_mutations', value: queue, updatedAt: Date.now() });
+    };
+    for (const request of [allSongsRequest, queueRequest, redirectsRequest]) request.onsuccess = ready;
+  }).then(() => { notifyCacheChange(); });
+}
+
 export async function deleteCachedSong(id) {
   await openDb();
   return wrap(tx('songs', 'readwrite').delete(id));
 }
 
+export async function cancelPendingLocalSong(id) {
+  await openDb();
+  return transact(['songs', 'setlists', 'meta'], 'readwrite', (transaction, _setValue, fail) => {
+    const songs = transaction.objectStore('songs');
+    const lists = transaction.objectStore('setlists');
+    const meta = transaction.objectStore('meta');
+    const allListsRequest = lists.getAll();
+    const queueRequest = meta.get('pending_mutations');
+    let readyCount = 0;
+    const ready = () => {
+      readyCount += 1;
+      if (readyCount !== 2) return;
+      const queue = queueRequest.result?.value || [];
+      const pendingSongCreate = queue.find(item => item.entity === 'song'
+        && String(item.id) === String(id) && item.sent);
+      if (pendingSongCreate) return fail(new Error('Sync the pending song creation before deleting it.'));
+      const dependentAdds = queue.filter(item => item.entity === 'setlist' && item.type === 'entry_add'
+        && String(item.payload.song_id) === String(id));
+      if (dependentAdds.some(item => item.sent)) {
+        return fail(new Error('Sync the pending setlist entry before deleting its song.'));
+      }
+      const cancelledEntryIds = new Set(dependentAdds.map(item => String(item.payload.entry_id)));
+      const nextQueue = queue.filter(item => {
+        if (item.entity === 'song' && String(item.id) === String(id)) return false;
+        if (item.entity !== 'setlist') return true;
+        if (item.type === 'entry_add' && String(item.payload.song_id) === String(id)) return false;
+        if (['entry_edit', 'entry_remove'].includes(item.type)
+            && cancelledEntryIds.has(String(item.payload.entry_id)) && !item.sent) return false;
+        if (item.type === 'reorder' && !item.sent) {
+          item.payload.entry_ids = item.payload.entry_ids.filter(entryId => !cancelledEntryIds.has(String(entryId)));
+        }
+        return true;
+      });
+      for (const list of allListsRequest.result) {
+        const before = list.songs || [];
+        list.songs = before.filter(entry => String(entry.song_id) !== String(id)
+          && String(entry.id) !== String(id));
+        if (list.songs.length !== before.length) {
+          list.songs.forEach((entry, index) => { entry.position = index + 1; });
+          list.song_count = list.songs.length;
+          lists.put(list);
+        }
+      }
+      songs.delete(id);
+      meta.put({ key: 'pending_mutations', value: nextQueue, updatedAt: Date.now() });
+    };
+    allListsRequest.onsuccess = queueRequest.onsuccess = ready;
+  }).then(() => { notifyCacheChange(); });
+}
+
 export function makeLocalSongId() {
-  const suffix = globalThis.crypto?.randomUUID?.()
-    || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const suffix = mutationId();
   return `local-${suffix}`;
 }
 
@@ -114,25 +299,51 @@ export function makeLocalSongId() {
 
 export async function cacheSetlists(setlistList) {
   await openDb();
-  const store = tx('setlists', 'readwrite');
-  for (const setlist of setlistList) {
-    store.put(Array.isArray(setlist.songs)
-      ? { ...setlist, song_count: setlist.songs.length }
-      : setlist);
-  }
-  return transactionDone(store);
+  return transact(['setlists', 'meta'], 'readwrite', transaction => {
+    const lists = transaction.objectStore('setlists');
+    const meta = transaction.objectStore('meta');
+    const pendingRequest = meta.get('pending_mutations');
+    pendingRequest.onsuccess = () => {
+      const pendingIds = new Set((pendingRequest.result?.value || [])
+        .filter(item => item.entity === 'setlist').map(item => String(item.setlist_id)));
+      for (const setlist of setlistList) {
+        if (pendingIds.has(String(setlist.id))) continue;
+        const existingRequest = lists.get(setlist.id);
+        existingRequest.onsuccess = () => {
+          const existing = existingRequest.result;
+          const cached = Array.isArray(setlist.songs) ? setlist
+            : (existing?.songs ? { ...setlist, songs: existing.songs } : setlist);
+          lists.put(Array.isArray(cached.songs)
+            ? { ...cached, song_count: setlist.song_count ?? cached.songs.length }
+            : cached);
+        };
+      }
+    };
+  });
 }
 
 async function replaceCachedSetlists(setlistList) {
   await openDb();
-  const store = tx('setlists', 'readwrite');
-  store.clear();
-  for (const setlist of setlistList) {
-    store.put(Array.isArray(setlist.songs)
-      ? { ...setlist, song_count: setlist.songs.length }
-      : setlist);
-  }
-  return transactionDone(store);
+  return transact(['setlists', 'meta'], 'readwrite', transaction => {
+    const lists = transaction.objectStore('setlists');
+    const meta = transaction.objectStore('meta');
+    const existingRequest = lists.getAll();
+    const queueRequest = meta.get('pending_mutations');
+    let readyCount = 0;
+    const ready = () => {
+      readyCount += 1;
+      if (readyCount !== 2) return;
+      const pendingIds = new Set((queueRequest.result?.value || [])
+        .filter(item => item.entity === 'setlist').map(item => String(item.setlist_id)));
+      const pending = existingRequest.result.filter(item => pendingIds.has(String(item.id)));
+      lists.clear();
+      for (const item of setlistList) lists.put(Array.isArray(item.songs)
+        ? { ...item, song_count: item.songs.length }
+        : item);
+      for (const item of pending) lists.put(item);
+    };
+    existingRequest.onsuccess = queueRequest.onsuccess = ready;
+  });
 }
 
 export async function deleteCachedSetlist(id) {
@@ -142,12 +353,105 @@ export async function deleteCachedSetlist(id) {
 
 export async function getCachedSetlists() {
   await openDb();
-  return wrap(tx('setlists').getAll());
+  return (await wrap(tx('setlists').getAll())).filter(setlist => !setlist._deleted);
 }
 
 export async function getCachedSetlist(id) {
   await openDb();
-  return wrap(tx('setlists').get(id));
+  let setlist = await wrap(tx('setlists').get(id));
+  if (!setlist && String(id).startsWith('local-')) {
+    const redirects = await readRedirects('setlist_id_redirects');
+    if (redirects[id]) setlist = await wrap(tx('setlists').get(redirects[id]));
+  }
+  return setlist?._deleted ? null : setlist;
+}
+
+export async function getRedirectedSetlistId(id) {
+  return (await readRedirects('setlist_id_redirects'))[id] ?? id;
+}
+
+export async function queueSetlistMutation({ type, setlistId = null, payload = {}, entry = null }) {
+  const localId = type === 'create' ? `local-${mutationId()}` : await getRedirectedSetlistId(setlistId);
+  const entryRedirects = await readRedirects('entry_id_redirects');
+  if (type === 'entry_add' && /^\d+$/.test(String(payload.song_id))) {
+    payload = { ...payload, song_id: Number(payload.song_id) };
+  }
+  if (payload.entry_id) payload = { ...payload, entry_id: entryRedirects[payload.entry_id] ?? payload.entry_id };
+  if (payload.entry_ids) payload = { ...payload, entry_ids: payload.entry_ids.map(id => entryRedirects[id] ?? id) };
+  return transact(['setlists', 'songs', 'meta'], 'readwrite', (transaction, setValue, fail) => {
+    const lists = transaction.objectStore('setlists');
+    const songs = transaction.objectStore('songs');
+    const meta = transaction.objectStore('meta');
+    pendingQueueRequest(meta, (queue, persistQueue) => {
+      const addEnvelope = (target, operation, data, base = null) => enqueueSetlistOperation(queue, {
+        entity: 'setlist', setlist_id: target, type: operation, payload: data,
+        base_updated_at: base, op_id: mutationId(), local_revision: Date.now(),
+      });
+      if (type === 'create') {
+        const list = { id: localId, ...payload, created_at: new Date().toISOString(), updated_at: null,
+          songs: [], song_count: 0, _local: true, _pending: true };
+        lists.put(list);
+        addEnvelope(localId, 'create', payload);
+        persistQueue();
+        setValue(list);
+        notifyCacheChange();
+        return;
+      }
+      const request = lists.get(localId);
+      request.onsuccess = () => {
+        const list = request.result;
+        if (!list || list._deleted) return fail(new Error('Setlist is no longer available offline.'));
+        list.songs ||= [];
+        if (type === 'metadata') Object.assign(list, payload);
+        else if (type === 'delete') list._deleted = true;
+        else if (type === 'entry_add') {
+          const songRequest = songs.get(payload.song_id);
+          songRequest.onsuccess = () => {
+            const song = songRequest.result;
+          if (!song) return fail(new Error('Song is not available in the offline library.'));
+            const newEntry = { ...song, ...payload, entry_id: payload.entry_id || `local-${mutationId()}`,
+              song_id: song.id, position: list.songs.length + 1 };
+            list.songs.push(newEntry);
+            list.song_count = list.songs.length;
+            lists.put(list);
+            addEnvelope(localId, 'entry_add', { entry_id: newEntry.entry_id, song_id: song.id,
+              transposed_key: payload.transposed_key ?? null, capo_fret: payload.capo_fret ?? null,
+              notes: payload.notes ?? null }, list.updated_at);
+            setValue(list);
+            persistQueue();
+            notifyCacheChange();
+          };
+          return;
+        } else if (type === 'entry_edit') {
+          const target = list.songs.find(item => String(item.entry_id) === String(payload.entry_id));
+          if (!target) return fail(new Error('Setlist entry is no longer available offline.'));
+          Object.assign(target, payload);
+        } else if (type === 'entry_remove') {
+          list.songs = list.songs.filter(item => String(item.entry_id) !== String(payload.entry_id));
+          list.songs.forEach((item, index) => { item.position = index + 1; });
+          list.song_count = list.songs.length;
+        } else if (type === 'reorder') {
+          const byId = new Map(list.songs.map(item => [String(item.entry_id), item]));
+          if (payload.entry_ids.length !== list.songs.length || payload.entry_ids.some(id => !byId.has(String(id)))) {
+            return fail(new Error('Reorder must include every setlist entry exactly once.'));
+          }
+          list.songs = payload.entry_ids.map(id => byId.get(String(id)));
+          list.songs.forEach((item, index) => { item.position = index + 1; });
+        } else return fail(new Error(`Unsupported setlist mutation: ${type}`));
+
+        list._pending = true;
+        list.song_count = list.songs.length;
+        lists.put(list);
+        // Fold repeated unsent metadata and entry edits. The next serializer
+        // keeps omitted properties absent, while null remains an explicit clear.
+        const queued = addEnvelope(localId, type, payload, list.updated_at);
+        if (queued.cancelledLocalSetlist) lists.delete(localId);
+        setValue(list);
+        persistQueue();
+        notifyCacheChange();
+      };
+    }, true);
+  });
 }
 
 // ── Metadata / pending mutations ─────────────────────────────────────────────
@@ -163,31 +467,52 @@ export async function getMeta(key) {
   return row?.value;
 }
 
-export async function markDirty(songId) {
-  const dirty = (await getMeta('dirty_songs')) || [];
-  if (!dirty.includes(songId)) {
-    await setMeta('dirty_songs', [...dirty, songId]);
-  }
+export async function markDirty(songId, operationId = null) {
+  await transact('meta', 'readwrite', (transaction, _setValue, fail) => {
+    pendingQueueRequest(transaction.objectStore('meta'), queue => {
+      let item = queue.find(entry => entry.entity === 'song' && String(entry.id) === String(songId));
+      if (!item) {
+        item = { entity: 'song', id: songId, op_id: operationId || mutationId(), local_revision: 0 };
+        queue.push(item);
+      }
+      item.local_revision = (item.local_revision || 0) + 1;
+    });
+  }).catch(error => { throw error; });
   notifyCacheChange();
 }
 
 export async function getDirtySongs() {
-  return (await getMeta('dirty_songs')) || [];
+  const queue = await getPendingMutations();
+  return queue.filter(item => item.entity === 'song').map(item => item.id);
 }
 
 export async function clearDirty(songId) {
-  const dirty = (await getMeta('dirty_songs')) || [];
-  await setMeta('dirty_songs', dirty.filter(id => id !== songId));
+  await transact('meta', 'readwrite', transaction => {
+    pendingQueueRequest(transaction.objectStore('meta'), queue => {
+      queue.splice(0, queue.length, ...queue.filter(item => !(item.entity === 'song' && item.id === songId)));
+    });
+  });
   notifyCacheChange();
 }
 
 export async function clearAllDirty() {
-  await setMeta('dirty_songs', []);
+  await transact('meta', 'readwrite', transaction => {
+    pendingQueueRequest(transaction.objectStore('meta'), queue => {
+      queue.splice(0, queue.length, ...queue.filter(item => item.entity !== 'song'));
+    });
+  });
   notifyCacheChange();
+}
+
+export async function getPendingMutations() {
+  return transact('meta', 'readwrite', (transaction, setValue) => {
+    pendingQueueRequest(transaction.objectStore('meta'), queue => setValue([...queue]));
+  });
 }
 
 export function onCacheChange(listener) {
   window.addEventListener(CACHE_CHANGE_EVENT, listener);
+  ensureChangeChannel();
   return () => window.removeEventListener(CACHE_CHANGE_EVENT, listener);
 }
 
@@ -216,18 +541,108 @@ async function rememberRedirect(localId, serverId) {
   await setMeta('song_id_redirects', { ...redirects, [localId]: serverId });
 }
 
+async function markSongCreateDispatched(songId) {
+  return transact(['songs', 'meta'], 'readwrite', (transaction, setValue, fail) => {
+    const songs = transaction.objectStore('songs');
+    const meta = transaction.objectStore('meta');
+    const songRequest = songs.get(songId);
+    const queueRequest = meta.get('pending_mutations');
+    let readyCount = 0;
+    const ready = () => {
+      readyCount += 1;
+      if (readyCount !== 2) return;
+      const local = songRequest.result;
+      const queue = queueRequest.result?.value || [];
+      const operation = queue.find(item => item.entity === 'song' && String(item.id) === String(songId));
+      if (!local || !operation) return fail(new Error('Pending song create disappeared before dispatch.'));
+      if (!operation.sent_payload) {
+        operation.sent_payload = editablePayload(local);
+        operation.sent_revision = operation.local_revision || 0;
+      }
+      operation.sent = true;
+      meta.put({ key: 'pending_mutations', value: queue, updatedAt: Date.now() });
+      setValue({ local, operation: structuredClone(operation) });
+    };
+    songRequest.onsuccess = queueRequest.onsuccess = ready;
+  });
+}
+
+async function acknowledgeSongCreate(localId, sentRevision, sentOperationId, saved) {
+  const serverId = saved.id;
+  await transact(['songs', 'setlists', 'meta'], 'readwrite', transaction => {
+    const songs = transaction.objectStore('songs');
+    const setlistStore = transaction.objectStore('setlists');
+    const meta = transaction.objectStore('meta');
+    const localRequest = songs.get(localId);
+    const allListsRequest = setlistStore.getAll();
+    const queueRequest = meta.get('pending_mutations');
+    const redirectRequest = meta.get('song_id_redirects');
+    let readyCount = 0;
+    const ready = () => {
+      readyCount += 1;
+      if (readyCount !== 4) return;
+      const queue = queueRequest.result?.value || [];
+      const operation = queue.find(item => item.entity === 'song' && item.op_id === sentOperationId);
+      const local = localRequest.result;
+      const redirects = redirectRequest.result?.value || {};
+      redirects[localId] = serverId;
+      queueMetaValue(meta, 'song_id_redirects', redirects);
+
+      for (const item of queue) {
+        if (item.entity === 'setlist' && item.type === 'entry_add'
+            && String(item.payload.song_id) === String(localId)) item.payload.song_id = serverId;
+      }
+      const cachedSetlists = allListsRequest.result;
+      for (const list of cachedSetlists) {
+        let changed = false;
+        list.songs = (list.songs || []).map(entry => {
+          if (String(entry.song_id) !== String(localId) && String(entry.id) !== String(localId)) return entry;
+          changed = true;
+          return { ...entry, id: String(entry.id) === String(localId) ? serverId : entry.id,
+            song_id: String(entry.song_id) === String(localId) ? serverId : entry.song_id };
+        });
+        if (changed) setlistStore.put(list);
+      }
+
+      const changedAfterDispatch = Boolean(local && operation
+        && (operation.local_revision || 0) > sentRevision);
+      if (changedAfterDispatch) {
+        const rebased = { ...local, id: serverId, updated_at: saved.updated_at,
+          _sync: { ...local._sync, operation: 'update', base_updated_at: saved.updated_at } };
+        songs.delete(localId);
+        songs.put(rebased);
+        operation.id = serverId;
+        operation.op_id = mutationId();
+        operation.sent = false;
+        operation.local_revision = 1;
+        delete operation.sent_payload;
+        delete operation.sent_revision;
+      } else {
+        if (local) songs.delete(localId);
+        songs.put(cleanServerSong(saved));
+        if (operation) queue.splice(queue.indexOf(operation), 1);
+      }
+      meta.put({ key: 'pending_mutations', value: queue, updatedAt: Date.now() });
+    };
+    for (const request of [localRequest, allListsRequest, queueRequest, redirectRequest]) request.onsuccess = ready;
+  });
+  notifyCacheChange();
+}
+
 export async function getRedirectedSongId(id) {
   const redirects = (await getMeta('song_id_redirects')) || {};
   return redirects[id] ?? id;
 }
 
-async function pushPendingSongs(songApi) {
-  const dirtyIds = await getDirtySongs();
+async function pushPendingSongs(songApi, assertSyncOwned) {
+  const songOperations = (await getPendingMutations()).filter(item => item.entity === 'song');
   const conflicts = [];
   let pushed = 0;
 
-  for (const songId of dirtyIds) {
-    const local = await getCachedSong(songId);
+  for (const queued of songOperations) {
+    await assertSyncOwned();
+    const songId = queued.id;
+    let local = await getCachedSong(songId);
     if (!local) {
       await clearDirty(songId);
       continue;
@@ -235,26 +650,32 @@ async function pushPendingSongs(songApi) {
 
     const operation = local._sync?.operation || 'update';
     const baseUpdatedAt = local._sync?.base_updated_at || local.updated_at || null;
+    const dispatch = operation === 'create' ? await markSongCreateDispatched(songId) : null;
+    local = dispatch?.local || local;
 
     try {
       if (operation === 'create') {
-        const saved = await songApi.create(editablePayload(local));
-        await rememberRedirect(songId, saved.id);
-        await deleteCachedSong(songId);
-        await updateCachedSong(cleanServerSong(saved));
+        const frozen = dispatch.operation.sent_payload;
+        const saved = await songApi.create({ ...frozen, operation_id: dispatch.operation.op_id });
+        await assertSyncOwned();
+        await acknowledgeSongCreate(songId, dispatch.operation.sent_revision || 0,
+          dispatch.operation.op_id, saved);
       } else if (operation === 'delete') {
         await songApi.remove(songId, { base_updated_at: baseUpdatedAt });
+        await assertSyncOwned();
         await deleteCachedSong(songId);
       } else {
         const saved = await songApi.update(songId, {
           ...editablePayload(local),
           base_updated_at: baseUpdatedAt,
         });
+        await assertSyncOwned();
         await updateCachedSong(cleanServerSong(saved));
       }
-      await clearDirty(songId);
+      if (operation !== 'create') await clearDirty(songId);
       pushed += 1;
     } catch (error) {
+      await assertSyncOwned();
       const serverWins = operation !== 'create'
         && (error.status === 404 || error.status === 409);
       if (!serverWins) throw error;
@@ -267,15 +688,261 @@ async function pushPendingSongs(songApi) {
   return { pushed, conflicts };
 }
 
+async function readRedirects(key) { return (await getMeta(key)) || {}; }
+
+async function acknowledgeSetlistOperation(operation, response) {
+  const localId = operation.setlist_id;
+  const isCreate = operation.type === 'create';
+  const actualId = isCreate ? response.id : localId;
+  await transact(['setlists', 'meta'], 'readwrite', transaction => {
+    const lists = transaction.objectStore('setlists');
+    const meta = transaction.objectStore('meta');
+    const listRequest = lists.get(localId);
+    const queueRequest = meta.get('pending_mutations');
+    const setlistMapRequest = meta.get('setlist_id_redirects');
+    const entryMapRequest = meta.get('entry_id_redirects');
+    let readyCount = 0;
+    const ready = () => {
+      readyCount += 1;
+      if (readyCount !== 4) return;
+      const remaining = (queueRequest.result?.value || []).filter(item => item.op_id !== operation.op_id);
+      const setlistRedirects = setlistMapRequest.result?.value || {};
+      const entryRedirects = entryMapRequest.result?.value || {};
+      if (isCreate) {
+        setlistRedirects[localId] = actualId;
+        for (const item of remaining) if (item.entity === 'setlist' && String(item.setlist_id) === String(localId)) item.setlist_id = actualId;
+        rebaseSetlistOperations(remaining, actualId, response.updated_at);
+        queueMetaValue(meta, 'setlist_id_redirects', setlistRedirects);
+      } else {
+        rebaseSetlistOperations(remaining, localId, response.updated_at || operation.base_updated_at);
+      }
+      if (response.created_entry_id && operation.payload.entry_id) {
+        entryRedirects[String(operation.payload.entry_id)] = String(response.created_entry_id);
+        queueMetaValue(meta, 'entry_id_redirects', entryRedirects);
+      }
+      queueMetaValue(meta, 'pending_mutations', remaining);
+      const cached = listRequest.result;
+      if (!cached) return;
+      if (operation.type === 'delete') {
+        lists.delete(localId);
+        return;
+      }
+      if (isCreate && String(actualId) !== String(localId)) lists.delete(localId);
+      const current = { ...cached, id: actualId, updated_at: response.updated_at || cached.updated_at };
+      if (response.created_entry_id && operation.payload.entry_id) {
+        const clientEntryId = String(operation.payload.entry_id);
+        current.songs = (current.songs || []).map(entry => String(entry.entry_id) === clientEntryId
+          ? { ...entry, entry_id: String(response.created_entry_id) }
+          : entry);
+      }
+      current._pending = remaining.some(item => item.entity === 'setlist' && String(item.setlist_id) === String(actualId));
+      lists.put(current);
+    };
+    for (const request of [listRequest, queueRequest, setlistMapRequest, entryMapRequest]) request.onsuccess = ready;
+  });
+  notifyCacheChange();
+}
+
+async function discardSetlistAndRestore(operation, setlistApi) {
+  const mapping = await readRedirects('setlist_id_redirects');
+  const localId = operation.setlist_id;
+  const serverId = mapping[localId] ?? localId;
+  let authoritative = null;
+  if (!String(localId).startsWith('local-')) {
+    try { authoritative = await setlistApi.get(serverId); }
+    catch (error) { if (error.status !== 404) throw error; }
+  }
+  await transact(['setlists', 'meta'], 'readwrite', transaction => {
+    const lists = transaction.objectStore('setlists');
+    const meta = transaction.objectStore('meta');
+    pendingQueueRequest(meta, queue => {
+      queue.splice(0, queue.length, ...discardSetlistOperations(queue, localId));
+      if (!String(localId).startsWith('local-') && String(serverId) !== String(localId)) {
+        queue.forEach(item => { if (String(item.setlist_id) === String(localId)) item.setlist_id = serverId; });
+      }
+    });
+    const conflictsRequest = meta.get('last_sync_conflicts');
+    conflictsRequest.onsuccess = () => {
+      const conflicts = conflictsRequest.result?.value || [];
+      const notice = { entity: 'setlist', id: serverId,
+        name: operation.payload.name || authoritative?.name || '', operation: operation.type };
+      const key = value => `${value.entity}:${value.id}:${value.operation}`;
+      if (!conflicts.some(value => key(value) === key(notice))) conflicts.push(notice);
+      queueMetaValue(meta, 'last_sync_conflicts', conflicts);
+    };
+    if (!authoritative) lists.delete(serverId);
+    else lists.put(authoritative);
+  });
+  notifyCacheChange();
+  return serverId;
+}
+
+async function appendConflictNotices(notices) {
+  if (!notices.length) return;
+  await transact('meta', 'readwrite', transaction => {
+    const meta = transaction.objectStore('meta');
+    const request = meta.get('last_sync_conflicts');
+    request.onsuccess = () => {
+      const existing = request.result?.value || [];
+      const key = value => `${value.entity}:${value.id}:${value.operation}`;
+      const seen = new Set(existing.map(key));
+      for (const notice of notices) if (!seen.has(key(notice))) {
+        existing.push(notice);
+        seen.add(key(notice));
+      }
+      queueMetaValue(meta, 'last_sync_conflicts', existing);
+    };
+  });
+  notifyCacheChange();
+}
+
+async function markMutationSent(operationId) {
+  return transact('meta', 'readwrite', (transaction, setValue, fail) => {
+    pendingQueueRequest(transaction.objectStore('meta'), queue => {
+      const operation = queue.find(item => item.op_id === operationId);
+      if (!operation) return fail(new Error('Pending mutation disappeared before send.'));
+      operation.sent = true;
+      setValue(structuredClone(operation));
+    });
+  });
+}
+
+async function pushPendingSetlists(setlistApi, assertSyncOwned) {
+  const conflicts = [];
+  let pushed = 0;
+  const attempted = new Set();
+  while (true) {
+    await assertSyncOwned();
+    const queue = (await getPendingMutations()).filter(item => item.entity === 'setlist');
+    const candidate = queue.find(item => !attempted.has(item.op_id));
+    if (!candidate) break;
+    const operation = await markMutationSent(candidate.op_id);
+    await assertSyncOwned();
+    attempted.add(operation.op_id);
+    try {
+      const setlistRedirects = await readRedirects('setlist_id_redirects');
+      const entryRedirects = await readRedirects('entry_id_redirects');
+      const songRedirects = await readRedirects('song_id_redirects');
+      const wireSetlistId = setlistRedirects[operation.setlist_id] ?? operation.setlist_id;
+      const payload = resolveSetlistOperationIds(operation.type, operation.payload, {
+        songs: songRedirects, entries: entryRedirects,
+      });
+      await assertSyncOwned();
+      const response = await setlistApi.mutate({
+        operation_id: operation.op_id,
+        setlist_id: operation.type === 'create' ? null : Number(wireSetlistId),
+        type: operation.type,
+        base_updated_at: operation.type === 'create' ? null : operation.base_updated_at,
+        payload,
+      });
+      await assertSyncOwned();
+      await acknowledgeSetlistOperation(operation, response);
+      pushed += 1;
+    } catch (error) {
+      if (error.status !== 404 && error.status !== 409) throw error;
+      await assertSyncOwned();
+      const serverId = await discardSetlistAndRestore(operation, setlistApi);
+      conflicts.push({ entity: 'setlist', id: serverId, name: operation.payload.name || '', operation: operation.type });
+      // Discard every pending operation for this aggregate. Later work for
+      // different setlists remains eligible to push.
+      attempted.clear();
+    }
+  }
+  return { pushed, conflicts };
+}
+
+async function withSyncOwnership(callback) {
+  if (typeof navigator !== 'undefined' && navigator.locks?.request) {
+    return navigator.locks.request('ccm-offline-sync', { mode: 'exclusive' },
+      () => callback(async () => {}));
+  }
+  const owner = mutationId();
+  const leaseKey = 'sync_lease';
+  const claim = async () => transact('meta', 'readwrite', (transaction, setValue) => {
+    const meta = transaction.objectStore('meta');
+    const request = meta.get(leaseKey);
+    request.onsuccess = () => {
+      const current = request.result?.value;
+      if (current && current.expires > Date.now() && current.owner !== owner) {
+        setValue({ fence: 0, waitMs: current.expires - Date.now() });
+        return;
+      }
+      const fence = (current?.fence || 0) + 1;
+      queueMetaValue(meta, leaseKey, { owner, fence, expires: Date.now() + 30000 });
+      setValue({ fence, waitMs: 0 });
+    };
+  });
+  let ownership = await claim();
+  if (!ownership.fence && ownership.waitMs > 0) {
+    // A single expiry wait is bounded by the lease duration. On wake, claim
+    // again inside IndexedDB so the new owner receives a fresh fence. A page
+    // navigation cancels the timer; no polling loop keeps an abandoned tab busy.
+    const ready = await new Promise(resolve => {
+      let finished = false;
+      const finish = value => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        if (typeof window !== 'undefined') window.removeEventListener('pagehide', onPageHide);
+        resolve(value);
+      };
+      const onPageHide = () => finish(false);
+      const timer = setTimeout(() => finish(true), ownership.waitMs + 50);
+      if (typeof window !== 'undefined') window.addEventListener('pagehide', onPageHide, { once: true });
+    });
+    if (ready) ownership = await claim();
+  }
+  const fence = ownership.fence;
+  if (!fence) return { ok: false, error: 'Sync is already running in another tab.' };
+  const assertOwned = async () => {
+    const valid = await transact('meta', 'readonly', (transaction, setValue) => {
+      const request = transaction.objectStore('meta').get(leaseKey);
+      request.onsuccess = () => setValue(request.result?.value?.owner === owner
+        && request.result.value.fence === fence && request.result.value.expires > Date.now());
+    });
+    if (!valid) throw new Error('Sync ownership expired; a later sync owner will safely retry the pending operation.');
+  };
+  const heartbeat = setInterval(() => {
+    void transact('meta', 'readwrite', transaction => {
+      const meta = transaction.objectStore('meta');
+      const request = meta.get(leaseKey);
+      request.onsuccess = () => {
+        if (request.result?.value?.owner === owner && request.result.value.fence === fence) {
+          queueMetaValue(meta, leaseKey, { owner, fence, expires: Date.now() + 30000 });
+        }
+      };
+    });
+  }, 10000);
+  try { return await callback(assertOwned); }
+  finally {
+    clearInterval(heartbeat);
+    await transact('meta', 'readwrite', transaction => {
+      const meta = transaction.objectStore('meta');
+      const request = meta.get(leaseKey);
+      request.onsuccess = () => {
+        if (request.result?.value?.owner === owner && request.result.value.fence === fence) meta.delete(leaseKey);
+      };
+    });
+  }
+}
+
 // Push pending tablet mutations first, then replace the cache with a fresh
 // server snapshot. This ordering prevents a pull from overwriting queued work.
 export async function syncWithServer({ library, setlists: setlistApi, songs: songApi }) {
+  return withSyncOwnership(async assertSyncOwned => {
   try {
-    const pending = await pushPendingSongs(songApi);
+    const pendingSongs = await pushPendingSongs(songApi, assertSyncOwned);
+    const pendingSetlists = await pushPendingSetlists(setlistApi, assertSyncOwned);
+    const pending = {
+      pushed: pendingSongs.pushed + pendingSetlists.pushed,
+      conflicts: [...pendingSongs.conflicts, ...pendingSetlists.conflicts],
+    };
+    await assertSyncOwned();
     const [lib, setlistSummaries] = await Promise.all([library(), setlistApi.all()]);
     const setlistList = await Promise.all((setlistSummaries || []).map(setlist =>
       Array.isArray(setlist.songs) ? setlist : setlistApi.get(setlist.id),
     ));
+    await assertSyncOwned();
     await Promise.all([
       replaceCachedSongs(lib.songs || []),
       replaceCachedSetlists(setlistList || []),
@@ -283,7 +950,7 @@ export async function syncWithServer({ library, setlists: setlistApi, songs: son
     if (lib.facets) await setMeta('facets', lib.facets);
     const syncedAt = Date.now();
     await setMeta('last_synced', syncedAt);
-    await setMeta('last_sync_conflicts', pending.conflicts);
+    await appendConflictNotices(pending.conflicts);
     notifyCacheChange();
     return {
       ok: true,
@@ -297,6 +964,7 @@ export async function syncWithServer({ library, setlists: setlistApi, songs: son
     console.warn('Sync failed:', error.message);
     return { ok: false, error: error.message };
   }
+  });
 }
 
 // Backward-compatible name for callers outside the React hooks.

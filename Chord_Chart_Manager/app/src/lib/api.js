@@ -70,6 +70,9 @@ export const setlists = {
   updateSong:  (id, position, data) => put(`/api/setlists/${id}/songs/${position}`, data),
   removeSong:  (id, position)   => del(`/api/setlists/${id}/songs/${position}`),
   reorder:     (id, songIds)    => put(`/api/setlists/${id}/order`, { songIds }),
+  mutate:      operation       => post('/api/setlists/mutations', operation),
+  updateEntry: (id, entryId, data) => put(`/api/setlists/${id}/entries/${entryId}`, data),
+  removeEntry: (id, entryId, data) => del(`/api/setlists/${id}/entries/${entryId}`, data),
 };
 
 // ── Full library export (for offline sync) ────────────────────────────────────

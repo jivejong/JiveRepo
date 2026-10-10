@@ -235,7 +235,10 @@ test('invalid or unavailable stored preference safely falls back to System', asy
 
 test('theme tokens cover setlist and edit views, with task-owned fixture cleanup', async ({ page, request }) => {
   const name = `T16 Theme view ${randomUUID()}`;
-  const created = await request.post('/api/setlists', { data: { name } });
+  const created = await request.post('/api/setlists/mutations', { data: {
+    operation_id: randomUUID(), type: 'create', setlist_id: null,
+    base_updated_at: null, payload: { name },
+  } });
   expect(created.ok(), `setlist fixture creation returned ${created.status()}`).toBeTruthy();
   const setlist = await created.json();
 
@@ -260,7 +263,13 @@ test('theme tokens cover setlist and edit views, with task-owned fixture cleanup
     await expectTheme(page, 'dark');
     expect(await contrastOf(page, page.locator('.form-input').first())).toBeGreaterThanOrEqual(4.5);
   } finally {
-    const deleted = await request.delete(`/api/setlists/${setlist.id}`);
+    const latest = await request.get(`/api/setlists/${setlist.id}`);
+    if (!latest.ok()) throw new Error(`Could not inspect T16 setlist fixture ${setlist.id}`);
+    const current = await latest.json();
+    const deleted = await request.post('/api/setlists/mutations', { data: {
+      operation_id: randomUUID(), type: 'delete', setlist_id: setlist.id,
+      base_updated_at: current.updated_at, payload: {},
+    } });
     if (!deleted.ok()) throw new Error(`Could not clean up T16 setlist fixture ${setlist.id}: HTTP ${deleted.status()}`);
     if ((await request.get(`/api/setlists/${setlist.id}`)).status() !== 404) {
       throw new Error(`T16 setlist fixture ${setlist.id} remains after cleanup`);
@@ -283,7 +292,10 @@ test('danger text meets contrast on effective surfaces in Light and Dark', async
   };
 
   try {
-    const setlistResponse = await request.post('/api/setlists', { data: { name: setlistName } });
+    const setlistResponse = await request.post('/api/setlists/mutations', { data: {
+      operation_id: randomUUID(), type: 'create', setlist_id: null,
+      base_updated_at: null, payload: { name: setlistName },
+    } });
     expect(setlistResponse.ok(), `setlist fixture creation returned ${setlistResponse.status()}`).toBeTruthy();
     setlist = await setlistResponse.json();
     const songResponse = await request.post('/api/songs', { data: {
@@ -360,7 +372,13 @@ test('danger text meets contrast on effective surfaces in Light and Dark', async
     }
     if (setlist) {
       try {
-        const deletedSetlist = await cleanupRequest.delete(`http://localhost:3000/api/setlists/${setlist.id}`);
+        const latest = await cleanupRequest.get(`http://localhost:3000/api/setlists/${setlist.id}`);
+        if (!latest.ok()) throw new Error(`Could not inspect T16 contrast setlist ${setlist.id}: HTTP ${latest.status()}`);
+        const current = await latest.json();
+        const deletedSetlist = await cleanupRequest.post('http://localhost:3000/api/setlists/mutations', { data: {
+          operation_id: randomUUID(), type: 'delete', setlist_id: setlist.id,
+          base_updated_at: current.updated_at, payload: {},
+        } });
         if (!deletedSetlist.ok()) throw new Error(`Could not clean up T16 contrast setlist ${setlist.id}: HTTP ${deletedSetlist.status()}`);
         if ((await cleanupRequest.get(`http://localhost:3000/api/setlists/${setlist.id}`)).status() !== 404) {
           throw new Error(`T16 contrast setlist ${setlist.id} remains after cleanup`);
