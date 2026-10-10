@@ -42,6 +42,28 @@ async function searchSongs(filters = {}) {
       where.push(`s.release_year >= ${p(decade)} AND s.release_year < ${p(decade + 10)}`);
     }
   }
+  for (const tag of filters.selectedTags || []) {
+    const name = tag.name.trim();
+    if (tag.category === "Genre") {
+      where.push(`EXISTS (SELECT 1 FROM song_genres sg2 JOIN genres g2 ON g2.id=sg2.genre_id
+                          WHERE sg2.song_id=s.id AND LOWER(g2.name)=LOWER(${p(name)}))`);
+    } else if (tag.category === "Feel") {
+      where.push(`EXISTS (SELECT 1 FROM song_vibes sv2 JOIN vibes v2 ON v2.id=sv2.vibe_id
+                          WHERE sv2.song_id=s.id AND LOWER(v2.name)=LOWER(${p(name)}))`);
+    } else {
+      where.push(`LOWER((s.release_year / 10 * 10)::text || 's') = LOWER(${p(name)})`);
+    }
+  }
+  // Existing name-only clients retain their across-category semantics, but
+  // every genre assignment (not just the primary one) participates.
+  for (const name of filters.legacyTags || []) {
+    const value = p(name);
+    where.push(`(EXISTS (SELECT 1 FROM song_genres sg2 JOIN genres g2 ON g2.id=sg2.genre_id
+                        WHERE sg2.song_id=s.id AND LOWER(g2.name)=LOWER(${value}))
+                 OR EXISTS (SELECT 1 FROM song_vibes sv2 JOIN vibes v2 ON v2.id=sv2.vibe_id
+                            WHERE sv2.song_id=s.id AND LOWER(v2.name)=LOWER(${value}))
+                 OR LOWER((s.release_year / 10 * 10)::text || 's') = LOWER(${value}))`);
+  }
 
   const sql = `
     SELECT s.id, s.title, a.name AS artist, s.performance_key, s.original_key,
@@ -138,7 +160,8 @@ async function exportAll() {
            s.alt_key, s.capo_fret, s.bpm, s.release_year,
            (s.release_year / 10 * 10)::text || 's' AS era,
            s.bb_structure, s.chart_source, s.chart_content,
-           s.created_at, s.updated_at
+           s.created_at,
+           to_char(s.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
     FROM songs s JOIN artists a ON a.id = s.artist_id
     ORDER BY a.name, s.title`;
   const genresQ = `

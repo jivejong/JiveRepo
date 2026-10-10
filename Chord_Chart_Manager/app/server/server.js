@@ -64,14 +64,14 @@ app.get("/api/export", async (_req, res, next) => {
 // Song tags (map onto genres/vibes; Era is derived)
 app.post("/api/songs/:id/tags", async (req, res, next) => {
   try {
-    const { name, category } = req.body || {};
-    res.json(await dbx.addSongTag(parseInt(req.params.id, 10), name, category));
+    const { name, category, base_updated_at } = req.body || {};
+    res.json(await dbx.addSongTag(parseInt(req.params.id, 10), name, category, base_updated_at));
   } catch (e) { next(e); }
 });
 app.delete("/api/songs/:id/tags/:name", async (req, res, next) => {
   try {
     res.json(await dbx.removeSongTag(parseInt(req.params.id, 10),
-                                     decodeURIComponent(req.params.name)));
+      req.params.name, req.body?.category, req.body?.base_updated_at));
   } catch (e) { next(e); }
 });
 
@@ -79,19 +79,19 @@ app.delete("/api/songs/:id/tags/:name", async (req, res, next) => {
 // list (tag names across categories, resolved against genre/vibe/era).
 app.get("/api/songs", async (req, res, next) => {
   try {
-    const { q, artist, genre, vibe, era, tags } = req.query;
-    const filters = { q, artist, genre, vibe, era };
-    let rows = await db.searchSongs(filters);
-    if (tags) {
-      const wanted = String(tags).split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
-      rows = rows.filter((s) => {
-        const have = new Set();
-        (s.vibes || []).forEach((v) => have.add(v.toLowerCase()));
-        if (s.primary_genre) have.add(s.primary_genre.toLowerCase());
-        if (s.era) have.add(s.era.toLowerCase());
-        return wanted.every((t) => have.has(t));
-      });
+    const { q, artist, genre, vibe, era, tags, tag_filters } = req.query;
+    let selectedTags = [];
+    if (tag_filters !== undefined) {
+      try { selectedTags = JSON.parse(tag_filters); } catch { selectedTags = null; }
+      if (!Array.isArray(selectedTags) || selectedTags.some(tag =>
+        !tag || typeof tag.name !== "string" || !tag.name.trim() ||
+        !["Genre", "Feel", "Era"].includes(tag.category))) {
+        return res.status(400).json({ error: "tag_filters must be a list of Genre, Feel, or Era names" });
+      }
     }
+    const filters = { q, artist, genre, vibe, era, selectedTags,
+      legacyTags: tags ? String(tags).split(",").map(t => t.trim()).filter(Boolean) : [] };
+    const rows = await db.searchSongs(filters);
     // shape to the app's response contract
     res.json({ songs: rows.map(dbx.mapSongOut) });
   } catch (e) { next(e); }
@@ -122,7 +122,7 @@ app.delete("/api/songs/:id", async (req, res, next) => {
   try {
     res.json(await dbx.deleteSong(
       parseInt(req.params.id, 10),
-      (req.body || {}).base_updated_at || null,
+      (req.body || {}).base_updated_at ?? null,
     ));
   }
   catch (e) { next(e); }
@@ -153,6 +153,13 @@ app.post("/api/setlists/:id/songs", async (req, res, next) => {
   try { res.json(await dbx.addSetlistSong(parseInt(req.params.id, 10), req.body || {})); }
   catch (e) { next(e); }
 });
+app.put("/api/setlists/:id/songs/:position", async (req, res, next) => {
+  try {
+    res.json(await dbx.updateSetlistSong(
+      parseInt(req.params.id, 10), parseInt(req.params.position, 10), req.body || {},
+    ));
+  } catch (e) { next(e); }
+});
 app.delete("/api/setlists/:id/songs/:position", async (req, res, next) => {
   try {
     res.json(await dbx.removeSetlistSong(parseInt(req.params.id, 10),
@@ -180,6 +187,14 @@ app.use((err, _req, res, _next) => {
 
 const PORT = process.env.PORT || 3000;
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`chord-app listening on :${PORT}`));
+  const { runMigrations } = require("./migrate");
+  const { startAfterMigrations } = require("./migrationRunner");
+  startAfterMigrations(runMigrations, () => app.listen(PORT, () => {
+    console.log(`chord-app listening on :${PORT}`);
+  })).catch(async (error) => {
+    console.error(`Database migration failed: ${error.message}`);
+    await db.pool.end();
+    process.exitCode = 1;
+  });
 }
 module.exports = app;

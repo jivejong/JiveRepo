@@ -41,16 +41,20 @@ docker compose ps
 
 Open <http://localhost:3000>. The first build can take a few minutes. Both the
 app and database should report as healthy before you begin using it.
+The app applies pending database migrations before it starts listening. An
+existing database is adopted only when it matches the complete baseline; a
+partial or incompatible schema prevents startup with a diagnostic.
 
 An `.env` file is optional for local use because Compose supplies development
-defaults. To retain custom ports or database credentials, copy the example
-first:
+defaults. Run the following from `app/` only when you need local overrides and
+`app/.env` does not already exist. Preserve an existing `.env`; do not overwrite
+it.
 
 ```powershell
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-On macOS or Linux, use `cp .env.example .env` instead.
+On macOS or Linux, run `test -f .env || cp .env.example .env` from `app/`.
 
 ### Add some songs
 
@@ -81,11 +85,14 @@ On the **Songs** screen:
 1. Type part of a title or artist into the search box.
 2. Select **Filter** to show the available tag categories.
 3. Select one or more tags to narrow the results; all selected tags must match.
+   Genre and Feel values with the same name remain separate filters, and a
+   secondary genre matches its Genre filter online and offline.
 4. Select a song row to open its chart.
 
 The badge at the right of each row shows the chart's written key and, when set,
-its default capo fret. Tags are assigned by the import data/API; the current UI
-can filter by tags but does not edit them.
+its default capo fret. Edit a song to add or remove Genre and Vibe tags, including
+while offline. Era is read-only and derived from the release year by decade;
+enter a year to add an Era when one is not already available.
 
 ### Read and transpose a chart
 
@@ -102,8 +109,7 @@ BeatBuddy structure when those values are available.
 Saving a key stores `preferred_key` and `default_capo`. It does not rewrite the
 chart text; transposition is applied while the chart is rendered.
 
-When a chart was opened from a song list or setlist, swipe left for the next
-song and right for the previous song. The neighboring titles at the bottom of
+When a chart is open, swipe left for the next song and right for the previous song, including while following a setlist. The neighboring titles at the bottom of
 the chart show where each swipe will go.
 
 ### Create or edit a song
@@ -161,12 +167,22 @@ Setlist changes require an online connection.
    a song from the setlist.
 6. Select a song row to open its chart. Swipe left and right to follow the
    setlist order.
+7. Choose **Edit setlist** to change its name, gig date, or notes. Clear the
+   date or notes by leaving those fields blank; the name is required.
+8. Choose **Delete setlist** and confirm to remove the setlist and its entries.
+   Songs remain in the library.
+9. Use the edit control beside an entry to change its key, capo, and
+   performance note in place. Blank key/capo fields clear those overrides and
+   restore the song defaults; capo `0` is an explicit override.
 
 The setlist row displays its saved key/capo override and performance note.
-Currently, opening the chart still uses the song's own preferred key and default
-capo; reproduce the override with the chart controls if needed. To change an
-existing setlist entry's overrides, remove the entry and add it again. The UI
-also does not yet rename or delete an existing setlist.
+Opening an entry applies its key/capo overrides, with each missing field
+falling back to the song's preferred key or default capo. Adjust the chart and
+choose **Save to setlist** to update that entry only; the song's defaults and
+chart source are unchanged. This write requires a connection. Cached setlists
+retain entry overrides for offline chart reading, but setlist writes are not
+queued offline yet (T10). All setlist changes require a connection to the app
+server.
 
 ## Offline use and synchronization
 
@@ -199,6 +215,16 @@ provide dependable PWA installation or offline service-worker behavior.
 
 ## Operational notes
 
+### Database credential mismatches
+
+The app connects to the Compose database at `db:5432`; this internal service
+address is independent of the host-published PostgreSQL port. Changing a
+password in `app/.env` does not change the password stored for a role in an
+initialized PostgreSQL volume. Container environment changes take effect only
+after recreating the affected container; restarting it alone does not apply new
+environment values. Never delete or recreate the database volume to resolve a
+credential mismatch.
+
 ### Start, stop, and inspect the local stack
 
 Run these commands from `app/`:
@@ -228,8 +254,9 @@ Server source is bind-mounted in the local Compose configuration, but a server
 code change still requires an app-container restart.
 
 Do not run `docker compose down -v` unless you intend to delete the local
-PostgreSQL database. Initialization SQL runs only when the `pgdata` volume is
-created; editing the schema file does not migrate an existing database.
+PostgreSQL database. The app applies migrations before listening. Run them
+explicitly inside the running app container with
+`docker compose exec app npm --prefix /app/server run migrate`.
 
 ### Security and deployment boundary
 
@@ -237,10 +264,10 @@ The application currently has no login or per-user permissions. Anyone who can
 reach it can view and modify the library. Keep the local instance on a trusted
 machine/network unless authentication and production hardening are added.
 
-The verified deployment is local Docker Compose. Cloud and Kubernetes work has
-not started; the proposed direction is recorded in
-[infra/INFRA_HANDOFF.md](infra/INFRA_HANDOFF.md). A tablet deployment must keep
-the client and relative `/api` routes on one trusted HTTPS origin.
+The verified deployment is local Docker Compose. Cloud, Kubernetes, Terraform,
+and the split nginx/API topology are out of scope; see `docs/AGENTS.md` →
+Recorded decisions. A tablet deployment must keep the client and relative
+`/api` routes on one trusted HTTPS origin.
 
 ## Developer guide
 
@@ -251,7 +278,7 @@ Chord_Chart_Manager/
 |-- app/                     React PWA, Express API, database, and Compose
 |   |-- src/                 screens, components, hooks, cache, and API client
 |   |-- server/              Express routes, database access, chart parser
-|   |-- db/init/             first-run PostgreSQL schema
+|   |-- db/migrations/       canonical baseline and numbered SQL migrations
 |   |-- test/unit/           Vitest parser and transposition tests
 |   `-- test/e2e/            Playwright browser smoke tests
 |-- pipeline/                .docx parser, enrichment, and database loader
@@ -274,7 +301,9 @@ The Python `.docx` importer has a separate whole-document parser.
 
 ### Run the client and API outside the app container
 
-Start PostgreSQL with the schema already applied. Then use two terminals.
+Start PostgreSQL and run the app migration command before starting the API
+outside its container. Then use two terminals. The server also runs pending
+migrations automatically before listening.
 
 Terminal 1, from `app/server`:
 
@@ -298,21 +327,21 @@ and `$env:PORT = '3001'` before running `npm start`.
 
 From `app/`:
 
-```bash
-npm ci
-npx playwright install chromium
-npm test
+```powershell
+npm.cmd ci
+npx.cmd playwright install chromium
+npm.cmd test
 ```
 
 The Playwright suite targets the production app at <http://localhost:3000> by
 default, so start Compose before running it:
 
-```bash
+```powershell
 docker compose up --build -d
-npm run test:e2e
+npm.cmd run test:e2e
 ```
 
-Set `E2E_BASE_URL` to test another deployment. `npm run test:all` runs both
+Set `E2E_BASE_URL` to test another deployment. `npm.cmd run test:all` runs both
 suites when the target application is already available. On Windows systems
 where PowerShell blocks `npm.ps1`, use `npm.cmd` and `npx.cmd`.
 
@@ -326,9 +355,11 @@ npm audit --omit=dev
 
 ## Import a `.docx` library
 
-The Python 3.10 pipeline converts Word chord charts to JSON, optionally enriches
-their metadata with external services, and loads PostgreSQL. Docker provides
-the Python environment.
+The Python 3.10 pipeline converts Word chord charts to JSON, can enrich metadata,
+and loads PostgreSQL. Current code uses MusicBrainz and GetSongBPM. The approved
+replacement design is MusicBrainz → AcousticBrainz → Gemini fallback; it is not
+implemented or live-verified. T14 keeps enrichment off. Do not use proposed
+future configuration or commands until code supports them.
 
 1. Put source `.docx` files in `pipeline/docs/`.
 2. From `app/`, build and run the parser:
@@ -355,19 +386,13 @@ the Python environment.
      python load_songs.py parsed_out/songs.json
    ```
 
-Metadata enrichment is optional. It requires `MUSICBRAINZ_CONTACT` and
-`GETSONGBPM_API_KEY` in `app/.env`; parsing and direct loading do not. See the
-[pipeline guide](pipeline/README.md) for enrichment, caches, strict parsing,
+The current optional implementation uses MusicBrainz and GetSongBPM; parsing and direct loading do not require enrichment. The approved MusicBrainz → AcousticBrainz → Gemini replacement is future design only. See the [pipeline guide](pipeline/README.md) for enrichment, caches, strict parsing,
 `--truncate`, and host-Python workflows.
 
 Source charts and generated JSON may contain copyrighted lyrics and are ignored
 by Git. Do not commit them or enrichment credentials.
 
-The optional enrichment step uses
-[MusicBrainz](https://musicbrainz.org/) and
-[GetSongBPM](https://getsongbpm.com/). GetSongBPM requires a visible backlink
-when its data is used; add that attribution to the application UI before
-distributing an enriched library.
+Current code uses [MusicBrainz](https://musicbrainz.org/) and [GetSongBPM](https://getsongbpm.com/). The approved future replacement is MusicBrainz → AcousticBrainz → Gemini fallback, and is not implemented or live-verified. Do not remove GetSongBPM attribution if previously sourced data may remain in use; verify data provenance first. T14 remains enrichment-off.
 
 ## Troubleshooting
 
@@ -376,10 +401,17 @@ distributing an enriched library.
 This is normal for a new database. Create a song in the UI or run the pipeline
 loader. Check the current count with `curl http://localhost:3000/api/stats`.
 
-### A schema change does not appear
+### Adding a database schema change
 
-Files under `app/db/init/` run only for a new PostgreSQL volume. Add a migration
-for existing data. Recreating the volume also works, but deletes the database.
+Migrations run before the API starts listening. Add the next numbered plain SQL
+file under `app/db/migrations/` (for example, `0003_add_song_field.sql`), then
+restart or rebuild the app. Existing databases that match `0001_baseline.sql`
+are recorded as having adopted that baseline without rerunning its DDL. A
+partial or incompatible schema fails startup and is not silently adopted.
+Editing `0001_baseline.sql` does not change an existing database; all future
+schema changes need a new numbered migration. Run migrations explicitly with
+`docker compose exec app npm --prefix /app/server run migrate`. Never recreate
+the PostgreSQL volume to apply schema changes.
 
 ### Offline charts are missing
 
@@ -398,14 +430,47 @@ Check the conflict notice in **Settings**. If another client updated that song
 after the tablet cached it, synchronization deliberately keeps the newer server
 copy.
 
+## Backup and restore
+
+Run the backup script from any working directory; it locates `app/docker-compose.yml` relative to itself and writes validated custom-format dumps to the project-root `backups/` directory. The default target is the Compose `POSTGRES_DB` (normally `chords`); each database has its own timestamped `DATABASE-YYYYMMDD-HHMMSS.dump` sequence. A successful backup requires `pg_dump` success, a nonempty file, and a successful `pg_restore --list`. The default retention is 14 backups per database; only files matching that database's exact timestamped pattern are pruned.
+
+```powershell
+.\scripts\backup.ps1
+.\scripts\backup.ps1 -Database ccm_backuptest -Keep 7
+```
+
+```bash
+./scripts/backup.sh
+./scripts/backup.sh --database ccm_backuptest --keep 7
+```
+
+Restore requires an explicit confirmation because it replaces objects in the selected database. It first validates the archive and creates a separate safety backup. If that backup fails, restore stops. Safety backups are retained without pruning.
+
+```powershell
+.\scripts\restore.ps1 -Path .\backups\chords-20261009-120000.dump -Force
+.\scripts\restore.ps1 -Path .\backups\ccm_backuptest-20261009-120000.dump -Database ccm_backuptest -Force
+```
+
+```bash
+./scripts/restore.sh --file ./backups/chords-20261009-120000.dump --yes
+./scripts/restore.sh --file ./backups/ccm_backuptest-20261009-120000.dump --database ccm_backuptest --yes
+```
+
+To schedule a backup, create a Windows Task Scheduler action using `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\path\to\Chord_Chart_Manager\scripts\backup.ps1"`, or add a Linux cron entry such as `0 2 * * * /path/to/Chord_Chart_Manager/scripts/backup.sh >> /path/to/backup.log 2>&1`. These are examples only; no scheduled job is created.
+
 ## Current validation status
 
-The local milestone has been exercised with a production Vite/PWA build,
-Vitest unit tests, a Playwright Chromium smoke test, healthy Compose startup,
-song CRUD, setlist creation and ordering, offline song mutations, reconnect
-synchronization, conflict handling, immediate offline chart rendering, and
-horizontal chart navigation. A full import of the user's real document corpus
-and real enrichment-service trial remain data/credential-dependent.
+T02 baseline verification on 2026-10-09 passed the production image/Vite build,
+unit tests (2 files, 7 tests), and Playwright E2E (1 test). The browser
+assertions checked Songs-screen controls. After the computer crash, the existing
+`app_pgdata` volume remained attached; TCP authentication passed, both
+containers were healthy, and `/healthz` plus `/api/stats` returned HTTP 200.
+The stack remains running. Unit/E2E checks were completed before the crash; after
+restart, TCP, health, and endpoints were checked again.
 
-More implementation detail is available in [app/README.md](app/README.md), and
-the previous development checkpoint is recorded in [HANDOFF.md](HANDOFF.md).
+T02 validated the baseline and Songs screen only. It did not verify complete
+offline workflows, a real corpus import, or live enrichment. Earlier feature
+checks recorded in the engineering history are historical and were not part of
+T02.
+
+More implementation detail is available in [app/README.md](app/README.md), and the current development checkpoint is recorded in [HANDOFF.md](docs/HANDOFF.md).

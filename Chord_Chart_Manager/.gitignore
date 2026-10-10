@@ -27,6 +27,7 @@ songs.json
 songs.enriched.json
 enrich_cache.json
 *.dump
+/backups/
 
 # --- OS / editor ---
 .DS_Store

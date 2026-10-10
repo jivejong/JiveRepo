@@ -1,15 +1,15 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { ChevronDown, ChevronUp, XIcon } from './Icons';
 
 /**
  * TagPanel — categorized multi-row tag filter.
  * Props:
  *   tags        — array of { id, name, category, song_count }
- *   activeTags  — Set of active tag names
- *   onToggle    — (tagName) => void
+ *   activeTags  — selected { category, name } values
+ *   onToggle    — (tag) => void
  *   onClearAll  — () => void
  */
-export default function TagPanel({ tags = [], activeTags = new Set(), onToggle, onClearAll }) {
+export default function TagPanel({ tags = [], activeTags = [], onToggle, onClearAll }) {
   // Group tags by category; uncategorized → "Other"
   const grouped = useMemo(() => {
     const map = {};
@@ -36,19 +36,29 @@ export default function TagPanel({ tags = [], activeTags = new Set(), onToggle, 
     return s;
   });
 
+  useEffect(() => {
+    setOpen(previous => {
+      const next = { ...previous };
+      grouped.forEach(([cat]) => { if (!(cat in next)) next[cat] = true; });
+      return next;
+    });
+  }, [grouped]);
+
   const toggleCat = (cat) => setOpen(p => ({ ...p, [cat]: !p[cat] }));
 
-  const activeList = [...activeTags];
+  const activeList = activeTags;
+  const isActive = tag => activeTags.some(item => item.category === tag.category
+    && item.name.toLocaleLowerCase() === tag.name.toLocaleLowerCase());
 
   return (
     <div className="tag-panel">
       {/* Active tags bar */}
       {activeList.length > 0 && (
         <div className="active-tags-bar">
-          {activeList.map(name => (
-            <div key={name} className="active-tag">
-              {name}
-              <button onClick={() => onToggle(name)} aria-label={`Remove ${name}`}>
+          {activeList.map(tag => (
+            <div key={`${tag.category}:${tag.name}`} className="active-tag">
+              {tag.category}: {tag.name}
+              <button onClick={() => onToggle(tag)} aria-label={`Remove ${tag.category} ${tag.name}`}>
                 <XIcon size={12} />
               </button>
             </div>
@@ -72,8 +82,8 @@ export default function TagPanel({ tags = [], activeTags = new Set(), onToggle, 
                 .map(tag => (
                   <button
                     key={tag.id}
-                    className={`tag-chip ${activeTags.has(tag.name) ? 'active' : ''}`}
-                    onClick={() => onToggle(tag.name)}
+                    className={`tag-chip ${isActive(tag) ? 'active' : ''}`}
+                    onClick={() => onToggle({ category: tag.category, name: tag.name })}
                   >
                     {tag.name}
                     {tag.song_count > 0 && (

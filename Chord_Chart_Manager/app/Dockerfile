@@ -25,6 +25,7 @@ RUN apk add --no-cache curl
 
 COPY --chown=node:node --from=deps   /app/node_modules ./node_modules
 COPY --chown=node:node server        ./server
+COPY --chown=node:node db/migrations ./db/migrations
 COPY --chown=node:node --from=client /client/dist ./dist
 USER node
 

@@ -1,9 +1,11 @@
 # Chord Chart Manager data pipeline
 
-The pipeline converts Word chord-chart documents into JSON, optionally enriches
-their metadata, and loads them into PostgreSQL. The recommended workflow uses
-the dedicated Python 3.10 Compose service, so no host Python installation is
-required.
+The pipeline converts Word chord-chart documents into JSON and loads them into
+PostgreSQL. Current enrichment code uses MusicBrainz and GetSongBPM. The
+approved replacement design is MusicBrainz → AcousticBrainz → Gemini fallback;
+it has not been implemented or live-verified. T14 keeps enrichment off. Do not
+use future configuration or commands operationally until the code supports them.
+The recommended workflow uses the Python 3.10 Compose service.
 
 ## Requirements
 
@@ -11,11 +13,34 @@ For the Docker workflow:
 
 - Docker Desktop or Docker Engine with Compose.
 - Source `.docx` files in `pipeline/docs/`.
-- Enrichment credentials in `app/.env` when enrichment is run.
+- Any MusicBrainz/GetSongBPM settings below apply only to the existing implementation; the approved replacement is not implemented.
 
 The container provides Python 3.10 and installs `requirements.txt`. It connects
 to the Compose database through the service name `db`, so no host-specific
 database address is needed.
+The app owns schema initialization and applies migrations before listening;
+start the app once before running the pipeline against a fresh volume. The
+pipeline does not define or apply a separate schema.
+
+The pipeline parser also recognizes the app's versioned generated chart source
+(`[[CCM-CHART:2]]`) when such text is present in a document, and the DOCX path
+also accepts legacy v1. Explicit section and line markers preserve progression,
+repeat, raw, spacer, and lyric/chord structure. Version 2 stores lyric text
+separately from numeric chord columns, so lyric edits do not shift later anchors.
+Columns are zero-based UTF-16 code units, matching JavaScript string indices;
+anchors past lyric end are retained. Generated raw-line trailing spaces are
+significant and preserved. Ordinary Word chart parsing ignores paragraph-spacing
+attributes but preserves explicit empty paragraphs inside songs as spacer lines;
+blank padding outside song boundaries is ignored. Manual Word line breaks split
+chart text into separate lines. Text-wrapping `w:br` and `w:cr` controls split
+chart lines; a terminal text break becomes a spacer before following content.
+Consecutive breaks and adjacent empty paragraphs collapse to one spacer. Page
+and column breaks remain layout controls and do not create chart rows. A spacer before a section heading is normalized
+to the normal section gap; a spacer after a heading remains explicit and turns
+off that section gap to prevent doubled spacing. Synthetic tests cover these
+cases and the shared serialization contract. Ordinary chart text edited in the
+app follows the same internal blank-line normalization; a chord-only line is
+flushed as a progression instead of being paired across a blank separator.
 
 For an optional host-Python workflow:
 
@@ -40,23 +65,22 @@ Keep real `.docx` files, generated song JSON, enrichment caches, database
 dumps, and secrets out of source control. The song files can contain
 copyrighted lyrics.
 
-## Current local readiness
+## Historical local readiness
 
-The Python 3.10 image builds successfully, imports every pipeline module, sees
-both bind-mounted folders, and connects to the Compose PostgreSQL database.
-There are no implementation blockers.
+Earlier checks reported a successful Python 3.10 image build, module imports,
+bind mounts, and database connectivity. These are historical pipeline checks,
+not part of T02. A real corpus and live enrichment remain unverified.
 
 Before processing real data:
 
-1. Put the source `.docx` files in `pipeline/docs/`.
+1. Put source `.docx` files in `pipeline/docs/`.
 2. Run the parser and review `pipeline/parsed_out/report.json`.
-3. Before enrichment, copy `app/.env.example` to `app/.env` and provide
-   `MUSICBRAINZ_CONTACT` and `GETSONGBPM_API_KEY`.
-4. Dry-run the loader before performing the real database load.
+3. Parsing and direct loading need no enrichment credentials. If using the
+   current legacy enrichment code, preserve an existing `app/.env`; create it
+   from `app/.env.example` only if it is absent.
+4. Dry-run the loader before a real database load.
 
-Steps 1 and 2 do not require MusicBrainz or GetSongBPM credentials. If
-enrichment is postponed, `parsed_out/songs.json` can be dry-run or loaded
-directly instead of `parsed_out/songs.enriched.json`.
+T14 keeps enrichment off.
 
 ## Docker workflow
 
@@ -97,9 +121,16 @@ Important outputs:
 Review every failure and flagged song against the source documents before
 continuing. Use `--strict` when the command should fail if any document fails.
 
-## 3. Enrich metadata (optional)
+## 3. Enrich metadata (optional; current implementation only)
 
-Start with a small trial:
+The current `enrich_songs.py` code uses MusicBrainz and GetSongBPM. Its existing
+command and settings describe that implementation only. The approved replacement
+is MusicBrainz → AcousticBrainz → Gemini fallback; it is not implemented or
+live-verified, and no settings or command for that future design are available.
+T14 keeps enrichment off. Do not use this legacy path for T14.
+
+If the current implementation is being tested in a separate authorized task,
+start with a small trial:
 
 ```bash
 docker compose run --rm pipeline \
@@ -109,16 +140,11 @@ docker compose run --rm pipeline \
   --limit 20
 ```
 
-Then inspect matches, non-matches, release years, BPM values, and keys before
-removing `--limit`. Enrichment is cached in
-`parsed_out/enrich_cache.json`, so a long run can be resumed. Set
-`MUSICBRAINZ_CONTACT` and `GETSONGBPM_API_KEY` in `app/.env` first; Compose
-passes them into the one-shot container.
-
-Parsed source values take precedence over enrichment results. GetSongBPM's
-terms require a visible backlink in any application using its data. The
-project README links to the service, but the React UI does not currently
-include that attribution.
+The current code expects its existing MusicBrainz/GetSongBPM configuration in
+`app/.env`; preserve any existing file and do not infer future settings from
+this guide. Check cache provenance before reuse. If data may have come from
+GetSongBPM, retain the visible backlink requirement until its source is checked;
+do not remove attribution blindly.
 
 ## 4. Load PostgreSQL
 
@@ -161,12 +187,26 @@ All inputs and outputs that must follow the project folder are bind-mounted:
 The image contains the pipeline code and Python dependencies. Rebuild the
 pipeline image after changing a pipeline script or `requirements.txt`.
 
+## Pipeline tests
+
+The pipeline image installs the small test-only dependency set from
+`requirements-test.txt` (currently pytest); these tools are not app
+dependencies. Create an empty `ccm_pipelinetest` database only after checking
+that it does not exist, then initialize it with the T06 app migration runner:
+
+```bash
+docker compose exec app npm --prefix /app/server run migrate -- --database ccm_pipelinetest
+docker compose run --rm -e PIPELINE_TEST_DATABASE=ccm_pipelinetest pipeline pytest -q
+```
+
+The parser test builds a synthetic `.docx` in a temporary directory using
+invented text. The loader dry-run test checks all eight application tables'
+contents before and after rollback and refuses any database name other than
+`ccm_pipelinetest`. Drop only this task-owned scratch database after testing;
+never point the test at `chords`.
+
 ## Current validation status
 
-- The parser was validated against the available sample document.
-- The batch runner was tested with simulated multi-document inputs.
-- Enrichment logic was tested with mocked API responses; the real enrichment
-  trial remains pending.
-- The loader was tested against PostgreSQL for insert, repeat load, truncate,
-  and both regular and truncate dry-run rollback.
-- A full real-document corpus run remains pending.
+T02 did not run the pipeline or validate enrichment. Historical checks reported
+parser, simulated batch, mocked enrichment, and loader checks. A real-document
+corpus run and live enrichment remain pending. T14 remains enrichment-off.

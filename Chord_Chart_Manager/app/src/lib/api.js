@@ -46,8 +46,10 @@ export const songs = {
   create:    (data)        => post('/api/songs', data),
   update:    (id, data)    => put(`/api/songs/${id}`, data),
   remove:    (id, data)    => del(`/api/songs/${id}`, data),
-  addTag:    (id, name, category) => post(`/api/songs/${id}/tags`, { name, category }),
-  removeTag: (id, name)    => del(`/api/songs/${id}/tags/${encodeURIComponent(name)}`),
+  addTag:    (id, name, category, base_updated_at) =>
+    post(`/api/songs/${id}/tags`, { name, category, base_updated_at }),
+  removeTag: (id, name, category, base_updated_at) =>
+    del(`/api/songs/${id}/tags/${encodeURIComponent(name)}`, { category, base_updated_at }),
   getTags:   (id)          => get(`/api/songs/${id}/tags`),
 };
 
@@ -65,6 +67,7 @@ export const setlists = {
   update:      (id, data)       => put(`/api/setlists/${id}`, data),
   remove:      (id)             => del(`/api/setlists/${id}`),
   addSong:     (id, data)       => post(`/api/setlists/${id}/songs`, data),
+  updateSong:  (id, position, data) => put(`/api/setlists/${id}/songs/${position}`, data),
   removeSong:  (id, position)   => del(`/api/setlists/${id}/songs/${position}`),
   reorder:     (id, songIds)    => put(`/api/setlists/${id}/order`, { songIds }),
 };

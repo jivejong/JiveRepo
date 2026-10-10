@@ -5,6 +5,6 @@
 #     (they read the .docx zip directly — no python-docx needed).
 #   - enrich_songs.py uses only the standard library too (urllib) to call
 #     MusicBrainz and GetSongBPM — no requests/SDK needed.
-#   - pglast was only used to validate schema.sql during design; not a runtime dep.
+#   - pglast was only used to validate the canonical app migration SQL during design.
 
 psycopg[binary]>=3.2      # load_songs.py -> Postgres

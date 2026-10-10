@@ -5,6 +5,8 @@ import { transposeChart, transposeChord, soundingKey, keyDelta, keyAfter } from 
 import { useSong, useSwipe } from '../hooks';
 import * as api from '../lib/api';
 import * as cache from '../lib/cache';
+import { buildPerformanceSaveTarget, resolveStartingPerformance } from '../setlistOverrides';
+import { setlistWriteError } from '../setlistMutations';
 
 /**
  * ChartView — displays a single chart with:
@@ -21,7 +23,8 @@ import * as cache from '../lib/cache';
  *   onEdit      — (song) => void
  */
 export default function ChartView({
-  songId, songList = [], online, onBack, onEdit, onNavigateSong,
+  songId, songList = [], setlistId = null, setlistEntry = null,
+  online, onBack, onEdit, onNavigateSong, onSetlistUpdated,
 }) {
   const { song, loading, setSong } = useSong(songId, online);
 
@@ -31,30 +34,40 @@ export default function ChartView({
   // `hasChanges` is measured against that baseline, not against zero.
   const [semiOffset,   setSemiOffset]   = useState(0);
   const [initialOffset, setInitialOffset] = useState(0);
-  const [capoOverride, setCapoOverride] = useState(null); // null = use song default
+  const [initialCapo, setInitialCapo] = useState(0);
+  const [capoOverride, setCapoOverride] = useState(null); // null = use entry/song baseline
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
 
-  // When the song loads (or we navigate to another), open it in its preferred
-  // key. preferred_key may differ from the written key; if it's unset we open
-  // in the written (performance) key, i.e. zero offset.
+  // Resolve the starting key and capo from this setlist entry when present,
+  // otherwise preserve the song-list preference/default behavior.
   useEffect(() => {
     if (!song) return;
     const written = song.chart_written_key || 'C';
-    const off = song.preferred_key ? keyDelta(written, song.preferred_key) : 0;
+    const start = resolveStartingPerformance(song, setlistEntry);
+    const off = keyDelta(written, start.key);
     setInitialOffset(off);
     setSemiOffset(off);
+    setInitialCapo(start.capo);
     setCapoOverride(null);
-  }, [song?.id, song?.preferred_key, song?.chart_written_key]);
+    setSaveError(null);
+  }, [song?.id, song?.preferred_key, song?.chart_written_key,
+    song?.default_capo, song?.capo_fret, setlistId, setlistEntry?.position,
+    setlistEntry?.transposed_key, setlistEntry?.capo_fret]);
 
   // Navigation within song list
-  const currentIdx = songList.findIndex(s => s.id === songId);
+  const inSetlist = setlistId != null && setlistEntry != null;
+  const currentIdx = inSetlist
+    ? songList.findIndex(s => s.position === setlistEntry.position)
+    : songList.findIndex(s => s.id === songId);
   const prevSong   = currentIdx > 0                  ? songList[currentIdx - 1] : null;
   const nextSong   = currentIdx < songList.length - 1 ? songList[currentIdx + 1] : null;
 
   const goNext = useCallback(() => {
-    if (nextSong) onNavigateSong?.(nextSong.id);
+    if (nextSong) onNavigateSong?.(nextSong);
   }, [nextSong, onNavigateSong]);
   const goPrev = useCallback(() => {
-    if (prevSong) onNavigateSong?.(prevSong.id);
+    if (prevSong) onNavigateSong?.(prevSong);
   }, [prevSong, onNavigateSong]);
 
   const swipeHandlers = useSwipe(goNext, goPrev);
@@ -62,7 +75,7 @@ export default function ChartView({
   if (loading) return <div className="loading">Loading…</div>;
   if (!song)   return <div className="loading">Song not found</div>;
 
-  const capo    = capoOverride ?? song.default_capo ?? 0;
+  const capo    = capoOverride ?? initialCapo;
   const baseKey = song.chart_written_key || 'C';
 
   // Current key after offset, in its CONVENTIONAL spelling (Bb, not A#).
@@ -81,36 +94,64 @@ export default function ChartView({
   const adjustCapo  = (n) => setCapoOverride(p => Math.max(0, Math.min(11, (p ?? capo) + n)));
   const resetAll    = () => { setSemiOffset(initialOffset); setCapoOverride(null); };
 
-  const hasChanges = semiOffset !== initialOffset || capoOverride !== null;
+  const hasChanges = semiOffset !== initialOffset || capo !== initialCapo;
 
-  // Save transposition back to song record
+  // Save to the setlist entry in setlist context; retain song preference saves
+  // for the ordinary song list.
   const saveTransposition = async () => {
-    if (!hasChanges) return;
-    const updated = {
-      preferred_key: currentWrittenKey,
-      default_capo:  capo,
-    };
-    if (online) {
-      await api.songs.update(song.id, updated);
-    } else {
-      const patched = {
-        ...song,
-        ...updated,
-        _sync: song._sync?.operation === 'create'
-          ? song._sync
-          : {
-              operation: 'update',
-              base_updated_at: song._sync?.base_updated_at ?? song.updated_at ?? null,
-            },
-      };
-      await cache.updateCachedSong(patched);
-      await cache.markDirty(song.id);
-      setSong(patched);
+    if (!hasChanges || saving) return;
+    setSaveError(null);
+    if (inSetlist && !online) {
+      setSaveError('Saving setlist overrides requires an internet connection.');
+      return;
     }
-    // The current view IS the new preferred key now — make it the baseline so
-    // the Save/reset controls disappear rather than resetting the display.
-    setInitialOffset(semiOffset);
-    setCapoOverride(null);
+    const target = buildPerformanceSaveTarget({ song, setlistId, setlistEntry }, currentWrittenKey, capo);
+    setSaving(true);
+    try {
+      if (target.kind === 'setlist') {
+        const updatedSetlist = await api.setlists.updateSong(
+          target.setlistId, target.position, target.payload,
+        );
+        onSetlistUpdated?.(updatedSetlist);
+        let cacheWarning = null;
+        try {
+          await cache.cacheSetlists([updatedSetlist]);
+        } catch {
+          cacheWarning = 'Saved to the setlist, but the offline copy could not be refreshed.';
+        }
+        setInitialOffset(semiOffset);
+        setInitialCapo(capo);
+        setCapoOverride(null);
+        setSaveError(cacheWarning);
+      } else {
+        if (online) {
+          await api.songs.update(target.songId, target.payload);
+        } else {
+          const patched = {
+            ...song,
+            ...target.payload,
+            _sync: song._sync?.operation === 'create'
+              ? song._sync
+              : {
+                  operation: 'update',
+                  base_updated_at: song._sync?.base_updated_at ?? song.updated_at ?? null,
+                },
+          };
+          await cache.updateCachedSong(patched);
+          await cache.markDirty(song.id);
+          setSong(patched);
+        }
+        setInitialOffset(semiOffset);
+        setInitialCapo(capo);
+        setCapoOverride(null);
+      }
+    } catch (error) {
+      setSaveError(target.kind === 'setlist'
+        ? setlistWriteError(error)
+        : error.message || 'Could not save the performance settings.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -148,12 +189,19 @@ export default function ChartView({
           <button
             className="btn btn-ghost btn-sm"
             style={{ marginLeft: 'auto', fontSize: 12 }}
-            onClick={saveTransposition}
+            onClick={() => { void saveTransposition(); }}
+            disabled={saving || (inSetlist && !online)}
           >
-            Save key
+            {inSetlist ? 'Save to setlist' : 'Save key'}
           </button>
         )}
       </div>
+      {inSetlist && !online && hasChanges && (
+        <div className="form-help" role="status">
+          Saving setlist overrides requires a connection to the app server.
+        </div>
+      )}
+      {saveError && <div className="form-error" role="alert">{saveError}</div>}
 
       {/* Transpose + capo controls */}
       <div className="transpose-bar">

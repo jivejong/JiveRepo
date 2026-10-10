@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ChevronRight, MusicIcon, PlusIcon, XIcon } from '../components/Icons';
 import { useSetlists } from '../hooks';
 import * as api from '../lib/api';
+import { buildSetlistMetadataPayload, setlistWriteError } from '../setlistMutations';
 
 function formatGigDate(value, options) {
   const dateOnly = String(value).slice(0, 10);
@@ -25,17 +26,13 @@ export default function SetlistListView({ online, onSelectSetlist }) {
     setSaving(true);
     setError(null);
     try {
-      const created = await api.setlists.create({
-        name: form.name.trim(),
-        gig_date: form.gig_date || null,
-        notes: form.notes.trim() || null,
-      });
+      const created = await api.setlists.create(buildSetlistMetadataPayload(form));
       setForm({ name: '', gig_date: '', notes: '' });
       setCreating(false);
       await refresh();
       onSelectSetlist(created);
     } catch (err) {
-      setError(err.message);
+      setError(setlistWriteError(err));
     } finally {
       setSaving(false);
     }
@@ -56,6 +53,12 @@ export default function SetlistListView({ online, onSelectSetlist }) {
         )}
       </div>
 
+      {!online && (
+        <div className="form-help setlist-connection-help" role="status">
+          Setlist changes require a connection to the app server.
+        </div>
+      )}
+
       {creating && (
         <div className="setlist-form">
           <div className="form-group">
@@ -66,6 +69,7 @@ export default function SetlistListView({ online, onSelectSetlist }) {
               onChange={event => set('name', event.target.value)}
               placeholder="Friday night set"
               autoFocus
+              disabled={!online || saving}
             />
           </div>
           <div className="form-group">
@@ -75,6 +79,7 @@ export default function SetlistListView({ online, onSelectSetlist }) {
               type="date"
               value={form.gig_date}
               onChange={event => set('gig_date', event.target.value)}
+              disabled={!online || saving}
             />
           </div>
           <div className="form-group">
@@ -84,10 +89,11 @@ export default function SetlistListView({ online, onSelectSetlist }) {
               value={form.notes}
               onChange={event => set('notes', event.target.value)}
               placeholder="Optional"
+              disabled={!online || saving}
             />
           </div>
-          {error && <div className="form-error">{error}</div>}
-          <button className="btn btn-primary btn-full" onClick={createSetlist} disabled={saving}>
+          {error && <div className="form-error" role="alert">{error}</div>}
+          <button className="btn btn-primary btn-full" onClick={createSetlist} disabled={!online || saving}>
             {saving ? 'Creating…' : 'Create setlist'}
           </button>
         </div>

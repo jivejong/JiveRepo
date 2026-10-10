@@ -39,6 +39,8 @@
   const REPEAT_MARKER_RE = /^\(([^)]+?)\)\s*(?:[xX]\s*(\d+))?\s*$/;
   const SECTION_WORD_RE =
     /^(Intro|Outro|Verse|Chorus|Bridge|Pre-?Chorus|Interlude|Instrumental|Solo|Link|Middle|Refrain|Tag|Ending|Coda|Hook)(\s*\d+)?$/i;
+  const GENERATED_HEADER = "[[CCM-CHART:2]]";
+  const LEGACY_GENERATED_HEADER = "[[CCM-CHART:1]]";
 
   function isChord(tok) {
     return CHORD_RE.test(tok);
@@ -82,7 +84,7 @@
     let m;
     while ((m = re.exec(chordLine))) {
       if (!isChord(m[0])) continue;
-      chords.push({ sym: clean(m[0]), pos: Math.min(m.index, lyricLine.length) });
+      chords.push({ sym: clean(m[0]), pos: m.index });
     }
     return { type: "lyric", text: clean(lyricLine.replace(/\s+$/, "")),
              chords, confidence: "low" };
@@ -108,6 +110,10 @@
 
   function parseChartBody(text) {
     const lines = (text || "").split(/\r?\n/);
+    if (lines[0] === GENERATED_HEADER || lines[0] === LEGACY_GENERATED_HEADER) {
+      try { return parseGeneratedChart(lines.slice(1), lines[0] === GENERATED_HEADER); }
+      catch (error) { error.status = 400; throw error; }
+    }
     const sections = [];
     let cur = null;
     let pendingChord = null;
@@ -120,13 +126,24 @@
         pendingChord = null;
       }
     };
-    const newSection = (label) => { cur = { label: label ? clean(label) : null, lines: [] }; sections.push(cur); };
+    const newSection = (label) => {
+      if (cur?.lines.at(-1)?.type === "spacer") cur.lines.pop();
+      cur = { label: label ? clean(label) : null, lines: [] };
+      sections.push(cur);
+    };
 
     for (const rawLine of lines) {
       const line = rawLine.replace(/\s+$/, "");
       const s = line.trim();
 
-      if (!s) { flushPending(); continue; }
+      if (!s) {
+        flushPending();
+        if (cur && (cur.lines.length > 0 || cur.label)
+            && cur.lines.at(-1)?.type !== "spacer") {
+          cur.lines.push({ type: "spacer" });
+        }
+        continue;
+      }
 
       if (isTab(s)) { flushPending(); ensure(); cur.lines.push({ type: "raw", text: line }); continue; }
 
@@ -199,42 +216,186 @@
       }
     }
     flushPending();
+    if (cur?.lines.at(-1)?.type === "spacer") cur.lines.pop();
     return { sections };
+  }
+
+  function parseGeneratedChordText(text) {
+    const chords = [];
+    let lyric = "";
+    for (let i = 0; i < text.length;) {
+      if (text[i] === "\\" && i + 1 < text.length) {
+        const escaped = text[i + 1];
+        lyric += escaped === "n" ? "\n" : escaped === "r" ? "\r" : escaped;
+        i += 2;
+        continue;
+      }
+      if (text.startsWith("[[C:", i)) {
+        const end = text.indexOf("]]", i + 4);
+        if (end < 0) throw new Error("Generated chart has an incomplete chord anchor marker");
+        let sym;
+        try { sym = decodeURIComponent(text.slice(i + 4, end)); }
+        catch { throw new Error("Generated chart has an invalid chord anchor marker"); }
+        if (!isChord(sym)) throw new Error("Generated chart has an invalid chord symbol");
+        chords.push({ sym: clean(sym), pos: lyric.length });
+        i = end + 2;
+        continue;
+      }
+      lyric += text[i];
+      i += 1;
+    }
+    return { type: "lyric", text: lyric, chords, confidence: "high" };
+  }
+
+  function escapeGeneratedText(text) {
+    return String(text || "").replace(/\\/g, "\\\\").replace(/\[/g, "\\[")
+      .replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+  }
+
+  function unescapeGeneratedText(text) {
+    return text.replace(/\\([\\\[nr])/g, (_, escaped) =>
+      escaped === "n" ? "\n" : escaped === "r" ? "\r" : escaped);
+  }
+
+  function parseGeneratedLyricV2(body, confidence) {
+    const splitAt = body.lastIndexOf("[[CCM-CHORDS]]");
+    if (splitAt < 0) throw new Error("Generated lyric is missing its chord list");
+    const lyric = unescapeGeneratedText(body.slice(0, splitAt));
+    const encoded = body.slice(splitAt + "[[CCM-CHORDS]]".length);
+    const chords = [];
+    const marker = /\[\[C:(\d+):([^\]]*)\]\]/g;
+    let match;
+    let cursor = 0;
+    while ((match = marker.exec(encoded))) {
+      if (encoded.slice(cursor, match.index).trim()) throw new Error("Generated lyric has invalid chord data");
+      let sym;
+      try { sym = decodeURIComponent(match[2]); }
+      catch { throw new Error("Generated lyric has an invalid chord symbol"); }
+      const pos = Number(match[1]);
+      if (!Number.isSafeInteger(pos) || pos < 0 || !isChord(sym)) {
+        throw new Error("Generated lyric has an invalid chord anchor");
+      }
+      chords.push({ sym: clean(sym), pos });
+      cursor = marker.lastIndex;
+    }
+    if (encoded.slice(cursor).trim()) throw new Error("Generated lyric has invalid chord data");
+    return { type: "lyric", text: lyric, chords, confidence };
+  }
+
+  function parseGeneratedChart(lines, version2 = false) {
+    const sections = [];
+    let current = null;
+    if (lines[lines.length - 1] === "") lines = lines.slice(0, -1);
+    for (const line of lines) {
+      if (line.startsWith("[[CCM-SECTION]]")) {
+        if (current?.lines.at(-1)?.type === "spacer") current.lines.pop();
+        const label = unescapeGeneratedText(line.slice("[[CCM-SECTION]]".length));
+        current = { label: label || null, lines: [] };
+        sections.push(current);
+        continue;
+      }
+      if (!current) throw new Error("Generated chart line appears before its section marker");
+      let match;
+      if ((match = /^\[\[CCM-LYRIC:(high|low)\]\](.*)$/.exec(line))) {
+        const parsed = version2
+          ? parseGeneratedLyricV2(match[2], match[1])
+          : parseGeneratedChordText(match[2]);
+        parsed.confidence = match[1];
+        current.lines.push(parsed);
+      } else if ((match = /^\[\[CCM-PROGRESSION\]\](.*)$/.exec(line))) {
+        let body = match[1];
+        const noteIndex = body.indexOf("[[CCM-NOTE]]");
+        let note;
+        if (noteIndex >= 0) {
+          note = unescapeGeneratedText(body.slice(noteIndex + "[[CCM-NOTE]]".length));
+          body = body.slice(0, noteIndex);
+        }
+        const repeat = /\[\[CCM-PROGRESSION-REPEAT:(\d+)\]\]$/.exec(body);
+        if (repeat) body = body.slice(0, repeat.index);
+        const chordTokens = body.trim() ? body.trim().split(/\s+/) : [];
+        if (chordTokens.some(token => !isChord(token))) {
+          throw new Error("Generated progression contains an invalid chord token");
+        }
+        const progression = { type: "progression", chords: chordTokens };
+        if (repeat) progression.repeat = Number(repeat[1]);
+        if (noteIndex >= 0) progression.note = note;
+        current.lines.push(progression);
+      } else if ((match = /^\[\[CCM-REPEAT(?::(\d+))?\]\](.*)$/.exec(line))) {
+        const repeated = { type: "repeat", ref: unescapeGeneratedText(match[2]) };
+        if (match[1]) repeated.times = Number(match[1]);
+        current.lines.push(repeated);
+      } else if (line.startsWith("[[CCM-RAW]]")) {
+        current.lines.push({ type: "raw", text: unescapeGeneratedText(line.slice("[[CCM-RAW]]".length)) });
+      } else if (line === "[[CCM-SPACER]]") {
+        if (current.lines.at(-1)?.type !== "spacer") current.lines.push({ type: "spacer" });
+      } else {
+        throw new Error("Generated chart contains a missing or unsupported line marker");
+      }
+    }
+    return { sections };
+  }
+
+  function isGeneratedSourceUnchanged(existingSource, existingContent, submittedSource) {
+    if (typeof submittedSource !== "string") return false;
+    if (typeof existingSource === "string" && submittedSource === existingSource) return true;
+    return (!existingSource && submittedSource === chartToText(existingContent));
+  }
+
+  function isGeneratedChartSource(source) {
+    return typeof source === "string" &&
+      (source.startsWith(`${GENERATED_HEADER}\n`) || source.startsWith(`${LEGACY_GENERATED_HEADER}\n`));
+  }
+
+  function generatedChordText(line) {
+    const text = line.text || "";
+    const byPosition = new Map();
+    for (const chord of line.chords || []) {
+      const pos = chord.pos;
+      if (!Number.isSafeInteger(pos) || pos < 0) {
+        throw new Error("Chord column must be a non-negative safe integer UTF-16 column");
+      }
+      if (!byPosition.has(pos)) byPosition.set(pos, []);
+      byPosition.get(pos).push(chord.sym);
+    }
+    const anchors = [...byPosition.entries()].sort((a, b) => a[0] - b[0])
+      .flatMap(([pos, symbols]) => symbols.map(sym => `[[C:${pos}:${encodeURIComponent(sym)}]]`)).join("");
+    return `${escapeGeneratedText(text)}[[CCM-CHORDS]]${anchors}`;
   }
 
   /* Inverse: render structured chart_content back to editable text. Used to
    * seed chart_source for migrated songs that only have structured content. */
   function chartToText(chart) {
     if (!chart || !Array.isArray(chart.sections)) return "";
-    const out = [];
+    const out = [GENERATED_HEADER];
     for (const sec of chart.sections) {
-      if (sec.label) out.push(`[${sec.label}]`);
+      out.push(`[[CCM-SECTION]]${escapeGeneratedText(sec.label || "")}`);
       for (const line of sec.lines || []) {
         if (line.type === "lyric") {
-          if (line.chords && line.chords.length) {
-            let row = "";
-            for (const c of [...line.chords].sort((a, b) => a.pos - b.pos)) {
-              const pos = Math.max(0, c.pos | 0);
-              row += pos < row.length ? " " + c.sym : " ".repeat(pos - row.length) + c.sym;
-            }
-            out.push(row);
-          }
-          out.push(line.text || "");
+          const confidence = line.confidence === "low" ? "low" : "high";
+          out.push(`[[CCM-LYRIC:${confidence}]]${generatedChordText(line)}`);
         } else if (line.type === "progression") {
-          let l = (line.chords || []).join("  ");
-          if (line.repeat) l += `  ${line.repeat}x`;
-          if (line.note) l += `  ${line.note}`;
-          out.push(l);
+          let l = (line.chords || []).join(" ");
+          if (line.repeat !== undefined && line.repeat !== null) {
+            l += `${l ? " " : ""}[[CCM-PROGRESSION-REPEAT:${line.repeat}]]`;
+          }
+          if (Object.hasOwn(line, "note")) l += `[[CCM-NOTE]]${escapeGeneratedText(line.note)}`;
+          out.push(`[[CCM-PROGRESSION]]${l}`);
         } else if (line.type === "raw") {
-          out.push(line.text || "");
+          out.push(`[[CCM-RAW]]${escapeGeneratedText(line.text || "")}`);
         } else if (line.type === "repeat") {
-          out.push(`(${line.ref}${line.times ? ") x" + line.times : ")"}`);
+          out.push(`[[CCM-REPEAT${line.times !== undefined && line.times !== null ? `:${line.times}` : ""}]]${escapeGeneratedText(line.ref || "")}`);
+        } else if (line.type === "spacer") {
+          out.push("[[CCM-SPACER]]");
+        } else {
+          throw new Error(`Unsupported chart line type: ${line.type}`);
         }
       }
-      out.push("");
     }
-    return out.join("\n").replace(/\n+$/, "\n");
+    return `${out.join("\n")}\n`;
   }
 
-  return { parseChartBody, chartToText, _isChord: isChord };
+  return {
+    parseChartBody, chartToText, isGeneratedSourceUnchanged, isGeneratedChartSource,
+    _isChord: isChord,
+  };
 });

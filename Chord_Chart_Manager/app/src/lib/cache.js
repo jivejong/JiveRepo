@@ -5,6 +5,7 @@
  * The API checks that version while holding a row lock. If the server changed
  * first, the queued tablet mutation is discarded and the server copy wins.
  */
+import { matchesSongTagFilters } from '../tagMutations';
 
 const DB_NAME = 'chart-manager';
 const DB_VERSION = 1;
@@ -114,7 +115,11 @@ export function makeLocalSongId() {
 export async function cacheSetlists(setlistList) {
   await openDb();
   const store = tx('setlists', 'readwrite');
-  for (const setlist of setlistList) store.put(setlist);
+  for (const setlist of setlistList) {
+    store.put(Array.isArray(setlist.songs)
+      ? { ...setlist, song_count: setlist.songs.length }
+      : setlist);
+  }
   return transactionDone(store);
 }
 
@@ -122,8 +127,17 @@ async function replaceCachedSetlists(setlistList) {
   await openDb();
   const store = tx('setlists', 'readwrite');
   store.clear();
-  for (const setlist of setlistList) store.put(setlist);
+  for (const setlist of setlistList) {
+    store.put(Array.isArray(setlist.songs)
+      ? { ...setlist, song_count: setlist.songs.length }
+      : setlist);
+  }
   return transactionDone(store);
+}
+
+export async function deleteCachedSetlist(id) {
+  await openDb();
+  return wrap(tx('setlists', 'readwrite').delete(id));
 }
 
 export async function getCachedSetlists() {
@@ -177,10 +191,11 @@ export function onCacheChange(listener) {
   return () => window.removeEventListener(CACHE_CHANGE_EVENT, listener);
 }
 
-function editablePayload(song) {
+export function editablePayload(song) {
   const fields = [
     'title', 'artist', 'chart_written_key', 'preferred_key', 'original_key',
     'default_capo', 'bpm', 'release_year', 'beatbuddy_structure', 'chart_source',
+    'genres', 'vibes',
   ];
   return Object.fromEntries(fields.map(field => [field, song[field]]));
 }
@@ -257,7 +272,10 @@ async function pushPendingSongs(songApi) {
 export async function syncWithServer({ library, setlists: setlistApi, songs: songApi }) {
   try {
     const pending = await pushPendingSongs(songApi);
-    const [lib, setlistList] = await Promise.all([library(), setlistApi.all()]);
+    const [lib, setlistSummaries] = await Promise.all([library(), setlistApi.all()]);
+    const setlistList = await Promise.all((setlistSummaries || []).map(setlist =>
+      Array.isArray(setlist.songs) ? setlist : setlistApi.get(setlist.id),
+    ));
     await Promise.all([
       replaceCachedSongs(lib.songs || []),
       replaceCachedSetlists(setlistList || []),
@@ -286,22 +304,17 @@ export const syncFromServer = syncWithServer;
 
 // ── Offline search ───────────────────────────────────────────────────────────
 
-export async function searchCached({ q, query, tags }) {
+export async function searchCached({ q, query, tags, tag_filters }) {
   const text = (q ?? query ?? '').toLowerCase();
   const wanted = (typeof tags === 'string' ? tags.split(',') : (tags || []))
     .map(tag => tag.trim().toLowerCase()).filter(Boolean);
+  const selected = tag_filters ? JSON.parse(tag_filters) : [];
   const all = await getCachedSongs();
   return all.filter(song => {
     if (song._sync?.operation === 'delete') return false;
     if (text && !song.title?.toLowerCase().includes(text)
         && !song.artist?.toLowerCase().includes(text)) return false;
-    if (wanted.length) {
-      const have = new Set();
-      (song.genres || []).forEach(genre => have.add((genre.name || genre).toLowerCase()));
-      (song.vibes || []).forEach(vibe => have.add(String(vibe).toLowerCase()));
-      if (song.era) have.add(String(song.era).toLowerCase());
-      if (!wanted.every(tag => have.has(tag))) return false;
-    }
+    if (!matchesSongTagFilters(song, selected, wanted)) return false;
     return true;
   }).sort((a, b) => a.title?.localeCompare(b.title));
 }

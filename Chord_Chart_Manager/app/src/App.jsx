@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { MusicIcon, ListIcon, SettingsIcon } from './components/Icons';
 import HomeView     from './views/HomeView';
 import ChartView    from './views/ChartView';
@@ -25,29 +25,49 @@ export default function App() {
 
   const [tab,  setTab]  = useState('songs');
   const [view, setView] = useState(null);
+  const navigationSession = useRef(0);
+
+  const advanceNavigationSession = () => {
+    navigationSession.current += 1;
+    return navigationSession.current;
+  };
 
   // ── Navigation helpers ──────────────────────────────────────────────────────
 
-  const openChart = (song, songList = []) => {
-    setView({ type: 'chart', songId: song.id, songList });
+  const openChart = (song, songList = [], setlistContext = null) => {
+    advanceNavigationSession();
+    setView({
+      type: 'chart',
+      songId: song.id,
+      songList,
+      setlistId: setlistContext?.setlistId ?? null,
+      setlistEntry: setlistContext?.setlistEntry ?? null,
+    });
   };
 
   const openSetlist = (setlist) => {
+    advanceNavigationSession();
     setView({ type: 'setlist', setlistId: setlist.id });
   };
 
   const openEdit = (song) => {
-    setView({ type: 'edit', song });
+    const session = advanceNavigationSession();
+    setView({ type: 'edit', song, session });
   };
 
   const openNew = () => {
     // EditView treats a null song as "New song" and routes save -> POST.
-    setView({ type: 'edit', song: null });
+    const session = advanceNavigationSession();
+    setView({ type: 'edit', song: null, session });
   };
 
-  const goBack = () => setView(null);
+  const goBack = () => {
+    advanceNavigationSession();
+    setView(null);
+  };
 
   const switchTab = (newTab) => {
+    advanceNavigationSession();
     setTab(newTab);
     setView(null);
   };
@@ -59,14 +79,33 @@ export default function App() {
   if (view?.type === 'chart') {
     activeView = (
       <ChartView
-        key={view.songId}
+        key={view.setlistEntry
+          ? `${view.setlistId}:${view.setlistEntry.position}`
+          : view.songId}
         songId={view.songId}
         songList={view.songList}
+        setlistId={view.setlistId}
+        setlistEntry={view.setlistEntry}
         online={online}
         onBack={goBack}
         onEdit={openEdit}
-        onNavigateSong={(songId) => {
-          setView(current => ({ ...current, songId }));
+        onNavigateSong={(item) => {
+          advanceNavigationSession();
+          setView(current => current.setlistEntry
+            ? { ...current, songId: item.song_id, setlistEntry: item }
+            : { ...current, songId: item.id });
+        }}
+        onSetlistUpdated={(updatedSetlist) => {
+          setView(current => {
+            const entry = updatedSetlist.songs?.find(
+              item => item.position === current.setlistEntry?.position,
+            );
+            return {
+              ...current,
+              songList: updatedSetlist.songs || current.songList,
+              setlistEntry: entry || current.setlistEntry,
+            };
+          });
         }}
       />
     );
@@ -77,10 +116,13 @@ export default function App() {
         online={online}
         onBack={goBack}
         onSaved={(updated) => {
+          if (navigationSession.current !== view.session) return;
+          advanceNavigationSession();
           // Return to chart view after save
           setView({ type: 'chart', songId: updated.id, songList: [] });
         }}
         onDeleted={() => {
+          advanceNavigationSession();
           setTab('songs');
           setView(null);
         }}
@@ -92,9 +134,11 @@ export default function App() {
         setlistId={view.setlistId}
         online={online}
         onBack={goBack}
+        onDeleted={() => setView(null)}
         onSelectSong={(entry, songs) => openChart(
           { id: entry.song_id, title: entry.title },
-          songs.map(s => ({ id: s.song_id, title: s.title }))
+          songs,
+          { setlistId: view.setlistId, setlistEntry: entry },
         )}
       />
     );

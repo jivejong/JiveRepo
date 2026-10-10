@@ -5,28 +5,28 @@ import { useSongs, useTags } from '../hooks';
 
 export default function HomeView({ online, onSelectSong, onNewSong }) {
   const [query,      setQuery]      = useState('');
-  const [activeTags, setActiveTags] = useState(new Set());
+  const [activeTags, setActiveTags] = useState([]);
   const [panelOpen,  setPanelOpen]  = useState(false);
 
   const filters = useMemo(() => ({
     q:    query || undefined,
-    tags: activeTags.size ? [...activeTags].join(',') : undefined,
+    tag_filters: activeTags.length ? JSON.stringify(activeTags) : undefined,
   }), [query, activeTags]);
 
   const { songs,    loading: songsLoading } = useSongs(filters, online);
   const { tags                            } = useTags(online);
 
-  const toggleTag = (name) => {
+  const toggleTag = (tag) => {
     setActiveTags(prev => {
-      const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
-      return next;
+      const matches = item => item.category === tag.category
+        && item.name.toLocaleLowerCase() === tag.name.toLocaleLowerCase();
+      return prev.some(matches) ? prev.filter(item => !matches(item)) : [...prev, tag];
     });
   };
 
-  const clearTags = () => setActiveTags(new Set());
+  const clearTags = () => setActiveTags([]);
 
-  const filterActive = activeTags.size > 0 || panelOpen;
+  const filterActive = activeTags.length > 0 || panelOpen;
 
   return (
     <div className="screen">
@@ -50,13 +50,13 @@ export default function HomeView({ online, onSelectSong, onNewSong }) {
         >
           <FilterIcon size={16} />
           Filter
-          {activeTags.size > 0 && (
+          {activeTags.length > 0 && (
             <span style={{
               background: 'var(--accent)', color: '#1A1A1F',
               borderRadius: 10, fontSize: 10, fontWeight: 600,
               padding: '1px 6px', marginLeft: 2,
             }}>
-              {activeTags.size}
+              {activeTags.length}
             </span>
           )}
         </button>
@@ -82,8 +82,8 @@ export default function HomeView({ online, onSelectSong, onNewSong }) {
 
       {/* Songs list */}
       <div className="list-section-head">
-        {activeTags.size > 0
-          ? `${[...activeTags].join(' · ')} · `
+        {activeTags.length > 0
+          ? `${activeTags.map(tag => `${tag.category}: ${tag.name}`).join(' · ')} · `
           : 'All songs · '}
         <span style={{ color: 'var(--accent)' }}>
           {songsLoading ? '…' : `${songs.length} songs`}
@@ -98,7 +98,7 @@ export default function HomeView({ online, onSelectSong, onNewSong }) {
         <div className="empty-state">
           <MusicIcon size={48} />
           <p>No songs found</p>
-          {activeTags.size > 0 && (
+          {activeTags.length > 0 && (
             <button className="btn btn-ghost btn-sm" onClick={clearTags}>
               Clear filters
             </button>

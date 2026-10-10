@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import * as api from './lib/api';
 import * as cache from './lib/cache';
+import { buildCachedTagOptions } from './tagMutations';
 
 // ── Online/offline detection ──────────────────────────────────────────────────
 export function useOnline() {
@@ -136,11 +137,26 @@ export function useTags(online) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!online) { setLoading(false); return; }
-    api.tags.all()
-      .then(setTags)
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    const setFromSongs = async () => {
+      const [songs, facets] = await Promise.all([
+        cache.getCachedSongs(), cache.getMeta('facets'),
+      ]);
+      if (!cancelled) setTags(buildCachedTagOptions(songs, facets));
+    };
+    const load = async () => {
+      setLoading(true);
+      try {
+        if (online) setTags(await api.tags.all());
+        else await setFromSongs();
+      } catch {
+        await setFromSongs().catch(() => {});
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
   }, [online]);
 
   return { tags, loading };

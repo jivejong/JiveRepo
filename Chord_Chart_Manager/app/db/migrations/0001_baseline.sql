@@ -8,30 +8,30 @@
 
 -- ---------- Lookup tables (drive faceted search) ----------
 
-CREATE TABLE artists (
+CREATE TABLE public.artists (
     id          SERIAL PRIMARY KEY,
     name        TEXT NOT NULL
 );
-CREATE UNIQUE INDEX artists_name_lower_idx ON artists (LOWER(name));
+CREATE UNIQUE INDEX artists_name_lower_idx ON public.artists (LOWER(name));
 
-CREATE TABLE genres (
+CREATE TABLE public.genres (
     id          SERIAL PRIMARY KEY,
     name        TEXT NOT NULL
 );
-CREATE UNIQUE INDEX genres_name_lower_idx ON genres (LOWER(name));
+CREATE UNIQUE INDEX genres_name_lower_idx ON public.genres (LOWER(name));
 
-CREATE TABLE vibes (
+CREATE TABLE public.vibes (
     id          SERIAL PRIMARY KEY,
     name        TEXT NOT NULL
 );
-CREATE UNIQUE INDEX vibes_name_lower_idx ON vibes (LOWER(name));
+CREATE UNIQUE INDEX vibes_name_lower_idx ON public.vibes (LOWER(name));
 
 -- ---------- Core songs table ----------
 
-CREATE TABLE songs (
+CREATE TABLE public.songs (
     id                  SERIAL PRIMARY KEY,
     title               TEXT NOT NULL,
-    artist_id           INTEGER NOT NULL REFERENCES artists(id),
+    artist_id           INTEGER NOT NULL REFERENCES public.artists(id),
     -- genre is many-to-many; see song_genres junction below.
     -- The genre from a doc's cover page becomes the PRIMARY genre at
     -- migration time (is_primary = true), and additional genres can be
@@ -78,16 +78,16 @@ CREATE TABLE songs (
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX songs_artist_idx  ON songs (artist_id);
-CREATE INDEX songs_bpm_idx     ON songs (bpm);
-CREATE INDEX songs_year_idx    ON songs (release_year);
-CREATE INDEX songs_title_idx   ON songs (LOWER(title));
+CREATE INDEX songs_artist_idx  ON public.songs (artist_id);
+CREATE INDEX songs_bpm_idx     ON public.songs (bpm);
+CREATE INDEX songs_year_idx    ON public.songs (release_year);
+CREATE INDEX songs_title_idx   ON public.songs (LOWER(title));
 
 -- ---------- Vibe/feel: many-to-many (a song can be "chill" AND "romantic") ----------
 
-CREATE TABLE song_vibes (
-    song_id     INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
-    vibe_id     INTEGER NOT NULL REFERENCES vibes(id) ON DELETE CASCADE,
+CREATE TABLE public.song_vibes (
+    song_id     INTEGER NOT NULL REFERENCES public.songs(id) ON DELETE CASCADE,
+    vibe_id     INTEGER NOT NULL REFERENCES public.vibes(id) ON DELETE CASCADE,
     PRIMARY KEY (song_id, vibe_id)
 );
 
@@ -96,24 +96,24 @@ CREATE TABLE song_vibes (
 -- binder). Exactly one primary per song is enforced by the partial unique
 -- index below; additional non-primary genres are unconstrained in count.
 
-CREATE TABLE song_genres (
-    song_id     INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
-    genre_id    INTEGER NOT NULL REFERENCES genres(id) ON DELETE CASCADE,
+CREATE TABLE public.song_genres (
+    song_id     INTEGER NOT NULL REFERENCES public.songs(id) ON DELETE CASCADE,
+    genre_id    INTEGER NOT NULL REFERENCES public.genres(id) ON DELETE CASCADE,
     is_primary  BOOLEAN NOT NULL DEFAULT false,
     PRIMARY KEY (song_id, genre_id)
 );
 
-CREATE INDEX song_genres_genre_idx ON song_genres (genre_id);
+CREATE INDEX song_genres_genre_idx ON public.song_genres (genre_id);
 -- at most one primary genre per song:
 CREATE UNIQUE INDEX song_genres_one_primary_idx
-    ON song_genres (song_id) WHERE is_primary;
+    ON public.song_genres (song_id) WHERE is_primary;
 
 -- ---------- Setlists: ordered, gig-oriented collections of songs ----------
 -- A setlist is a performance running order. Each entry can override the key
 -- and capo for that gig (e.g. same song, different key for a given singer)
 -- without touching the song's own defaults.
 
-CREATE TABLE setlists (
+CREATE TABLE public.setlists (
     id          SERIAL PRIMARY KEY,
     name        TEXT NOT NULL,
     gig_date    DATE,
@@ -122,20 +122,20 @@ CREATE TABLE setlists (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE setlist_songs (
-    setlist_id      INTEGER NOT NULL REFERENCES setlists(id) ON DELETE CASCADE,
-    song_id         INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+CREATE TABLE public.setlist_songs (
+    setlist_id      INTEGER NOT NULL REFERENCES public.setlists(id) ON DELETE CASCADE,
+    song_id         INTEGER NOT NULL REFERENCES public.songs(id) ON DELETE CASCADE,
     position        INTEGER NOT NULL,          -- 1-based running order
     transposed_key  TEXT,                      -- per-gig key override (null = song default)
     capo_fret       SMALLINT CHECK (capo_fret IS NULL OR capo_fret BETWEEN 0 AND 11),
     notes           TEXT,                      -- per-song performance note
     PRIMARY KEY (setlist_id, position)
 );
-CREATE INDEX setlist_songs_song_idx ON setlist_songs (song_id);
+CREATE INDEX setlist_songs_song_idx ON public.setlist_songs (song_id);
 
 -- ---------- Keep updated_at honest ----------
 
-CREATE OR REPLACE FUNCTION set_updated_at() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION public.set_updated_at() RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = now();
     RETURN NEW;
@@ -143,12 +143,12 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER songs_set_updated_at
-    BEFORE UPDATE ON songs
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+    BEFORE UPDATE ON public.songs
+    FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 CREATE TRIGGER setlists_set_updated_at
-    BEFORE UPDATE ON setlists
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+    BEFORE UPDATE ON public.setlists
+    FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 -- ---------- Notes ----------
 -- 1. "Era" isn't a field you listed — it's derived from release_year

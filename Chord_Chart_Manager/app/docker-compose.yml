@@ -2,8 +2,8 @@
 #
 #   docker compose up
 #
-# Brings up Postgres (schema auto-applied from db/init on first run) and the
-# Node app serving the client build baked into its image. Values come from
+# Brings up Postgres and the Node app, which applies versioned migrations
+# before listening. Values come from
 # .env (copy .env.example -> .env first).
 
 services:
@@ -18,8 +18,6 @@ services:
       - "${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # *.sql here runs once, only when the data volume is first created
-      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chords}"]
       interval: 5s
@@ -43,6 +41,7 @@ services:
     # public/ is retained as the API-only fallback when dist/ is unavailable.
     volumes:
       - ./server:/app/server
+      - ./db/migrations:/app/db/migrations:ro
       - ./public:/app/public
 
   # One-shot Python ETL environment. It stays out of ordinary `compose up`
