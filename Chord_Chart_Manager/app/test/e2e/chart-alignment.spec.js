@@ -133,6 +133,107 @@ async function waitForStableFrames(page) {
     requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 
+async function chordRowRevisions(page) {
+  return page.locator('.chart-line:has(.chord-line)').evaluateAll(nodes => nodes
+    .map(row => Number(row.querySelector('.chord-line').dataset.measurementRevision || 0)));
+}
+
+async function expectChordRowsAboveLyrics(page, previousRevisions = null) {
+  const rows = page.locator('.chart-line:has(.chord-line)');
+  await expect(rows).not.toHaveCount(0);
+  if (previousRevisions) {
+    await expect.poll(async () => {
+      const current = await chordRowRevisions(page);
+      return current.length === previousRevisions.length
+        && current.every((revision, index) => revision > previousRevisions[index]);
+    }).toBeTruthy();
+  } else {
+    await expect.poll(async () => (await chordRowRevisions(page)).every(revision => revision > 0))
+      .toBeTruthy();
+  }
+
+  const read = async () => rows.evaluateAll(nodes => nodes.map(row => {
+    const chordRow = row.querySelector('.chord-line');
+    const lyricRow = row.querySelector('.lyric-line-anchored');
+    const chordRect = chordRow.getBoundingClientRect();
+    const lyricRect = lyricRow.getBoundingClientRect();
+    const groups = [...chordRow.querySelectorAll('.chord-anchor')].map(group => {
+      const rect = group.getBoundingClientRect();
+      return { visible: group.checkVisibility() && getComputedStyle(group).visibility === 'visible',
+        top: rect.top, bottom: rect.bottom, height: rect.height };
+    });
+    return { chordHeight: chordRect.height, lyricTop: lyricRect.top,
+      rowGap: lyricRect.top - chordRect.bottom, groups,
+      revision: Number(chordRow.dataset.measurementRevision || 0) };
+  }));
+  await expect.poll(async () => (await read()).every(row => row.groups.length > 0
+    && row.groups.every(group => group.visible && group.height > 0
+      && group.bottom <= row.lyricTop + 0.1)
+    && row.chordHeight >= Math.max(...row.groups.map(group => group.height)) - 0.1))
+    .toBeTruthy();
+  const first = await read();
+  await waitForStableFrames(page);
+  const second = await read();
+  await waitForStableFrames(page);
+  const third = await read();
+  for (let index = 0; index < first.length; index += 1) {
+    for (const later of [second[index], third[index]]) {
+      expect(Math.abs(first[index].lyricTop - later.lyricTop)).toBeLessThan(0.1);
+      expect(Math.abs(first[index].chordHeight - later.chordHeight)).toBeLessThan(0.1);
+    }
+  }
+  return third;
+}
+
+test('Bye Bye Love pipe groups occupy a dedicated row above lyrics', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/');
+  await page.evaluate(async () => { await document.fonts.ready; });
+  const search = page.getByPlaceholder(/Search songs, artists/);
+  await search.fill('Bye Bye Love');
+  await page.getByText('Bye Bye Love', { exact: true }).click();
+  await expect(page.locator('.chart-body')).toBeVisible();
+  await expect(page.locator('.chart-spacer')).toHaveCount(2);
+  expect(await page.locator('.chart-spacer').evaluateAll(nodes =>
+    nodes.every(node => node.getBoundingClientRect().height > 0))).toBeTruthy();
+  await expectChordRowsAboveLyrics(page);
+
+  let revisions = await chordRowRevisions(page);
+  await page.getByRole('button', { name: 'Up half step' }).click();
+  await expectChordRowsAboveLyrics(page, revisions);
+  revisions = await chordRowRevisions(page);
+  await page.evaluate(() => {
+    document.body.style.zoom = '100%';
+    window.dispatchEvent(new Event('resize'));
+  });
+  await expectChordRowsAboveLyrics(page, revisions);
+  revisions = await chordRowRevisions(page);
+  await page.evaluate(() => {
+    document.body.style.zoom = '125%';
+    window.dispatchEvent(new Event('resize'));
+  });
+  await expectChordRowsAboveLyrics(page, revisions);
+
+  revisions = await chordRowRevisions(page);
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await expectChordRowsAboveLyrics(page, revisions);
+  revisions = await chordRowRevisions(page);
+  await page.getByRole('button', { name: 'Up half step' }).click();
+  await expectChordRowsAboveLyrics(page, revisions);
+  revisions = await chordRowRevisions(page);
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty('--font-chord', 'Arial, sans-serif');
+    document.fonts.dispatchEvent(new Event('loadingdone'));
+  });
+  await expectChordRowsAboveLyrics(page, revisions);
+  revisions = await chordRowRevisions(page);
+  await page.evaluate(() => {
+    document.documentElement.style.removeProperty('--font-chord');
+    document.fonts.dispatchEvent(new Event('loadingdone'));
+  });
+  await expectChordRowsAboveLyrics(page, revisions);
+});
+
 test('generated charts round-trip and keep anchors and colliding labels visible', async ({ page, request, context }) => {
   const suffix = crypto.randomUUID();
   const title = `T13a invented alignment ${suffix}`;
@@ -281,6 +382,7 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
       return third;
     };
     const verifyLayout = async () => {
+      await expectChordRowsAboveLyrics(page);
       expectAnchorsAligned(await measureFirstLine());
       expectUnicodeAnchorsAligned(await measureUnicodeAnchors());
       const collision = await inspectLabels(measuredRows[1]);
@@ -317,18 +419,22 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     ]);
     const unicodeFontLoaded = await measureUnicodeAnchors();
     expectUnicodeAnchorsAligned(unicodeFontLoaded);
+    const alternateFontRevisions = await rowMeasurementRevisions(measuredRows);
     await page.evaluate(() => {
       document.documentElement.style.setProperty('--font-chord', 'Arial, sans-serif');
       document.fonts.dispatchEvent(new Event('loadingdone'));
     });
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expectRowsRemeasured(measuredRows, alternateFontRevisions);
+    await assertStableAnchors();
     const unicodeAlternateFont = await measureUnicodeAnchors();
     expectUnicodeAnchorsAligned(unicodeAlternateFont);
+    const restoredFontRevisions = await rowMeasurementRevisions(measuredRows);
     await page.evaluate(() => {
       document.documentElement.style.removeProperty('--font-chord');
       document.fonts.dispatchEvent(new Event('loadingdone'));
     });
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expectRowsRemeasured(measuredRows, restoredFontRevisions);
+    await assertStableAnchors();
     const unicodeFontRestored = await measureUnicodeAnchors();
     expectUnicodeAnchorsAligned(unicodeFontRestored);
     const desktopBefore = await inspectLabels(page.locator('.chart-line').nth(1));
@@ -336,7 +442,11 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
         ['C', 'G', 'Am | F | Dm | E7']);
     expect(desktopBefore.labels.map(label => label.position)).toEqual([5, 11, 21, 22, 22, 22]);
 
+    const transposeRevisions = await rowMeasurementRevisions(measuredRows);
     await page.getByRole('button', { name: 'Up half step' }).click();
+    await expect(measuredRows[0].locator('.chord-anchor-symbol')).toHaveText(['Ab', 'Db', 'Eb']);
+    await expectRowsRemeasured(measuredRows, transposeRevisions);
+    await assertStableAnchors();
     const desktopAfterTranspose = await measureFirstLine();
     expectAnchorsAligned(desktopAfterTranspose);
     expect(desktopAfterTranspose.map(anchor => anchor.chord)).not.toEqual(firstBefore.map(anchor => anchor.chord));

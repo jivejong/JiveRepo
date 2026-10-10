@@ -14,6 +14,18 @@ The browser and server use the same JavaScript parser source so an offline
 edit can re-render immediately and produce the same structure the server will
 save after synchronization.
 
+### Chart auto-scroll
+
+Charts open with auto-scroll paused. Use **Start** and **Pause** to move the
+vertical chart view at a steady speed; **Slower** and **Faster** adjust the
+visible rate from 5 to 40 CSS pixels per second in 5-pixel steps. Each chart
+opens at 10 CSS pixels per second. Auto-scroll works offline, pauses for
+intentional vertical scrolling or when the page is hidden, resumes from the
+current position, and stops at the bottom. Horizontal chord-row panning and
+left/right song navigation remain available. A frame delay over 1,000 ms while
+scrolling is treated as suspended time: the current position is held and the
+normal selected speed resumes on the next frame without a catch-up jump.
+
 Paired chord and lyric rows use the same monospace character grid. They stay
 unwrapped and scroll together horizontally on narrow screens. Overlapping chord
 labels appear in original order on one row separated by pipes. Each group starts

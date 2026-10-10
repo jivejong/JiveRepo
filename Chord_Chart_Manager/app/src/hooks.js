@@ -21,13 +21,15 @@ export function useOnline() {
 }
 
 // ── Swipe gesture detection ───────────────────────────────────────────────────
-export function useSwipe(onSwipeLeft, onSwipeRight, threshold = 60) {
+export function useSwipe(onSwipeLeft, onSwipeRight, threshold = 60, shouldIgnoreSwipe = null) {
   const startX = useRef(null);
   const startY = useRef(null);
+  const startTarget = useRef(null);
 
   const onTouchStart = useCallback((e) => {
     startX.current = e.touches[0].clientX;
     startY.current = e.touches[0].clientY;
+    startTarget.current = e.target;
   }, []);
 
   const onTouchEnd = useCallback((e) => {
@@ -35,12 +37,15 @@ export function useSwipe(onSwipeLeft, onSwipeRight, threshold = 60) {
     const dx = e.changedTouches[0].clientX - startX.current;
     const dy = e.changedTouches[0].clientY - startY.current;
     // Only trigger if horizontal swipe is dominant
-    if (Math.abs(dx) > threshold && Math.abs(dx) > Math.abs(dy) * 1.5) {
+    const ignored = shouldIgnoreSwipe?.(startTarget.current, e) === true;
+    if (!ignored && Math.abs(dx) > threshold && Math.abs(dx) > Math.abs(dy) * 1.5) {
       if (dx < 0) onSwipeLeft?.();
       else        onSwipeRight?.();
     }
     startX.current = null;
-  }, [onSwipeLeft, onSwipeRight, threshold]);
+    startY.current = null;
+    startTarget.current = null;
+  }, [onSwipeLeft, onSwipeRight, threshold, shouldIgnoreSwipe]);
 
   return { onTouchStart, onTouchEnd };
 }
