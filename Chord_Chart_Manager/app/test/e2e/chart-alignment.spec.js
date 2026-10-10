@@ -15,48 +15,79 @@ async function inspectLabels(row) {
     const rowRect = node.getBoundingClientRect();
     const rowScaleX = node.clientWidth ? rowRect.width / node.clientWidth : 1;
     const scrollContentLeft = rowRect.left - node.scrollLeft * rowScaleX;
-    const labels = [...chordLine.querySelectorAll('.chord-anchor')].map(label => {
-      const rect = label.getBoundingClientRect();
-      const style = getComputedStyle(label);
-      const position = Number(label.dataset.pos);
-      const segment = graphemes.find(item => position >= item.index
-        && position < item.index + item.segment.length);
-      let anchorDelta = null;
-      if (segment) {
-        const range = document.createRange();
-        range.setStart(lyricLine.firstChild, segment.index);
-        range.setEnd(lyricLine.firstChild, segment.index + segment.segment.length);
-        anchorDelta = rect.left - range.getBoundingClientRect().left;
-      }
-      return {
-        symbol: label.textContent,
-        position,
-        anchorDelta,
-        lane: Number(label.dataset.lane),
-        visible: label.checkVisibility() && style.visibility === 'visible' && style.opacity !== '0',
-        color: style.color,
-        background: style.backgroundColor,
+    const groups = [...chordLine.querySelectorAll('.chord-anchor')].map((group, groupIndex) => {
+      const rect = group.getBoundingClientRect();
+      const symbols = [...group.querySelectorAll('.chord-anchor-symbol')];
+      const separators = [...group.querySelectorAll('.chord-anchor-separator')];
+      return { text: group.textContent, position: Number(group.dataset.pos),
         rect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
           width: rect.width, height: rect.height },
-        insideChordLine: rect.top >= chordRect.top && rect.bottom <= chordRect.bottom,
-        insideRow: rect.top >= rowRect.top && rect.bottom <= rowRect.bottom,
+        insideChordLine: rect.top >= chordRect.top - 1 && rect.bottom <= chordRect.bottom + 1,
+        insideRow: rect.top >= rowRect.top - 1 && rect.bottom <= rowRect.bottom + 1,
         insideScrollContent: rect.left >= scrollContentLeft - 1
           && rect.right <= scrollContentLeft + node.scrollWidth * rowScaleX + 1,
-        insideViewport: rect.left >= rowRect.left - 1 && rect.right <= rowRect.right + 1,
+        separators: separators.map(separator => ({ text: separator.textContent,
+          visible: separator.checkVisibility(), width: separator.getBoundingClientRect().width })),
+        symbols: symbols.map((symbol, symbolIndex) => {
+          const symbolRect = symbol.getBoundingClientRect();
+          const style = getComputedStyle(symbol);
+          const position = Number(symbol.dataset.pos);
+          const segment = graphemes.find(item => position >= item.index
+            && position < item.index + item.segment.length);
+          let anchorDelta = null;
+          if (symbolIndex === 0 && segment) {
+            const range = document.createRange();
+            range.setStart(lyricLine.firstChild, segment.index);
+            range.setEnd(lyricLine.firstChild, segment.index + segment.segment.length);
+            anchorDelta = rect.left - range.getBoundingClientRect().left;
+          }
+          return {
+            symbol: symbol.textContent,
+            position,
+            groupIndex,
+            symbolIndex,
+            anchorDelta,
+            warning: symbol.dataset.anchorWarning || null,
+            warningTitle: symbol.title,
+            visible: symbol.checkVisibility() && style.visibility === 'visible' && style.opacity !== '0',
+            color: style.color,
+            background: style.backgroundColor,
+            rect: { left: symbolRect.left, right: symbolRect.right, top: symbolRect.top,
+              bottom: symbolRect.bottom, width: symbolRect.width, height: symbolRect.height },
+            insideChordLine: symbolRect.top >= chordRect.top - 1
+              && symbolRect.bottom <= chordRect.bottom + 1,
+            insideRow: symbolRect.top >= rowRect.top - 1
+              && symbolRect.bottom <= rowRect.bottom + 1,
+            insideScrollContent: symbolRect.left >= scrollContentLeft - 1
+              && symbolRect.right <= scrollContentLeft + node.scrollWidth * rowScaleX + 1,
+            insideViewport: symbolRect.left >= rowRect.left - 1 && symbolRect.right <= rowRect.right + 1,
+          };
+        }),
       };
     });
-    return { labels, rowWidth: node.clientWidth, rowScrollWidth: node.scrollWidth,
+    const labels = groups.flatMap(group => group.symbols);
+    return { labels, groups, rowWidth: node.clientWidth, rowScrollWidth: node.scrollWidth,
       measurementRevision: Number(chordLine.dataset.measurementRevision || 0) };
   });
 }
 
-function expectLabelsDistinct(result, symbols) {
+function expectLabelsDistinct(result, symbols, groupTexts) {
   expect(result.labels.map(label => label.symbol)).toEqual(symbols);
+  if (groupTexts) expect(result.groups.map(group => group.text)).toEqual(groupTexts);
+  for (const group of result.groups) {
+    expect(group.rect.width).toBeGreaterThan(0);
+    expect(group.rect.height).toBeGreaterThan(0);
+    expect(group.insideRow, JSON.stringify(group)).toBeTruthy();
+    expect(group.insideScrollContent, JSON.stringify(group)).toBeTruthy();
+    expect(group.separators.map(separator => separator.text)).toEqual(
+      Array(Math.max(0, group.symbols.length - 1)).fill(' | '));
+    expect(group.separators.every(separator => separator.visible && separator.width > 0)).toBeTruthy();
+  }
   for (const label of result.labels) {
     expect(label.visible).toBeTruthy();
+    if (label.warning) expect(label.warningTitle).toContain('Stored column splits');
     expect(label.rect.width).toBeGreaterThan(0);
     expect(label.rect.height).toBeGreaterThan(0);
-    expect(label.insideChordLine, JSON.stringify(label)).toBeTruthy();
     expect(label.insideRow, JSON.stringify(label)).toBeTruthy();
     expect(label.insideScrollContent, JSON.stringify(label)).toBeTruthy();
     if (label.anchorDelta !== null) expect(Math.abs(label.anchorDelta)).toBeLessThan(1);
@@ -137,6 +168,12 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     { type: 'lyric', text: unicodeLyric, confidence: 'high', chords: [
       { sym: 'C', pos: 1 }, { sym: 'D', pos: 2 }, { sym: 'E', pos: 3 }, { sym: 'F', pos: 10 },
     ] },
+    { type: 'lyric', text: 'Invented same-position collision row', confidence: 'high', chords: [
+      { sym: 'G', pos: 5 }, { sym: 'D', pos: 5 },
+    ] },
+    { type: 'lyric', text: 'Invented pipe spacing expands into next label', confidence: 'high', chords: [
+      { sym: 'G', pos: 2 }, { sym: 'D', pos: 2 }, { sym: 'C', pos: 5 },
+    ] },
   ] }] };
   const source = chartToText(structured);
   let songId;
@@ -155,7 +192,7 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     const search = page.getByPlaceholder('Search songs, artists…');
     await search.fill(title);
     await page.getByText(title, { exact: true }).click();
-    await expect(page.locator('.chart-line')).toHaveCount(7);
+    await expect(page.locator('.chart-line')).toHaveCount(9);
     await expect(page.locator('.chart-spacer')).toHaveCount(2);
     const spacing = await page.locator('.chart-body').evaluate(body => {
       const sections = [...body.querySelectorAll('.chart-section')];
@@ -191,8 +228,8 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
       const lyric = row.querySelector('.lyric-line-anchored');
       const text = lyric.firstChild.textContent;
       const segments = [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)];
-      const anchors = [...row.querySelectorAll('.chord-anchor')];
-      return anchors.map(anchor => {
+      const symbols = [...row.querySelectorAll('.chord-anchor-symbol')];
+      return symbols.map((anchor, symbolIndex) => {
         const position = Number(anchor.dataset.pos);
         const segment = segments.find(item => position >= item.index
           && position < item.index + item.segment.length);
@@ -203,8 +240,10 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
         range.setStart(lyric.firstChild, segment.index);
         range.setEnd(lyric.firstChild, segment.index + segment.segment.length);
         const rect = range.getBoundingClientRect();
+        const group = anchor.closest('.chord-anchor');
         return { position, warning: anchor.dataset.anchorWarning || null,
-          delta: anchor.getBoundingClientRect().left - rect.left,
+          delta: symbolIndex === 0 || group.querySelector('.chord-anchor-symbol') === anchor
+            ? group.getBoundingClientRect().left - rect.left : null,
           visible: anchor.checkVisibility(), chord: anchor.textContent };
       });
     });
@@ -212,10 +251,13 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
       expect(measured.map(anchor => anchor.position)).toEqual([1, 2, 3, 10]);
       expect(measured[0].warning).toBe('inside-surrogate-pair');
       expect(measured[2].warning).toBe('inside-grapheme');
-      for (const anchor of measured.slice(0, 3)) expect(Math.abs(anchor.delta)).toBeLessThan(1);
+      expect(Math.abs(measured[0].delta)).toBeLessThan(1);
+      expect(Math.abs(measured[1].delta)).toBeLessThan(1);
+      expect(measured[2].delta).toBeNull();
+      expect(measured[0].chord.length).toBeGreaterThan(0);
       expect(measured.every(anchor => anchor.visible)).toBeTruthy();
     };
-    const measuredRows = [0, 1, 2, 3, 6].map(index => page.locator('.chart-line').nth(index));
+    const measuredRows = [0, 1, 2, 3, 6, 7, 8].map(index => page.locator('.chart-line').nth(index));
     const assertStableAnchors = async () => {
       const read = async () => Promise.all(measuredRows.map(inspectLabels));
       await expect.poll(async () => (await read()).every(result =>
@@ -248,6 +290,13 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
       const beyond = await inspectLabels(measuredRows[3]);
       expectLabelsDistinct(beyond, beyond.labels.map(label => label.symbol));
       expect(beyond.rowScrollWidth).toBeGreaterThan(beyond.rowWidth);
+      const samePosition = await inspectLabels(measuredRows[5]);
+      expectLabelsDistinct(samePosition, samePosition.labels.map(label => label.symbol));
+      expect(samePosition.groups).toHaveLength(1);
+      expect(samePosition.groups[0].position).toBe(5);
+      const pipeExpanded = await inspectLabels(measuredRows[6]);
+      expectLabelsDistinct(pipeExpanded, pipeExpanded.labels.map(label => label.symbol));
+      expect(pipeExpanded.groups).toHaveLength(1);
     };
     const changeAndVerify = async action => {
       const revisions = await rowMeasurementRevisions(measuredRows);
@@ -283,7 +332,8 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     const unicodeFontRestored = await measureUnicodeAnchors();
     expectUnicodeAnchorsAligned(unicodeFontRestored);
     const desktopBefore = await inspectLabels(page.locator('.chart-line').nth(1));
-    expectLabelsDistinct(desktopBefore, ['C', 'G', 'Am', 'F', 'Dm', 'E7']);
+      expectLabelsDistinct(desktopBefore, ['C', 'G', 'Am', 'F', 'Dm', 'E7'],
+        ['C', 'G', 'Am | F | Dm | E7']);
     expect(desktopBefore.labels.map(label => label.position)).toEqual([5, 11, 21, 22, 22, 22]);
 
     await page.getByRole('button', { name: 'Up half step' }).click();
@@ -291,16 +341,43 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     expectAnchorsAligned(desktopAfterTranspose);
     expect(desktopAfterTranspose.map(anchor => anchor.chord)).not.toEqual(firstBefore.map(anchor => anchor.chord));
     const collisionsAfterTranspose = await inspectLabels(page.locator('.chart-line').nth(1));
-    expectLabelsDistinct(collisionsAfterTranspose, ['Db', 'Ab', 'Bbm', 'Gb', 'Ebm', 'F7']);
+    expectLabelsDistinct(collisionsAfterTranspose, ['Db', 'Ab', 'Bbm', 'Gb', 'Ebm', 'F7'],
+      ['Db', 'Ab', 'Bbm | Gb | Ebm | F7']);
 
     const introducedCollision = await inspectLabels(page.locator('.chart-line').nth(2));
     expect(introducedCollision.labels.map(label => label.position)).toEqual([5, 6]);
-    expectLabelsDistinct(introducedCollision, ['Db', 'Eb']);
-    expect(introducedCollision.labels[0].lane).not.toBe(introducedCollision.labels[1].lane);
+    expectLabelsDistinct(introducedCollision, ['Db', 'Eb'], ['Db | Eb']);
+    expect(introducedCollision.groups[0].position).toBe(5);
     const unicodeAfterTranspose = await measureUnicodeAnchors();
     expectUnicodeAnchorsAligned(unicodeAfterTranspose);
     expect(unicodeAfterTranspose.map(anchor => anchor.chord)).toEqual(['Db', 'Eb', 'F', 'Gb']);
-    expectLabelsDistinct(await inspectLabels(page.locator('.chart-line').nth(6)), ['Db', 'Eb', 'F', 'Gb']);
+    expectLabelsDistinct(await inspectLabels(page.locator('.chart-line').nth(6)), ['Db', 'Eb', 'F', 'Gb'],
+      ['Db', 'Eb | F', 'Gb']);
+    const samePosition = await inspectLabels(measuredRows[5]);
+    expectLabelsDistinct(samePosition, ['Ab', 'Eb'], ['Ab | Eb']);
+    expect(samePosition.groups[0].position).toBe(5);
+    const pipeExpanded = await inspectLabels(measuredRows[6]);
+    expectLabelsDistinct(pipeExpanded, ['Ab', 'Eb', 'Db'], ['Ab | Eb | Db']);
+    expect(pipeExpanded.groups[0].position).toBe(2);
+    const pipeCollisionGeometry = await measuredRows[6].evaluate(row => {
+      const chordLine = row.querySelector('.chord-line');
+      const group = chordLine.querySelector('.chord-anchor');
+      const symbols = [...group.querySelectorAll('.chord-anchor-symbol')].slice(0, 2);
+      const lyric = row.querySelector('.lyric-line-anchored');
+      const nextRange = document.createRange();
+      nextRange.setStart(lyric.firstChild, 5);
+      nextRange.setEnd(lyric.firstChild, 6);
+      const font = getComputedStyle(chordLine).font;
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      context.font = font;
+      const individualWidth = Math.max(...symbols.map(symbol => context.measureText(symbol.textContent).width));
+      const pipeWidth = context.measureText(symbols.map(symbol => symbol.textContent).join(' | ')).width;
+      return { gap: nextRange.getBoundingClientRect().left - group.getBoundingClientRect().left,
+        individualWidth, pipeWidth };
+    });
+    expect(pipeCollisionGeometry.gap).toBeGreaterThan(pipeCollisionGeometry.individualWidth);
+    expect(pipeCollisionGeometry.gap).toBeLessThan(pipeCollisionGeometry.pipeWidth);
 
     await changeAndVerify(async () => {
       await page.evaluate(() => {
@@ -526,7 +603,7 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     await page.getByRole('button', { name: 'Back' }).click();
     await search.fill(title);
     await page.getByText(title, { exact: true }).click();
-    await expect(page.locator('.chart-line')).toHaveCount(7);
+    await expect(page.locator('.chart-line')).toHaveCount(9);
     const reopened = await (await request.get(`/api/songs/${songId}`)).json();
     expect(reopened.chart_content).toEqual(offlineExpected);
   } finally {

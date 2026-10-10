@@ -555,10 +555,8 @@ body {
   white-space: pre;
 }
 
-.chord-anchor-overlap {
-  background: var(--bg-raised);
-  border-bottom: 1px solid var(--danger);
-  border-radius: 2px;
+.chord-anchor-separator {
+  white-space: pre;
 }
 
 .lyric-line {

@@ -15,9 +15,11 @@ edit can re-render immediately and produce the same structure the server will
 save after synchronization.
 
 Paired chord and lyric rows use the same monospace character grid. They stay
-unwrapped and scroll together horizontally on narrow screens. Colliding chord
-labels keep their horizontal anchors and use separate vertical lanes; row height
-grows to keep every symbol visible.
+unwrapped and scroll together horizontally on narrow screens. Overlapping chord
+labels appear in original order on one row separated by pipes. Each group starts
+at its first chord's measured lyric position; noncolliding chords keep their own
+measured anchors. Symbols within a group share that first display anchor while
+their stored positions remain unchanged.
 
 When the server synthesizes editable text from `chart_content`, it writes a
 versioned `[[CCM-CHART:2]]` representation. Section, lyric, progression, repeat,

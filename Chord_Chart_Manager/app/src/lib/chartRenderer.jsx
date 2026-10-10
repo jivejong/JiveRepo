@@ -20,18 +20,11 @@
 import React, { useLayoutEffect, useRef, useState } from "react";
 
 function orderedChords(chords) {
-  const sorted = (chords || []).map((chord, index) => ({
+  return (chords || []).map((chord, index) => ({
     ...chord,
     pos: Number.isFinite(chord.pos) ? Math.max(0, Math.trunc(chord.pos)) : 0,
     index,
-  })).sort((a, b) => a.pos - b.pos || a.index - b.index);
-  const laneEnds = [];
-  return sorted.map(chord => {
-    let lane = 0;
-    while (laneEnds[lane] > chord.pos) lane += 1;
-    laneEnds[lane] = chord.pos + String(chord.sym || "").length;
-    return { ...chord, lane };
-  });
+  }));
 }
 
 function graphemeBoundary(text, position) {
@@ -120,27 +113,51 @@ function measureChartLine(lyric, chordLine, text, chords) {
     const measuredChord = context?.measureText(String(chord.sym || "")).width
       || String(chord.sym || "").length * cellWidth;
     layout[chord.index] = { left, warning: mapped.warning, width: measuredChord };
-    reservedWidth = Math.max(reservedWidth, left + measuredChord);
   }
-  const lanes = [];
-  for (const chord of chords) {
+  const groups = [];
+  const byPosition = [...chords].sort((a, b) =>
+    layout[a.index].left - layout[b.index].left || a.index - b.index);
+  for (const chord of byPosition) {
     const item = layout[chord.index];
-    let lane = 0;
-    while (lanes[lane] > item.left) lane += 1;
-    lanes[lane] = item.left + item.width;
-    item.lane = lane;
+    const previous = groups.at(-1);
+    if (previous && item.left < previous.right) {
+      previous.members.push(chord);
+      previous.right = Math.max(previous.right, item.left + item.width);
+    } else {
+      groups.push({ left: item.left, right: item.left + item.width, members: [chord] });
+    }
   }
-  return { anchors: layout, width: reservedWidth, cellWidth };
-}
-
-function initialLaneCount(chords) {
-  const laneEnds = [];
-  for (const chord of chords) {
-    let lane = 0;
-    while (laneEnds[lane] > chord.pos) lane += 1;
-    laneEnds[lane] = chord.pos + String(chord.sym || "").length;
+  const measureGroup = group => {
+    group.members.sort((a, b) => a.index - b.index);
+    group.text = group.members.map(member => String(member.sym || "")).join(" | ");
+    group.left = layout[group.members[0].index].left;
+    group.width = context?.measureText(group.text).width || group.text.length * cellWidth;
+  };
+  groups.forEach(measureGroup);
+  let merged = true;
+  while (merged) {
+    merged = false;
+    groups.sort((a, b) => a.left - b.left || a.members[0].index - b.members[0].index);
+    for (let index = 1; index < groups.length; index += 1) {
+      const previous = groups[index - 1];
+      const current = groups[index];
+      if (current.left < previous.left + previous.width) {
+        previous.members.push(...current.members);
+        measureGroup(previous);
+        groups.splice(index, 1);
+        merged = true;
+        break;
+      }
+    }
   }
-  return Math.max(1, laneEnds.length);
+  for (const group of groups) {
+    group.warning = layout[group.members[0].index].warning;
+    group.members.forEach(member => {
+      layout[member.index].grouped = group.members.length > 1;
+    });
+    reservedWidth = Math.max(reservedWidth, group.left + group.width);
+  }
+  return { anchors: layout, groups, width: reservedWidth, cellWidth };
 }
 
 function LyricLine({ line, i }) {
@@ -181,37 +198,44 @@ function LyricLine({ line, i }) {
     };
   }, [hasChords, measureKey]);
   const activeLayout = layout?.key === measureKey ? layout : null;
-  const laneCount = activeLayout?.anchors
-    ? Math.max(...Object.values(activeLayout.anchors).map(anchor => anchor.lane + 1))
-    : initialLaneCount(chords);
   return (
     <div key={i} className="chart-line">
       {hasChords && (
         <div ref={chordRef} className="chord-line" style={{
           minWidth: activeLayout ? `${activeLayout.width}px` : undefined,
-          height: `${laneCount * 1.5 + 0.2}em`,
         }}>
-          {chords.map((chord, index) => {
-            const measured = activeLayout?.anchors?.[chord.index];
-            const overlaps = chords.some((other, otherIndex) =>
-              otherIndex !== index && chord.pos < other.pos + other.sym.length &&
-              other.pos < chord.pos + chord.sym.length);
+          {(activeLayout?.groups || chords.map(chord => ({
+            left: 0,
+            members: [chord],
+            text: String(chord.sym || ""),
+            warning: undefined,
+          }))).map((group, groupIndex) => {
+            const first = group.members[0];
             return (
               <span
-                key={`${chord.pos}-${chord.sym}-${chord.index}`}
-                className={`chord-anchor${overlaps ? ' chord-anchor-overlap' : ''}`}
-                data-pos={chord.pos}
-                data-lane={measured?.lane ?? chord.lane}
-                data-anchor-warning={measured?.warning || undefined}
-                title={measured?.warning === 'inside-surrogate-pair'
-                  ? 'Stored column splits a surrogate pair; shown at the character’s leading edge.'
-                  : measured?.warning === 'inside-grapheme'
-                    ? 'Stored column splits a visible grapheme; shown at its leading edge.'
-                    : overlaps ? 'Chord overlaps another anchor; shown in a separate lane' : undefined}
-                style={{ left: measured ? `${measured.left}px` : "0px",
-                  top: `${(measured?.lane ?? chord.lane) * 1.5}em` }}
+                key={`${first.pos}-${first.sym}-${first.index}-${groupIndex}`}
+                className="chord-anchor"
+                data-pos={first.pos}
+                data-group-index={groupIndex}
+                data-group-size={group.members.length}
+                data-anchor-warning={group.warning || undefined}
+                style={{ left: activeLayout ? `${group.left}px` : "0px" }}
               >
-                {chord.sym}
+                {group.members.map((chord, index) => (
+                  <React.Fragment key={`${chord.pos}-${chord.sym}-${chord.index}`}>
+                    {index > 0 && <span className="chord-anchor-separator" aria-hidden="true"> | </span>}
+                    <span className="chord-anchor-symbol" data-pos={chord.pos}
+                      data-symbol-index={chord.index}
+                      data-anchor-warning={activeLayout?.anchors?.[chord.index]?.warning || undefined}
+                      title={activeLayout?.anchors?.[chord.index]?.warning === 'inside-surrogate-pair'
+                        ? 'Stored column splits a surrogate pair; shown at the character’s leading edge.'
+                        : activeLayout?.anchors?.[chord.index]?.warning === 'inside-grapheme'
+                          ? 'Stored column splits a visible grapheme; shown at its leading edge.'
+                          : undefined}>
+                      {chord.sym}
+                    </span>
+                  </React.Fragment>
+                ))}
               </span>
             );
           })}
