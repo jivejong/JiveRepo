@@ -933,6 +933,84 @@ noticed the bridge was down, and nothing brought it back without a human.
 **Note.** Commit `7a05748` (Stage 3d) reused Stage 3c's own subject line verbatim. Left as-is — already public on
 `main`, a cosmetic git-history issue, not a code or data problem.
 
+## Phase 5 Round 2 — the bridge survives an unattended reboot (2026-10-10)
+
+**Root cause of 2026-10-09, two independent failures.** (1) After the reboot the old task opened a console window at logon; Jong
+closed it, not knowing what it was, which is the `0xC000013A` (`CONTROL_C_EXIT`). (2) Separately, `bridge.py` exited with code 1
+if the broker was unreachable at start (`SystemExit("cannot reach the MQTT broker…")`, `bridge.py:496-497` before this round),
+and the broker container came up about 4m40s after the task started (15:21:40Z vs 15:26:20Z), so the bridge would likely have
+died anyway. Task Scheduler's `RestartCount` covers a failure to *start* a process, not one that starts and later exits, so
+nothing restarted it.
+
+**Elevation probe (Jong, 2026-10-10, non-elevated Windows PowerShell, both throwaway tasks removed afterwards).** Variant U,
+`-AtLogOn -User JIVEDESKTOP\jivejong` with principal Interactive/Limited: registered; trigger `UserId` =
+`JIVEDESKTOP\jivejong`. Variant A, `-AtLogOn` with no `-User` (the any-user trigger the old script created, `UserId=''`):
+"Access is denied". Conclusion: the any-user logon trigger is what needs elevation. Doc 05's "No administrator elevation is
+required… Checked, Stage 3d" was wrong for the script as written (that check had no test behind it); doc 05 and the script header
+now say what was proven.
+
+**Changes.**
+- `ingest/bridge/bridge.py`: `connect_async` + `loop_start` in place of a blocking `connect`, so an unreachable broker is retried
+  in the background (installed paho 2.1.0: `client.py` `_thread_main` calls `loop_forever(retry_first_connection=True)`, which
+  retries the first connection on `OSError`); `reconnect_delay_set(1, 60)`; failed attempts logged at most once a minute through
+  `on_connect_fail`; SIGINT (and SIGBREAK) handled before the connect and the previous handlers restored on exit; a rotating log
+  file (`logs/bridge.log`, 5 × 5 MB, UTC timestamps, absolute path from the script location) that also receives `print` output,
+  stderr and uncaught exceptions from every thread, with a console stream only when `sys.stdout` exists (`pythonw.exe` has none);
+  an exclusive lock on `logs/bridge.lock` taken before the connect — a second bridge logs a line and exits with code 3.
+  New flags `--log-file` and `--lock-file` (doc 04 table).
+- `infra/desktop/register-bridge-task.ps1`: `New-BridgeTaskDefinition` builds the task without registering it. Action
+  `pythonw.exe`; triggers: logon of the named user, and a 5-minute repetition with an empty duration (indefinite;
+  `-RepetitionDuration ([TimeSpan]::MaxValue)` yields `P99999999DT23H59M59S`, which some builds reject — an empty duration is what
+  this PowerShell builds without the parameter, checked in memory only, **registration of it not yet confirmed**); principal =
+  the user, Interactive, Limited; `MultipleInstances IgnoreNew`, `StartWhenAvailable`, no time limit. The running-bridge guard now
+  also looks at `pythonw.exe`.
+- Decision (Q-A2): no auto-logon. A reboot nobody logs in after starts neither the broker nor the bridge; the planned Phase 5
+  bridge-liveness signal (S1, doc 05 "Monitoring", to be written) is what catches it.
+
+**Tests.** `ingest/tests/test_bridge_resilience.py`: 17 new tests, including one that points a real paho client at a closed port
+and waits for the second failed attempt. Ingest suite 283 → 300. Pester 7 → 23. Mutations, each against a green baseline, only an
+assertion FAIL counted: bridge.py — restore the one-shot connect + `SystemExit` (7 FAIL), drop the lock (2 FAIL), drop the file
+handler (5 FAIL), install SIGINT after the connect (2 FAIL); script — 14 mutations (logon trigger without `-User`, MaxValue
+duration, 15-minute interval, RunLevel Highest, LogonType S4U, MultipleInstances Parallel, no StartWhenAvailable, 72 h time limit,
+RestartCount 3, no battery settings, `python.exe` instead of `pythonw.exe`, guard on `python.exe` only, no repetition trigger,
+principal for another user), each caught by 1–2 assertion FAILs. Two first-attempt results were mutation-harness artefacts, not
+code problems, and were fixed before the numbers above: an `ERROR` where a stray `SystemExit` escaped a test helper, and a
+`release()` that raised on a lock the mutation never took (it now ignores an unlock error, because closing the descriptor
+releases the lock anyway). One mutation was deliberately not run: making the definition function register a task, because the
+Describe-level call is not mocked and would have created a real task.
+
+**Manual steps for Jong (data is safe in the broker throughout — it holds the bridge's persistent session, and the Pi has its own
+buffer — so there is no hurry). Results to be recorded here.**
+1. Stop the running bridge cleanly: just after a quarter-hour scan has landed (~:01 past :00/:15/:30/:45), click its console
+   window and press Ctrl+C; wait for `bridge: final …` and for the window to close. (`Stop-ScheduledTask` also works but is
+   abrupt: events buffered in memory but not yet uploaded, up to about one scan, are lost.) Verify none is left:
+   `Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" | ? CommandLine -like '*bridge.py*'` prints nothing.
+2. Remove the old task. Try in an ordinary shell first and note whether it is refused; if so, in an elevated shell:
+   `Unregister-ScheduledTask -TaskName ForceBridge -Confirm:$false`. Verify, in an ordinary shell:
+   `Get-ScheduledTask -TaskName ForceBridge -ErrorAction SilentlyContinue` prints nothing and `schtasks /query /tn ForceBridge`
+   says it cannot find the file.
+3. Probe the repetition form with a harmless action (do not register the real action under a throwaway name: its first tick would
+   start a second bridge). Ordinary shell, from `infra\desktop`: `. .\register-bridge-task.ps1`;
+   `$d = New-BridgeTaskDefinition -RepoPath (Resolve-Path ..\..).Path -MqttHost probe.invalid -User "$env:USERDOMAIN\$env:USERNAME"`;
+   `$a = New-ScheduledTaskAction -Execute cmd.exe -Argument '/c exit 0'`;
+   `Register-ScheduledTask -TaskName FBP-RoundTwoProbe -Action $a -Trigger $d.Triggers -Principal $d.Principal -Settings $d.Settings`;
+   `Export-ScheduledTask -TaskName FBP-RoundTwoProbe | Select-String 'LogonTrigger|UserId|Repetition|Interval|Duration'`;
+   then `Unregister-ScheduledTask -TaskName FBP-RoundTwoProbe -Confirm:$false` and confirm it is gone. Paste the output. If
+   registration is refused, stop: the fallback is a finite duration of about 10 years.
+4. Confirm the shell is not elevated (`([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')`
+   prints `False`), then from `infra\desktop`: `.\register-bridge-task.ps1 -MqttHost <broker host or address> -StartNow`.
+5. Verify: the Step 1 command now lists exactly two processes (the venv launcher and the interpreter, the second's
+   `ParentProcessId` equal to the first's `ProcessId`), both `pythonw.exe`; no console window appeared; `logs\bridge.log` exists
+   and shows `connected (session present: True …)` and `subscribed`, and within 15 minutes `landed …`.
+6. Kill-the-child test, again just after a landed scan: `Stop-Process -Id <the interpreter's PID> -Force` (abrupt, so the same
+   few-seconds-of-events caveat). Within 5 minutes the same listing shows a new pair with new start times, and the log shows a
+   new `connected (session present: True …)`; the messages published while it was down arrive from the broker.
+7. Reboot test: reboot, log on, touch nothing. Expect no console window; Docker Desktop starts and `docker ps` shows
+   `force-mosquitto` up; `logs\bridge.log` shows `cannot reach the MQTT broker at …` lines (at most one a minute) and then
+   `connected (session present: True …)`; the Operational log
+   (`Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-TaskScheduler/Operational'; StartTime=(Get-Date).AddHours(-1)} | ? Message -match 'ForceBridge' | select TimeCreated,Id,Message`)
+   shows the task starting at logon; one pair running; a new file lands within 15 minutes.
+
 ## Open items
 
 | Item | Status |
@@ -958,7 +1036,7 @@ noticed the bridge was down, and nothing brought it back without a human.
 | `deploy.sh` restart and verification | **Fixed, 2026-10-07.** `deploy.sh` had no restart step at all — confirmed live: commit `ca2ba04` was checked out on the Pi 2026-10-06 23:56:52 EDT, but the process running since 2026-09-30 kept serving `--fault-rate 0` until a manual `sudo systemctl restart force-probe` at 2026-10-07 13:29:35Z, ~13.5 hours later. The journal shows every earlier deploy was restarted by hand at the time, so no earlier checkpoint result ran on stale code — this one just happened to be missed. `deploy.sh` now restarts `force-probe` itself when it's already active, and verifies the result (new PID's start time after the deploy began, checked-out SHA matches) before exiting 0. |
 | `probe_ctl.py` `mode` with no `--for-seconds` | **Guarded, 2026-10-08.** Overrides the schedule indefinitely with no resume command (`edge/probe/modes.py`) — found live, 2026-10-06, when exactly this silently overrode the schedule for 12 minutes during a C4 run. `probe_ctl.py` now refuses it unless `--indefinite` is also given explicitly; recovery is still `mode CONNECTED --for-seconds 1`. |
 | `ingest/phase4_checkpoint.sql`'s literal `event_time` upper bounds | **Padded, 2026-10-08.** p4-8's `<replay_window_end_utc>` placeholder now pads +10s (`dateadd(second, 10, ...)`) — a literal boundary clips most of the last scan's 60 rows to sub-second jitter, confirmed live twice (the real backlog figure, 1560 then 300, only matched after padding). p4-10's fixed "+2h" upper bound on `detected_at` was removed outright (a separate, related fix, not jitter) — a delayed or re-attempted run could push `detected_at` past it and produce a false "0 incidents." |
-| Unattended bridge outage: nothing detected it, recovery needed a human | **Open, Phase 5 first priority** (see doc 07). A real ~22h bridge outage (2026-10-09/10) delivered intact on a manual restart — the broker's persistence and queued-session settings worked — but Job 1 stayed green throughout and nothing alerted that the bridge itself was down. Three items: the bridge task should wait/retry for the broker and restart automatically on failure (it exited `0xC000013A`/`CONTROL_C_EXIT` and just stayed down); a landing-freshness alert, which also moves the existing Phase 8 freshness item (above) forward, since it's the same class of problem as the quota exhaustion's own silent gaps; and documenting/testing the broker and bridge settings that made recovery possible in the first place (`persistence`, `max_queued_messages`, `clean_session`, the fixed `client_id`) rather than leaving them correct-but-unasserted. |
+| Unattended bridge outage: nothing detected it, recovery needed a human | **Open, Phase 5 first priority** (see doc 07). A real ~22h bridge outage (2026-10-09/10) delivered intact on a manual restart — the broker's persistence and queued-session settings worked — but Job 1 stayed green throughout and nothing alerted that the bridge itself was down. Three items: the bridge task should wait/retry for the broker and restart automatically on failure (it exited `0xC000013A`/`CONTROL_C_EXIT` and just stayed down); a landing-freshness alert, which also moves the existing Phase 8 freshness item (above) forward, since it's the same class of problem as the quota exhaustion's own silent gaps; and documenting/testing the broker and bridge settings that made recovery possible in the first place (`persistence`, `max_queued_messages`, `clean_session`, the fixed `client_id`) rather than leaving them correct-but-unasserted. **Progress, 2026-10-10 (Phase 5 Round 2):** item 1 is implemented (in-process connect retry, windowless launch, user-scoped logon trigger plus a 5-minute repetition, single-instance lock, log file); manual registration and reboot verification are pending, see "Phase 5 Round 2". Items 2 and 3 are not started. |
 | `force-bridge` OAuth secret expires 2026-12-25 13:59Z | **Open, Phase 5.** When it lapses, token exchange fails (`AuthError`; `upload.py` retries 5 times) and every batch is dead-lettered to `logs/bridge_dead_letter.ndjson`. MQTT stays connected and Job 1 still succeeds on empty input, so the bridge-liveness and Job 1 signals keep reporting healthy; only the data-freshness signal fires. These three are the planned Phase 5 monitoring signals (S1 bridge liveness, S2 Job 1 liveness, S3 data freshness; doc 05 "Monitoring", to be written). Derived timing: the last good upload is at most ~1 h after expiry (the cached token lives up to `expires_in`, default 3,600 s), and S3 then fires after its ~4 h of silence, so the alert arrives ~5 h after expiry, about 18:00–19:15Z on 2026-12-25. Rotation steps to be written into doc 05 "Monitoring" before then. |
 | `deploy.sh`: the first deploy after a `deploy.sh` change runs the previous script | **Open, documented in doc 05 ("Redeploying").** Observed 2026-10-10: the first deploy after a `deploy.sh` change ran the previous script. The mechanism is derived from `deploy.sh`, not observed: the clone is detached, so the operator runs `./deploy.sh <new SHA>` from the old checkout, and bash is already reading the old file when `git checkout --detach` replaces it, so the rest of that run is the old script. The new unit file is still installed (it is read after the checkout); only the script logic is stale. Workaround: run it twice. Permanent fix proposed (re-exec the new script after the checkout, guarded against loops), Phase 5 Round 5. |
 | No replay tool for `logs/bridge_dead_letter.ndjson` | **Open, Phase 5.** Dead-lettered events (upload failure, or a lapsed OAuth secret) are kept as raw lines but nothing re-sends them to the landing volume. The dead-letter file can also hold events that already arrived: the 60 events dead-lettered 2026-10-05T13:13:07Z (scan `01M45CXZF0G8XWF3DTHZJAC7JQ`, event_time 2026-10-05 06:45Z) were checked on 2026-10-10 and are 60/60 present in `force.bronze.events` and `silver_probe_reading`; their path of arrival is unconfirmed. A replay tool must therefore check bronze first, or accept bronze duplicates that silver's `event_id` merge removes. |

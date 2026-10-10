@@ -819,44 +819,77 @@ e2-micro come together in a later phase. Nothing below is committed with a real 
 
 ### Bridge auto-start
 
-The bridge has so far only ever been started by hand (a foreground terminal, this session's own maintenance-window restarts).
-`infra/desktop/register-bridge-task.ps1` registers it as a Windows Scheduled Task instead: starts at logon, restarts
-automatically if it exits (up to 999 times, a minute apart), and **refuses to register or start a second bridge if one is
-already running** -- the bridge connects with a fixed MQTT client id (`force-bridge`, above: "a persistent session queues the
-Pi's messages while it is down"), so two running at once would silently kick each other off the broker the moment the newer
-one connects, with no error from either side. The check is a real process-command-line scan (`Win32_Process`, filtered on
-`bridge.py` appearing in the command line), not a lock file the bridge itself has to cooperate with.
+The bridge runs as a Windows Scheduled Task, `ForceBridge`, registered by `infra/desktop/register-bridge-task.ps1`. The design
+answers the 2026-10-09 outage (`docs/ENGINEERING-LOG.md`, "Phase 5 Round 2"): after a reboot the old task opened a console window
+at logon, someone closed it (exit `0xC000013A`), and a second, independent failure sat behind that one — the bridge exited with
+code 1 if the broker was not reachable at start, and the broker container came up about 4m40s after the task did.
+
+| Property | Setting | Why |
+|---|---|---|
+| Interpreter | `edge\.venv\Scripts\pythonw.exe` | No console window to close by mistake. `pythonw.exe` has no stdout or stderr, so the bridge writes its own log file (below) |
+| Triggers | the logon of the current user (`-AtLogOn -User DOMAIN\name`), and a repetition every 5 minutes with no end | The logon trigger starts it; the repetition restarts it if it ever exits. The task's `RestartCount` (999, a minute apart) only covers a failure to *start* the process, not one that starts and later exits |
+| Overlap | `MultipleInstances = IgnoreNew` | A repetition tick while the bridge is running does nothing |
+| Missed ticks | `StartWhenAvailable = True` | A tick missed while the machine was off or asleep runs when it is back |
+| Time limit | none (`ExecutionTimeLimit` 0) | The bridge is meant to run for weeks |
+| Principal | the current user, `Interactive`, `Limited` | Standard rights, no stored password |
+
+**Starting before the broker is up.** The bridge no longer exits when the broker is unreachable. It connects with
+`connect_async` and `loop_start`, and paho's loop thread makes the first attempt and every retry, backing off 1, 2, 4 … up to 60 s
+(`reconnect_delay_set(1, 60)`; paho 2.1.0, `client.py`: `_thread_main` calls `loop_forever(retry_first_connection=True)`, checked
+against the installed source and by a test against a port nothing listens on). A failed attempt is logged at most once a minute.
+Ctrl+C is handled from the moment the process starts, so it stops the bridge cleanly instead of killing it.
+
+**Logs.** `logs/bridge.log` (gitignored; `--log-file`): a rotating file, 5 files of up to 5 MB, UTC timestamps
+(`2026-10-10T15:26:16.123Z INFO …`). Everything the bridge prints, everything written to stderr, and any uncaught exception
+(main thread or another thread) goes there; a console stream is added only when there is a console. Dead-lettered events stay in
+`logs/bridge_dead_letter.ndjson`. Paths are absolute, derived from the script's location, never the working directory.
+
+**One bridge at a time.** The bridge connects with the fixed client id `force-bridge` (above: "a persistent session queues the Pi's
+messages while it is down"), so two running at once would take the session from each other, repeatedly, with no error from either
+side. Three layers: the task's `IgnoreNew`; `register-bridge-task.ps1` refuses to register or start a task while a bridge process
+exists (a real `Win32_Process` scan for `bridge.py` in the command line of `python.exe` or `pythonw.exe` — a bridge started from a
+venv shows as two PIDs, the launcher and the interpreter); and an exclusive lock on `logs/bridge.lock` (`--lock-file`) taken before
+the MQTT connect and held for the life of the process. The operating system drops the lock when the holder dies, so a crash never
+leaves it stale. A second bridge logs `another bridge holds …` and exits with code 3, without creating an MQTT client.
+
+**Elevation: not required — proven 2026-10-10.** In a non-elevated PowerShell, registering a task whose logon trigger names the
+current user (`New-ScheduledTaskTrigger -AtLogOn -User DOMAIN\name`) with principal `Interactive`/`Limited` succeeded; the same
+trigger *without* `-User` (an "any user logs on" trigger — what this script created before) failed with "Access is denied". The
+script therefore always passes `-User`, and registration is done in an ordinary window. (The earlier text here said no elevation
+was needed, "Checked, Stage 3d"; that check was not backed by a test, and the task it had registered carried the any-user trigger.)
+Removing a task that was registered *elevated* with the any-user trigger is expected to need an elevated shell (not tested).
+
+**A reboot with no logon starts nothing — a decision, not an oversight.** The task runs in the interactive session, so it starts at
+logon, and so does the broker (derived from the 2026-10-09 timeline: bridge task 15:21:40Z, broker container 15:26:20Z). A reboot nobody logs in after (a
+Windows Update restart overnight, say) starts neither the broker nor the bridge, and the Pi's messages wait in its own buffer. No
+auto-logon is configured. The planned Phase 5 bridge-liveness signal (S1, "Monitoring", to be written) is what turns that case into
+an alert.
 
 ```powershell
-# from Force_Balance_Pipeline\infra\desktop
+# from Force_Balance_Pipeline\infra\desktop, in an ordinary (NON-elevated) PowerShell
 .\register-bridge-task.ps1 -MqttHost <DESKTOP_IP_or_broker_host>              # registers only
 .\register-bridge-task.ps1 -MqttHost <DESKTOP_IP_or_broker_host> -StartNow    # registers and starts it now
 ```
 
 No secrets or real addresses live in the script or in the registered task's own definition: `-MqttHost` (or
-`$env:BRIDGE_MQTT_HOST`) is required with no default, and the bridge's own MQTT credentials still come from `.env.mqtt` at
-the repo root (above), read by the bridge process itself at startup -- the scheduled task's command line never carries them.
-`-VenvPath` defaults to `edge\.venv`; override it if the venv with `paho-mqtt` installed lives elsewhere. Un-register with
-`Unregister-ScheduledTask -TaskName ForceBridge` (prompts for confirmation; stop the running bridge process first if one is
-up, the same way you would before closing a manually-started one).
+`$env:BRIDGE_MQTT_HOST`) is required with no default, and the bridge's own MQTT credentials still come from `.env.mqtt` at the repo
+root (above), read by the bridge process itself at startup — the task's command line never carries them. `-VenvPath` defaults to
+`edge\.venv`; `-User` defaults to the current user. Un-register with `Unregister-ScheduledTask -TaskName ForceBridge` (prompts for
+confirmation; stop the running bridge process first, the same way you would before closing a manually-started one).
 
-**No administrator elevation is required.** Checked, Stage 3d, not assumed: the task is registered to run as, and triggered
-at the logon of, the current user (no `-User`/`-Password` targeting a different account, no `RunLevel Highest`) -- both are
-standard-user operations in Windows Task Scheduler. Run the script as yourself, in an ordinary (non-elevated) PowerShell
-window; an elevated one gains nothing here.
+Every cmdlet that can fail carries an explicit `-ErrorAction Stop`, so the "Registered…" message can only print after the
+registration actually succeeded. The running-bridge guard fails closed: a failed process-list query stops the script rather than
+being read as "nothing is running".
 
-Every cmdlet that can fail (`Register-ScheduledTask`, `Start-ScheduledTask`, the `New-ScheduledTask*` builders) now carries
-an explicit `-ErrorAction Stop`, on top of the script's own `$ErrorActionPreference = "Stop"` -- belt and suspenders, so the
-"Registered..." / "Started..." success messages can only print after the thing they describe actually succeeded. The
-running-bridge guard (`Get-RunningBridgeProcesses`) also fails closed now: an earlier version swallowed a failed process-list
-query (`-ErrorAction SilentlyContinue`) and would have silently treated "couldn't check" as "nothing is running" -- exactly
-backwards for a safety check. It now lets that error propagate and stop the script instead.
-
-**Tested:** `infra/desktop/register-bridge-task.Tests.ps1` (Pester 3.4.0, ships with Windows PowerShell 5.1 -- no new
-dependency) exercises the running-bridge guard against a faked process list, never a real one. `Get-RunningBridgeProcesses`
-takes an injectable `-Processes` parameter for exactly this; the script's own top-level registration logic is skipped when
-dot-sourced (`$MyInvocation.InvocationName -eq '.'`), so the test file can load just the functions. Run with
-`Invoke-Pester infra\desktop\register-bridge-task.Tests.ps1`.
+**Tested:** `infra/desktop/register-bridge-task.Tests.ps1` (Pester 3.4.0, ships with Windows PowerShell 5.1) fakes the process list
+for the guard and asserts every property of the task definition above — the user-named logon trigger, the 5-minute repetition with
+an empty (indefinite) duration, the principal, each setting, `pythonw.exe` — by *building* the definition without registering
+anything (`New-BridgeTaskDefinition`). `ingest/tests/test_bridge_resilience.py` covers the bridge side: first-connect retry (including
+a real paho client against a closed port), the backoff, rate-limited failure logging, SIGINT before the connect, the log file with
+no console, uncaught-exception capture, and the lock. Run Pester with `Invoke-Pester infra\desktop\register-bridge-task.Tests.ps1`.
+What these cannot show is that Task Scheduler *accepts* the empty-duration repetition and starts the task unattended after a reboot.
+That is checked by hand after registering (the step list and its results are in `docs/ENGINEERING-LOG.md`, "Phase 5 Round 2");
+until results are recorded there, treat it as unproven.
 
 ### The Pi
 
