@@ -188,15 +188,15 @@ rows stayed clean). The Pi's unit stayed at `--fault-rate 0` for a few days afte
 scheduled outage and an injected fault were never running at the same time and an anomaly's cause was never ambiguous; it now
 runs explicitly at `--fault-rate 1.0` (doc 04's default, stated rather than left to the flag's own default) for its own period.
 
-**This period: started 2026-10-07T13:29:35Z, ends about 3 days later (~2026-10-10T13:29:35Z).** The start is the manual
-`sudo systemctl restart force-probe`, not the deploy itself -- `./deploy.sh` on 2026-10-06 installed the new unit (confirmed
-by `systemctl cat` showing `--fault-rate 1.0`) but did not restart the already-running process, which stayed on the previous
-commit's `--fault-rate 0` until the restart (`infra/pi/deploy.sh`, fixed to restart and verify this itself -- doc 05, "Pi
-deploy"). The exact
-end date gets filled in here once it ends; `scp`-pulling `fault_injection.jsonl` and p4-12's reconciliation
-(`scripts/faultlog_to_seed.py`, then `dbt seed`, then the join against `silver.rejects`, above) follow once it does.
-`fault_injection.jsonl` is the Phase 4 reconciliation source — pull it before the state directory is
-touched again, since the file has no cap of its own and keeps growing.
+**This period: 2026-10-07T13:29:35Z to the 2026-10-10 pull.** The start is the manual `sudo systemctl restart
+force-probe`, not the deploy itself -- `./deploy.sh` on 2026-10-06 installed the new unit (confirmed by `systemctl cat`
+showing `--fault-rate 1.0`) but did not restart the already-running process, which stayed on the previous commit's
+`--fault-rate 0` until the restart (`infra/pi/deploy.sh`, fixed to restart and verify this itself -- doc 05, "Pi
+deploy"). `fault_injection.jsonl` was pulled (`scp`) 2026-10-10; the last logged fault in it is at 13:45:03Z. Converted
+to the frozen seed `warehouse/dbt/seeds/fault_injection_20261007.csv` (425 rows, `scripts/faultlog_to_seed.py`, then
+`dbt seed --target prod`) for p4-12's reconciliation (`ingest/phase4_checkpoint.sql` -- there is no separate dbt test
+for this; the checkpoint SQL query against the seed is the only check). Injection is off again (`--fault-rate 0`) now
+that the period has ended and the log has been pulled -- re-running it isn't possible or needed once the seed is frozen.
 
 ### The four modes
 
