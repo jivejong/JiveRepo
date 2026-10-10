@@ -935,6 +935,15 @@ never-enabled install, `deploy.sh` still does **not** start the service — `pro
 and starting it would crash-loop on missing MQTT credentials; that first start stays the manual `sudo systemctl enable --now
 force-probe` step above.
 
+**The first deploy after a change to `deploy.sh` itself runs the previous script — run it twice.** The clone is detached
+(`git checkout --detach`), so you start the new commit by running `./deploy.sh <new SHA>` from the *old* checkout. bash is
+already reading the old file when that checkout replaces it on disk, so the rest of that run executes the old script's logic
+(observed 2026-10-10: the first deploy after a `deploy.sh` change ran the previous script; the mechanism described here is
+derived from reading `deploy.sh`, not observed). The new unit file *is* still installed, because it is read after the
+checkout; only the script's own steps are stale. After any commit that changes `deploy.sh`, run the same command a second
+time: the second run executes the new script. A permanent fix (re-exec the new script after the checkout, guarded against
+loops) is an open item in `docs/ENGINEERING-LOG.md`.
+
 The service user owns `/var/lib/force-probe/` (the buffer database, `mode_transitions.jsonl`, `fault_injection.jsonl`), so reading
 it from your login needs `sudo`; use `sudo sqlite3 -readonly` for the database so a read cannot touch its WAL files.
 

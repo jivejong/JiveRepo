@@ -50,8 +50,9 @@ resources:
         # 3d"). Set to UNPAUSED again here, Stage 3d, alongside the moved schedule and the task timeout below --
         # pause_status and timeout_seconds confirmed deployed, Stage 4a (live `jobs/get` matched this file's
         # values exactly). Stage 4b's 03:18 cron was deployed and ran live 2026-10-03 through 2026-10-05 (3/3
-        # SUCCESS, confirmed via `jobs/runs/list`). The cron above moved again, Stage 4c (03:18 -> 03:40) -- not
-        # yet deployed.
+        # SUCCESS, confirmed via `jobs/runs/list`). The cron above moved again, Stage 4c (03:18 -> 03:40). The
+        # 03:40 cron confirmed deployed: live `jobs get` on 2026-10-10 matched this file (cron, timezone,
+        # pause_status, task timeout).
         pause_status: UNPAUSED
       tasks:
         - task_key: rebuild_baseline
