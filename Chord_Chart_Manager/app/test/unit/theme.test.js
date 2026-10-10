@@ -3,6 +3,23 @@ import {
   applyTheme, getSystemPrefersDark, readThemePreference, resolveTheme,
   subscribeToSystemTheme, THEME_COLORS, THEME_STORAGE_KEY, writeThemePreference,
 } from '../../src/lib/theme.js';
+import { compositeColor, contrastOverLayers, contrastRatio } from '../../src/lib/colorContrast.js';
+
+describe('CSS color contrast', () => {
+  it('matches known opaque contrast ratios', () => {
+    expect(contrastRatio('#000000', '#FFFFFF')).toBeCloseTo(21, 5);
+    expect(contrastRatio('#FFFFFF', '#000000')).toBeCloseTo(21, 5);
+  });
+
+  it('composites translucent colors and ancestor layers in CSS paint order', () => {
+    expect(compositeColor('rgba(255, 0, 0, 0.5)', '#000000'))
+      .toEqual([127.5, 0, 0, 1]);
+    expect(contrastOverLayers('#FF8585', [
+      'rgba(224, 92, 92, 0.12)', '#22222A',
+    ], '#FFFFFF')).toBeGreaterThan(4.5);
+    expect(contrastOverLayers('#E05C5C', ['#22222A'], '#FFFFFF')).toBeLessThan(4.5);
+  });
+});
 
 describe('theme preference', () => {
   it('accepts only supported stored values and defaults invalid/missing values to System', () => {

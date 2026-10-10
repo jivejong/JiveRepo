@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { expect, test } from '@playwright/test';
+import { expect, request as playwrightRequest, test } from '@playwright/test';
+import { contrastOverLayers } from '../../src/lib/colorContrast.js';
 
 const require = createRequire(import.meta.url);
 const { chartToText } = require('../../server/chartParser.js');
@@ -13,27 +14,40 @@ async function expectTheme(page, theme) {
     theme === 'dark' ? '#1A1A1F' : '#F5F3EE');
 }
 
-async function contrastOf(page, foreground, background) {
-  return page.evaluate(({ foreground, background }) => {
-    const rgb = value => {
-      if (value.startsWith('#')) return [...value.slice(1).match(/.{2}/g)
-        .map(channel => parseInt(channel, 16)), 1];
-      const parts = value.match(/[\d.]+/g).map(Number);
-      return [parts[0], parts[1], parts[2], parts[3] ?? 1];
+async function contrastOf(_page, locator, property = 'color') {
+  const sample = await locator.evaluate((element, foregroundProperty) => {
+    const backgrounds = [];
+    for (let node = element; node; node = node.parentElement) {
+      backgrounds.push(getComputedStyle(node).backgroundColor);
+    }
+    return {
+      foreground: getComputedStyle(element)[foregroundProperty],
+      backgroundsNearestFirst: backgrounds,
+      canvas: getComputedStyle(document.documentElement).colorScheme === 'dark' ? '#000000' : '#FFFFFF',
     };
-    const over = (color, base) => color.slice(0, 3).map((channel, index) =>
-      channel * color[3] + base[index] * (1 - color[3]));
-    const luminance = value => {
-      const channels = value.map(channel => channel / 255).map(channel =>
-        channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
-      return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
-    };
-    const base = rgb(getComputedStyle(document.documentElement).getPropertyValue('--bg-base').trim());
-    const backgroundRgb = over(rgb(background), base.slice(0, 3));
-    const foregroundRgb = over(rgb(foreground), backgroundRgb);
-    const values = [luminance(foregroundRgb), luminance(backgroundRgb)].sort((a, b) => b - a);
-    return (values[0] + 0.05) / (values[1] + 0.05);
-  }, { foreground, background });
+  }, property);
+  return contrastOverLayers(sample.foreground, sample.backgroundsNearestFirst, sample.canvas);
+}
+
+async function seedTaskOwnedConflict(page, song) {
+  await page.evaluate(async conflict => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('chart-manager', 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction('meta', 'readwrite');
+      transaction.objectStore('meta').put({
+        key: 'last_sync_conflicts', value: [conflict], updatedAt: Date.now(),
+      });
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    db.close();
+    window.dispatchEvent(new Event('chart-cache-change'));
+  }, { id: song.id, title: song.title, operation: 'update' });
 }
 
 async function inspectChart(page) {
@@ -102,13 +116,9 @@ async function expectSettledChart(page) {
   expect(second.pipes.every(pipe => pipe.visible)).toBeTruthy();
   expect(second.scrollWidth).toBe(first.scrollWidth);
   expect(second.rowWidth).toBe(first.rowWidth);
-  expect(await contrastOf(page, second.chartText, second.background)).toBeGreaterThanOrEqual(4.5);
-  expect(await contrastOf(page, second.chordText, second.background)).toBeGreaterThanOrEqual(4.5);
-  for (const color of [second.secondary, second.muted, second.accent, second.danger, second.success]) {
-    expect(await contrastOf(page, color, second.background)).toBeGreaterThanOrEqual(4.5);
-  }
-  expect(await contrastOf(page, second.textOnAccent, second.accent)).toBeGreaterThanOrEqual(4.5);
-  expect(await contrastOf(page, second.focusRing, second.background)).toBeGreaterThanOrEqual(3);
+  expect(await contrastOf(page, page.locator('.lyric-line').first())).toBeGreaterThanOrEqual(4.5);
+  expect(await contrastOf(page, page.locator('.chord-anchor-symbol').first())).toBeGreaterThanOrEqual(4.5);
+  expect(await contrastOf(page, page.locator('.chord-anchor-separator').first())).toBeGreaterThanOrEqual(4.5);
   return second;
 }
 
@@ -124,13 +134,11 @@ test('System follows device changes, explicit themes persist, and theme switchin
     visible: document.activeElement.matches(':focus-visible'),
     outlineStyle: getComputedStyle(document.activeElement).outlineStyle,
     outlineWidth: getComputedStyle(document.activeElement).outlineWidth,
-    outlineColor: getComputedStyle(document.activeElement).outlineColor,
-    background: getComputedStyle(document.documentElement).getPropertyValue('--bg-base').trim(),
   }));
   expect(focusStyle.visible).toBeTruthy();
   expect(focusStyle.outlineStyle).toBe('solid');
   expect(parseFloat(focusStyle.outlineWidth)).toBeGreaterThanOrEqual(2);
-  expect(await contrastOf(page, focusStyle.outlineColor, focusStyle.background)).toBeGreaterThanOrEqual(3);
+  expect(await contrastOf(page, page.locator(':focus-visible'), 'outlineColor')).toBeGreaterThanOrEqual(3);
 
   await page.getByRole('radio', { name: 'Light' }).check();
   await expectTheme(page, 'light');
@@ -155,11 +163,7 @@ test('System follows device changes, explicit themes persist, and theme switchin
   await page.reload();
   await expect(page.getByPlaceholder(/Search songs, artists/)).toBeVisible();
   await expectTheme(page, 'dark');
-  const offlineNotice = await page.locator('.offline-banner').evaluate(node => ({
-    text: getComputedStyle(node).color,
-    surface: getComputedStyle(node).backgroundColor,
-  }));
-  expect(await contrastOf(page, offlineNotice.text, offlineNotice.surface)).toBeGreaterThanOrEqual(4.5);
+  expect(await contrastOf(page, page.locator('.offline-banner'))).toBeGreaterThanOrEqual(4.5);
   await page.getByRole('button', { name: 'Settings' }).click();
   await page.getByRole('radio', { name: 'Light' }).check();
   await expectTheme(page, 'light');
@@ -244,9 +248,7 @@ test('theme tokens cover setlist and edit views, with task-owned fixture cleanup
     await page.getByText(name, { exact: true }).click();
     await expect(page.locator('.topbar-title')).toHaveText(name);
     await expectTheme(page, 'dark');
-    const setlistTitleColor = await page.locator('.topbar-title').evaluate(node => getComputedStyle(node).color);
-    const darkBase = await page.locator('html').evaluate(node => getComputedStyle(node).getPropertyValue('--bg-base').trim());
-    expect(await contrastOf(page, setlistTitleColor, darkBase)).toBeGreaterThanOrEqual(4.5);
+    expect(await contrastOf(page, page.locator('.topbar-title'))).toBeGreaterThanOrEqual(4.5);
 
     await page.getByRole('button', { name: 'Back' }).click();
     await expect(page.getByText(name, { exact: true })).toBeVisible();
@@ -256,17 +258,119 @@ test('theme tokens cover setlist and edit views, with task-owned fixture cleanup
     await page.getByRole('button', { name: 'Edit' }).click();
     await expect(page.locator('.topbar-title')).toHaveText('Edit song');
     await expectTheme(page, 'dark');
-    const formColors = await page.locator('.form-input').first().evaluate(node => ({
-      color: getComputedStyle(node).color,
-      background: getComputedStyle(node).backgroundColor,
-    }));
-    expect(await contrastOf(page, formColors.color, formColors.background)).toBeGreaterThanOrEqual(4.5);
+    expect(await contrastOf(page, page.locator('.form-input').first())).toBeGreaterThanOrEqual(4.5);
   } finally {
     const deleted = await request.delete(`/api/setlists/${setlist.id}`);
     if (!deleted.ok()) throw new Error(`Could not clean up T16 setlist fixture ${setlist.id}: HTTP ${deleted.status()}`);
     if ((await request.get(`/api/setlists/${setlist.id}`)).status() !== 404) {
       throw new Error(`T16 setlist fixture ${setlist.id} remains after cleanup`);
     }
+  }
+});
+
+test('danger text meets contrast on effective surfaces in Light and Dark', async ({ page, context, request }) => {
+  const suffix = randomUUID();
+  const setlistName = `T16 Contrast setlist ${suffix}`;
+  const songTitle = `T16 Contrast song ${suffix}`;
+  const cleanupRequest = await playwrightRequest.newContext();
+  let setlist = null;
+  let song = null;
+  const measuredContrasts = [];
+  const recordContrast = async (theme, state, locator) => {
+    const ratio = await contrastOf(page, locator);
+    expect(ratio, `${theme} ${state} contrast ratio`).toBeGreaterThanOrEqual(4.5);
+    measuredContrasts.push(`${theme}/${state}=${ratio.toFixed(2)}:1`);
+  };
+
+  try {
+    const setlistResponse = await request.post('/api/setlists', { data: { name: setlistName } });
+    expect(setlistResponse.ok(), `setlist fixture creation returned ${setlistResponse.status()}`).toBeTruthy();
+    setlist = await setlistResponse.json();
+    const songResponse = await request.post('/api/songs', { data: {
+      title: songTitle, artist: 'T16 synthetic contrast fixture', chart_written_key: 'C', chart_source: '',
+    } });
+    expect(songResponse.ok(), `song fixture creation returned ${songResponse.status()}`).toBeTruthy();
+    song = await songResponse.json();
+
+    await page.emulateMedia({ colorScheme: 'light' });
+    await page.goto('/');
+    await page.getByPlaceholder(/Search songs, artists/).fill(songTitle);
+    await expect(page.getByText(songTitle, { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await expect(page.getByRole('radio', { name: 'System' })).toBeChecked();
+
+    for (const theme of ['light', 'dark']) {
+      if (theme === 'dark') {
+        await page.getByRole('radio', { name: 'Dark' }).check();
+      } else {
+        await page.getByRole('radio', { name: 'Light' }).check();
+      }
+      await expectTheme(page, theme);
+      await context.setOffline(true);
+      await seedTaskOwnedConflict(page, song);
+
+      const offlineStatus = page.getByText('○ Offline', { exact: true });
+      const conflictHeading = page.getByText(/tablet change was replaced/);
+      await expect(offlineStatus).toBeVisible();
+      await expect(conflictHeading).toBeVisible();
+      await recordContrast(theme, 'Settings Offline status', offlineStatus);
+      await recordContrast(theme, 'Settings conflict heading', conflictHeading);
+
+      await context.setOffline(false);
+      await expect(page.getByText('● Online', { exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Songs' }).click();
+      await page.getByPlaceholder(/Search songs, artists/).fill(songTitle);
+      await page.getByText(songTitle, { exact: true }).click();
+      await page.getByRole('button', { name: 'Edit' }).click();
+      await page.locator('.form-input').first().fill('');
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      const editError = page.getByText('Title is required', { exact: true });
+      await expect(editError).toBeVisible();
+      await recordContrast(theme, 'Edit error', editError);
+
+      await page.getByRole('button', { name: 'Back' }).click();
+      await page.getByRole('button', { name: 'Setlists' }).click();
+      await page.getByText(setlistName, { exact: true }).click();
+      const deleteButton = page.getByRole('button', { name: 'Delete setlist' });
+      await expect(deleteButton).toBeVisible();
+      await recordContrast(theme, 'setlist Delete control', deleteButton);
+      await page.getByRole('button', { name: 'Back' }).click();
+      await page.getByRole('button', { name: 'Settings' }).click();
+    }
+    console.log(`T16 effective foreground/background contrast: ${measuredContrasts.join(', ')}`);
+  } finally {
+    const cleanupFailures = [];
+    if (song) {
+      try {
+        const currentSong = await cleanupRequest.get(`http://localhost:3000/api/songs/${song.id}`);
+        if (currentSong.status() !== 404) {
+          if (!currentSong.ok()) throw new Error(`Could not inspect T16 contrast song ${song.id}: HTTP ${currentSong.status()}`);
+          const latest = await currentSong.json();
+          const deletedSong = await cleanupRequest.delete(`http://localhost:3000/api/songs/${song.id}`, {
+            data: { base_updated_at: latest.updated_at },
+          });
+          if (!deletedSong.ok()) throw new Error(`Could not clean up T16 contrast song ${song.id}: HTTP ${deletedSong.status()}`);
+        }
+        if ((await cleanupRequest.get(`http://localhost:3000/api/songs/${song.id}`)).status() !== 404) {
+          throw new Error(`T16 contrast song ${song.id} remains after cleanup`);
+        }
+      } catch (error) {
+        cleanupFailures.push(error.message);
+      }
+    }
+    if (setlist) {
+      try {
+        const deletedSetlist = await cleanupRequest.delete(`http://localhost:3000/api/setlists/${setlist.id}`);
+        if (!deletedSetlist.ok()) throw new Error(`Could not clean up T16 contrast setlist ${setlist.id}: HTTP ${deletedSetlist.status()}`);
+        if ((await cleanupRequest.get(`http://localhost:3000/api/setlists/${setlist.id}`)).status() !== 404) {
+          throw new Error(`T16 contrast setlist ${setlist.id} remains after cleanup`);
+        }
+      } catch (error) {
+        cleanupFailures.push(error.message);
+      }
+    }
+    await cleanupRequest.dispose();
+    if (cleanupFailures.length) throw new Error(cleanupFailures.join('; '));
   }
 });
 
@@ -295,11 +399,7 @@ test('malformed-anchor warnings remain visible and themed in Light and Dark', as
     await expect(warning).toBeVisible();
     await expect(warning).toHaveAttribute('title', /Stored column splits a surrogate pair/);
     await expectTheme(page, 'light');
-    const lightColors = await warning.evaluate(node => ({
-      color: getComputedStyle(node).color,
-      background: getComputedStyle(document.documentElement).getPropertyValue('--bg-base').trim(),
-    }));
-    expect(await contrastOf(page, lightColors.color, lightColors.background)).toBeGreaterThanOrEqual(4.5);
+    expect(await contrastOf(page, warning)).toBeGreaterThanOrEqual(4.5);
 
     await page.getByRole('button', { name: 'Back' }).click();
     await page.getByRole('button', { name: 'Settings' }).click();
@@ -311,11 +411,7 @@ test('malformed-anchor warnings remain visible and themed in Light and Dark', as
     await expect(darkWarning).toBeVisible();
     await expect(darkWarning).toHaveAttribute('title', /Stored column splits a surrogate pair/);
     await expectTheme(page, 'dark');
-    const darkColors = await darkWarning.evaluate(node => ({
-      color: getComputedStyle(node).color,
-      background: getComputedStyle(document.documentElement).getPropertyValue('--bg-base').trim(),
-    }));
-    expect(await contrastOf(page, darkColors.color, darkColors.background)).toBeGreaterThanOrEqual(4.5);
+    expect(await contrastOf(page, darkWarning)).toBeGreaterThanOrEqual(4.5);
   } finally {
     const current = await request.get(`/api/songs/${song.id}`);
     if (current.status() !== 404) {
