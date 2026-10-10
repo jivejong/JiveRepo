@@ -52,6 +52,8 @@ class DocParityTests(unittest.TestCase):
         self.assertEqual(table["--local-dir"], "none")
         self.assertIsNone(args.local_dir)
         self.assertEqual(table["--dead-letter"], args.dead_letter.relative_to(ROOT).as_posix())
+        self.assertEqual(table["--log-file"], args.log_file.relative_to(ROOT).as_posix())
+        self.assertEqual(table["--lock-file"], args.lock_file.relative_to(ROOT).as_posix())
         self.assertEqual(table["--env-file"], bridge.ENV_FILE_DEFAULT.name)
         self.assertEqual(bridge.ENV_FILE_DEFAULT.parent, ROOT)
 

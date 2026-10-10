@@ -96,7 +96,8 @@ class RunningBridge:
     def __init__(self, args, landing, dead, client_id, exit_after_files=0):
         cmd = [sys.executable, "-B", str(ROOT / "ingest" / "bridge" / "bridge.py"), "--local-dir", str(landing),
                "--mqtt-host", args.host, "--mqtt-port", str(args.port), "--client-id", client_id,
-               "--idle-exit", "90", "--stats-interval", "5", "--dead-letter", str(dead)]
+               "--idle-exit", "90", "--stats-interval", "5", "--dead-letter", str(dead),
+               "--log-file", str(dead.parent / "bridge.log"), "--lock-file", str(dead.parent / "bridge.lock")]
         if exit_after_files:
             cmd += ["--exit-after-files", str(exit_after_files)]
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

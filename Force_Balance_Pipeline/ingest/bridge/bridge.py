@@ -39,6 +39,7 @@ Usage:
 """
 import argparse
 import json
+import logging
 import os
 import queue
 import re
@@ -48,6 +49,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from files_api import CONFLICT, DEFAULT_SCOPE, FilesApiUploader, TokenProvider, normalise_scope
@@ -55,6 +57,8 @@ from upload import ALREADY_LANDED, UPLOADED, upload_file
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DEAD_LETTER = REPO_ROOT / "logs" / "bridge_dead_letter.ndjson"
+DEFAULT_LOG_PATH = REPO_ROOT / "logs" / "bridge.log"     # absolute, derived from this file's location, never the cwd
+DEFAULT_LOCK_PATH = REPO_ROOT / "logs" / "bridge.lock"
 ENV_FILE_DEFAULT = REPO_ROOT / ".env.bridge"
 BRIDGE_ENV_KEYS = ("DATABRICKS_HOST", "BRIDGE_DATABRICKS_CLIENT_ID", "BRIDGE_DATABRICKS_CLIENT_SECRET")
 
@@ -63,6 +67,11 @@ DEFAULT_MAX_SECONDS = 90
 DEFAULT_SCAN_SIZE = 60
 DEFAULT_TOPIC = "force/telemetry/#"
 DEFAULT_CLIENT_ID = "force-bridge"
+LOGGER_NAME = "force-bridge"
+LOG_MAX_BYTES, LOG_BACKUPS = 5 * 1024 * 1024, 5          # about 5 x 5 MB on disk
+RECONNECT_MIN_S, RECONNECT_MAX_S = 1, 60                 # paho's backoff: 1, 2, 4 ... capped at 60 s between attempts
+CONNECT_FAIL_LOG_INTERVAL_S = 60                         # an unreachable broker is logged at most once a minute
+EXIT_ALREADY_RUNNING = 3                                 # another bridge holds the lock (1 = failure, 2 = usage)
 DEFAULT_VOLUME_PATH = "/Volumes/force/raw/telemetry"
 
 ENVELOPE_KEYS = ("event_id", "source_id", "source_type", "schema_version", "event_time", "mode",
@@ -423,6 +432,11 @@ def parse_args(argv=None):
     p.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS)
     p.add_argument("--scan-size", type=int, default=DEFAULT_SCAN_SIZE, help="events in a complete scan (default %(default)s)")
     p.add_argument("--dead-letter", type=Path, default=DEFAULT_DEAD_LETTER)
+    p.add_argument("--log-file", type=Path, default=DEFAULT_LOG_PATH,
+                   help="the bridge's rotating log file (default %(default)s)")
+    p.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK_PATH,
+                   help="single-instance lock; a second bridge exits with code " + str(EXIT_ALREADY_RUNNING)
+                        + " (default %(default)s)")
     p.add_argument("--stats-interval", type=float, default=30.0, help="seconds between console counters")
     p.add_argument("--exit-after-files", type=int, default=0, help="exit after uploading N files (0 = run until stopped)")
     p.add_argument("--idle-exit", type=float, default=0.0, help="exit after S seconds without a message (0 = never)")
@@ -468,13 +482,161 @@ def make_on_disconnect(clock=time.time):
     return on_disconnect
 
 
-def run(bridge, args):
+# ---- process plumbing: log file, crash hooks, single instance ---------------------------------------------
+class _UtcFormatter(logging.Formatter):
+    """2026-10-10T15:26:16.123Z LEVEL message -- UTC, like every other timestamp this project writes."""
+
+    def formatTime(self, record, datefmt=None):
+        return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)) + f".{int(record.msecs):03d}Z"
+
+
+def configure_logging(log_path, stdout=None):
+    """The bridge's logger: a rotating file always, and a console stream only when there is one. Started with
+    pythonw.exe (no console) sys.stdout is None, and a print() to it silently vanishes -- the file is then the only
+    record there is. The handlers are replaced on every call, so calling it twice never doubles a line."""
+    logger = logging.getLogger(LOGGER_NAME)
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    path = Path(log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = RotatingFileHandler(path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8")
+    file_handler.setFormatter(_UtcFormatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(file_handler)
+    if stdout is not None:
+        console = logging.StreamHandler(stdout)
+        console.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(console)
+    return logger
+
+
+class _LoggerStream:
+    """Stands in for sys.stdout / sys.stderr: every complete line written to it becomes a log record, so the existing
+    print() calls (and any traceback printed to stderr) reach the log file without being rewritten."""
+    encoding = "utf-8"
+    errors = "replace"
+
+    def __init__(self, logger, level):
+        self._logger, self._level = logger, level
+        self._buffer, self._lock, self._local = "", threading.Lock(), threading.local()
+
+    def write(self, text):
+        if getattr(self._local, "busy", False):   # logging reporting its own failure through stderr: drop it, never loop
+            return len(text)
+        with self._lock:
+            *lines, self._buffer = (self._buffer + text).split("\n")
+        self._local.busy = True
+        try:
+            for line in lines:
+                if line.strip():
+                    self._logger.log(self._level, line.rstrip("\r"))
+        finally:
+            self._local.busy = False
+        return len(text)
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+
+def capture_process_output(logger):
+    """Route sys.stdout, sys.stderr and uncaught exceptions (main thread and other threads) into the logger. With no
+    console an uncaught traceback would otherwise disappear. Returns a function that undoes it (for tests)."""
+    saved = (sys.stdout, sys.stderr, sys.excepthook, threading.excepthook)
+    sys.stdout = _LoggerStream(logger, logging.INFO)
+    sys.stderr = _LoggerStream(logger, logging.ERROR)
+
+    def log_uncaught(exc_type, exc, tb):
+        logger.critical("bridge: uncaught exception", exc_info=(exc_type, exc, tb))
+
+    def log_thread_uncaught(args):
+        if args.exc_type is not SystemExit:
+            name = args.thread.name if args.thread else "?"
+            logger.critical(f"bridge: uncaught exception in thread {name}",
+                            exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+    sys.excepthook, threading.excepthook = log_uncaught, log_thread_uncaught
+
+    def restore():
+        sys.stdout, sys.stderr, sys.excepthook, threading.excepthook = saved
+    return restore
+
+
+class AlreadyRunning(Exception):
+    """Another process holds the single-instance lock."""
+
+
+class InstanceLock:
+    """An exclusive, non-blocking lock on one byte of a file, held for the life of the process. Two bridges with the
+    fixed client id force-bridge would take the session from each other and keep bumping each other off the broker
+    (doc 05); the operating system drops the lock when the holder dies, so a crash never leaves it stale. It does not
+    depend on how the process was started (the scheduled task, a repetition tick, or a terminal)."""
+
+    def __init__(self, path):
+        self.path, self._fd = Path(path), None
+
+    def acquire(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise AlreadyRunning(f"another bridge holds {self.path}") from None
+        self._fd = fd
+        return self
+
+    def release(self):
+        if self._fd is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(self._fd, 0, os.SEEK_SET)
+                msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass                   # closing the descriptor below releases the lock regardless
+        finally:
+            os.close(self._fd)
+            self._fd = None
+
+
+def make_on_connect_fail(host, port, clock=time.time, interval=CONNECT_FAIL_LOG_INTERVAL_S):
+    """paho calls this for every failed connection attempt (the first connect and every reconnect). Logs the first
+    failure and then at most one line per `interval` seconds, counting the attempts in between, so a broker that is
+    down for hours writes a few hundred lines rather than one per backoff step."""
+    state = {"last": None, "count": 0}
+
+    def on_connect_fail(client, userdata):
+        state["count"] += 1
+        now = clock()
+        if state["last"] is not None and now - state["last"] < interval:
+            return
+        state["last"], count, state["count"] = now, state["count"], 0
+        print(f"bridge: cannot reach the MQTT broker at {host}:{port} ({count} failed attempt(s) since the last "
+              f"report); retrying, at most {RECONNECT_MAX_S} s apart ({_utc_stamp(clock)})", flush=True)
+    return on_connect_fail
+
+
+def run(bridge, args, mqtt=None):
     """Wire the bridge to MQTT. Uploads happen on a worker thread so a slow upload never blocks the
-    MQTT network loop (and its keepalive)."""
-    try:
-        import paho.mqtt.client as mqtt
-    except ImportError:
-        raise SystemExit("paho-mqtt is not installed: pip install -r edge/requirements.txt (in the edge venv)")
+    MQTT network loop (and its keepalive). An unreachable broker is not an error: the connection is retried in
+    the background with backoff until it comes up (a reboot starts this before Docker has the broker listening)."""
+    if mqtt is None:
+        try:
+            import paho.mqtt.client as mqtt
+        except ImportError:
+            raise SystemExit("paho-mqtt is not installed: pip install -r edge/requirements.txt (in the edge venv)")
     work = queue.Queue()
     stop = threading.Event()
     last_message = [time.time()]
@@ -491,6 +653,14 @@ def run(bridge, args):
     uploader_thread = threading.Thread(target=worker, name="uploader", daemon=True)
     uploader_thread.start()
 
+    # Installed before the connect, so a Ctrl+C or Ctrl+Break during a long wait for the broker stops the bridge
+    # cleanly instead of killing it with 0xC000013A.
+    previous_handlers = {}
+    for name in ("SIGINT", "SIGBREAK"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            previous_handlers[number] = signal.signal(number, lambda *_: stop.set())
+
     client = build_client(mqtt, args)
     apply_mqtt_credentials(client)
 
@@ -504,45 +674,66 @@ def run(bridge, args):
 
     client.on_connect = make_on_connect(args.topic, bridge.clock)
     client.on_disconnect = make_on_disconnect(bridge.clock)
+    client.on_connect_fail = make_on_connect_fail(args.mqtt_host, args.mqtt_port, bridge.clock)
     client.on_subscribe, client.on_message = on_subscribe, on_message
+    client.reconnect_delay_set(RECONNECT_MIN_S, RECONNECT_MAX_S)
     try:
-        client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
-    except OSError as e:
-        raise SystemExit(f"cannot reach the MQTT broker at {args.mqtt_host}:{args.mqtt_port} ({e})")
-    client.loop_start()
-    signal.signal(signal.SIGINT, lambda *_: stop.set())
-    next_stats = time.time() + args.stats_interval
-    try:
-        while not stop.is_set():
-            time.sleep(0.25)
-            for batch in bridge.tick():
+        # connect_async + loop_start: paho's loop thread makes the FIRST connection attempt too, and retries it with
+        # backoff if it fails (paho 2.1.0, client.py: _thread_main -> loop_forever(retry_first_connection=True)).
+        # A blocking connect() would raise on an unreachable broker.
+        client.connect_async(args.mqtt_host, args.mqtt_port, keepalive=60)
+        client.loop_start()
+        next_stats = time.time() + args.stats_interval
+        try:
+            while not stop.is_set():
+                time.sleep(0.25)
+                for batch in bridge.tick():
+                    work.put(batch)
+                if args.idle_exit and time.time() - last_message[0] > args.idle_exit:
+                    print(f"bridge: idle for {args.idle_exit:g}s, exiting", flush=True)
+                    break
+                if time.time() >= next_stats:
+                    print("bridge: " + bridge.summary(), flush=True)
+                    next_stats = time.time() + args.stats_interval
+        finally:
+            client.loop_stop()
+            client.disconnect()
+            for batch in bridge.drain():
                 work.put(batch)
-            if args.idle_exit and time.time() - last_message[0] > args.idle_exit:
-                print(f"bridge: idle for {args.idle_exit:g}s, exiting", flush=True)
-                break
-            if time.time() >= next_stats:
-                print("bridge: " + bridge.summary(), flush=True)
-                next_stats = time.time() + args.stats_interval
+            work.put(None)
+            uploader_thread.join(timeout=120)
     finally:
-        client.loop_stop()
-        client.disconnect()
-        for batch in bridge.drain():
-            work.put(batch)
-        work.put(None)
-        uploader_thread.join(timeout=120)
+        for number, handler in previous_handlers.items():
+            signal.signal(number, handler)
     print("bridge: final " + bridge.summary(), flush=True)
     return 0
 
 
-def main(argv=None):
+def main(argv=None, *, process_wide=True, mqtt=None):
+    """process_wide=False (tests) leaves sys.stdout, sys.stderr and the exception hooks alone; mqtt injects a fake
+    client module."""
     args = parse_args(argv)
-    uploader = build_uploader(args)
-    bridge = Bridge(uploader, dead_letter_path=args.dead_letter, max_bytes=args.max_bytes,
-                    max_seconds=args.max_seconds, scan_size=args.scan_size)
-    mode = f"local directory {args.local_dir}" if args.local_dir else f"workspace volume {args.volume_path}"
-    print(f"bridge: writing to {mode}; flush at {args.max_bytes} bytes, {args.max_seconds:g} s, or a complete "
-          f"scan of {args.scan_size}", flush=True)
-    return run(bridge, args)
+    logger = configure_logging(args.log_file, stdout=sys.stdout)
+    if process_wide:
+        capture_process_output(logger)
+    lock = InstanceLock(args.lock_file)
+    try:
+        lock.acquire()
+    except AlreadyRunning as e:
+        logger.error(f"bridge: {e}; this one exits with code {EXIT_ALREADY_RUNNING} (two bridges would share the "
+                     f"client id {args.client_id} and keep taking the session from each other)")
+        return EXIT_ALREADY_RUNNING
+    try:
+        uploader = build_uploader(args)
+        bridge = Bridge(uploader, dead_letter_path=args.dead_letter, max_bytes=args.max_bytes,
+                        max_seconds=args.max_seconds, scan_size=args.scan_size)
+        mode = f"local directory {args.local_dir}" if args.local_dir else f"workspace volume {args.volume_path}"
+        logger.info(f"bridge: writing to {mode}; flush at {args.max_bytes} bytes, {args.max_seconds:g} s, or a complete "
+                    f"scan of {args.scan_size}")
+        logger.info(f"bridge: log file {args.log_file}")
+        return run(bridge, args, mqtt=mqtt)
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":

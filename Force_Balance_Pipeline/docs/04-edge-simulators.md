@@ -437,6 +437,8 @@ on the e2-micro parses YAML. The defaults below are checked against the code by
 | `--oauth-scope` | `files` | the scope in the OAuth token request (workspace mode); the force-bridge secret is scoped to the Files API, and `all-apis` is for an unscoped secret |
 | `--local-dir` | none | write here instead of the volume (local demo and tests) |
 | `--dead-letter` | `logs/bridge_dead_letter.ndjson` | structural failures, and events that could not be uploaded |
+| `--log-file` | `logs/bridge.log` | the bridge's rotating log (5 files of up to 5 MB, UTC timestamps); the only record when it runs without a console |
+| `--lock-file` | `logs/bridge.lock` | single-instance lock; a second bridge exits with code 3 |
 | `--env-file` | `.env.bridge` | the credentials file, below |
 
 Environment, in workspace mode: `DATABRICKS_HOST`, `BRIDGE_DATABRICKS_CLIENT_ID` and
