@@ -206,13 +206,28 @@ fixed (`generate_schema_name.sql` now isolates only `target=dev`; see `docs/ENGI
 semantics decided: current behavior (the run's latest qualifying scan, advancing on each rebuild) documented as
 intended, not a defect; a fixed `confirmed_at` is deferred to Phase 6.
 
-**Phase 4 checkpoint status, 2026-10-08:** p4-0 through p4-11 (`ingest/phase4_checkpoint.sql`) have passed. p4-12 (fault
-reconciliation) is pending the fault period itself, 2026-10-07T13:29:35Z to about 2026-10-10T13:29:35Z
-(`docs/04-edge-simulators.md`) — the seed, the conversion, and the final join all wait until it ends.
+**Phase 4 checkpoint status, 2026-10-10: complete.** p4-0 through p4-12 (`ingest/phase4_checkpoint.sql`) have all
+passed. The fault period ran 2026-10-07T13:29:35Z to the 2026-10-10 pull (`docs/04-edge-simulators.md`); p4-12's
+final reconciliation (425 matched, 0 `fault_not_rejected`, 0 `reason_mismatches`) passed after an unattended bridge
+outage was recovered from — see `docs/ENGINEERING-LOG.md`, "Stage 4d — Phase 4 close," for the full account.
 
 ---
 
 ## Phase 5 — Web intake and inference · 10–14h
+
+**Carried over from Phase 4 close, first priority — the unattended bridge outage (see `docs/ENGINEERING-LOG.md`,
+"Phase 4 close"):** the broker's own persistence and queued-session settings delivered about 22 hours of data intact
+on a manual restart, but nothing detected the outage itself — Job 1 stayed green throughout, and recovery needed a
+human to notice and act. Before the next build step:
+1. The bridge task should wait/retry for the broker rather than exit when it's unreachable, and the task (or its
+   wrapper) should restart automatically on failure — it exited `0xC000013A` (`CONTROL_C_EXIT`) and simply stayed
+   down.
+2. A landing-freshness alert — moves the Phase 8 freshness-monitoring open item forward, since the same class of
+   problem (a healthy-looking pipeline silently not receiving new data) applies to both the bridge and to Job 1's
+   own quota exhaustion.
+3. Document and test the broker persistence and queue settings that actually made recovery possible
+   (`persistence`, `max_queued_messages`) and the bridge's own session settings (`clean_session`, a fixed
+   `client_id`) — currently true/correct in the deployed config, but asserted nowhere.
 
 1. `POST /api/report` endpoint in the bridge. Inference call with the planet's baseline passed in.
 2. **Clamp all returned values to valid ranges in code**, regardless of model output.

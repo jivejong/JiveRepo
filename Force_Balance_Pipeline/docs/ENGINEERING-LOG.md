@@ -839,6 +839,100 @@ reconcile the net +1, so a late-arrival is the leading explanation, not a confir
 suppression). `is_replayed` added to `gold_sector_reading`, and to doc 03's own column list for that table (previously
 missing). detected_at semantics decided: current behavior documented as intended; confirmed_at deferred to Phase 6.
 
+### Stage 4d — Phase 4 close
+
+**Schema isolation incident (Stage 4a).** `generate_schema_name` resolved every model's `+schema` config literally
+regardless of target, so `--target dev` gave no real isolation. A stray dev-target build landed directly in prod.
+Two attempts at 17:03Z and one at 17:18Z failed on `on_schema_change` as a result. Restored via a `git worktree`
+build of `main` (~17:21Z); the first clean run after restoration was 17:33Z. The 51-row `gold_disturbance` table
+was byte-identical to its pre-incident state after the restore. Fix: `generate_schema_name` now isolates only
+`target=dev`; every other target keeps its prior, literal-schema behavior.
+
+**Baseline sensitivity — tund, 2026-07-15 05:45Z.** A disturbance's onset can sit on either side of the 5.75
+threshold depending on exactly which `gold_sector_baseline` snapshot it's scored against: 5.750447 in one build
+(prod) vs. 5.748625 in another (dev), both evaluated against the same strict `> 5.75` rule. The baseline depends
+on both build time (`current_timestamp()`, captured once per build) and on `silver_probe_reading`'s own contents
+at that build time — two genuinely different, both-correct snapshots can disagree on a borderline row.
+
+**2026-10-04 push (commit `05a8f0f`) and full refresh.** The 21:03Z Job 1 run failed on schema, as expected. The
+subsequent `gold --full-refresh` passed 45/45. `gold_disturbance` stayed at 53 rows overall, but with 2 removed
+and 2 added, all three within a hair of 5.75 (the same mechanism as above): tund's onset moved 05:45→06:00 (05:45
+now scores 5.721); kamino's 2026-09-02 incident disappeared (19:30 now scores 5.730); dorin's 2026-07-06 incident
+appeared (20:30/20:45 score 5.817/5.799).
+
+**Quota and cadence.** Observed run counts: Oct 2 — 41 Job 1 runs, then none until 03:33Z Oct 3. Oct 3 — 34 runs
+(03:33Z–20:03Z). Oct 4 — 36 runs (03:33Z–21:03Z). Exhaustion is silent: no run is created once the day's budget is
+spent. Inferred (not confirmed against a published number): daily reset between 03:03Z and 03:18Z; daily transform
+budget roughly 3.4–3.8h. Observed median transform duration ~338s (Oct 2–4), ~358s (Oct 5). Cadence: 15→30min
+(Oct 2)→hourly (Oct 5); Job 2 moved with it, 03:10→03:18→03:40. The Oct 3 11:03Z/11:33Z runs each stalled 844s
+before their first node — a SQL-warehouse startup delay, not a slow model or query.
+
+**Oct 5 per-node cost.** Node-time share: data tests 40%, models 26%, unit tests 22%, seeds 12%. Seeds and unit
+tests were subsequently removed from Job 1's own selection; `--indirect-selection cautious` keeps the one
+cross-reference test a blunter exclusion would have dropped along with the seed-only tests; 44 data tests remain.
+
+**Natural outage, 2026-10-05 (unplanned, link loss).** `DISCONNECTED` at 06:45:27Z (keep-alive timeout). Restored
+13:11:59Z, backlog 1,560; drain interrupted twice, completed 13:12:32Z. Silver: 1,560 rows, 26 scans × 60, 0
+duplicates in silver or bronze. `is_replayed` true on 1,440/1,560; `was_buffered` true on 1,500/1,560 (the 60-row
+gap is the scan captured `CONNECTED`, just before the link actually died, that nonetheless arrived hours late —
+`was_buffered` records the probe's mode at capture, not the delivery path; see doc 03). Lag: ~23,320s (first
+buffered scan), ~838s (last). The first Job 1 run after the drain (13:33Z) took 18 minutes. Link flaps 13:12Z–13:13Z
+during the drain: one mode transition recorded per flap — the duplicate-disconnect guard held under real, repeated
+flapping.
+
+**p4-8 — scheduled DISCONNECTED window.** 17:33:08Z–18:49:40Z, backlog 300. 300 rows, 5 scans, 0 duplicates.
+`is_replayed` true on 180/300; `was_buffered` true on all 300. Lag: ~3,882s (first), ~284s (last).
+
+**C4 attempt 1 — dagobah (void).** Injection 1 applied 2026-10-05T21:59:49Z. Injection 2 was never sent — a missed
+operator step. A follow-up `mode CONNECTED` sent with no `--for-seconds` (2026-10-06T01:33:10Z) overrode the
+schedule indefinitely; cleared 01:45:13Z with `mode CONNECTED --for-seconds 1`; the schedule resumed (next window
+from 06:35:19Z). This is what `probe_ctl.py`'s `--indefinite` guard now exists to prevent.
+
+**p4-10 — bespin (succeeded).** T = 2026-10-06 14:00Z. Episode 1, 14:15Z–15:00Z: scores 8.17, 6.511, 6.511, 5.777.
+T+60 (15:00Z) was still over threshold; T+75 (15:15Z, 3.945) was the scan that actually confirmed below-threshold.
+Injection 2 fired at T+90 (15:30Z), not the originally planned T+75. Episode 2, 15:45Z–16:15Z: scores 8.663, 6.516,
+6.554. Result: 1 incident, `detected_at` = 15:00Z, `cooldown_conflict` = false. The onset `scan_id` at 14:15Z is
+**[unverified]**.
+
+**`deploy.sh` had no restart step.** Commit `ca2ba04` was checked out on the Pi 2026-10-06 23:56:52 EDT; the process
+running since 2026-09-30 kept serving `--fault-rate 0` until a manual `sudo systemctl restart force-probe` at
+2026-10-07 13:29:35Z — ~13.5 hours later. Every earlier deploy on this Pi had been restarted by hand at the time,
+so no earlier checkpoint result ran against stale code; this is the first time it was missed. Fixed: `deploy.sh`
+now restarts and verifies this itself.
+
+**Unattended bridge outage, 2026-10-09/10.** Last file landed 2026-10-09 15:15:05Z. The desktop crashed and
+rebooted (boot 15:20:44Z). The Pi saw `link_lost` at 15:21:27Z (keep-alive timeout). The bridge task started
+15:21:40Z and exited `0xC000013A` (`CONTROL_C_EXIT`) — and simply stayed down, nothing restarted it. The broker
+container started 15:26:20Z; the Pi reconnected 15:26:23Z. The bridge itself wasn't restarted until a human did it
+manually, 2026-10-10 ~15:25Z — about 22 hours after the crash. Job 1 stayed green throughout; nothing detected the
+outage.
+
+**Gap completeness, bronze, event_time 2026-10-09T15:30Z–2026-10-10T16:00Z (post-recovery check):** 5,878 rows;
+98/98 regular scans complete (≥55 rows each); 14 small scan_ids (+24h future-time faults shifted into the window
+from elsewhere); 0 duplicate rows.
+
+**Early fault-reconciliation check, 2026-10-08 (partial — faults logged before 12:00Z that day).** 135 faults
+logged: `null_channel` 67, `out_of_range` 44, `unknown_sector` 18, `future_event_time` 6. 135 matched against
+`silver.rejects`, 0 unrejected, 0 reason mismatches. A sanity check mid-period, against a subset of the eventual
+425-fault log, not the final reconciliation below.
+
+**p4-12 — fault reconciliation, final.** Seed: 425 faults (`fault_injection_20261007.csv`, loaded to
+`force.gold.fault_injection_20261007`, 2026-10-10). First run (before the bridge restart): 292 matched, 133 not
+yet delivered, 0 mismatches — the undelivered 133 were simply still queued at the broker during the outage, not
+lost or misclassified. Final (after the bridge restart and the 16:03Z Job 1 run): 425 matched, 0
+`fault_not_rejected`, 0 `reason_mismatches`, 12 `rejected_not_a_logged_fault` (real rejects logged after the
+13:45:03Z cut, outside the fault log's own window). **PASS.**
+
+**Framing.** At-least-once delivery held end to end through a desktop crash and about 22 hours with no bridge
+running at all — every one of the 425 logged faults eventually matched, with its correct reject reason, once
+delivery resumed. The gap this incident exposed is detection and automatic recovery, not data integrity: nothing
+noticed the bridge was down, and nothing brought it back without a human.
+
+**Phase 4 checkpoint status.** p4-0 through p4-12 (`ingest/phase4_checkpoint.sql`) have all passed.
+
+**Note.** Commit `7a05748` (Stage 3d) reused Stage 3c's own subject line verbatim. Left as-is — already public on
+`main`, a cosmetic git-history issue, not a code or data problem.
+
 ## Open items
 
 | Item | Status |
@@ -864,6 +958,7 @@ missing). detected_at semantics decided: current behavior documented as intended
 | `deploy.sh` restart and verification | **Fixed, 2026-10-07.** `deploy.sh` had no restart step at all — confirmed live: commit `ca2ba04` was checked out on the Pi 2026-10-06 23:56:52 EDT, but the process running since 2026-09-30 kept serving `--fault-rate 0` until a manual `sudo systemctl restart force-probe` at 2026-10-07 13:29:35Z, ~13.5 hours later. The journal shows every earlier deploy was restarted by hand at the time, so no earlier checkpoint result ran on stale code — this one just happened to be missed. `deploy.sh` now restarts `force-probe` itself when it's already active, and verifies the result (new PID's start time after the deploy began, checked-out SHA matches) before exiting 0. |
 | `probe_ctl.py` `mode` with no `--for-seconds` | **Guarded, 2026-10-08.** Overrides the schedule indefinitely with no resume command (`edge/probe/modes.py`) — found live, 2026-10-06, when exactly this silently overrode the schedule for 12 minutes during a C4 run. `probe_ctl.py` now refuses it unless `--indefinite` is also given explicitly; recovery is still `mode CONNECTED --for-seconds 1`. |
 | `ingest/phase4_checkpoint.sql`'s literal `event_time` upper bounds | **Padded, 2026-10-08.** p4-8's `<replay_window_end_utc>` placeholder now pads +10s (`dateadd(second, 10, ...)`) — a literal boundary clips most of the last scan's 60 rows to sub-second jitter, confirmed live twice (the real backlog figure, 1560 then 300, only matched after padding). p4-10's fixed "+2h" upper bound on `detected_at` was removed outright (a separate, related fix, not jitter) — a delayed or re-attempted run could push `detected_at` past it and produce a false "0 incidents." |
+| Unattended bridge outage: nothing detected it, recovery needed a human | **Open, Phase 5 first priority** (see doc 07). A real ~22h bridge outage (2026-10-09/10) delivered intact on a manual restart — the broker's persistence and queued-session settings worked — but Job 1 stayed green throughout and nothing alerted that the bridge itself was down. Three items: the bridge task should wait/retry for the broker and restart automatically on failure (it exited `0xC000013A`/`CONTROL_C_EXIT` and just stayed down); a landing-freshness alert, which also moves the existing Phase 8 freshness item (above) forward, since it's the same class of problem as the quota exhaustion's own silent gaps; and documenting/testing the broker and bridge settings that made recovery possible in the first place (`persistence`, `max_queued_messages`, `clean_session`, the fixed `client_id`) rather than leaving them correct-but-unasserted. |
 
 ## Lessons (beyond this project)
 
