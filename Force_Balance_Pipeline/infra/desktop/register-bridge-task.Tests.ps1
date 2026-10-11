@@ -71,19 +71,18 @@ Describe "Get-RunningBridgeProcesses" {
 }
 
 Describe "New-BridgeTaskDefinition" {
+    # Every command that could change a Scheduled Task is mocked BEFORE the definition is first built, so nothing in
+    # this Describe can touch a real task even if New-BridgeTaskDefinition were changed to try, and the last test
+    # below counts the calls the whole Describe made (building $def included).
+    Mock Register-ScheduledTask {}
+    Mock Unregister-ScheduledTask {}
+    Mock Start-ScheduledTask {}
+    Mock Stop-ScheduledTask {}
+    Mock Set-ScheduledTask {}
+
     $user = 'CONTOSO\tester'
     $def = New-BridgeTaskDefinition -RepoPath 'C:\repo' -MqttHost 'broker.invalid' -User $user `
         -Start ([datetime]'2026-10-10T12:00:00')
-
-    It "builds the definition without registering, starting or changing any task" {
-        Mock Register-ScheduledTask {}
-        Mock Start-ScheduledTask {}
-        Mock Unregister-ScheduledTask {}
-        $null = New-BridgeTaskDefinition -RepoPath 'C:\r' -MqttHost 'h.invalid' -User $user
-        Assert-MockCalled Register-ScheduledTask -Times 0
-        Assert-MockCalled Start-ScheduledTask -Times 0
-        Assert-MockCalled Unregister-ScheduledTask -Times 0
-    }
 
     It "runs the windowless pythonw.exe on bridge.py with the broker host, from the repo folder" {
         $def.Action.Execute | Should Be 'C:\repo\edge\.venv\Scripts\pythonw.exe'
@@ -145,5 +144,15 @@ Describe "New-BridgeTaskDefinition" {
     It "puts no address or credential in the task definition beyond the broker host argument" {
         ($def.Action.Arguments -split ' ').Count | Should Be 3
         $def.Action.Arguments | Should Not Match '(?i)password|secret|token'
+    }
+
+    # Keep this test last: -Scope Describe counts every call made by every test above it and by building $def.
+    It "registered, unregistered, started, stopped or changed no task while the definitions above were built" {
+        $null = New-BridgeTaskDefinition -RepoPath 'C:\r' -MqttHost 'h.invalid' -User $user
+        Assert-MockCalled Register-ScheduledTask -Times 0 -Exactly -Scope Describe
+        Assert-MockCalled Unregister-ScheduledTask -Times 0 -Exactly -Scope Describe
+        Assert-MockCalled Start-ScheduledTask -Times 0 -Exactly -Scope Describe
+        Assert-MockCalled Stop-ScheduledTask -Times 0 -Exactly -Scope Describe
+        Assert-MockCalled Set-ScheduledTask -Times 0 -Exactly -Scope Describe
     }
 }
