@@ -844,6 +844,12 @@ Ctrl+C is handled from the moment the process starts, so it stops the bridge cle
 (main thread or another thread) goes there; a console stream is added only when there is a console. Dead-lettered events stay in
 `logs/bridge_dead_letter.ndjson`. Paths are absolute, derived from the script's location, never the working directory.
 
+Reading the log while the bridge runs is safe: `Get-Content -Wait logs\bridge.log` (or an editor, or a scanner) holds the file
+open without delete sharing, which makes Windows refuse the rename a rotation needs. The bridge then keeps appending to the
+current file, which grows past 5 MB meanwhile, and tries to rotate again a minute later, so no line is lost and rotation resumes
+by itself once the reader lets go. A failing log write (a full disk, say) never stops the bridge: it is reported once a minute to
+the original stderr, or dropped silently when there is none (`pythonw.exe`), and never logged through the logger itself.
+
 **One bridge at a time.** The bridge connects with the fixed client id `force-bridge` (above: "a persistent session queues the Pi's
 messages while it is down"), so two running at once would take the session from each other, repeatedly, with no error from either
 side. Three layers: the task's `IgnoreNew`; `register-bridge-task.ps1` refuses to register or start a task while a bridge process

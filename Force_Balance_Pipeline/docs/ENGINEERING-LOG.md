@@ -979,6 +979,32 @@ code problems, and were fixed before the numbers above: an `ERROR` where a stray
 releases the lock anyway). One mutation was deliberately not run: making the definition function register a task, because the
 Describe-level call is not mocked and would have created a real task.
 
+**Follow-up, same day (review of the stream capture).** Reading `capture_process_output` against the committed code raised
+whether the console handler could write into the replaced `sys.stdout` (no: `main()` passes the original stream to
+`configure_logging` before capture runs, and `StreamHandler` keeps that reference) and whether a log failure could recurse
+through the logger-backed `sys.stderr`. Reproduced on this machine with a handle held on `bridge.log` (no delete sharing, as
+`Get-Content -Wait` does) and a 400-byte rotation limit: 6 `print`s caused 118 emit calls (nesting depth 2, so bounded by the
+reentrancy flag, not infinite), and only the first 2 lines reached the file, because the stock `RotatingFileHandler` raises
+from the rollover before it writes the record, so every line is lost while the rotation is blocked. Fixed: a handler that
+keeps writing to the current file when a rotation fails and retries a minute later; `handleError` reports to the original
+stderr once a minute (nothing under `pythonw.exe`); the reentrancy flag is shared by the stdout and stderr streams. Same
+reproduction afterwards: 6 emits, depth 1, 6 lines in the file. Five new tests, mutation-checked (removing `handleError` — 2
+assertion FAILs; removing the reentrancy flag — 1, via `RecursionError`; a per-stream flag — 1; removing the rotation recovery —
+2). `ingest/e2e_local.py` was edited in Round 2 (it now passes temporary `--log-file` and `--lock-file` paths) and was run
+afterwards, 2026-10-11 about 00:25Z (the evening of 2026-10-10 local): `ingest/e2e_local.py --port 18883 --broker-container
+fbp-e2e-mosquitto` against a throwaway `eclipse-mosquitto:2` container (Mosquitto 2.1.2, `infra/mosquitto/mosquitto.conf`,
+published on 127.0.0.1:18883 only), both scenarios. **ALL CHECKS PASSED**: 41 PASS, 0 FAIL (basic 20, restart 21), including the
+bridge reaching `subscribed` through the stream capture, every scan landing once byte for byte, nothing dead-lettered, and the
+restarted bridge reporting `session present: True` after the throwaway broker was restarted. The e2e bridges used client ids
+`force-bridge-e2e-<random>` (never `force-bridge`) and wrote `bridge.log` and `bridge.lock` under their temporary work
+directories; nothing was written to the repo's `logs/`. The live `force-mosquitto` was not touched (`Up 33 hours`, `StartedAt`
+2026-10-09T15:26:20Z, 0 restarts, identical before and after) and neither was the running bridge; the throwaway container was
+removed afterwards. The bridges logged in with the real `.env.mqtt` credentials, over loopback, to the anonymous throwaway broker.
+Pester: the Scheduled Task commands are now mocked for the whole definition Describe and the last test asserts zero calls to
+`Register-`, `Unregister-`, `Start-`, `Stop-` and `Set-ScheduledTask`; the mutation skipped in Round 2 (the definition function
+registering a task, here with invalid XML as a second safeguard) is caught: "Expected Register-ScheduledTask to be called 0
+times exactly but was called 3 times".
+
 **Manual steps for Jong (data is safe in the broker throughout — it holds the bridge's persistent session, and the Pi has its own
 buffer — so there is no hurry). Results to be recorded here.**
 1. Stop the running bridge cleanly: just after a quarter-hour scan has landed (~:01 past :00/:15/:30/:45), click its console
