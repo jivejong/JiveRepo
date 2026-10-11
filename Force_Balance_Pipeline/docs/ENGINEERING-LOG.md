@@ -937,12 +937,11 @@ noticed the bridge was down, and nothing brought it back without a human.
 
 **Goal.** Doc 07's carried-over first priority, from the 22-hour bridge outage of 2026-10-09/10 (Stage 4d): (1) the bridge survives
 an unattended reboot; (2) a landing-freshness alert; (3) the broker and bridge session settings that made recovery work are
-documented and tested. Items 1 and 3 are done and verified live (below). **Item 2 is Round 4 and is not built.** Its design is
-decided: three signals — S1 bridge liveness, S2 Job 1 liveness, S3 data freshness — each reported to an external dead-man's-switch
-so that alerting shares no failure domain with the desktop or with Databricks quota. It supersedes the 45-minute bronze rule in
-doc 03:439 and doc 05:413 (which would trip between hourly runs and in every scheduled DISCONNECTED window); those docs are amended
-in Round 4. Two silent-loss paths were found and
-closed on the way (below).
+documented and tested. All three are done and verified live (below); item 2 is Round 4 (2026-10-11), with one test still pending:
+three signals — S1 bridge liveness, S2 Job 1 liveness, S3 data freshness — each reported to an external dead-man's-switch so that
+alerting shares no failure domain with the desktop or with Databricks quota. They supersede the 45-minute bronze rule that was in
+doc 03 and `sources.yml` (which would trip between hourly runs and in every scheduled DISCONNECTED window). Two silent-loss paths
+were found and closed on the way (below).
 
 **Rounds and commits** (all under `Force_Balance_Pipeline/`; SHAs from `git log`):
 
@@ -952,6 +951,7 @@ closed on the way (below).
 | 2 | The bridge survives an unattended reboot | `2686936` (bridge code and tests), `b5d88e4` (task script and Pester), `6af8d59` (docs); review follow-up `d985195` (log rotation), `b6bcad0` (Pester mocks), `55f0662` (log and doc 05) |
 | 3 | Broker persistence and session settings | `7341cde` (tests), `24ee207` (doc 05), `c56517b` (the broker conf: expiry 10d, autosave 10 s, window 180) |
 | 3b | Acknowledge after landing (`manual_ack`) | `460f41d` (bridge and tests), `1885327` (e2e scenarios), `1d1325e` (docs) |
+| 4 | Freshness monitoring (S1-S3) | `98136f3` (S1/S3 pings, wiring, tests), `7c09534` (freshness rule dropped, docs), `c01808d` (S2 through a bundle variable), `3b793b1` (doc 05: S2, email-ping format, stop-wait-start) |
 
 **How it was run.** Each round was planned and approved before any code. Every new test was mutation-checked against a green
 baseline, and only an assertion FAIL counted as a catch. The live steps (the scheduled task, Docker, the broker restarts, the
@@ -1199,6 +1199,96 @@ and the only places the probe disconnects its client are `publisher.reset()` (`p
 after an unacknowledged publish) and `close()` (`:136-138`). A kill test is only meaningful in a CONNECTED window with a scan in
 flight (about :00:00–:00:03).
 
+### Phase 5 Round 4 — freshness monitoring (S1-S3) (2026-10-11)
+
+Commits `98136f3`, `7c09534`, `c01808d`, `3b793b1`. Live results below are from Jong's pasted output; times are UTC unless marked
+EDT.
+
+**Goal.** Carried-over item 2: notice the silent failure class of 2026-10-09/10 (a healthy-looking pipeline that is not receiving
+data), including Databricks quota exhaustion, where Job 1 simply is not run. Alerting must not share a failure domain with the
+desktop or with Databricks.
+
+**Decisions and why.**
+- *An external dead-man's-switch,* [Healthchecks.io](https://healthchecks.io) (hosted free tier, email only). A check that stops
+  receiving pings goes down, and the silence is the alarm, so nothing has to be alive to report a failure. Four checks:
+
+  | Signal | Check | Period | Grace | Alert after |
+  |---|---|---|---|---|
+  | S1 bridge alive and connected | `fbp-s1-bridge-alive` | 5 min | 25 min | 30 min of silence |
+  | S2 Job 1 succeeded | `fbp-s2-job1-success` | 1 h | 1 h | 2 h |
+  | S3 data landed | `fbp-s3-data-landed` | 15 min | 3 h 45 min | 4 h |
+  | (test) | `fbp-test` | 1 min | 1 min | 2 min |
+
+  *Grace means total silence* (period plus grace), decision Q-B1. S1 is 30 minutes because the longest normal gap is a reboot (13 min
+  56 s in the 2026-10-11 reboot test). S3 is 4 hours because the probe's scheduled DISCONNECTED windows last 1–3 hours
+  (`edge/probe/modes.py:55`), so the longest normal silence is about 3 hours plus a scan interval; two windows touching at the
+  half-day boundary would merge, which a Monte Carlo over the schedule's own rule puts at about 2 in 10,000 per boundary (derived).
+  The reasoning for all three is in doc 05, "Monitoring".
+- *S1 and S3 are sent by the bridge,* from `ingest/bridge/monitor.py`: a queue of 16 and one daemon thread that sends through
+  `files_api.http_request`, the repo's one outbound HTTP path, with only the project User-Agent and no Databricks credential in
+  reach. A failing ping is caught, logged at most once per 15 minutes, and never touches the MQTT, upload or acknowledgement paths.
+  The ping URLs live in `.env.bridge` (gitignored) and are credential-like, so only their presence is ever reported.
+- *S2 is sent by Databricks,* by a job-level `email_notifications.on_success` entry on Job 1 whose address is the bundle variable
+  `s2_ping_email` (no default, so a deploy without it fails rather than deploying an empty notification). It needs no outbound access,
+  no secret and no serverless quota. It was chosen over a webhook or a final ping task, which would have needed an administrator
+  destination or egress that the Free Edition page leaves unconfirmed. A throwaway serverless job with `on_success` email to
+  `fbp-test`'s address produced an email ping, so the route works on Free Edition; the job and its folder were deleted.
+- *The 45-minute freshness rule was deleted* (`sources.yml` block; the stale comment in `stg_bronze_events.sql`; docs 03 and 07),
+  decision Q-B2. Doc 05 "Monitoring" is the one place the rule lives. The old rule only existed as documentation: nothing ran
+  `dbt source freshness`.
+
+**Issues.**
+- *The Stop/Start race (found 2026-10-11 during the S1/S3 rollout).* `Stop-ScheduledTask; Start-ScheduledTask` raced: the new
+  instance reached the lock at 19:38:00.476Z and exited with code 3, 177 ms before the old instance wrote its last summary line at
+  19:38:00.653Z. The 19:39:44Z repetition tick then started the new code ("monitoring pings enabled for S1, S3", connected,
+  `session present: True`), 1 min 44 s late. *Cause:* `Stop-ScheduledTask` returns before the process has exited. *Effect:* only
+  the delay; the lock did its job and prevented two bridges. *Fix:* a documented procedure, stop → wait until no `bridge.py`
+  process remains → start (doc 05, "Restarting the bridge by hand"); the rollout steps were corrected. A lock-loser log line that
+  looked like `this oneexits` was a copy/paste artifact: the source and the log both read "this one exits", so nothing changed.
+- *The `warehouse_id` placeholder (found 2026-10-11 at the first S2 deploy).* `databricks bundle deploy` failed: `jobs/reset`
+  returned HTTP 400 `"<id> is not a valid endpoint id"` for **both** jobs; zero files were uploaded and nothing changed, and the live
+  jobs and the warehouse were fine (the warehouse id is deliberately not written here, per the placeholder convention). *Cause:* `BUNDLE_VAR_warehouse_id` held the literal placeholder `<id>`, at
+  user level and in the session; older terminals still had the real value, which hid it. *Fix:* `setx` and the session variable set
+  to the real id; the deploy then succeeded. *How the placeholder got there:* not established; but the repo's own text showed the
+  variable as `BUNDLE_VAR_warehouse_id=<id> databricks bundle deploy` (`databricks.yml:15` and doc 05), a line that can be pasted
+  as it stands. A placeholder hunt over `docs/`, `infra/`, scripts and READMEs found only those two (and the S2 deploy snippet,
+  which had the same shape, `setx BUNDLE_VAR_s2_ping_email "<uuid>@hc-ping.com"`); all three were rewritten so they cannot be
+  pasted literally, and the read-only deploy check now validates a real-looking address without printing it.
+- *The Email integration was never confirmed (found 2026-10-11 by the S1 outage proof).* S1 went down at the right moment and **no
+  email was sent**. The account's Email integration had not been confirmed or attached; S1's own event log showed the status changes
+  but no notification. Jong confirmed it and enabled it on all four checks; delivery was then proven on `fbp-test`. The setup
+  checklist in doc 05 now has these steps, in order.
+- *Found while building the bridge side:* the sender had to go through `files_api.http_request`, because a repo guard test forbids
+  outbound HTTP anywhere else; a key-name pattern of `[A-Z_]+` could not match `BRIDGE_PING_S1_URL` (it has a
+  digit); and non-daemon threads in a test left the mutation harness hanging. All three were fixed in `98136f3`.
+
+**Live results (2026-10-11).**
+- *S1 and S3 deployed.* The new bridge started at 19:39:44Z, logged `monitoring pings enabled for S1, S3` and connected with
+  `session present: True`. S1 pinged every 5 minutes from 15:39 EDT (19:39Z), each request carrying the project User-Agent. S3
+  is deployed with the same start; its live ping cadence is to be confirmed from the check's log (that line of the pasted facts
+  was a placeholder, so it is not stated here).
+- *S2 deployed.* After the fix above the deploy succeeded. The read-only check returned Job 1 `on_success=1`, `on_failure=0` and a
+  hc-ping.com address, and Job 2 `on_success=0`. `fbp-s2-job1-success` received its first ping after Job 1's 21:03Z run
+  succeeded.
+- *S1 outage proof.* ForceBridge was disabled and stopped at about 20:23:30Z (last bridge summary line 20:23:26Z). S1's last ping
+  was at 20:19Z and Healthchecks marked it **down at 20:49Z, exactly period plus grace (30 minutes)**. The bridge was restored at
+  21:04:48Z (`session present: True`) and S1 went back **up on its first ping (21:04Z)**. The three scans published during the
+  roughly 41-minute outage (20:30, 20:45 and 21:00Z) landed at 21:04:49–21:04:50Z as 60-line, regular-sized files. **The Pi did not
+  buffer them: the broker held them for the offline persistent session.** This is the first live proof of broker-queued delivery
+  (previously only 2026-10-09).
+- *Delivery proof.* `fbp-test` was taken through a down cycle and the "down" email arrived at 17:21 EDT (21:21Z). All four checks
+  share that integration.
+- *Not recorded here:* the Healthchecks ping log shows a public IP address; it is deliberately not written down.
+
+**Not yet done.**
+- *S3's negative test:* it must stay up through a scheduled DISCONNECTED window of at most 3 hours. That happens naturally in the
+  00:00–12:00Z half-day of 2026-10-12 (one window is scheduled per half-day); recorded as pending, an open item below.
+- *A quota-exhaustion alert has not been observed.* It follows from the design: exhaustion creates no run, so there is no success
+  email, so S2 goes down after 2 hours; delivery of the alert is proven through `fbp-test`.
+
+**Tests.** Before these documentation edits, both suites were green: edge 533 tests OK (1 skipped) and ingest 373 tests OK
+(2026-10-11). The monitoring tests are `test_monitor.py` and `test_monitor_wiring.py` (`98136f3`).
+
 
 ## Open items
 
@@ -1219,14 +1309,14 @@ flight (about :00:00–:00:03).
 | `cooldown_conflict` scope: replayed onsets only (doc 03's literal words) or any suppressed onset (current implementation) | **Resolved, Stage 4a: definition B** (replayed onsets only). Doc 03 (`cooldown_conflict`) and `gold_disturbance.sql` now agree; see "Stage 4a," above. |
 | `gold_disturbance`'s full-history rescan, cost growing with total row count (530,000+ and climbing) | A bounded recompute window (e.g. 7 days) would cut this ~90%+ and keep it constant, but risks cutting a real run in half if the window isn't proven wide enough first. Proposed, not built — see "Stage 3d," above. |
 | Job 1 cadence (15 / 30 / 60 minutes) | **Changed to 30 minutes, Stage 4b** (2026-10-01), after a second quota-exhaustion event. **Changed again to 60 minutes, Stage 4c** (2026-10-05): a 3-day quota-watch at 30 minutes (2026-10-02 to 2026-10-04, `ingest/job1_quota_watch.sql`) still exhausted every day — exhaustion is silent (no run created, not a failed run), reset inferred between 03:03Z and 03:18Z (Job 2 succeeded at 03:18Z all 3 days; the 03:03Z Job 1 run never appeared, any day), daily transform budget inferred at ~3.4-3.8h. Hourly brings cumulative transform time to ~2-2.5h/day, real margin under the inferred budget. Still provisional; if exhaustion recurs at hourly, the next lever is a paid warehouse tier, not a shorter interval. |
-| Quota-exhaustion monitoring is a failure-count check, but exhaustion is silent | **Open, moved to Phase 5 (signal S2).** The 3-day quota-watch (above) found that exhausted days show zero FAILED/SKIPPED runs for the cut-off period -- the scheduler simply never creates a run, so a per-day FAILED/SKIPPED count (`job1_quota_watch.sql`'s own quota-1 query) reads as healthy even on a day that stopped running hours early. Real monitoring needs a freshness/gap check instead -- e.g. "has `gold_sector_reading`'s `_gold_built_at` (or Job 1's own last-run timestamp) advanced within the last N minutes" -- not a result-state tally. |
+| Quota-exhaustion monitoring is a failure-count check, but exhaustion is silent | **Resolved by S2, deployed 2026-10-11 (Phase 5 Round 4).** The 3-day quota-watch found that exhausted days show zero FAILED/SKIPPED runs for the cut-off period -- the scheduler simply never creates a run, so a per-day failure count reads as healthy. S2 is the answer: Job 1 emails `fbp-s2-job1-success` once per *successful* run, so silent exhaustion means no run, so no ping, so the check goes down after 2 hours (period 1 h plus grace 1 h) and the alert fires. Delivery of that alert is proven through the shared `fbp-test` down cycle (email 17:21 EDT); an actual exhaustion alert has not yet been observed. |
 | `resources/*.job.yml`'s resilience changes (task timeouts, Job 2's moved schedule, `pause_status: UNPAUSED`) | **Resolved, 2026-10-10.** Live `databricks jobs get` matched the files. Job 1 (`force_pipeline`, 692051683030737): `schedule.quartz_cron_expression` `0 3 * * * ?`, `timezone_id` UTC, `pause_status` UNPAUSED, `timeout_seconds` 2400 on both `ingest_bronze` and `transform`, transform command `dbt build --exclude gold_sector_baseline resource_type:seed test_type:unit assert_baseline_probe_only --indirect-selection cautious`. Job 2 (`rebuild_baseline`, 38074271722750): cron `0 40 3 * * ?`, UTC, UNPAUSED, `timeout_seconds` 2400. |
 | A gold `--full-refresh` recomputes historical z-scores against whatever `gold_sector_baseline` exists at build time | A disturbance near the 5.75 threshold can shift onset, appear, or disappear between two full-refreshes built at different times from different baseline snapshots — observed directly, 2026-10-04 (tund's onset moved 05:45→06:00; kamino's 2026-09-02 incident disappeared; dorin's 2026-07-06 incident appeared — all three within 0.03 of the 5.75 threshold). Not a bug — the baseline genuinely is a snapshot, and a full-refresh genuinely does recompute everything against it — but worth deciding, in Phase 6: freeze historical z-scores once computed (don't recompute rows outside the normal recompute window on a full-refresh), or add hysteresis around the threshold, or simply treat every full-refresh as a deliberate, logged event (which commit, which baseline snapshot, what changed) rather than a routine operation. |
 | `deploy.sh` restart and verification | **Fixed, 2026-10-07.** `deploy.sh` had no restart step at all — confirmed live: commit `ca2ba04` was checked out on the Pi 2026-10-06 23:56:52 EDT, but the process running since 2026-09-30 kept serving `--fault-rate 0` until a manual `sudo systemctl restart force-probe` at 2026-10-07 13:29:35Z, ~13.5 hours later. The journal shows every earlier deploy was restarted by hand at the time, so no earlier checkpoint result ran on stale code — this one just happened to be missed. `deploy.sh` now restarts `force-probe` itself when it's already active, and verifies the result (new PID's start time after the deploy began, checked-out SHA matches) before exiting 0. |
 | `probe_ctl.py` `mode` with no `--for-seconds` | **Guarded, 2026-10-08.** Overrides the schedule indefinitely with no resume command (`edge/probe/modes.py`) — found live, 2026-10-06, when exactly this silently overrode the schedule for 12 minutes during a C4 run. `probe_ctl.py` now refuses it unless `--indefinite` is also given explicitly; recovery is still `mode CONNECTED --for-seconds 1`. |
 | `ingest/phase4_checkpoint.sql`'s literal `event_time` upper bounds | **Padded, 2026-10-08.** p4-8's `<replay_window_end_utc>` placeholder now pads +10s (`dateadd(second, 10, ...)`) — a literal boundary clips most of the last scan's 60 rows to sub-second jitter, confirmed live twice (the real backlog figure, 1560 then 300, only matched after padding). p4-10's fixed "+2h" upper bound on `detected_at` was removed outright (a separate, related fix, not jitter) — a delayed or re-attempted run could push `detected_at` past it and produce a false "0 incidents." |
-| Unattended bridge outage: nothing detected it, recovery needed a human | **Items 1 and 3 done and verified live; item 2 (monitoring) open, Phase 5 Round 4.** The ~22 h outage of 2026-10-09/10 delivered intact on a manual restart, but Job 1 stayed green and nothing alerted. (1) The bridge task waits, retries and restarts automatically — **done** (Round 2): the kill-the-child test restarted it on the first repetition tick (01:04:44Z), and in the reboot test of 2026-10-11 it retried once a minute for about 13 minutes until Docker Desktop was up and connected 3 s after the broker. (2) A landing-freshness alert — **open, Round 4, not built**: three signals reported to an external dead-man's-switch, S1 bridge liveness (period 5 min, grace 25 min), S2 Job 1 liveness (1 h, 1 h) and S3 data freshness (15 min, 3 h 45 min), grace meaning total silence; S2 also covers the quota-exhaustion row below. (3) Document and test the broker and bridge session settings — **done** (Round 3: doc 05 "Broker persistence and the bridge session", `test_broker_config.py`; Round 3b then closed the pre-upload loss path). See "Phase 5". |
-| `force-bridge` OAuth secret expires 2026-12-25 13:59Z | **Open, Phase 5.** When it lapses, token exchange fails (`AuthError`; `upload.py` retries 5 times) and every batch is dead-lettered to `logs/bridge_dead_letter.ndjson`. MQTT stays connected and Job 1 still succeeds on empty input, so the bridge-liveness and Job 1 signals keep reporting healthy; only the data-freshness signal fires. These three are the planned Phase 5 monitoring signals (S1 bridge liveness, S2 Job 1 liveness, S3 data freshness; doc 05 "Monitoring", to be written). Derived timing: the last good upload is at most ~1 h after expiry (the cached token lives up to `expires_in`, default 3,600 s), and S3 then fires after its ~4 h of silence, so the alert arrives ~5 h after expiry, about 18:00–19:15Z on 2026-12-25. Rotation steps to be written into doc 05 "Monitoring" before then. |
+| Unattended bridge outage: nothing detected it, recovery needed a human | **Resolved, all three items, 2026-10-11 (Phase 5).** The ~22 h outage of 2026-10-09/10 delivered intact on a manual restart, but Job 1 stayed green and nothing alerted. (1) The bridge task waits, retries and restarts automatically -- **done** (Round 2): the kill-the-child test restarted it on the first repetition tick (01:04:44Z), and in the reboot test of 2026-10-11 it retried once a minute for about 13 minutes until Docker Desktop was up and connected 3 s after the broker. (2) A landing-freshness alert -- **done** (Round 4): S1 bridge liveness (period 5 min, grace 25 min), S2 Job 1 liveness (1 h, 1 h) and S3 data freshness (15 min, 3 h 45 min) to an external dead-man's-switch; S1 was proven by a real outage (down at exactly 30 minutes, back up on its first ping), S2 by its first live ping, and the email path by `fbp-test`; S3's negative test is a separate open item. (3) Document and test the broker and bridge session settings -- **done** (Round 3: doc 05 "Broker persistence and the bridge session", `test_broker_config.py`; Round 3b then closed the pre-upload loss path). See "Phase 5". |
+| `force-bridge` OAuth secret expires 2026-12-25 13:59Z | **Open, Phase 5; rotate by mid-December 2026.** When it lapses, token exchange fails (`AuthError`; `upload.py` retries 5 times) and every batch is dead-lettered to `logs/bridge_dead_letter.ndjson`. MQTT stays connected and Job 1 still succeeds on empty input, so S1 (bridge liveness) and S2 (Job 1 liveness) keep reporting healthy; **S3 (data freshness) is the signal that fires**. All three are deployed (Round 4). Derived timing: the last good upload is at most ~1 h after expiry (the cached token lives up to `expires_in`, default 3,600 s), and S3 then fires after its ~4 h of silence, so the alert arrives ~5 h after expiry, about 18:00-19:15Z on 2026-12-25 -- which is a failure, not a warning; rotating earlier avoids it. Rotation steps still to be written into doc 05 before then. |
 | `deploy.sh`: the first deploy after a `deploy.sh` change runs the previous script | **Open, documented in doc 05 ("Redeploying").** Observed 2026-10-10: the first deploy after a `deploy.sh` change ran the previous script. The mechanism is derived from `deploy.sh`, not observed: the clone is detached, so the operator runs `./deploy.sh <new SHA>` from the old checkout, and bash is already reading the old file when `git checkout --detach` replaces it, so the rest of that run is the old script. The new unit file is still installed (it is read after the checkout); only the script logic is stale. Workaround: run it twice. Permanent fix proposed (re-exec the new script after the checkout, guarded against loops), Phase 5 Round 5. |
 | No replay tool for `logs/bridge_dead_letter.ndjson` | **Open, Phase 5.** Dead-lettered events (upload failure, or a lapsed OAuth secret) are kept as raw lines but nothing re-sends them to the landing volume. The dead-letter file can also hold events that already arrived: the 60 events dead-lettered 2026-10-05T13:13:07Z (scan `01M45CXZF0G8XWF3DTHZJAC7JQ`, event_time 2026-10-05 06:45Z) were checked on 2026-10-10 and are 60/60 present in `force.bronze.events` and `silver_probe_reading`; their path of arrival is unconfirmed. A replay tool must therefore check bronze first, or accept bronze duplicates that silver's `event_id` merge removes. |
 | Bridge acks MQTT messages before they are uploaded | **Resolved, deployed 2026-10-11 (Phase 5 Round 3b).** `manual_ack`: a message is acknowledged only after its batch lands or its line is dead-lettered, in arrival order, from one thread, never across a reconnect; the broker window is 180 and the bridge flushes at `--max-pending 120`. Delivery is now at-least-once from the broker to the landing zone: a kill after landing but before the acknowledgement, or a connection drop mid-upload, lands those events twice (counted as `redelivered=`; silver deduplicates). Proven by the e2e hard-kill (and its `manual_ack=False` mutation, 60 of 120 lost) and by the live rollout: a 660-event BURST landed as 11 files of 60 lines, and 28 of 28 real scans over 02:15–09:00Z were 60 of 60 with 0 duplicate rows. The live kill test was not achieved (see below). |
@@ -1235,8 +1325,10 @@ flight (about :00:00–:00:03).
 | Live kill test not achieved | **Closed by decision, 2026-10-11.** Attempted at 03:45:01Z and 16:15:01.540Z; both fell inside scheduled DISCONNECTED windows, which keep the Pi's MQTT connection open but publish nothing (`modes.py:123,130`, `runtime.py:98,176-177`), so no scan was in flight and `redelivered=0`. Redelivery is covered by the e2e hard-kill against Mosquitto 2.1.2 and its `manual_ack=False` mutation. A live attempt needs a CONNECTED window and a scan in flight (about :00:00–:00:03). |
 | Docker Desktop autostart is slow and variable | **Works; documented in doc 05.** Docker Desktop must start at sign-in (Settings > General > "Start Docker Desktop when you sign in to your computer"). It started unattended about 4m40s after logon on 2026-10-09 and about 12.5 minutes after logon on 2026-10-11 (logon 17:51:48Z, Docker Desktop 18:04:27Z, broker 18:04:37Z). Slow, not a fault; the bridge's once-a-minute retry absorbs it and the Pi buffers meanwhile. |
 | A Windows shutdown stops the broker ungracefully | **Documented in doc 05.** In the reboot test the broker logged no `terminating` line, so it got no exit save and restored (1 clients, 1 subscriptions) from the last autosave. On a reboot the real exposure is therefore `autosave_interval` (now 10 s) of arrivals, not zero; a graceful `docker restart` is not representative. |
-| Queued-message persistence across a broker restart is untested live | **Open, optional.** Both restarts on 2026-10-11 logged `Restored 0 client messages` (the queue was empty), so only the *session* is proven. Test: `Stop-ScheduledTask ForceBridge` (safe since `manual_ack`), let two scans publish, restart the broker, start the task, and check that both scans land 60 of 60. |
+| Queued-message persistence across a broker restart is untested live | **Partly proven; the restart case is still open and optional.** *Proven live, 2026-10-11 (Round 4):* during the ~41-minute bridge outage the broker held three scans for the offline persistent session and delivered them when the bridge reconnected at 21:04:48Z (60-line files, 21:04:49-21:04:50Z), with nothing buffered by the Pi. *Still untested:* queued messages across a broker **restart** -- both restarts on 2026-10-11 logged `Restored 0 client messages` (the queue was empty), so only the *session* is proven across a restart. Test: `Disable-ScheduledTask ForceBridge`, then `Stop-ScheduledTask ForceBridge` and wait for the process to exit (doc 05, "Restarting the bridge by hand"), let two scans publish, restart the broker, `Enable-ScheduledTask` and `Start-ScheduledTask`, and check that both scans land 60 of 60. |
 | Date-window checks need an `_ingest_ts` filter while fault-period rows are in range | **Lesson, 2026-10-11.** Seven single-row "scans" appeared in a 02:15–09:00Z window: fault-period future-time rows (+24 h `event_time`, `_ingest_ts` 2026-10-10T16:03:52Z), not real scans. Any `event_time` window check should add `AND _ingest_ts >= <window start>` while those rows fall in range. |
+| S3 negative test is pending | **Open, expected 2026-10-12.** `fbp-s3-data-landed` must stay up through a scheduled DISCONNECTED window of at most 3 hours (grace 3 h 45 min). One window is scheduled per half-day, so it should happen in the 00:00-12:00Z half-day of 2026-10-12. Check from `mode_transitions` or `bridge.log` that a window ran, and that the check never went down. If it goes down, the grace is too short (a merged pair of windows is the derived risk, about 2 in 10,000 per boundary). |
+| Healthchecks.io setup must include confirming the Email integration and enabling it per check | **Documented in doc 05 ("Setting Healthchecks.io up"), 2026-10-11.** The first S1 outage proof sent no email because the account's Email integration was never confirmed or attached to the checks; the check's own event log showed the status changes but no notification. Creating checks is not enough: confirm the integration (follow the email link), enable it on every check, and prove delivery with the short-grace `fbp-test` check before trusting any alert. |
 
 ## Lessons (beyond this project)
 
