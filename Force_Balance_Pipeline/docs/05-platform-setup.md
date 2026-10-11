@@ -1149,8 +1149,8 @@ runs and in every scheduled DISCONNECTED window.
 **Status (2026-10-11): all three signals are deployed and proven; one test is pending.**
 - **S1 and S3** are implemented in `ingest/bridge/monitor.py`, wired into `bridge.py`, and deployed: the new bridge started at
   19:39:44Z, logged `monitoring pings enabled for S1, S3` and connected with `session present: True`. S1 has pinged every 5 minutes
-  since 15:39 EDT (19:39Z), each request carrying the project User-Agent. S3 started the same way; confirm its cadence from the check's
-  own log (see "How the alerts were proven", step 3).
+  since 15:39 EDT (19:39Z), each request carrying the project User-Agent. S3 has pinged roughly every 15 minutes since about 19:45Z,
+  one per landed scan, including at 21:04Z after the S1-proof restart (from the check's own log).
 - **S2** is deployed (the bundle variable `s2_ping_email`, below) and its first ping arrived after Job 1's 21:03Z run succeeded.
 - **Proven:** S1 went down on a real outage, at exactly period plus grace, and came back up on its first ping; the notification
   email was proven on `fbp-test` (below).
@@ -1312,8 +1312,8 @@ no notification. It was fixed and enabled on all four checks, and delivery was t
    ping and down at about 30, with an email (once the integration is attached). To restore: `Enable-ScheduledTask ForceBridge`, then
    `Start-ScheduledTask ForceBridge`; S1 returns to up on its first ping. A stop is safe at any moment, because messages are
    acknowledged only after landing.
-3. *S3, cadence:* read from the check's log: pings should follow landings, about every 15 minutes and never more than one per 5
-   minutes (the throttle is unit-tested; the live cadence is to be confirmed from the log). *S3, silence:* **pending**: across one
+3. *S3, cadence:* in the check's log, pings arrive roughly every 15 minutes since about 19:45Z, one per landed scan, including at
+   21:04Z after the S1-proof restart (the at-most-one-per-5-minutes throttle is unit-tested). *S3, silence:* **pending**: across one
    scheduled DISCONNECTED window (at most 3 hours; from `mode_transitions` or `bridge.log`) `fbp-s3-data-landed` must never go down. It happens naturally in the 00:00–12:00Z half-day of 2026-10-12, if a window falls there.
 4. *S2:* the throwaway job's email reached `fbp-test` (2026-10-11), and after the real deploy `fbp-s2-job1-success` showed its first ping
    after the 21:03Z run. A quota-exhaustion alert itself has not been observed; it follows from the

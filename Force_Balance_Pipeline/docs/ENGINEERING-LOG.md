@@ -1265,8 +1265,8 @@ desktop or with Databricks.
 **Live results (2026-10-11).**
 - *S1 and S3 deployed.* The new bridge started at 19:39:44Z, logged `monitoring pings enabled for S1, S3` and connected with
   `session present: True`. S1 pinged every 5 minutes from 15:39 EDT (19:39Z), each request carrying the project User-Agent. S3
-  is deployed with the same start; its live ping cadence is to be confirmed from the check's log (that line of the pasted facts
-  was a placeholder, so it is not stated here).
+  has pinged roughly every 15 minutes since about 19:45Z, one per landed scan, including at 21:04Z after the S1-proof restart
+  (Jong, from the check's log).
 - *S2 deployed.* After the fix above the deploy succeeded. The read-only check returned Job 1 `on_success=1`, `on_failure=0` and a
   hc-ping.com address, and Job 2 `on_success=0`. `fbp-s2-job1-success` received its first ping after Job 1's 21:03Z run
   succeeded.
