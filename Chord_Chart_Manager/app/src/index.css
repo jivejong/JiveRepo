@@ -322,6 +322,34 @@ body {
   background: var(--accent-dim);
 }
 
+.song-sort-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: 0 var(--space-4) var(--space-2);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.song-sort-controls select,
+.sort-direction-btn {
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+}
+.song-sort-controls select { min-width: 0; max-width: 190px; padding: 0 8px; }
+.sort-direction-btn { width: 36px; cursor: pointer; font-size: 18px; }
+.song-sort-controls select:focus-visible,
+.sort-direction-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+@media (max-width: 420px) {
+  .search-wrap { gap: 6px; padding-inline: var(--space-3); }
+  .search-wrap > .filter-btn { padding-inline: 8px; }
+  .song-sort-controls select { max-width: 155px; }
+}
+
 /* ── Tag panel ────────────────────────────────────────────────────────────── */
 .tag-panel {
   border-bottom: 1px solid var(--border);

@@ -66,7 +66,7 @@ async function searchSongs(filters = {}) {
   }
 
   const sql = `
-    SELECT s.id, s.title, a.name AS artist, s.performance_key, s.original_key,
+    SELECT s.id, s.title, a.name AS artist, s.created_at, s.performance_key, s.original_key,
            s.alt_key, s.capo_fret, s.bpm, s.release_year,
            (s.release_year / 10 * 10)::text || 's' AS era,
            COALESCE(pg.name, NULL) AS primary_genre,

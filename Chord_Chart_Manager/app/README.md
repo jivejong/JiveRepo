@@ -141,12 +141,16 @@ Never delete or recreate the database volume to resolve a mismatch.
 PostgreSQL must be reachable. Start the server once so it can apply pending
 migrations before listening.
 
+With the repository's Compose database, host tools connect through loopback at
+`localhost:15432` by default (`DB_PORT` in `.env`); containers continue to use
+the internal `db:5432` address.
+
 Terminal 1:
 
 ```bash
 cd server
 npm install
-DATABASE_URL=postgresql://chords:chords@localhost:5432/chords PORT=3001 npm start
+DATABASE_URL=postgresql://chords:chords@localhost:15432/chords PORT=3001 npm start
 ```
 
 Terminal 2:
@@ -202,6 +206,10 @@ cd server && npm audit --omit=dev
 ### Songs
 
 - Search titles and artists and filter by genre, feel, or era tags.
+- Sort the opening Songs list by title (default), date added, artist, primary
+  genre, era, or alphabetically first vibe. The adjacent direction control
+  reverses the selected value while missing values stay last. Sort choice is
+  stored locally and works offline; chart navigation follows the visible order.
 - Create, edit, and delete songs online or offline.
 - Edit Genres and Vibes online or offline; new values stay within those existing
   categories and sync with the song update. Era is read-only and derived from

@@ -306,11 +306,15 @@ Start PostgreSQL and run the app migration command before starting the API
 outside its container. Then use two terminals. The server also runs pending
 migrations automatically before listening.
 
+With the repository's Compose database, host tools connect through loopback at
+`localhost:15432` by default (`DB_PORT` in `app/.env`); containers continue to
+use the internal `db:5432` address.
+
 Terminal 1, from `app/server`:
 
 ```bash
 npm install
-DATABASE_URL=postgresql://chords:chords@localhost:5432/chords PORT=3001 npm start
+DATABASE_URL=postgresql://chords:chords@localhost:15432/chords PORT=3001 npm start
 ```
 
 Terminal 2, from `app`:

@@ -31,10 +31,10 @@ function readLocalEnv() {
 }
 
 function databaseUrl(env, database) {
-  const url = new URL('postgresql://placeholder:placeholder@127.0.0.1:5432/chords');
+  const url = new URL('postgresql://placeholder:placeholder@127.0.0.1:15432/chords');
   url.username = env.POSTGRES_USER || 'chords';
   url.password = env.POSTGRES_PASSWORD || '';
-  url.port = env.DB_PORT || '5432';
+  url.port = env.DB_PORT || '15432';
   url.pathname = `/${database}`;
   return url.toString();
 }

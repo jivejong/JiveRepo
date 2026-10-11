@@ -1,0 +1,96 @@
+import { randomUUID } from 'node:crypto';
+import { expect, test } from '@playwright/test';
+
+test('song sorting is consistent from cache offline and survives reload', async ({ page, context, request }) => {
+  const suffix = randomUUID();
+  const prefix = `T17 sort ${suffix}`;
+  const fixtures = [
+    { title: `${prefix} Cedar`, artist: `T17 Artist C ${suffix}` },
+    { title: `${prefix} Amber`, artist: `T17 Artist A ${suffix}` },
+    { title: `${prefix} Birch`, artist: `T17 Artist B ${suffix}` },
+  ];
+  const ids = [];
+  const createdSongs = [];
+  let primaryError = null;
+  try {
+    for (const fixture of fixtures) {
+      const response = await request.post('/api/songs', { data: {
+        ...fixture, chart_written_key: 'C', chart_source: 'Invented T17 verse\nInvented T17 line',
+        genres: [], vibes: [],
+      } });
+      if (response.status() !== 201) throw new Error(`T17 song create failed with HTTP ${response.status()}.`);
+      const created = await response.json();
+      if (!Number.isInteger(created.id) || created.id < 1) throw new Error('T17 create returned no valid server ID.');
+      ids.push(created.id);
+      createdSongs.push(created);
+    }
+
+    await page.goto('/');
+    const search = page.getByPlaceholder('Search songs, artists…');
+    await search.fill(prefix);
+    const rows = page.locator('.song-row');
+    await expect(rows).toHaveCount(fixtures.length);
+    await expect.poll(async () => page.evaluate(async prefixValue => {
+      const opening = indexedDB.open('chart-manager', 1);
+      const db = await new Promise((resolve, reject) => { opening.onsuccess = () => resolve(opening.result); opening.onerror = () => reject(opening.error); });
+      const result = await new Promise((resolve, reject) => {
+        const get = db.transaction('songs').objectStore('songs').getAll();
+        get.onsuccess = () => resolve(get.result.filter(song => song.title?.startsWith(prefixValue)).length);
+        get.onerror = () => reject(get.error);
+      });
+      db.close();
+      return result;
+    }, prefix)).toBe(fixtures.length);
+
+    const sortBy = page.getByLabel('Sort songs by');
+    await sortBy.selectOption('created_at');
+    const dateOrder = [...createdSongs].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)
+      || a.title.localeCompare(b.title));
+    for (let index = 0; index < dateOrder.length; index += 1) {
+      await expect(rows.nth(index)).toContainText(dateOrder[index].title);
+    }
+
+    await sortBy.selectOption('artist');
+    await expect(rows.nth(0)).toContainText('Artist A');
+    await expect(rows.nth(1)).toContainText('Artist B');
+    await expect(rows.nth(2)).toContainText('Artist C');
+    await page.getByRole('button', { name: 'Sort descending' }).click();
+    await expect(rows.nth(0)).toContainText('Artist C');
+    await expect(rows.nth(2)).toContainText('Artist A');
+    await context.setOffline(true);
+    await rows.nth(0).click();
+    await expect(page.locator('.chart-topbar-title')).toHaveText(fixtures[0].title);
+    await expect(page.locator('.swipe-hint')).toContainText(fixtures[2].title);
+    await page.getByRole('button', { name: 'Back' }).click();
+    await expect(search).toBeVisible();
+    await page.reload();
+    await expect(search).toBeVisible();
+    await search.fill(prefix);
+    await expect(rows).toHaveCount(fixtures.length);
+    await expect(rows.nth(0)).toContainText('Artist C');
+    await expect(rows.nth(1)).toContainText('Artist B');
+    await expect(rows.nth(2)).toContainText('Artist A');
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    await context.setOffline(false).catch(error => { primaryError ||= error; });
+    const cleanupErrors = [];
+    for (const id of ids) {
+      try {
+        const current = await request.get(`/api/songs/${id}`);
+        if (current.status() === 404) continue;
+        if (!current.ok()) throw new Error(`Could not inspect T17 fixture ${id}: HTTP ${current.status()}.`);
+        const song = await current.json();
+        const deleted = await request.delete(`/api/songs/${id}`, { data: { base_updated_at: song.updated_at } });
+        if (!deleted.ok()) throw new Error(`Could not delete T17 fixture ${id}: HTTP ${deleted.status()}.`);
+        if ((await request.get(`/api/songs/${id}`)).status() !== 404) throw new Error(`T17 fixture ${id} remains after cleanup.`);
+      } catch (error) { cleanupErrors.push(error); }
+    }
+    if (cleanupErrors.length) {
+      const cleanupError = new AggregateError(cleanupErrors, 'T17 exact-ID fixture cleanup failed.');
+      if (primaryError) throw new AggregateError([primaryError, cleanupError], 'T17 test and cleanup failed.');
+      throw cleanupError;
+    }
+  }
+  if (primaryError) throw primaryError;
+});

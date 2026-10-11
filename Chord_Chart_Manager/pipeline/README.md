@@ -44,6 +44,11 @@ flushed as a progression instead of being paired across a blank separator.
 
 For an optional host-Python workflow:
 
+When connecting host Python to this repository's Compose database, use the
+loopback-published host port `localhost:15432` by default (`DB_PORT` in
+`app/.env`). The Docker pipeline service continues to use the internal
+`db:5432` address; do not use that service name from host Python.
+
 - Python 3.10 or newer.
 - PostgreSQL only for `load_songs.py`.
 - `psycopg` from `requirements.txt` for the loader.
