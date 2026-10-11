@@ -21,10 +21,23 @@ while it is down; with --broker-container the broker is restarted too, to prove 
 bridge restarts with the same client id and persistent session; scan 3 is published. Every scan must land
 exactly once, byte for byte, and the restarted bridge must report "session present: True".
 
+Scenario "hardkill": the bridge acknowledges a message only after its file has landed, so a bridge killed with a scan
+buffered (--scan-size 120 keeps a 60-event scan from completing) loses nothing: the broker still holds the scan,
+unacknowledged, and redelivers it (DUP) to the restarted bridge. Asserts zero lost event_ids; duplicates are allowed and
+counted. Run it with --bridge-script pointing at a copy of the bridge with manual_ack=False and it must FAIL.
+
+Scenario "stall20" (not part of "all"; run it ONLY against a broker with Mosquitto's default max_inflight_messages of 20): shows
+why mosquitto.conf and mosquitto.lan.conf set 180. A bridge that holds its acknowledgements until a scan completes receives
+only 20 of a scan's 60 events, so nothing flushes until the bridge's 90 s timer, and the first file holds 20 lines.
+
+The broker must allow a whole scan in flight (max_inflight_messages 180, as infra/mosquitto/mosquitto.conf sets), or the
+bridge stalls (see "stall20").
+
 Each run uses its own MQTT client id and removes its session from the broker afterwards. Everything is written
 under a temp directory outside the repo.
 
-Usage:  edge/.venv/Scripts/python.exe ingest/e2e_local.py [--scenario basic|restart|all] [--broker-container NAME]
+Usage:  edge/.venv/Scripts/python.exe ingest/e2e_local.py [--scenario basic|restart|hardkill|stall20|all]
+            [--broker-container NAME] [--bridge-script PATH]
 """
 import argparse
 import json
@@ -93,13 +106,14 @@ def broker_up(args):
 
 
 class RunningBridge:
-    def __init__(self, args, landing, dead, client_id, exit_after_files=0):
-        cmd = [sys.executable, "-B", str(ROOT / "ingest" / "bridge" / "bridge.py"), "--local-dir", str(landing),
+    def __init__(self, args, landing, dead, client_id, exit_after_files=0, extra=()):
+        cmd = [sys.executable, "-B", str(args.bridge_script), "--local-dir", str(landing),
                "--mqtt-host", args.host, "--mqtt-port", str(args.port), "--client-id", client_id,
                "--idle-exit", "90", "--stats-interval", "5", "--dead-letter", str(dead),
                "--log-file", str(dead.parent / "bridge.log"), "--lock-file", str(dead.parent / "bridge.lock")]
         if exit_after_files:
             cmd += ["--exit-after-files", str(exit_after_files)]
+        cmd += list(extra)      # argparse keeps the last of a repeated flag, so these override the defaults above
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.sink, self.seen = queue.Queue(), []
         threading.Thread(target=read_lines, args=(self.proc.stdout, self.sink), daemon=True).start()
@@ -253,6 +267,7 @@ def scenario_restart(args):
         if not wait_until(lambda: land_count(landing) == 1, 30):
             raise SystemExit("scan 1 did not land in 30 s")
         print("scan 1 landed; killing bridge A (buffer is empty, so nothing buffered is lost)")
+        time.sleep(1.0)  # the bridge acknowledges within 0.25 s of landing; a kill before that would redeliver scan 1 (see "hardkill")
         first.kill()
         print("publishing scan 2 while the bridge is down")
         run_probe(args, sent, 1)
@@ -283,14 +298,113 @@ def scenario_restart(args):
                   session_present=session_present)
 
 
+def event_ids_in(landing):
+    ids = []
+    for path in sorted(landing.rglob("*.ndjson")) if landing.exists() else []:
+        ids += [json.loads(l)["event_id"] for l in path.read_text(encoding="utf-8").splitlines()]
+    return ids
+
+
+def scenario_hardkill(args):
+    print("\n=== scenario: hardkill (bridge killed with a scan buffered, not landed and not acknowledged) ===")
+    work = Path(tempfile.mkdtemp(prefix="force_bridge_e2e_hardkill_"))
+    landing, sent, dead = work / "landing", work / "sent.ndjson", work / "dead_letter.ndjson"
+    print(f"working directory (outside the repo): {work}")
+    client_id = f"force-bridge-e2e-{uuid.uuid4().hex[:8]}"
+    failures = []
+
+    def check(ok, message):
+        print(f"  [{'PASS' if ok else 'FAIL'}] {message}")
+        if not ok:
+            failures.append(message)
+
+    first = second = None
+    landed_both = False
+    try:
+        # --scan-size 120: a 60-event scan can never complete, so it stays in the bridge's buffer (until the 90 s timer)
+        first = RunningBridge(args, landing, dead, client_id, extra=["--scan-size", "120", "--stats-interval", "1"])
+        first.wait_subscribed()
+        print("bridge A subscribed; publishing scan 1 (60 events, which cannot complete a scan of 120)")
+        run_probe(args, sent, 1)
+        received = wait_for(first.sink, "received=60", 20, first.seen)
+        check(received, "bridge A received all 60 events")
+        check(land_count(landing) == 0, "nothing has landed: the scan exists only in bridge A's memory and, unacknowledged, in the broker")
+        print("killing bridge A")
+        first.kill()
+        print("publishing scan 2 while the bridge is down")
+        run_probe(args, sent, 1)
+        print("restarting the bridge (same client id, persistent session, normal scan size)")
+        second = RunningBridge(args, landing, dead, client_id, exit_after_files=2)
+        second.wait_subscribed()
+        landed_both = wait_until(lambda: land_count(landing) >= 2, 30)
+        if landed_both:
+            second.wait_final()
+    finally:
+        for b in (first, second):
+            if b is not None:
+                b.stop()
+        drop_session(args, client_id)
+    print("\n".join("  " + l for l in (second.seen if second else []) if l.startswith("bridge:")))
+    print("verification:")
+    sent_ids = [json.loads(l)["event_id"] for l in sent.read_text(encoding="utf-8").splitlines()] if sent.exists() else []
+    landed = event_ids_in(landing)
+    lost = set(sent_ids) - set(landed)
+    check(len(sent_ids) == 120, f"the probe published {len(sent_ids)} events (2 scans x 60)")
+    check(landed_both, "both scans landed within 30 s of the restart")
+    check(not lost, f"zero lost event_ids: {len(sent_ids)} published, {len(set(landed))} distinct landed, {len(lost)} lost")
+    print(f"  duplicates landed (allowed, counted): {len(landed) - len(set(landed))}")
+    seen = second.seen if second else []
+    check(any("session present: True" in l for l in seen), "the restarted bridge reconnected to its persistent session (session present: True)")
+    m = re.search(r"redelivered=(\d+)", second.summary or "") if second else None
+    check(bool(m) and int(m[1]) >= 60, f"the broker redelivered the unacknowledged scan to the restarted bridge ({m.group(0) if m else 'no final summary line'})")
+    check(not dead.exists() or dead.stat().st_size == 0, "nothing was dead-lettered")
+    return failures
+
+
+def scenario_stall20(args):
+    print("\n=== scenario: stall20 (run only against a broker whose max_inflight_messages is the default 20) ===")
+    work = Path(tempfile.mkdtemp(prefix="force_bridge_e2e_stall_"))
+    landing, sent, dead = work / "landing", work / "sent.ndjson", work / "dead_letter.ndjson"
+    print(f"working directory (outside the repo): {work}")
+    client_id = f"force-bridge-e2e-{uuid.uuid4().hex[:8]}"
+    failures = []
+
+    def check(ok, message):
+        print(f"  [{'PASS' if ok else 'FAIL'}] {message}")
+        if not ok:
+            failures.append(message)
+
+    bridge = RunningBridge(args, landing, dead, client_id, extra=["--stats-interval", "1"])
+    try:
+        bridge.wait_subscribed()
+        started = time.time()
+        print("bridge subscribed; publishing one scan of 60 events")
+        run_probe(args, sent, 1)
+        check(not wait_until(lambda: land_count(landing) >= 1, 40),
+              "no file within 40 s: the broker sent 20 events and waits for acknowledgements the bridge cannot give before a scan completes")
+        landed = wait_until(lambda: land_count(landing) >= 1, 100)
+        waited = time.time() - started
+        check(landed, f"the first file lands when the bridge's 90 s timer fires ({waited:.0f} s after the scan was published)")
+        files = sorted(landing.rglob("*.ndjson"))
+        lines = len(files[0].read_text(encoding="utf-8").splitlines()) if files else 0
+        check(lines == 20, f"the first file holds the {lines} events the broker's window of 20 allowed, not the scan's 60")
+    finally:
+        bridge.stop()
+        drop_session(args, client_id)
+    return failures
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=1883)
     p.add_argument("--scans", type=int, default=3, help="scans for the basic scenario")
     p.add_argument("--interval", type=int, default=4)
-    p.add_argument("--scenario", choices=("basic", "restart", "all"), default="all")
+    p.add_argument("--scenario", choices=("basic", "restart", "hardkill", "stall20", "all"), default="all",
+                   help="all = basic, restart and hardkill; stall20 needs a broker with the default in-flight window of 20")
     p.add_argument("--broker-container", help="restart this Docker container during the restart scenario")
+    p.add_argument("--bridge-script", type=Path, default=ROOT / "ingest" / "bridge" / "bridge.py",
+                   help="the bridge to run (default: the repo's); a mutated copy proves a scenario can fail")
     args = p.parse_args()
     if not broker_up(args):
         raise SystemExit(f"no broker at {args.host}:{args.port}. Start Mosquitto first (see the docstring).")
@@ -299,6 +413,10 @@ def main():
         failures += scenario_basic(args)
     if args.scenario in ("restart", "all"):
         failures += scenario_restart(args)
+    if args.scenario in ("hardkill", "all"):
+        failures += scenario_hardkill(args)
+    if args.scenario == "stall20":
+        failures += scenario_stall20(args)
     print(f"\n{'ALL CHECKS PASSED' if not failures else str(len(failures)) + ' CHECK(S) FAILED'}")
     return 1 if failures else 0
 
