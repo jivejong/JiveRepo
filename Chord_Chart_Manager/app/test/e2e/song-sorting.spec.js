@@ -61,8 +61,24 @@ test('song sorting is consistent from cache offline and survives reload', async 
     await rows.nth(0).click();
     await expect(page.locator('.chart-topbar-title')).toHaveText(fixtures[0].title);
     await expect(page.locator('.swipe-hint')).toContainText(fixtures[2].title);
+    await page.locator('.chart-scroll').evaluate(element => {
+      const dispatchTouch = (type, point, points) => {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperties(event, {
+          touches: { value: points },
+          changedTouches: { value: [point] },
+        });
+        element.dispatchEvent(event);
+      };
+      const start = { identifier: 1, clientX: 240, clientY: 320 };
+      const end = { identifier: 1, clientX: 130, clientY: 322 };
+      dispatchTouch('touchstart', start, [start]);
+      dispatchTouch('touchend', end, []);
+    });
+    await expect(page.locator('.chart-topbar-title')).toHaveText(fixtures[2].title);
     await page.getByRole('button', { name: 'Back' }).click();
     await expect(search).toBeVisible();
+    await search.fill(prefix);
     await page.reload();
     await expect(search).toBeVisible();
     await search.fill(prefix);
@@ -70,6 +86,79 @@ test('song sorting is consistent from cache offline and survives reload', async 
     await expect(rows.nth(0)).toContainText('Artist C');
     await expect(rows.nth(1)).toContainText('Artist B');
     await expect(rows.nth(2)).toContainText('Artist A');
+
+    const localCreateStartedAt = Date.now();
+    const localTitle = `${prefix} Offline`;
+    const editedLocalTitle = `${prefix} Offline edited`;
+    await page.getByRole('button', { name: 'Add a new song' }).click();
+    await page.locator('.form-group').nth(0).locator('input').fill(localTitle);
+    await page.locator('.form-group').nth(1).locator('input').fill(`T17 Artist D ${suffix}`);
+    await page.locator('.form-textarea').fill('Invented offline chart line');
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await expect(page.locator('.chart-topbar-title')).toHaveText(localTitle);
+    await page.getByRole('button', { name: 'Back' }).click();
+    await expect(search).toBeVisible();
+    await search.fill(prefix);
+
+    const readLocal = title => page.evaluate(async titleValue => {
+      const opening = indexedDB.open('chart-manager', 1);
+      const db = await new Promise((resolve, reject) => { opening.onsuccess = () => resolve(opening.result); opening.onerror = () => reject(opening.error); });
+      const result = await new Promise((resolve, reject) => {
+        const get = db.transaction('songs').objectStore('songs').getAll();
+        get.onsuccess = () => resolve(get.result.find(song => song.title === titleValue)
+          ? { id: get.result.find(song => song.title === titleValue).id,
+            created_at: get.result.find(song => song.title === titleValue).created_at }
+          : null);
+        get.onerror = () => reject(get.error);
+      });
+      db.close();
+      return result;
+    }, title);
+    let localSong = await readLocal(localTitle);
+    expect(localSong?.id).toMatch(/^local-/);
+    expect(Date.parse(localSong.created_at)).toBeGreaterThanOrEqual(localCreateStartedAt);
+    expect(Date.parse(localSong.created_at)).toBeLessThanOrEqual(Date.now());
+    const initialLocalCreatedAt = localSong.created_at;
+    await sortBy.selectOption('created_at');
+    await expect(rows.nth(0)).toContainText(localTitle);
+
+    await rows.nth(0).click();
+    await expect(page.locator('.chart-topbar-title')).toHaveText(localTitle);
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await page.locator('.form-group').nth(0).locator('input').fill(editedLocalTitle);
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await expect(page.locator('.chart-topbar-title')).toHaveText(editedLocalTitle);
+    await page.getByRole('button', { name: 'Back' }).click();
+    await expect(search).toBeVisible();
+    await search.fill(prefix);
+    localSong = await readLocal(editedLocalTitle);
+    expect(localSong?.created_at).toBe(initialLocalCreatedAt);
+    await page.reload();
+    await search.fill(prefix);
+    await expect(rows.nth(0)).toContainText(editedLocalTitle);
+    expect((await readLocal(editedLocalTitle))?.created_at).toBe(localSong.created_at);
+
+    const createResponsePromise = page.waitForResponse(response => response.url().endsWith('/api/songs')
+      && response.request().method() === 'POST');
+    await context.setOffline(false);
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await expect(page.getByText(/Online/)).toBeVisible();
+    await page.getByRole('button', { name: 'Sync now' }).click();
+    const createResponse = await createResponsePromise;
+    expect(createResponse.status()).toBe(201);
+    const createdLocalOnServer = await createResponse.json();
+    ids.push(createdLocalOnServer.id);
+    expect(createdLocalOnServer.title).toBe(editedLocalTitle);
+    expect(Date.parse(createdLocalOnServer.created_at)).toBeGreaterThanOrEqual(localCreateStartedAt);
+    const acknowledgedLocal = await readLocal(editedLocalTitle);
+    expect(acknowledgedLocal.id).toBe(createdLocalOnServer.id);
+    expect(acknowledgedLocal.created_at).toBe(createdLocalOnServer.created_at);
+    await expect(page.getByRole('button', { name: 'Sync now' })).toBeEnabled();
+
+    await page.getByRole('button', { name: 'Songs' }).click();
+    await search.fill(prefix);
+    await expect(rows).toHaveCount(fixtures.length + 1);
+    await expect(rows.nth(0)).toContainText(editedLocalTitle);
   } catch (error) {
     primaryError = error;
   } finally {

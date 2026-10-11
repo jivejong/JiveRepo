@@ -7,6 +7,7 @@ import {
 } from '../lib/chartParser';
 import { useTags } from '../hooks';
 import { eraForYear, normalizeSongTags } from '../tagMutations';
+import { offlineSongCreatedAt, primaryGenreFromAssignments } from '../lib/offlineSongFields';
 
 /**
  * EditView — edit a song's chart content and key metadata fields.
@@ -80,6 +81,7 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
         genres: tagSets.genres,
         vibes: tagSets.vibes,
       };
+      const primaryGenre = primaryGenreFromAssignments(payload.genres);
       if (payload.release_year !== null
           && (!Number.isInteger(payload.release_year) || payload.release_year < 1 || payload.release_year > 32767)) {
         setError('Release year must be a whole number from 1 to 32767');
@@ -99,7 +101,8 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
             ...song,
             ...payload,
             era: eraForYear(payload.release_year),
-            genre: payload.genres.find(tag => tag.is_primary)?.name || payload.genres[0]?.name || null,
+            genre: primaryGenre,
+            primary_genre: primaryGenre,
             feel: payload.vibes[0] || null,
             chart_content: preserveStructured ? originalChartContent.current : parseChartBody(payload.chart_source),
             _sync: { ...song._sync, operation: 'create' },
@@ -122,7 +125,8 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
             ...song,
             ...payload,
             era: eraForYear(payload.release_year),
-            genre: payload.genres.find(tag => tag.is_primary)?.name || payload.genres[0]?.name || null,
+            genre: primaryGenre,
+            primary_genre: primaryGenre,
             feel: payload.vibes[0] || null,
             chart_content: preserveStructured ? originalChartContent.current : parseChartBody(payload.chart_source),
             _sync: {
@@ -152,13 +156,16 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
           originalChartSource.current, originalChartContent.current, payload.chart_source,
         );
         const parsedContent = preserveStructured ? null : parseChartBody(payload.chart_source);
+        const createdAt = offlineSongCreatedAt(song, operation);
         const patched = {
           ...song,
           ...payload,
           era: eraForYear(payload.release_year),
-          genre: payload.genres.find(tag => tag.is_primary)?.name || payload.genres[0]?.name || null,
+          genre: primaryGenre,
+          primary_genre: primaryGenre,
           feel: payload.vibes[0] || null,
           id,
+          ...(createdAt ? { created_at: createdAt } : {}),
           chart_content: preserveStructured
             ? originalChartContent.current
             : parsedContent,

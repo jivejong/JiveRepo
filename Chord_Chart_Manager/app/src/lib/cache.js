@@ -732,7 +732,7 @@ async function acknowledgeSongCreate(localId, sentRevision, sentOperationId, sav
       const changedAfterDispatch = Boolean(local && operation
         && (operation.local_revision || 0) > sentRevision);
       if (changedAfterDispatch) {
-        const rebased = { ...local, id: serverId, updated_at: saved.updated_at,
+        const rebased = { ...local, id: serverId, created_at: saved.created_at, updated_at: saved.updated_at,
           _sync: { ...local._sync, operation: 'update', base_updated_at: saved.updated_at } };
         songs.delete(localId);
         songs.put(rebased);

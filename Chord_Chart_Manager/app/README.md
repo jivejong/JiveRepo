@@ -210,6 +210,9 @@ cd server && npm audit --omit=dev
   genre, era, or alphabetically first vibe. The adjacent direction control
   reverses the selected value while missing values stay last. Sort choice is
   stored locally and works offline; chart navigation follows the visible order.
+- A song first created offline receives its actual local creation timestamp for
+  Date added sorting. Existing records without a timestamp remain undated; after
+  sync, a new song uses the server's creation timestamp.
 - Create, edit, and delete songs online or offline.
 - Edit Genres and Vibes online or offline; new values stay within those existing
   categories and sync with the song update. Era is read-only and derived from

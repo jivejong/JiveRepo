@@ -1,10 +1,184 @@
 import 'fake-indexeddb/auto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as cache from '../../src/lib/cache.js';
+import { offlineSongCreatedAt, primaryGenreFromAssignments } from '../../src/lib/offlineSongFields.js';
+import { sortSongs } from '../../src/lib/songSort.js';
 
 const version = '2026-10-10T12:00:00.000001Z';
 
 describe('offline cache and push-then-pull sync', () => {
+  it('keeps a real offline creation timestamp through cache edits and replaces it with the server timestamp on acknowledgement', async () => {
+    const id = cache.makeLocalSongId();
+    const localCreatedAt = '2026-10-11T12:00:00.000Z';
+    let clockCalls = 0;
+    expect(offlineSongCreatedAt({ id: 42, title: 'Existing record without a date' }, 'create', () => {
+      clockCalls += 1;
+      return localCreatedAt;
+    })).toBeUndefined();
+    const createdAt = offlineSongCreatedAt(null, 'create', () => {
+      clockCalls += 1;
+      return localCreatedAt;
+    });
+    const local = { id, title: 'Invented new local date song', artist: 'T17 synthetic', created_at: createdAt,
+      genres: [], vibes: [], _sync: { operation: 'create', operation_id: cache.makeMutationId() } };
+    try {
+      await cache.savePendingSong(local);
+      const cached = await cache.getCachedSong(id);
+      expect(cached.created_at).toBe(localCreatedAt);
+      expect(sortSongs([
+        { id: 90, title: 'Older server song', created_at: '2025-01-01T00:00:00Z' }, cached,
+        { id: 91, title: 'Undated legacy song' },
+      ], { key: 'created_at' }).map(song => song.id)).toEqual([90, id, 91]);
+
+      const editedCreatedAt = offlineSongCreatedAt(cached, 'create', () => {
+        clockCalls += 1;
+        return '2099-01-01T00:00:00Z';
+      });
+      await cache.savePendingSong({ ...cached, title: 'Invented edited local date song', created_at: editedCreatedAt });
+      expect((await cache.getCachedSong(id)).created_at).toBe(localCreatedAt);
+      expect(clockCalls).toBe(1);
+
+      const serverCreatedAt = '2026-10-11T12:00:03.000Z';
+      const saved = { ...local, id: 987654, title: 'Invented edited local date song', created_at: serverCreatedAt,
+        updated_at: version, _sync: undefined };
+      const result = await cache.syncWithServer({
+        library: async () => ({ songs: [saved] }),
+        songs: { create: async () => saved },
+        setlists: { all: async () => [] },
+      });
+      expect(result.ok).toBe(true);
+      expect((await cache.getCachedSong(saved.id)).created_at).toBe(serverCreatedAt);
+      expect(sortSongs([
+        { id: 90, title: 'Older server song', created_at: '2025-01-01T00:00:00Z' },
+        await cache.getCachedSong(saved.id),
+        { id: 91, title: 'Undated legacy song' },
+      ], { key: 'created_at' }).map(song => song.id)).toEqual([90, saved.id, 91]);
+      expect(await cache.getCachedSong(id)).toBeUndefined();
+    } finally {
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+      await cache.clearDirty(987654);
+      await cache.deleteCachedSong(987654);
+    }
+  });
+
+  it('uses server created_at when a newer edit lands during an in-flight create, then syncs that edit after reload', async () => {
+    const localId = cache.makeLocalSongId();
+    const localCreatedAt = '2026-10-11T12:00:00.000Z';
+    const serverCreatedAt = '2026-10-11T12:07:43.123Z';
+    const serverVersion = '2026-10-11T12:07:44.000001Z';
+    const finalVersion = '2026-10-11T12:08:01.000001Z';
+    const local = { id: localId, title: 'Invented in-flight create', artist: 'T17 synthetic',
+      created_at: localCreatedAt, chart_source: 'Invented original line', genres: [], vibes: [],
+      _sync: { operation: 'create', operation_id: cache.makeMutationId() } };
+    let releaseCreate;
+    let createStarted;
+    const started = new Promise(resolve => { createStarted = resolve; });
+    const heldCreate = new Promise(resolve => { releaseCreate = resolve; });
+    const serverCreated = { ...local, id: 987657, created_at: serverCreatedAt, updated_at: serverVersion,
+      _sync: undefined };
+    const newTitle = 'Invented in-flight edited title';
+    const newerContent = 'Invented newer line kept through create acknowledgement';
+    try {
+      await cache.savePendingSong(local);
+      const firstSync = cache.syncWithServer({
+        library: async () => ({ songs: [serverCreated] }),
+        songs: { create: async () => { createStarted(); return heldCreate; } },
+        setlists: { all: async () => [] },
+      });
+      await started;
+
+      const editing = await cache.getCachedSong(localId);
+      await cache.savePendingSong({ ...editing, title: newTitle, chart_source: newerContent });
+      releaseCreate(serverCreated);
+      expect((await firstSync).ok).toBe(true);
+
+      const acknowledged = await cache.getCachedSong(serverCreated.id);
+      expect(await cache.getRedirectedSongId(localId)).toBe(serverCreated.id);
+      expect(acknowledged).toMatchObject({ id: serverCreated.id, title: newTitle,
+        chart_source: newerContent, created_at: serverCreatedAt, updated_at: serverVersion,
+        _sync: { operation: 'update', base_updated_at: serverVersion } });
+      const pendingAfterCreate = (await cache.getPendingMutations()).find(item => String(item.id) === String(serverCreated.id));
+      expect(pendingAfterCreate).toMatchObject({ entity: 'song', local_revision: 1, sent: false });
+      expect(sortSongs([acknowledged, { id: 987658, title: 'Invented date comparator',
+        created_at: '2026-10-11T12:05:00.000Z' }], { key: 'created_at' }).map(song => song.id))
+        .toEqual([987658, serverCreated.id]);
+
+      // Reload the cache module while retaining IndexedDB, as a page reload does.
+      vi.resetModules();
+      const reloadedCache = await import('../../src/lib/cache.js');
+      const afterReload = await reloadedCache.getCachedSong(serverCreated.id);
+      expect(afterReload).toMatchObject({ title: newTitle, chart_source: newerContent, created_at: serverCreatedAt });
+      const updatedServer = { ...afterReload, updated_at: finalVersion, _sync: undefined };
+      const secondSync = await reloadedCache.syncWithServer({
+        library: async () => ({ songs: [updatedServer] }),
+        songs: { update: async (id, payload) => {
+          expect(id).toBe(serverCreated.id);
+          expect(payload.title).toBe(newTitle);
+          expect(payload.chart_source).toBe(newerContent);
+          expect(payload.base_updated_at).toBe(serverVersion);
+          return updatedServer;
+        } },
+        setlists: { all: async () => [] },
+      });
+      expect(secondSync.ok).toBe(true);
+      expect(await reloadedCache.getCachedSong(serverCreated.id)).toMatchObject({
+        title: newTitle, chart_source: newerContent, created_at: serverCreatedAt, updated_at: finalVersion,
+      });
+      expect(await reloadedCache.getPendingMutations()).toEqual([]);
+    } finally {
+      await cache.clearDirty(localId);
+      await cache.deleteCachedSong(localId);
+      await cache.clearDirty(serverCreated.id);
+      await cache.deleteCachedSong(serverCreated.id);
+    }
+  });
+
+  it('sorts offline primary Genre changes and explicit clears from the cached projection through sync', async () => {
+    const id = 987655;
+    const original = { id, title: 'Invented genre edit song', artist: 'T17 synthetic', primary_genre: 'Rock',
+      genre: 'Rock', genres: [{ name: 'Rock', is_primary: true }], vibes: [], updated_at: version };
+    const other = { id: 987656, title: 'Invented comparator song', primary_genre: 'Mambo',
+      genres: [{ name: 'Mambo', is_primary: true }] };
+    const updated = (genres, token) => ({ ...original, genres, primary_genre: primaryGenreFromAssignments(genres),
+      genre: primaryGenreFromAssignments(genres), updated_at: token });
+    try {
+      await cache.cacheSongs([original]);
+      const jazz = updated([{ name: 'Jazz', is_primary: true }], version);
+      await cache.savePendingSong({ ...original, ...jazz,
+        _sync: { operation: 'update', base_updated_at: version } });
+      const changed = await cache.getCachedSong(id);
+      expect(sortSongs([other, changed], { key: 'genre' }).map(song => song.id)).toEqual([id, other.id]);
+
+      const jazzAck = { ...jazz, updated_at: '2026-10-10T12:00:00.000002Z' };
+      let nextServer = jazzAck;
+      const sync = () => cache.syncWithServer({
+        library: async () => ({ songs: [nextServer, other] }),
+        songs: { update: async (_songId, payload) => {
+          expect(payload.genres).toEqual(nextServer.genres);
+          return nextServer;
+        } },
+        setlists: { all: async () => [] },
+      });
+      expect((await sync()).ok).toBe(true);
+      expect((await cache.getCachedSong(id)).primary_genre).toBe('Jazz');
+
+      const cleared = updated([], '2026-10-10T12:00:00.000002Z');
+      nextServer = { ...cleared, updated_at: '2026-10-10T12:00:00.000003Z' };
+      await cache.savePendingSong({ ...(await cache.getCachedSong(id)), ...cleared,
+        _sync: { operation: 'update', base_updated_at: jazzAck.updated_at } });
+      const pendingClear = await cache.getCachedSong(id);
+      expect(pendingClear.primary_genre).toBeNull();
+      expect(sortSongs([other, pendingClear], { key: 'genre' }).map(song => song.id)).toEqual([other.id, id]);
+      expect((await sync()).ok).toBe(true);
+      expect((await cache.getCachedSong(id)).primary_genre).toBeNull();
+      expect(sortSongs([other, await cache.getCachedSong(id)], { key: 'genre' }).map(song => song.id)).toEqual([other.id, id]);
+    } finally {
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
   it('pushes a local song before dependent setlist work, maps IDs, then pulls', async () => {
     const localSongId = cache.makeLocalSongId();
     const localSong = { id: localSongId, title: 'Invented offline sync song', artist: 'T11 synthetic',
