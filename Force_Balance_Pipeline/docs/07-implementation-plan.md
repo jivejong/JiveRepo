@@ -219,17 +219,19 @@ outage was recovered from — see `docs/ENGINEERING-LOG.md`, "Stage 4d — Phase
 "Phase 4 close"):** the broker's own persistence and queued-session settings delivered about 22 hours of data intact
 on a manual restart, but nothing detected the outage itself — Job 1 stayed green throughout, and recovery needed a
 human to notice and act. Before the next build step:
-1. The bridge task should wait/retry for the broker rather than exit when it's unreachable, and the task (or its
-   wrapper) should restart automatically on failure — it exited `0xC000013A` (`CONTROL_C_EXIT`) and simply stayed
-   down.
-2. A landing-freshness alert, as three signals reported to an external dead-man's-switch so that alerting shares no failure
-   domain with the desktop or with Databricks quota: S1 bridge liveness, S2 Job 1 liveness, S3 data freshness (doc 05,
-   "Monitoring"). It replaces doc 03's 45-minute bronze freshness test, which would trip between hourly runs and in every
+1. **Done 2026-10-11 (Phase 5 Round 2).** The bridge task should wait/retry for the broker rather than exit when it's
+   unreachable, and the task (or its wrapper) should restart automatically on failure — it exited `0xC000013A`
+   (`CONTROL_C_EXIT`) and simply stayed down.
+2. **Done 2026-10-11 (Phase 5 Round 4); S3's negative test is pending.** A landing-freshness alert, as three signals
+   reported to an external dead-man's-switch so that alerting shares no failure domain with the desktop or with Databricks
+   quota: S1 bridge liveness, S2 Job 1 liveness, S3 data freshness (doc 05, "Monitoring"). It replaces doc 03's 45-minute bronze freshness test, which would trip between hourly runs and in every
    scheduled DISCONNECTED window, and it covers the same class of silent failure (a healthy-looking pipeline not receiving
    new data) in Job 1's own quota exhaustion (an open item in `docs/ENGINEERING-LOG.md`).
-3. Document and test the broker persistence and queue settings that actually made recovery possible
-   (`persistence`, `max_queued_messages`) and the bridge's own session settings (`clean_session`, a fixed
-   `client_id`) — currently true/correct in the deployed config, but asserted nowhere.
+3. **Done 2026-10-11 (Phase 5 Rounds 3 and 3b).** Document and test the broker persistence and queue settings that
+   actually made recovery possible (`persistence`, `max_queued_messages`) and the bridge's own session settings
+   (`clean_session`, a fixed `client_id`) — currently true/correct in the deployed config, but asserted nowhere.
+
+Details, evidence and the open follow-ups for all three are in `docs/ENGINEERING-LOG.md`, "Phase 5".
 
 1. `POST /api/report` endpoint in the bridge. Inference call with the planet's baseline passed in.
 2. **Clamp all returned values to valid ranges in code**, regardless of model output.

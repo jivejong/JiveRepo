@@ -593,14 +593,33 @@ on `main` when that run started (`git_snapshot.used_commit` in the run's own API
 approximate).
 
 `warehouse_id` is the one workspace-specific value the bundle needs; it's a bundle variable with no committed
-default, supplied at deploy time only (`BUNDLE_VAR_warehouse_id=<id> databricks bundle deploy`), consistent with
-this project's placeholder convention for anything workspace-specific.
+default, supplied at deploy time only, through the `BUNDLE_VAR_warehouse_id` environment variable (set from the workspace, as below,
+never by pasting a placeholder), consistent with this project's placeholder convention for anything workspace-specific.
 
 **To change either job:** edit the relevant `resources/*.job.yml`, `databricks bundle validate`, then
 `databricks bundle deploy` (needs a `BUNDLE_VAR_warehouse_id`-authenticated CLI session; never commit the real
 warehouse id). The YAML in the repo is what's deployed — no workspace-UI edits, for the same reason the dbt task
 itself pulls from Git rather than a workspace copy (below): someone reading the repo sees the actual deployed
 configuration.
+
+**Setting `BUNDLE_VAR_warehouse_id` — and the failed deploy of 2026-10-11.** The first S2 deploy failed: `jobs/reset` returned HTTP 400
+`"<id>" is not a valid endpoint id` for **both** jobs (nothing changed; zero files uploaded). Cause: `BUNDLE_VAR_warehouse_id` held the
+literal text `<id>` at user level and in the session; older terminals still had the real value, which hid it. The live jobs and the
+warehouse were fine. The repo's own text had shown the variable as `BUNDLE_VAR_warehouse_id=<id>` (here and in `databricks.yml`), a
+form that can be copied and run as it stands; that is the likely origin and it has been replaced. Set it from the workspace, with a
+guard that refuses anything that is not a real id (Free Edition has exactly one warehouse; with several, choose by name):
+
+```powershell
+$id = (databricks warehouses list -o json | ConvertFrom-Json).id
+if (@($id).Count -ne 1 -or "$id" -notmatch '^[0-9a-f]{16}$') { throw "expected one 16-character warehouse id, got: $id" }
+setx BUNDLE_VAR_warehouse_id $id            # then open a NEW terminal: setx does not change the one you are in
+# In the new terminal, confirm both the saved value and the session value are real (True/False only, nothing printed):
+[Environment]::GetEnvironmentVariable('BUNDLE_VAR_warehouse_id', 'User') -match '^[0-9a-f]{16}$'
+$env:BUNDLE_VAR_warehouse_id -match '^[0-9a-f]{16}$'
+```
+
+If a deploy ever fails with `is not a valid endpoint id`, check both of those first. A terminal opened before a bad `setx` keeps the old
+value, so the same deploy can pass in one window and fail in another.
 
 **Both jobs were created PAUSED** (`schedule.pause_status: PAUSED`), then unpaused by hand in the workspace UI on
 2026-09-30 (Phase 4 Stage 3b) after Job 1's manual run on commit `19cdba2` passed.
@@ -991,8 +1010,12 @@ but the throwaway broker of `ingest/e2e_local.py` does.
   02:15–03:00Z found 4 scans, all 60 of 60, with 0 duplicate rows.
 - **What this does and does not prove.** It proves the *session* (the client and its subscription) persists across a restart.
   Queued-message persistence across a restart was **not** tested: both restarts logged `Restored 0 client messages` because the
-  queue was empty. The test that would show it is: stop the bridge (safe now that it acknowledges after landing), let two scans
-  publish, restart the broker, start the bridge, and check that both scans land.
+  queue was empty. (A different thing *is* now proven live: on 2026-10-11 the broker held three scans for the offline `force-bridge`
+  session during a 41-minute bridge outage, and delivered them when the bridge reconnected at 21:04:48Z, without the Pi buffering
+  anything. That is queuing in the broker's memory for an offline session, not surviving a broker restart.) The test that would
+  show it is: disable the task and stop the bridge (safe now that it acknowledges after landing; disable first, or the 5-minute
+  tick restarts it), wait for the process to exit, let two scans publish, restart the broker, enable and start the task, and
+  check that both scans land.
 
 **A Windows shutdown or reboot stops the broker ungracefully.** Observed in the reboot test of 2026-10-11: at the shutdown
 (17:50:44Z) the broker logged both clients as `connection closed by client` and **no `terminating` line**, because Windows stops
@@ -1123,9 +1146,16 @@ alive to report a failure, and the alerting shares no failure domain with the de
 45-minute `bronze.events` freshness test that used to be in doc 03 and `sources.yml`, which would have tripped between hourly Job 1
 runs and in every scheduled DISCONNECTED window.
 
-**Status (2026-10-11).** S1 and S3 are implemented in `ingest/bridge/monitor.py` and wired into `bridge.py`, with tests, and are
-**deployed**: the new bridge started at 19:39:44Z, logged `monitoring pings enabled for S1, S3` and connected with `session present:
-True`. S2 is **decided and in the bundle but not yet deployed** (below). The four checks in the table are on Healthchecks.io.
+**Status (2026-10-11): all three signals are deployed and proven; one test is pending.**
+- **S1 and S3** are implemented in `ingest/bridge/monitor.py`, wired into `bridge.py`, and deployed: the new bridge started at
+  19:39:44Z, logged `monitoring pings enabled for S1, S3` and connected with `session present: True`. S1 has pinged every 5 minutes
+  since 15:39 EDT (19:39Z), each request carrying the project User-Agent. S3 started the same way; confirm its cadence from the check's
+  own log (see "How the alerts were proven", step 3).
+- **S2** is deployed (the bundle variable `s2_ping_email`, below) and its first ping arrived after Job 1's 21:03Z run succeeded.
+- **Proven:** S1 went down on a real outage, at exactly period plus grace, and came back up on its first ping; the notification
+  email was proven on `fbp-test` (below).
+- **Pending:** S3's negative test, that it stays up through a scheduled DISCONNECTED window of at most 3 hours. It happens
+  naturally in the 00:00–12:00Z half-day of 2026-10-12, if a window falls there (one is scheduled per half-day).
 
 | Signal | What it says | Sent by | Ping | Check | Period | Grace | Alert after |
 |---|---|---|---|---|---|---|---|
@@ -1207,7 +1237,7 @@ project User-Agent, and there is no Databricks session or credential in reach. T
 failing ping is logged at most once every 15 minutes, described by status or exception type only, and never touches the MQTT, upload
 or acknowledgement paths.
 
-**S2: how Job 1 pings (decided; in the bundle, not yet deployed).** Job 1 has a job-level `email_notifications.on_success` entry
+**S2: how Job 1 pings (deployed 2026-10-11).** Job 1 has a job-level `email_notifications.on_success` entry
 (`resources/force_pipeline.job.yml`) whose address is the S2 check's email-ping address, the bundle variable `s2_ping_email`
 (`databricks.yml`). It is success only: a failed or skipped run sends nothing, and the silence is the alarm. Job 2 is untouched.
 Databricks sends the email itself, so the compute needs no outbound access and no secret scope.
@@ -1227,37 +1257,69 @@ Databricks sends the email itself, so the compute needs no outbound access and n
   ([Bundle variables](https://docs.databricks.com/aws/en/dev-tools/bundles/variables)). Checked on this CLI (v1.17.0) on
   2026-10-11: with both set, `--var` won over `BUNDLE_VAR_s2_ping_email`.
 - *Every successful run pings,* manual runs included, and a run that exhausts the quota never starts, which is what S2 is for.
-- *Deploy* (the owner runs this; `bundle deploy` reconciles the whole definition of both jobs, and Job 2 is unchanged):
+- *Deploy* (the owner runs this; `bundle deploy` reconciles the whole definition of both jobs, and Job 2 is unchanged). **This is a
+  template: replace the whole quoted string with the real address from the S2 check's Email tab** (its form is
+  `<uuid>@hc-ping.com`, with the real uuid). Pasting it as it stands would deploy a notification to an address that does not exist,
+  and the checks below would catch it. Make sure `BUNDLE_VAR_warehouse_id` is a real id first (see "Setting
+  `BUNDLE_VAR_warehouse_id`", under "Job topology").
   ```powershell
-  # Once. setx only affects NEW terminals, like BUNDLE_VAR_warehouse_id. The address is the S2 check's, from its Email tab:
-  setx BUNDLE_VAR_s2_ping_email "<uuid>@hc-ping.com"
-  # In a new terminal, from Force_Balance_Pipeline\:
+  # Once. setx only affects NEW terminals. Replace the quoted string with the real address:
+  setx BUNDLE_VAR_s2_ping_email "<the address from the S2 check's Email tab>"
+  # In a new terminal, from Force_Balance_Pipeline\ (True/False only, nothing printed):
+  $env:BUNDLE_VAR_s2_ping_email -match '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}@hc-ping\.com$'     # must be True
   databricks bundle validate        # "Validation OK!"; without the variable: "no value assigned to required variable s2_ping_email"
   databricks bundle deploy
   ```
+  The first S2 deploy, on 2026-10-11, failed for a different reason (a placeholder in `BUNDLE_VAR_warehouse_id`); it was fixed and
+  the second deploy succeeded.
 - *Read-only check that the deployed jobs have it, without printing the address:*
   ```powershell
   function Count-Notified($job, $kind) { @($job.settings.email_notifications.$kind | Where-Object { $_ }).Count }
   $j1 = databricks jobs get 692051683030737 -o json | ConvertFrom-Json
   "Job 1: on_success=$(Count-Notified $j1 'on_success') (expect 1), on_failure=$(Count-Notified $j1 'on_failure') (expect 0)"
-  "Job 1 address is a hc-ping.com address: $([bool](@($j1.settings.email_notifications.on_success) -like '*@hc-ping.com'))"
+  "Job 1 address is a real hc-ping.com address: $([bool](@($j1.settings.email_notifications.on_success) -match '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}@hc-ping\.com$'))"
   $j2 = databricks jobs get 38074271722750 -o json | ConvertFrom-Json
   "Job 2: on_success=$(Count-Notified $j2 'on_success') (expect 0)"
   ```
-  Then, after the next Job 1 run succeeds, `fbp-s2-job1-success` should show its first ping.
+  Result on 2026-10-11: Job 1 `on_success=1`, `on_failure=0`, a hc-ping.com address; Job 2 `on_success=0`. After Job 1's 21:03Z run
+  succeeded, `fbp-s2-job1-success` showed its first ping.
 
-**How to prove each alert fires** (each step needs the owner's OK; nothing here runs automatically).
-1. *The alert path:* ping `fbp-test` once, then stop. After about 2 minutes the check goes late and then down, and the notification
-   email arrives (check the inbox and the check's log); pinging it again returns it to up.
-2. *S1, for real:* disable the task (`Disable-ScheduledTask ForceBridge`) so the 5-minute repetition cannot restart it, stop it
-   (`Stop-ScheduledTask ForceBridge`; safe, because messages are acknowledged only after landing), wait 35 minutes, expect
-   `fbp-s1-bridge-alive` late at about 5 minutes and down at about 30, with an email; then `Enable-ScheduledTask` and
-   `Start-ScheduledTask` (after confirming the process has exited, per "Restarting the bridge by hand") and expect it back to up.
-3. *S3, cadence and silence:* in the check's log, pings appear after landings at most once per 5 minutes; and across one scheduled
-   DISCONNECTED window (at most 3 hours, from `mode_transitions` or `bridge.log`) `fbp-s3-data-landed` never goes down.
-4. *S2:* the throwaway job's email reached `fbp-test` (2026-10-11, above); after the deploy, `fbp-s2-job1-success` shows a ping about
-   every hour at :03 plus the run time.
-5. *The disabled paths:* with the keys absent the bridge logs one warning per start and runs normally.
+**Setting Healthchecks.io up** (the order matters; the 2026-10-11 outage test found the third step missing).
+1. *Create the four checks* with the periods and grace times in the table: `fbp-s1-bridge-alive` (5 min / 25 min),
+   `fbp-s2-job1-success` (1 h / 1 h), `fbp-s3-data-landed` (15 min / 3 h 45 min) and the test check `fbp-test` (1 min / 1 min). Copy each
+   check's ping URL (S1, S3) or Email-tab address (S2, `fbp-test`) from the check itself.
+2. *Confirm the account's Email integration:* open the confirmation email Healthchecks sent and follow its link. An unconfirmed
+   integration sends nothing.
+3. *Enable that integration on every check* (each check has its own integrations list). Creating the integration does not attach it.
+4. *Prove delivery with the short-grace test check before trusting any alert:* ping `fbp-test` once, then stop. About 2 minutes later it
+   goes down, and the "down" email must arrive. All four checks share the integration, so one delivered email proves the path.
+
+**What went wrong the first time.** During the S1 outage proof (below) S1 went down at exactly the right moment and **no email was
+sent**. The account's Email integration had not been confirmed or attached; the check's own event log showed the status changes but
+no notification. It was fixed and enabled on all four checks, and delivery was then proven on `fbp-test` (the "down" email arrived at
+17:21 EDT, 21:21Z). So S1's *own* outage produced no email; the alert path was proven afterwards, on the shared integration.
+
+**How the alerts were proven** (2026-10-11 unless noted; each step needed the owner's OK).
+1. *The alert path:* `fbp-test` was taken through a down cycle and the "down" email arrived at 21:21Z (above).
+2. *S1, for real.* ForceBridge was disabled and stopped at about 20:23:30Z (the bridge's last summary line was 20:23:26Z). S1's last
+   ping was at 20:19Z, and Healthchecks marked it **down at 20:49Z: exactly period plus grace, 30 minutes**. The bridge was restored
+   at 21:04:48Z (`session present: True`) and S1 went back **up on its first ping** (21:04Z). The three scans published during the
+   outage (20:30, 20:45 and 21:00Z) landed at 21:04:49–21:04:50Z as 60-line, regular-sized files. **The Pi did not buffer them: the
+   broker held them for the offline persistent session** (the first live proof of broker-queued delivery; previously only 2026-10-09).
+   *Procedure for repeating it:* `Disable-ScheduledTask ForceBridge` **first** (otherwise the 5-minute repetition tick restarts the
+   bridge within 5 minutes and there is no outage), then `Stop-ScheduledTask ForceBridge`, then wait until no bridge process remains
+   (the command under "Restarting the bridge by hand"), then leave it for 35 minutes; expect S1 late about 5 minutes after its last
+   ping and down at about 30, with an email (once the integration is attached). To restore: `Enable-ScheduledTask ForceBridge`, then
+   `Start-ScheduledTask ForceBridge`; S1 returns to up on its first ping. A stop is safe at any moment, because messages are
+   acknowledged only after landing.
+3. *S3, cadence:* read from the check's log: pings should follow landings, about every 15 minutes and never more than one per 5
+   minutes (the throttle is unit-tested; the live cadence is to be confirmed from the log). *S3, silence:* **pending**: across one
+   scheduled DISCONNECTED window (at most 3 hours; from `mode_transitions` or `bridge.log`) `fbp-s3-data-landed` must never go down. It happens naturally in the 00:00–12:00Z half-day of 2026-10-12, if a window falls there.
+4. *S2:* the throwaway job's email reached `fbp-test` (2026-10-11), and after the real deploy `fbp-s2-job1-success` showed its first ping
+   after the 21:03Z run. A quota-exhaustion alert itself has not been observed; it follows from the
+   design (no run is created, so no success email, so the check goes down after 2 hours) and from the delivery proof above.
+5. *The disabled paths:* with the keys absent the bridge logs one warning per start and runs normally. This is covered by unit tests;
+   it was not exercised live.
 
 ### The Pi
 

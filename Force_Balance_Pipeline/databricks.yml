@@ -12,7 +12,8 @@
 #
 # warehouse_id is workspace-specific, not a secret in the credential sense, but still not committed as a literal
 # here, consistent with this project's placeholder convention for anything workspace-specific (doc 05, <DESKTOP_IP>
-# etc.). Set it at deploy time: `BUNDLE_VAR_warehouse_id=<id> databricks bundle deploy`.
+# etc.). Set it at deploy time through the BUNDLE_VAR_warehouse_id environment variable, taken from the workspace and never
+# from a placeholder (a literal "<id>" there broke the 2026-10-11 deploy): see doc 05, "Setting BUNDLE_VAR_warehouse_id".
 
 bundle:
   name: force_balance_pipeline
