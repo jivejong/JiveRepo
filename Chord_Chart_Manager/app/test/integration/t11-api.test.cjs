@@ -11,6 +11,8 @@ assert.ok(base, 'T11 harness must provide the isolated E2E_BASE_URL');
 const createdSongs = [];
 const createdSetlists = [];
 const createdGenres = [];
+const createdGenreNames = new Map();
+const createdVibes = [];
 test.after(async () => pool.end());
 const json = async (method, path, body) => {
   const response = await fetch(new URL(path, base), {
@@ -58,6 +60,7 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
     genreId = (await pool.query('SELECT id FROM public.genres WHERE name=$1', ['T11 API synthetic genre'])).rows[0]?.id;
     assert.ok(genreId);
     createdGenres.push(genreId);
+    createdGenreNames.set(genreId, 'T11 API synthetic genre');
 
     const update = await json('PUT', `/api/songs/${primarySong.id}`, {
       title: 'T11 API song A updated', artist: primarySong.artist,
@@ -65,6 +68,55 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
     });
     assert.equal(update.response.status, 200, JSON.stringify(update.value));
     assert.equal(update.value.title, 'T11 API song A updated');
+
+    const filterSong = await json('PUT', `/api/songs/${primarySong.id}`, {
+      genres: [
+        { name: 'T11 API synthetic genre', is_primary: true },
+        { name: 'T11 API secondary', is_primary: false },
+        { name: 'T11 API shared category name', is_primary: false },
+      ],
+      vibes: ['T11 API shared category name', 'T11 API calm'], release_year: 1979,
+      base_updated_at: update.value.updated_at, operation_id: randomUUID(),
+    });
+    assert.equal(filterSong.response.status, 200, JSON.stringify(filterSong.value));
+    const filterGenreIds = await pool.query(`SELECT id, name FROM public.genres
+      WHERE name = ANY($1::text[]) ORDER BY id`, [[
+        'T11 API synthetic genre', 'T11 API secondary', 'T11 API shared category name',
+      ]]);
+    for (const row of filterGenreIds.rows) {
+      if (!createdGenres.includes(row.id)) createdGenres.push(row.id);
+      createdGenreNames.set(row.id, row.name);
+    }
+    const filterVibeIds = await pool.query(`SELECT id FROM public.vibes
+      WHERE name = ANY($1::text[]) ORDER BY id`, [['T11 API shared category name', 'T11 API calm']]);
+    for (const row of filterVibeIds.rows) createdVibes.push(row.id);
+    const filterContains = async selected => {
+      const params = new URLSearchParams({ tag_filters: JSON.stringify(selected) });
+      const result = await json('GET', `/api/songs?${params}`);
+      assert.equal(result.response.status, 200, JSON.stringify(result.value));
+      return result.value.songs.some(song => song.id === primarySong.id);
+    };
+    assert.equal(await filterContains([
+      { category: 'Genre', name: 'T11 API missing' }, { category: 'Genre', name: 'T11 API secondary' },
+      { category: 'Vibe', name: 'T11 API missing' }, { category: 'Vibe', name: 'T11 API calm' },
+      { category: 'Era', name: '1960s' }, { category: 'Era', name: '1970s' },
+    ]), true, 'values within Genre, Vibe, and Era are OR alternatives');
+    assert.equal(await filterContains([
+      { category: 'Genre', name: 'T11 API shared category name' },
+      { category: 'Vibe', name: 'T11 API shared category name' },
+    ]), true, 'equal names retain distinct Genre and Vibe identity');
+    assert.equal(await filterContains([
+      { category: 'Genre', name: 'T11 API secondary' }, { category: 'Vibe', name: 'T11 API missing' },
+    ]), false, 'distinct categories combine with AND');
+    assert.equal(await filterContains([{ category: 'Era', name: '1970s' }]), true);
+    assert.equal(await filterContains([{ category: 'Era', name: '1980s' }]), false);
+    const boundary = await json('PUT', `/api/songs/${primarySong.id}`, {
+      release_year: 1980, base_updated_at: filterSong.value.updated_at, operation_id: randomUUID(),
+    });
+    assert.equal(boundary.response.status, 200, JSON.stringify(boundary.value));
+    assert.equal(await filterContains([{ category: 'Era', name: '1970s' }]), false);
+    assert.equal(await filterContains([{ category: 'Era', name: '1980s' }]), true);
+    const filterSongVersion = boundary.value.updated_at;
 
     const list = await json('POST', '/api/setlists/mutations', { operation_id: randomUUID(),
       type: 'create', setlist_id: null, base_updated_at: null, payload: { name: 'T11 API synthetic list' } });
@@ -110,7 +162,7 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
     assert.equal(unchanged.value.notes, null);
 
     const removedTag = await json('DELETE', `/api/songs/${primarySong.id}/tags/T11%20API%20synthetic%20genre`, {
-      category: 'Genre', base_updated_at: update.value.updated_at,
+      category: 'Genre', base_updated_at: filterSongVersion,
     });
     // The intervening setlist operations do not update this song version.
     assert.equal(removedTag.response.status, 200, JSON.stringify(removedTag.value));
@@ -141,9 +193,14 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
       assert.equal((await pool.query('SELECT 1 FROM public.songs WHERE id=$1', [id])).rowCount, 0);
     }
     for (const id of createdGenres) {
-      await pool.query(`DELETE FROM public.genres g WHERE id=$1 AND name='T11 API synthetic genre'
-        AND NOT EXISTS (SELECT 1 FROM public.song_genres sg WHERE sg.genre_id=g.id)`, [id]);
+      await pool.query(`DELETE FROM public.genres g WHERE id=$1 AND name=$2
+        AND NOT EXISTS (SELECT 1 FROM public.song_genres sg WHERE sg.genre_id=g.id)`, [id, createdGenreNames.get(id)]);
       assert.equal((await pool.query('SELECT 1 FROM public.genres WHERE id=$1', [id])).rowCount, 0);
+    }
+    for (const id of createdVibes) {
+      await pool.query(`DELETE FROM public.vibes v WHERE id=$1 AND name LIKE 'T11 API %'
+        AND NOT EXISTS (SELECT 1 FROM public.song_vibes sv WHERE sv.vibe_id=v.id)`, [id]);
+      assert.equal((await pool.query('SELECT 1 FROM public.vibes WHERE id=$1', [id])).rowCount, 0);
     }
   }
 });

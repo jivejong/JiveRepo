@@ -48,7 +48,16 @@ export function matchesSongTagFilters(song, selected = [], legacyNames = []) {
     const name = era.toLocaleLowerCase();
     have.add(`Era:${name}`); names.add(name);
   }
-  return selected.every(tag => have.has(`${tag.category}:${tag.name.trim().toLocaleLowerCase()}`))
+  const byCategory = new Map();
+  for (const tag of selected) {
+    const category = tag.category === 'Vibe' ? 'Feel' : tag.category;
+    if (!byCategory.has(category)) byCategory.set(category, []);
+    byCategory.get(category).push(tag.name.trim().toLocaleLowerCase());
+  }
+  // A selected category matches any one of its selected values; distinct
+  // categories still combine with AND. This mirrors the online SQL filters.
+  return [...byCategory].every(([category, values]) =>
+    values.some(name => have.has(`${category}:${name}`)))
     && legacyNames.every(name => names.has(name.toLocaleLowerCase()));
 }
 

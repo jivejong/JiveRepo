@@ -12,7 +12,8 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-/* Faceted song search. All filters optional and AND-combined.
+/* Faceted song search. Category values are OR-combined within Genre/Vibe/Era;
+ * selected categories are AND-combined with each other and the text filters.
  * filters: { q, artist, genre, vibe, era }  (era like "1970s")
  * Returns lightweight rows for the list view (no chart_content). */
 async function searchSongs(filters = {}) {
@@ -42,17 +43,25 @@ async function searchSongs(filters = {}) {
       where.push(`s.release_year >= ${p(decade)} AND s.release_year < ${p(decade + 10)}`);
     }
   }
+  const selectedByCategory = new Map();
   for (const tag of filters.selectedTags || []) {
-    const name = tag.name.trim();
-    if (tag.category === "Genre") {
-      where.push(`EXISTS (SELECT 1 FROM song_genres sg2 JOIN genres g2 ON g2.id=sg2.genre_id
-                          WHERE sg2.song_id=s.id AND LOWER(g2.name)=LOWER(${p(name)}))`);
-    } else if (tag.category === "Feel") {
-      where.push(`EXISTS (SELECT 1 FROM song_vibes sv2 JOIN vibes v2 ON v2.id=sv2.vibe_id
-                          WHERE sv2.song_id=s.id AND LOWER(v2.name)=LOWER(${p(name)}))`);
-    } else {
-      where.push(`LOWER((s.release_year / 10 * 10)::text || 's') = LOWER(${p(name)})`);
-    }
+    const category = tag.category === "Vibe" ? "Feel" : tag.category;
+    if (!selectedByCategory.has(category)) selectedByCategory.set(category, []);
+    selectedByCategory.get(category).push(tag.name.trim());
+  }
+  for (const [category, names] of selectedByCategory) {
+    const alternatives = names.map(name => {
+      if (category === "Genre") {
+        return `EXISTS (SELECT 1 FROM song_genres sg2 JOIN genres g2 ON g2.id=sg2.genre_id
+                         WHERE sg2.song_id=s.id AND LOWER(g2.name)=LOWER(${p(name)}))`;
+      }
+      if (category === "Feel") {
+        return `EXISTS (SELECT 1 FROM song_vibes sv2 JOIN vibes v2 ON v2.id=sv2.vibe_id
+                         WHERE sv2.song_id=s.id AND LOWER(v2.name)=LOWER(${p(name)}))`;
+      }
+      return `LOWER((s.release_year / 10 * 10)::text || 's') = LOWER(${p(name)})`;
+    });
+    if (alternatives.length) where.push(`(${alternatives.join(" OR ")})`);
   }
   // Existing name-only clients retain their across-category semantics, but
   // every genre assignment (not just the primary one) participates.

@@ -62,4 +62,24 @@ describe('tag editing data', () => {
     expect(matchesSongTagFilters({ ...song, release_year: null, era: '2000s' },
       [{ category: 'Era', name: '2000s' }])).toBe(false);
   });
+
+  it('uses OR within each selected category, AND across categories, and derives Era at decade boundaries', () => {
+    const song = {
+      genres: [{ name: 'Primary', is_primary: true }, { name: 'Secondary', is_primary: false }],
+      vibes: ['Calm', 'Driving'], release_year: 1980,
+    };
+    expect(matchesSongTagFilters(song, [
+      { category: 'Genre', name: 'Missing' }, { category: 'Genre', name: 'Secondary' },
+      { category: 'Vibe', name: 'Other' }, { category: 'Vibe', name: 'Calm' },
+      { category: 'Era', name: '1970s' }, { category: 'Era', name: '1980s' },
+    ])).toBe(true);
+    expect(matchesSongTagFilters(song, [
+      { category: 'Genre', name: 'Secondary' }, { category: 'Vibe', name: 'Missing' },
+    ])).toBe(false);
+    expect(eraForYear(1979)).toBe('1970s');
+    expect(eraForYear(1980)).toBe('1980s');
+    expect(matchesSongTagFilters({ ...song, release_year: undefined }, [
+      { category: 'Era', name: '1980s' },
+    ])).toBe(false);
+  });
 });

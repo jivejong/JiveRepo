@@ -28,6 +28,8 @@ export default function HomeView({ online, onSelectSong, onNewSong }) {
   };
 
   const clearTags = () => setActiveTags([]);
+  const clearCategory = category => setActiveTags(previous => previous.filter(tag => tag.category !== category));
+  const displayCategory = category => category === 'Feel' ? 'Vibe' : category;
   const changeSort = patch => {
     const next = { ...sortPreference, ...patch };
     setSortPreference(next);
@@ -98,13 +100,14 @@ export default function HomeView({ online, onSelectSong, onNewSong }) {
           activeTags={activeTags}
           onToggle={toggleTag}
           onClearAll={clearTags}
+          onClearCategory={clearCategory}
         />
       )}
 
       {/* Songs list */}
       <div className="list-section-head">
         {activeTags.length > 0
-          ? `${activeTags.map(tag => `${tag.category}: ${tag.name}`).join(' · ')} · `
+          ? `${activeTags.map(tag => `${displayCategory(tag.category)}: ${tag.name}`).join(' · ')} · `
           : 'All songs · '}
         <span style={{ color: 'var(--accent)' }}>
           {songsLoading ? '…' : `${songs.length} songs`}

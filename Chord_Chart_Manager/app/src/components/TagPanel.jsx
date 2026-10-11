@@ -9,7 +9,8 @@ import { ChevronDown, ChevronUp, XIcon } from './Icons';
  *   onToggle    — (tag) => void
  *   onClearAll  — () => void
  */
-export default function TagPanel({ tags = [], activeTags = [], onToggle, onClearAll }) {
+export default function TagPanel({ tags = [], activeTags = [], onToggle, onClearAll, onClearCategory }) {
+  const displayCategory = category => category === 'Feel' ? 'Vibe' : category;
   // Group tags by category; uncategorized → "Other"
   const grouped = useMemo(() => {
     const map = {};
@@ -18,8 +19,9 @@ export default function TagPanel({ tags = [], activeTags = [], onToggle, onClear
       if (!map[cat]) map[cat] = [];
       map[cat].push(tag);
     }
+    for (const cat of ['Genre', 'Era', 'Feel']) map[cat] ||= [];
     // Sort categories: known ones first, Other last
-    const ORDER = ['Genre','Era','Feel','Tempo','Vibe'];
+    const ORDER = ['Genre','Feel','Era','Tempo','Vibe'];
     return Object.entries(map).sort(([a], [b]) => {
       const ai = ORDER.indexOf(a), bi = ORDER.indexOf(b);
       if (ai === -1 && bi === -1) return a.localeCompare(b);
@@ -57,8 +59,8 @@ export default function TagPanel({ tags = [], activeTags = [], onToggle, onClear
         <div className="active-tags-bar">
           {activeList.map(tag => (
             <div key={`${tag.category}:${tag.name}`} className="active-tag">
-              {tag.category}: {tag.name}
-              <button onClick={() => onToggle(tag)} aria-label={`Remove ${tag.category} ${tag.name}`}>
+              {displayCategory(tag.category)}: {tag.name}
+              <button onClick={() => onToggle(tag)} aria-label={`Remove ${displayCategory(tag.category)} ${tag.name}`}>
                 <XIcon size={12} />
               </button>
             </div>
@@ -70,10 +72,15 @@ export default function TagPanel({ tags = [], activeTags = [], onToggle, onClear
       {/* Categorised tag grid */}
       {grouped.map(([cat, catTags]) => (
         <div key={cat} className="tag-category">
-          <div className="cat-header" onClick={() => toggleCat(cat)} role="button" tabIndex={0}>
-            <span className="cat-label">{cat}</span>
-            <span className="cat-count">{catTags.length}</span>
-            {open[cat] ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          <div className="cat-heading-row">
+            <div className="cat-header" onClick={() => toggleCat(cat)} role="button" tabIndex={0}>
+              <span className="cat-label">{displayCategory(cat)}</span>
+              <span className="cat-count">{catTags.length}</span>
+              {open[cat] ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            </div>
+            <button type="button" className="cat-clear-btn"
+              aria-label={`All ${displayCategory(cat)}`}
+              onClick={event => { event.stopPropagation(); onClearCategory?.(cat); }}>All</button>
           </div>
           {open[cat] && (
             <div className="tag-grid">

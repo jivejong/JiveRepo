@@ -285,7 +285,13 @@ base_updated_at}`; `DELETE /api/songs/:id/tags/:name` accepts `{category,
 base_updated_at}` in its JSON body. `category` is `Genre` or `Feel` (`Vibe`
 is an alias). Missing or malformed tokens return 400; stale or ambiguous
 tokens return 409. The song filter sends `tag_filters` as a JSON list of
-`{category,name}` values; every selected Genre, Feel, or Era must match.
+`{category,name}` values. Within Genre, Vibe (the API's legacy `Feel`
+category), or Era, selected values are alternatives (OR); selected categories
+combine with AND. Genre matches primary and secondary assignments. Vibe
+matches any assigned vibe. Era is derived from `release_year` by decade;
+missing years do not match. The opening-screen All control clears only its
+category, while Clear all removes every active category filter. These rules
+are the same for server search and the offline IndexedDB cache.
 Setlist conflict notices are stored in IndexedDB and remain visible after a
 later sync failure or reload. When Web Locks are unavailable, another tab
 waits to the active IndexedDB lease expiry and rechecks ownership and its

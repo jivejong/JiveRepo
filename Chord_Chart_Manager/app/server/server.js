@@ -86,8 +86,8 @@ app.get("/api/songs", async (req, res, next) => {
       try { selectedTags = JSON.parse(tag_filters); } catch { selectedTags = null; }
       if (!Array.isArray(selectedTags) || selectedTags.some(tag =>
         !tag || typeof tag.name !== "string" || !tag.name.trim() ||
-        !["Genre", "Feel", "Era"].includes(tag.category))) {
-        return res.status(400).json({ error: "tag_filters must be a list of Genre, Feel, or Era names" });
+        !["Genre", "Feel", "Vibe", "Era"].includes(tag.category))) {
+        return res.status(400).json({ error: "tag_filters must be a list of Genre, Vibe, or Era names" });
       }
     }
     const filters = { q, artist, genre, vibe, era, selectedTags,
