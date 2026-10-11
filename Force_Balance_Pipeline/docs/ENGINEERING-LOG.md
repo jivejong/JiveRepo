@@ -933,7 +933,46 @@ noticed the bridge was down, and nothing brought it back without a human.
 **Note.** Commit `7a05748` (Stage 3d) reused Stage 3c's own subject line verbatim. Left as-is — already public on
 `main`, a cosmetic git-history issue, not a code or data problem.
 
-## Phase 5 Round 2 — the bridge survives an unattended reboot (2026-10-10)
+## Phase 5 — the unattended bridge outage (2026-10-10 to 2026-10-11)
+
+**Goal.** Doc 07's carried-over first priority, from the 22-hour bridge outage of 2026-10-09/10 (Stage 4d): (1) the bridge survives
+an unattended reboot; (2) a landing-freshness alert; (3) the broker and bridge session settings that made recovery work are
+documented and tested. Items 1 and 3 are done and verified live (below). **Item 2 is Round 4 and is not built.** Its design is
+decided: three signals — S1 bridge liveness, S2 Job 1 liveness, S3 data freshness — each reported to an external dead-man's-switch
+so that alerting shares no failure domain with the desktop or with Databricks quota. It supersedes the 45-minute bronze rule in
+doc 03:439 and doc 05:413 (which would trip between hourly runs and in every scheduled DISCONNECTED window); those docs are amended
+in Round 4. Two silent-loss paths were found and
+closed on the way (below).
+
+**Rounds and commits** (all under `Force_Balance_Pipeline/`; SHAs from `git log`):
+
+| Round | What | Commits |
+|---|---|---|
+| 1 | Log and doc cleanup | `6193b08`, `176855f` |
+| 2 | The bridge survives an unattended reboot | `2686936` (bridge code and tests), `b5d88e4` (task script and Pester), `6af8d59` (docs); review follow-up `d985195` (log rotation), `b6bcad0` (Pester mocks), `55f0662` (log and doc 05) |
+| 3 | Broker persistence and session settings | `7341cde` (tests), `24ee207` (doc 05), `c56517b` (the broker conf: expiry 10d, autosave 10 s, window 180) |
+| 3b | Acknowledge after landing (`manual_ack`) | `460f41d` (bridge and tests), `1885327` (e2e scenarios), `1d1325e` (docs) |
+
+**How it was run.** Each round was planned and approved before any code. Every new test was mutation-checked against a green
+baseline, and only an assertion FAIL counted as a catch. The live steps (the scheduled task, Docker, the broker restarts, the
+reboot) were run by Jong and his pasted output is the source for every "live" figure below; times are UTC.
+
+### Round 1 — log and doc cleanup (2026-10-10)
+
+Commits `6193b08`, `176855f`. The bespin onset `scan_id` was confirmed (`01M48S2NN05WEG4K79HZSXECBV`, 60 rows, event_time
+14:15:00.000–14:15:02.950). The `cooldown_conflict` scope row was marked resolved (definition B, Stage 4a). The stale "not yet
+deployed" comments in both job files were replaced after a read-only `databricks jobs get` on each job (Job 1
+`692051683030737`, Job 2 `38074271722750`) matched the yml in cron, timezone, `pause_status`, task timeouts and the transform
+command: a comment-only change, so no bundle redeploy was needed. The first `jobs get` failed because the CLI's refresh token was
+invalid; Jong re-authenticated. Four open items were recorded: the OAuth secret expiry (2026-12-25 13:59Z), the `deploy.sh`
+first-run caveat (observed 2026-10-10; the mechanism is derived from the script), the missing dead-letter replay tool, and the
+pre-upload acknowledgement. A read-only check of the 60 events dead-lettered on 2026-10-05 found all 60 present in bronze and
+silver, so the dead-letter file can hold events that already arrived.
+
+### Phase 5 Round 2 — the bridge survives an unattended reboot (2026-10-10)
+
+Commits `2686936`, `b5d88e4`, `6af8d59`; review follow-up `d985195`, `b6bcad0`, `55f0662`.
+
 
 **Root cause of 2026-10-09, two independent failures.** (1) After the reboot the old task opened a console window at logon; Jong
 closed it, not knowing what it was, which is the `0xC000013A` (`CONTROL_C_EXIT`). (2) Separately, `bridge.py` exited with code 1
@@ -961,7 +1000,8 @@ now say what was proven.
 - `infra/desktop/register-bridge-task.ps1`: `New-BridgeTaskDefinition` builds the task without registering it. Action
   `pythonw.exe`; triggers: logon of the named user, and a 5-minute repetition with an empty duration (indefinite;
   `-RepetitionDuration ([TimeSpan]::MaxValue)` yields `P99999999DT23H59M59S`, which some builds reject — an empty duration is what
-  this PowerShell builds without the parameter, checked in memory only, **registration of it not yet confirmed**); principal =
+  this PowerShell builds without the parameter, checked in memory, then registered unelevated and accepted on 2026-10-10: see
+  "Live install and results" below); principal =
   the user, Interactive, Limited; `MultipleInstances IgnoreNew`, `StartWhenAvailable`, no time limit. The running-bridge guard now
   also looks at `pythonw.exe`.
 - Decision (Q-A2): no auto-logon. A reboot nobody logs in after starts neither the broker nor the bridge; the planned Phase 5
@@ -1005,37 +1045,160 @@ Pester: the Scheduled Task commands are now mocked for the whole definition Desc
 registering a task, here with invalid XML as a second safeguard) is caught: "Expected Register-ScheduledTask to be called 0
 times exactly but was called 3 times".
 
-**Manual steps for Jong (data is safe in the broker throughout — it holds the bridge's persistent session, and the Pi has its own
-buffer — so there is no hurry). Results to be recorded here.**
-1. Stop the running bridge cleanly: just after a quarter-hour scan has landed (~:01 past :00/:15/:30/:45), click its console
-   window and press Ctrl+C; wait for `bridge: final …` and for the window to close. (`Stop-ScheduledTask` also works but is
-   abrupt: events buffered in memory but not yet uploaded, up to about one scan, are lost.) Verify none is left:
-   `Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" | ? CommandLine -like '*bridge.py*'` prints nothing.
-2. Remove the old task. Try in an ordinary shell first and note whether it is refused; if so, in an elevated shell:
-   `Unregister-ScheduledTask -TaskName ForceBridge -Confirm:$false`. Verify, in an ordinary shell:
-   `Get-ScheduledTask -TaskName ForceBridge -ErrorAction SilentlyContinue` prints nothing and `schtasks /query /tn ForceBridge`
-   says it cannot find the file.
-3. Probe the repetition form with a harmless action (do not register the real action under a throwaway name: its first tick would
-   start a second bridge). Ordinary shell, from `infra\desktop`: `. .\register-bridge-task.ps1`;
-   `$d = New-BridgeTaskDefinition -RepoPath (Resolve-Path ..\..).Path -MqttHost probe.invalid -User "$env:USERDOMAIN\$env:USERNAME"`;
-   `$a = New-ScheduledTaskAction -Execute cmd.exe -Argument '/c exit 0'`;
-   `Register-ScheduledTask -TaskName FBP-RoundTwoProbe -Action $a -Trigger $d.Triggers -Principal $d.Principal -Settings $d.Settings`;
-   `Export-ScheduledTask -TaskName FBP-RoundTwoProbe | Select-String 'LogonTrigger|UserId|Repetition|Interval|Duration'`;
-   then `Unregister-ScheduledTask -TaskName FBP-RoundTwoProbe -Confirm:$false` and confirm it is gone. Paste the output. If
-   registration is refused, stop: the fallback is a finite duration of about 10 years.
-4. Confirm the shell is not elevated (`([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')`
-   prints `False`), then from `infra\desktop`: `.\register-bridge-task.ps1 -MqttHost <broker host or address> -StartNow`.
-5. Verify: the Step 1 command now lists exactly two processes (the venv launcher and the interpreter, the second's
-   `ParentProcessId` equal to the first's `ProcessId`), both `pythonw.exe`; no console window appeared; `logs\bridge.log` exists
-   and shows `connected (session present: True …)` and `subscribed`, and within 15 minutes `landed …`.
-6. Kill-the-child test, again just after a landed scan: `Stop-Process -Id <the interpreter's PID> -Force` (abrupt, so the same
-   few-seconds-of-events caveat). Within 5 minutes the same listing shows a new pair with new start times, and the log shows a
-   new `connected (session present: True …)`; the messages published while it was down arrive from the broker.
-7. Reboot test: reboot, log on, touch nothing. Expect no console window; Docker Desktop starts and `docker ps` shows
-   `force-mosquitto` up; `logs\bridge.log` shows `cannot reach the MQTT broker at …` lines (at most one a minute) and then
-   `connected (session present: True …)`; the Operational log
-   (`Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-TaskScheduler/Operational'; StartTime=(Get-Date).AddHours(-1)} | ? Message -match 'ForceBridge' | select TimeCreated,Id,Message`)
-   shows the task starting at logon; one pair running; a new file lands within 15 minutes.
+**Live install and results (2026-10-10 to 2026-10-11, from Jong's pasted output; UTC).**
+- **Removing the old task** needed an elevated shell, because it had been registered with the any-user trigger — consistent with the
+  elevation probe above.
+- **Repetition-trigger probe** (`FBP-RoundTwoProbe`, a harmless action, registered unelevated and removed afterwards): the
+  LogonTrigger `UserId` was `JIVEDESKTOP\jivejong`; the TimeTrigger `Repetition` had `Interval` PT5M and **no `Duration`**
+  (indefinite). So Task Scheduler on this build accepts the empty-duration form (previously confirmed only in memory).
+- **The real task was registered unelevated:** one `pythonw` pair, `connected (session present: True)` at 00:59:44Z.
+- **Kill-the-child test:** the interpreter was killed at about 01:00Z; the first repetition tick restarted the bridge at 01:04:44Z
+  (`session present: True`). SQL over 00:30–01:45Z: 6 scans, all 60 of 60.
+- **Reboot test (2026-10-11).** Shutdown at 17:50:44Z: task events 201 and 102; the broker logged both clients as `connection
+  closed by client` and **no `terminating` line**, so the stop was ungraceful (Windows stops Docker hard at shutdown). Logon at
+  17:51:48Z: task events 119, 100, 129, 200; **no console window appeared**. The bridge logged `cannot reach the MQTT broker at
+  …:1883 … retrying, at most 60 s apart` once a minute from logon without exiting. Docker Desktop started on its own at 18:04:27Z,
+  about 12.5 minutes after logon (it had been about 4m40s on 2026-10-09): slow, not a fault, and the retry covered it. The broker
+  started at 18:04:37Z and restored 1 clients and 1 subscriptions after the ungraceful stop (from the last autosave). The bridge
+  connected at 18:04:40Z (`session present: True`), 3 s after the broker; the Pi reconnected at 18:05:00Z; the 18:00Z scan, which
+  the Pi had buffered while the broker was down, landed at 18:05:02Z (60 lines, 24,155 bytes, BURST-sized), 22 s after the bridge
+  connected. Task event 322 every 5 minutes is the repetition tick being ignored because an instance is running
+  (`MultipleInstances IgnoreNew` working).
+
+### Round 3 — broker persistence and session settings (2026-10-10; live 2026-10-11)
+
+Commits `7341cde`, `24ee207`, `c56517b`. The settings that made the 22-hour recovery work were correct but asserted nowhere.
+`ingest/tests/test_broker_config.py` now parses `mosquitto.lan.conf` and asserts the values, the bridge's client id and
+`clean_session=False`, and an invariant tying the session expiry to the queue's fill time; doc 05 gained "Broker persistence and
+the bridge session" (effective values with the `mosquitto.conf(5)` defaults, the headroom arithmetic, the loss paths, how to check
+the live broker).
+
+**Findings (derived unless marked).** The probe publishes 60 events per scan every 900 s, so 240 events an hour (the test computes
+this from the probe's constants). `max_queued_messages 50000` fills in 208.3 hours = 8.68 days; the conf comment and doc 04 said
+"about 8 days". `persistent_client_expiration 7d` = 168 hours was **shorter than the fill time**, so the expiry, not the queue
+limit, was the binding limit: after seven days without the bridge the broker would discard the session and everything queued for
+it (up to 168 × 240 = 40,320 events), and the Pi had already deleted those rows on the broker's PUBACK
+(`edge/probe/buffer.py:3`), so nothing would have been left to resend. The man page does not say what the broker does with
+messages over `max_queued_messages`; only `max_queued_bytes` is said to drop them "silently".
+
+**Decisions (Jong).** `autosave_interval` 30 → 10; `persistent_client_expiration` 7d → 10d (240 hours, longer than the fill time,
+so the queue limit comes first); the conf comment corrected to ~8.7 days; doc 05 is the documentation home; doc 04 corrected to
+"~8.7 days (derived)". The conf is **bind-mounted** into the live container (`-v …\infra\mosquitto:/mosquitto/config:ro`, started
+with `mosquitto -c /mosquitto/config/mosquitto.lan.conf`), so an edit goes live on the next broker restart. The conf commit was
+therefore held back from the working tree while the Round 2 reboot test was pending; the tests were written first, with the unmet
+invariant and the window assertions recorded as expected failures (so a later change could not silently satisfy or violate them),
+then flipped in the conf commit `c56517b`. Jong then chose the live order — broker restart, bridge restart, reboot test last — so
+the conf went live on 2026-10-11 before the reboot test, not after it.
+
+**Issues.**
+- *A wrong claim in the first doc 05 draft.* It said the 2026-10-09/10 outage had not exercised `mosquitto.db`, because the broker
+  "was up for the whole 22 hours" with `RestartCount 0`. Jong corrected it: the container started fresh at 2026-10-09T15:26:20Z,
+  after the 15:20:44Z crash (`RestartCount 0` only means Docker's restart policy didn't do it; the Docker VM came back after the
+  reboot). A new broker process has empty memory, so the `force-bridge` subscription can only have come from the persistence
+  file; without it the Pi's QoS 1 publishes (it reconnected at 15:26:23Z) would have been acknowledged and dropped, about 22 hours
+  of data lost. That is an inference from the timeline, and the broker restarts of 2026-10-11 now show the mechanism directly.
+- *A contaminated baseline.* The first ingest baseline of the round reported 319 tests because the new test file was created while
+  the suite was running; a clean rerun of every other module gave 305.
+- *Mutation without touching live files.* The config mutations were applied at run time (a mutated copy of the conf, patched
+  module attributes), never by editing a file the broker or the bridge task reads. 22 mutations, all assertion FAILs.
+
+**Live results (2026-10-11).** Two graceful `docker restart`s, at 02:46:35Z and 02:48:52Z, applying the new conf. Each logged
+`mosquitto version 2.1.2 terminating` followed by `Saving in-memory database to /mosquitto/data//mosquitto.db.` (log
+timestamps 1791686795 and 1791686932), and on the way up `Restored 0 base messages`, `Restored 0 retained
+messages`, `Restored 1 clients`, `Restored 1 subscriptions`, `Restored 0 client messages`. `Client force-bridge [(null):0]
+disconnected: session taken over` was logged at each start against the restored offline session, just before the bridge
+connected: the resumption of a persistent session, not a second client (verified). The container saw `autosave_interval 10`,
+`persistent_client_expiration 10d` and `max_inflight_messages 180` through the bind mount, and the autosave rhythm in the log went
+from about every 31 s to about every 11 s. The Pi logged `link_lost` and `link_restored` around each restart with a backlog of 0,
+and the bridge reconnected each time with `session present: True`. SQL over 02:15–03:00Z: 4 scans, all 60 of 60, 0 duplicate rows.
+**Scope:** this proves the *session* persists across a restart. **Queued-message persistence was not tested** — both restarts
+logged `Restored 0 client messages` because the queue was empty.
+
+### Round 3b — acknowledge after landing (`manual_ack`) (2026-10-10; deployed 2026-10-11)
+
+Commits `460f41d`, `1885327`, `1d1325e`; the broker window setting is in `c56517b` and has been live since the broker restarts of
+2026-10-11.
+
+**Problem.** paho 2.1.0 acknowledges a message as soon as `on_message` returns (`client.py:4147-4152`), and the Pi deletes a row
+when the *broker* acknowledges it, so an event sitting in the bridge's memory (up to 90 s plus upload retries of up to 31 s) was
+held by nobody: a kill lost up to about one scan (derived). Doc 02 had called that acceptable because "the probe's SQLite buffer is
+the durability layer and clears only on confirmed publish" — but confirmed publish means the broker's PUBACK, not a landed file.
+
+**Design and why.** The bridge builds the client with `manual_ack=True` and acknowledges a message only after its batch has landed
+or its line is in the dead-letter file.
+- *In arrival order* — "It MUST send PUBACK packets in the order in which the corresponding PUBLISH packets were received"
+  (MQTT 3.1.1, MQTT-4.6.0-2) — through an `AckTracker`.
+- *From one thread.* paho 2.1.0 has no `_out_packet_mutex`: `ack()` reaches `_packet_queue`, which appends to an unguarded deque
+  (`client.py:3776`) that the loop thread also pops (`:3163-3177`). So the uploader only marks messages safe, and `run()`'s main
+  loop sends the released PUBACKs.
+- *Per connection.* On every connect the acknowledgements owed on the previous connection are forgotten (a stale message id could
+  name a different message). If the broker kept the session, it redelivers everything unacknowledged with DUP set (MQTT-4.4.0-1,
+  MQTT-4.6.0-1), so what is still buffered is dropped and arrives again. A batch already uploading when the connection drops
+  lands anyway, its acknowledgements are suppressed, and the broker redelivers its messages, so they land a second time and are
+  counted (`redelivered=`): an accepted duplicate, unit-tested.
+- *No bridge-side deduplication* (doc 04: "that is silver's job"); bronze keeps both copies (doc 03) and silver deduplicates on
+  `event_id`.
+- *Dead letters.* If the dead-letter write itself fails three times (1 s, 2 s apart) the message is not acknowledged and the bridge
+  exits with code 4; the task restarts it and the broker redelivers.
+- *Shutdown.* Buffered events are uploaded and acknowledged while the connection is up, then DISCONNECT is queued behind the last
+  PUBACKs (paho's loop thread writes its queue empty before it exits, `client.py:2302-2306`).
+- *The in-flight window.* Mosquitto's `max_inflight_messages` defaults to 20, a scan is 60 events, and a bridge that holds its
+  acknowledgements until a scan completes would receive 20 and then wait for the 90 s timer (derived: about 270 s and three
+  20-line files per scan). The fix is two settings that move together: the broker window **180** (three scans) and the bridge's
+  `--max-pending 120`, which flushes everything once 120 events are buffered without a complete scan; a test asserts the valve
+  plus one scan fits in both brokers' windows. MQTT v5's Receive Maximum was rejected (as understood, it can only lower what the
+  broker sends).
+
+**Decisions (Jong).** Window 180 and valve 120; retry the dead-letter write a few times, then exit with a distinct code; no
+bridge-side deduplication; the doc 02 corrections folded into the docs commit; the e2e against a throwaway broker, with
+`infra/mosquitto/mosquitto.conf` (the local-dev conf, never read by the live container) given the same window; the rollout's
+`Stop-ScheduledTask` to be done just after a landed scan, because it stops the old auto-acknowledging bridge.
+
+**Tests.** `test_bridge_ack.py` (13), four window tests and a `manual_ack` assertion in `test_broker_config.py`; ingest 319 → 337 at
+the 3b commits, 338 with the conf commit (0 expected failures). Mutations against copies of `ingest/bridge/` (never the repo file,
+which the live task could launch): 14, all caught as assertion FAILs. The e2e (`ingest/e2e_local.py`) against a throwaway
+`eclipse-mosquitto:2` (Mosquitto 2.1.2): basic 20, restart 21, **hardkill** 8 — 49 PASS, 0 FAIL. The hard-kill scenario keeps a
+60-event scan in the bridge's buffer (`--scan-size 120`), kills the bridge, restarts it, and asserts zero lost event_ids with
+`redelivered=60`; run with `--bridge-script` pointing at a copy with `manual_ack=False` it fails as it must (`zero lost event_ids:
+120 published, 60 distinct landed, 60 lost`, exit 1). A **stall20** scenario against a broker with the default window shows the
+first file landing 91 s after the scan with 20 lines.
+
+**Issues.**
+- *A mutation slipped through.* "DISCONNECT queued before the last acks" passed because the steady-state test had already sent
+  its acks before shutdown began. A test with events still buffered at shutdown was added and the mutation is now caught.
+- *The copy-based harness moves `REPO_ROOT`,* so one logging test fails under every mutation; an unmutated-copy row proved that
+  failure alone, so it was not read as a catch.
+- *A flag removed.* A `closing` flag in `run()` had no observable effect (a message arriving during shutdown is never
+  acknowledged either way) and was deleted.
+- *Beyond the approval.* A second throwaway broker (port 18884, for the stall demonstration) was started without being named in the
+  approval. Jong accepted it this time; ask first next time.
+- *The shared working tree* briefly lost and regained tracked changes (see the open item below).
+- The restart scenario now pauses 1 s before its kill so the kill lands after the acknowledgement. Dead-letter retries sleep while
+  holding the bridge lock (at most 3 s; only when the disk is failing).
+
+**Live rollout and results (2026-10-11).**
+- The old bridge was stopped at 02:51:14Z, between scans; the new one connected at 02:51:52Z (`p4, c0, u'force-bridge'`). The 03:00Z
+  scan landed as one 60-line file at 03:00:05Z.
+- *Overnight:* the Pi went DISCONNECTED (reason `schedule`) at 03:38:39Z; BURST began at 06:27:42Z (backlog 660); `drain_complete`
+  at 06:27:53Z. The bridge landed **11 files of exactly 60 lines** from 06:27:43 to 06:27:54Z (scans 03:45–06:15). With a window of
+  20 they would have been 20-line files.
+- SQL over 02:15–09:00Z: **28 of 28 real scans were 60 of 60, 0 duplicate rows.** Seven extra single-row "scans" in that window
+  were fault-period future-time rows (+24 h `event_time`, `_ingest_ts` 2026-10-10T16:03:52Z), not real scans.
+- At 16:14:59Z the bridge reported `received=3000 files=50` since its 03:49:45Z start (11 BURST and 39 regular scans).
+
+**Live kill test: not achieved.** Attempted at 03:45:01Z and at 16:15:01.540Z (armed by script, on time). Both fell inside
+scheduled DISCONNECTED windows (entered 03:38:39Z and 16:08:23Z), so no scan was in flight and `redelivered=0`; each restart came
+on the repetition tick with `session present: True`. Not re-attempted, by decision: redelivery is proven by the e2e hard-kill
+against Mosquitto 2.1.2 and its `manual_ack=False` mutation (60 of 120 lost). The afternoon window ran from 16:08:23Z to about
+17:37Z; its BURST landed 6 files of 60 lines from 17:37:48 to 17:37:51Z (scans 16:15–17:30, including the kill-test target).
+*Why the windows could not be avoided:* the scheduled DISCONNECTED mode is a simulation and does not drop the Pi's MQTT connection
+(the broker log shows no `probe-01` disconnect at 03:38Z). The code agrees: `edge/probe/modes.py:123` sets
+`forced_offline = requested == DISCONNECTED` and `:130` `offline = forced_offline or not link_up`; the runtime acts on `offline`
+only by not publishing (`runtime.py:98` drains only when not offline; `:176-177` `_scan` publishes only `if not self.modes.offline`);
+and the only places the probe disconnects its client are `publisher.reset()` (`publisher.py:129-134`, called from `runtime.py:127`
+after an unacknowledged publish) and `close()` (`:136-138`). A kill test is only meaningful in a CONNECTED window with a scan in
+flight (about :00:00–:00:03).
+
 
 ## Open items
 
@@ -1062,11 +1225,18 @@ buffer — so there is no hurry). Results to be recorded here.**
 | `deploy.sh` restart and verification | **Fixed, 2026-10-07.** `deploy.sh` had no restart step at all — confirmed live: commit `ca2ba04` was checked out on the Pi 2026-10-06 23:56:52 EDT, but the process running since 2026-09-30 kept serving `--fault-rate 0` until a manual `sudo systemctl restart force-probe` at 2026-10-07 13:29:35Z, ~13.5 hours later. The journal shows every earlier deploy was restarted by hand at the time, so no earlier checkpoint result ran on stale code — this one just happened to be missed. `deploy.sh` now restarts `force-probe` itself when it's already active, and verifies the result (new PID's start time after the deploy began, checked-out SHA matches) before exiting 0. |
 | `probe_ctl.py` `mode` with no `--for-seconds` | **Guarded, 2026-10-08.** Overrides the schedule indefinitely with no resume command (`edge/probe/modes.py`) — found live, 2026-10-06, when exactly this silently overrode the schedule for 12 minutes during a C4 run. `probe_ctl.py` now refuses it unless `--indefinite` is also given explicitly; recovery is still `mode CONNECTED --for-seconds 1`. |
 | `ingest/phase4_checkpoint.sql`'s literal `event_time` upper bounds | **Padded, 2026-10-08.** p4-8's `<replay_window_end_utc>` placeholder now pads +10s (`dateadd(second, 10, ...)`) — a literal boundary clips most of the last scan's 60 rows to sub-second jitter, confirmed live twice (the real backlog figure, 1560 then 300, only matched after padding). p4-10's fixed "+2h" upper bound on `detected_at` was removed outright (a separate, related fix, not jitter) — a delayed or re-attempted run could push `detected_at` past it and produce a false "0 incidents." |
-| Unattended bridge outage: nothing detected it, recovery needed a human | **Open, Phase 5 first priority** (see doc 07). A real ~22h bridge outage (2026-10-09/10) delivered intact on a manual restart — the broker's persistence and queued-session settings worked — but Job 1 stayed green throughout and nothing alerted that the bridge itself was down. Three items: the bridge task should wait/retry for the broker and restart automatically on failure (it exited `0xC000013A`/`CONTROL_C_EXIT` and just stayed down); a landing-freshness alert, which also moves the existing Phase 8 freshness item (above) forward, since it's the same class of problem as the quota exhaustion's own silent gaps; and documenting/testing the broker and bridge settings that made recovery possible in the first place (`persistence`, `max_queued_messages`, `clean_session`, the fixed `client_id`) rather than leaving them correct-but-unasserted. **Progress, 2026-10-10 (Phase 5 Round 2):** item 1 is implemented (in-process connect retry, windowless launch, user-scoped logon trigger plus a 5-minute repetition, single-instance lock, log file); manual registration and reboot verification are pending, see "Phase 5 Round 2". Items 2 and 3 are not started. |
+| Unattended bridge outage: nothing detected it, recovery needed a human | **Items 1 and 3 done and verified live; item 2 (monitoring) open, Phase 5 Round 4.** The ~22 h outage of 2026-10-09/10 delivered intact on a manual restart, but Job 1 stayed green and nothing alerted. (1) The bridge task waits, retries and restarts automatically — **done** (Round 2): the kill-the-child test restarted it on the first repetition tick (01:04:44Z), and in the reboot test of 2026-10-11 it retried once a minute for about 13 minutes until Docker Desktop was up and connected 3 s after the broker. (2) A landing-freshness alert — **open, Round 4, not built**: three signals reported to an external dead-man's-switch, S1 bridge liveness (period 5 min, grace 25 min), S2 Job 1 liveness (1 h, 1 h) and S3 data freshness (15 min, 3 h 45 min), grace meaning total silence; S2 also covers the quota-exhaustion row below. (3) Document and test the broker and bridge session settings — **done** (Round 3: doc 05 "Broker persistence and the bridge session", `test_broker_config.py`; Round 3b then closed the pre-upload loss path). See "Phase 5". |
 | `force-bridge` OAuth secret expires 2026-12-25 13:59Z | **Open, Phase 5.** When it lapses, token exchange fails (`AuthError`; `upload.py` retries 5 times) and every batch is dead-lettered to `logs/bridge_dead_letter.ndjson`. MQTT stays connected and Job 1 still succeeds on empty input, so the bridge-liveness and Job 1 signals keep reporting healthy; only the data-freshness signal fires. These three are the planned Phase 5 monitoring signals (S1 bridge liveness, S2 Job 1 liveness, S3 data freshness; doc 05 "Monitoring", to be written). Derived timing: the last good upload is at most ~1 h after expiry (the cached token lives up to `expires_in`, default 3,600 s), and S3 then fires after its ~4 h of silence, so the alert arrives ~5 h after expiry, about 18:00–19:15Z on 2026-12-25. Rotation steps to be written into doc 05 "Monitoring" before then. |
 | `deploy.sh`: the first deploy after a `deploy.sh` change runs the previous script | **Open, documented in doc 05 ("Redeploying").** Observed 2026-10-10: the first deploy after a `deploy.sh` change ran the previous script. The mechanism is derived from `deploy.sh`, not observed: the clone is detached, so the operator runs `./deploy.sh <new SHA>` from the old checkout, and bash is already reading the old file when `git checkout --detach` replaces it, so the rest of that run is the old script. The new unit file is still installed (it is read after the checkout); only the script logic is stale. Workaround: run it twice. Permanent fix proposed (re-exec the new script after the checkout, guarded against loops), Phase 5 Round 5. |
 | No replay tool for `logs/bridge_dead_letter.ndjson` | **Open, Phase 5.** Dead-lettered events (upload failure, or a lapsed OAuth secret) are kept as raw lines but nothing re-sends them to the landing volume. The dead-letter file can also hold events that already arrived: the 60 events dead-lettered 2026-10-05T13:13:07Z (scan `01M45CXZF0G8XWF3DTHZJAC7JQ`, event_time 2026-10-05 06:45Z) were checked on 2026-10-10 and are 60/60 present in `force.bronze.events` and `silver_probe_reading`; their path of arrival is unconfirmed. A replay tool must therefore check bronze first, or accept bronze duplicates that silver's `event_id` merge removes. |
-| Bridge acks MQTT messages before they are uploaded | **Open, Phase 5 Round 3b (design first).** paho auto-acknowledges after `on_message` returns, while events sit in the bridge's memory for up to 90 s (`DEFAULT_MAX_SECONDS`) plus upload retries. A hard kill (closed console, crash) can lose about one scan (derived); the broker has already discarded it. Candidate fix: `manual_ack`, acking after the batch lands or is dead-lettered, which makes delivery at-least-once and needs a `max_inflight_messages` check. |
+| Bridge acks MQTT messages before they are uploaded | **Resolved, deployed 2026-10-11 (Phase 5 Round 3b).** `manual_ack`: a message is acknowledged only after its batch lands or its line is dead-lettered, in arrival order, from one thread, never across a reconnect; the broker window is 180 and the bridge flushes at `--max-pending 120`. Delivery is now at-least-once from the broker to the landing zone: a kill after landing but before the acknowledgement, or a connection drop mid-upload, lands those events twice (counted as `redelivered=`; silver deduplicates). Proven by the e2e hard-kill (and its `manual_ack=False` mutation, 60 of 120 lost) and by the live rollout: a 660-event BURST landed as 11 files of 60 lines, and 28 of 28 real scans over 02:15–09:00Z were 60 of 60 with 0 duplicate rows. The live kill test was not achieved (see below). |
+| The `ForceBridge` task runs `bridge.py` from the live working tree | **Open.** `register-bridge-task.ps1` defaults `RepoPath` to the repo working tree, so any uncommitted edit, stash or checkout goes live on the next bridge start, and the 5-minute repetition trigger can cause one at any time. Proposed fix: a pinned deploy checkout (`git worktree add <path> <SHA>`) used as the task's `RepoPath`. Caveats to design for: a worktree has no `edge\.venv`, so `-VenvPath` must point at the existing one; and `REPO_ROOT` is derived from `bridge.py`'s location, so `.env.mqtt`, `.env.bridge`, `logs/` and the lock file would all move into the worktree, where the gitignored secrets do not exist (the paths need to become overridable, or the secrets copied). |
+| Shared-tree incident, 2026-10-10 | **Rule adopted.** At about 22:09 EDT (02:09Z 2026-10-11), another agent's git operations in the same working tree briefly removed and restored tracked changes: a `git status` taken at that moment showed only an untracked file, and seconds later all eight modified files were back with identical checksums and `HEAD` had advanced by a commit that was not ours. Nothing was lost. Rule: commit with explicit pathspecs (`git commit -- <paths>`); no `stash`, `checkout`, `reset`, `add -A` or `commit -a` in the shared tree. |
+| Live kill test not achieved | **Closed by decision, 2026-10-11.** Attempted at 03:45:01Z and 16:15:01.540Z; both fell inside scheduled DISCONNECTED windows, which keep the Pi's MQTT connection open but publish nothing (`modes.py:123,130`, `runtime.py:98,176-177`), so no scan was in flight and `redelivered=0`. Redelivery is covered by the e2e hard-kill against Mosquitto 2.1.2 and its `manual_ack=False` mutation. A live attempt needs a CONNECTED window and a scan in flight (about :00:00–:00:03). |
+| Docker Desktop autostart is slow and variable | **Works; documented in doc 05.** Docker Desktop must start at sign-in (Settings > General > "Start Docker Desktop when you sign in to your computer"). It started unattended about 4m40s after logon on 2026-10-09 and about 12.5 minutes after logon on 2026-10-11 (logon 17:51:48Z, Docker Desktop 18:04:27Z, broker 18:04:37Z). Slow, not a fault; the bridge's once-a-minute retry absorbs it and the Pi buffers meanwhile. |
+| A Windows shutdown stops the broker ungracefully | **Documented in doc 05.** In the reboot test the broker logged no `terminating` line, so it got no exit save and restored (1 clients, 1 subscriptions) from the last autosave. On a reboot the real exposure is therefore `autosave_interval` (now 10 s) of arrivals, not zero; a graceful `docker restart` is not representative. |
+| Queued-message persistence across a broker restart is untested live | **Open, optional.** Both restarts on 2026-10-11 logged `Restored 0 client messages` (the queue was empty), so only the *session* is proven. Test: `Stop-ScheduledTask ForceBridge` (safe since `manual_ack`), let two scans publish, restart the broker, start the task, and check that both scans land 60 of 60. |
+| Date-window checks need an `_ingest_ts` filter while fault-period rows are in range | **Lesson, 2026-10-11.** Seven single-row "scans" appeared in a 02:15–09:00Z window: fault-period future-time rows (+24 h `event_time`, `_ingest_ts` 2026-10-10T16:03:52Z), not real scans. Any `event_time` window check should add `AND _ingest_ts >= <window start>` while those rows fall in range. |
 
 ## Lessons (beyond this project)
 
