@@ -443,6 +443,18 @@ test('offline song creation verifies successful two-tab pulls and rejects a fail
     await expect(page.getByPlaceholder('Search songs, artists…')).toBeVisible();
   }
 
+  // T11 regression: a local create must remain editable/renderable offline,
+  // then the edited revision must survive reconnect and be visible through the API.
+  await page.getByPlaceholder('Search songs, artists…').fill(t10Owned.titles[0]);
+  await page.getByText(t10Owned.titles[0], { exact: true }).click();
+  await expect(page.locator('.chart-line')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Edit' }).click();
+  await page.locator('.form-group').filter({ hasText: 'BPM' }).locator('input').fill('137');
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
+  await expect(page.locator('.chart-line')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Back' }).click();
+
   await page.getByRole('button', { name: 'Setlists' }).click();
   await page.getByRole('button', { name: 'Create a setlist' }).click();
   await page.locator('.setlist-form input').first().fill(t10Owned.setlistName);
@@ -710,6 +722,10 @@ test('offline song creation verifies successful two-tab pulls and rejects a fail
     const after = await response.json();
     return after.songs.length === 2 && after.songs[0].title === t10Owned.titles[1];
   }).toBeTruthy();
+  const syncedSongResponse = await request.get(`/api/songs?q=${encodeURIComponent(t10Owned.titles[0])}`);
+  expect(syncedSongResponse.ok()).toBeTruthy();
+  const syncedSong = (await syncedSongResponse.json()).songs.find(song => song.title === t10Owned.titles[0]);
+  expect(syncedSong?.bpm).toBe(137);
 
   await context.setOffline(true);
   await page.getByRole('button', { name: 'Setlists' }).click();

@@ -1,20 +1,24 @@
 import { expect, test as base } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import path from 'node:path';
+import { createRequire } from 'node:module';
 
-function removeUnreferencedFixtureTag(tag) {
+const require = createRequire(import.meta.url);
+const { pool: testDatabase } = require('../../server/db.js');
+
+async function removeUnreferencedFixtureTag(tag) {
   const match = /^([gv])(\d+)$/.exec(tag.id);
   if (!match) throw new Error(`Unexpected fixture tag id: ${tag.id}`);
   const table = match[1] === 'g' ? 'genres' : 'vibes';
   const junction = match[1] === 'g' ? 'song_genres' : 'song_vibes';
   const foreignKey = match[1] === 'g' ? 'genre_id' : 'vibe_id';
-  const sql = `DELETE FROM public.${table} t WHERE t.id = ${Number(match[2])}
-    AND NOT EXISTS (SELECT 1 FROM public.${junction} j WHERE j.${foreignKey} = t.id)`;
-  execFileSync('docker', [
-    'compose', '-f', path.resolve('docker-compose.yml'), 'exec', '-T', '-u', 'postgres',
-    'db', 'sh', '-c', 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$1"', 'sh', sql,
-  ], { stdio: 'pipe', timeout: 20_000 });
+  const id = Number(match[2]);
+  const deleted = await testDatabase.query(`DELETE FROM public.${table} t
+    WHERE t.id=$1 AND t.name=$2
+      AND NOT EXISTS (SELECT 1 FROM public.${junction} j WHERE j.${foreignKey}=t.id)
+    RETURNING t.id`, [id, tag.name]);
+  if (deleted.rowCount > 1) throw new Error(`Unexpected multi-row T09 tag cleanup for ${tag.id}`);
+  const remaining = await testDatabase.query(`SELECT 1 FROM public.${table} WHERE id=$1`, [id]);
+  if (remaining.rowCount) throw new Error(`T09 tag ${tag.id} remains or is still referenced`);
 }
 
 const test = base.extend({
@@ -75,7 +79,7 @@ const test = base.extend({
       for (const [id] of fixture.tagIds) {
         const match = /^([gv])(\d+)$/.exec(id);
         if (!match || initialTagIds.has(id)) throw new Error(`Refusing to remove non-owned T09 tag ID ${id}`);
-        removeUnreferencedFixtureTag({ id });
+        await removeUnreferencedFixtureTag({ id, name: fixture.tagIds.get(id) });
       }
       const remainingResponse = await request.get('/api/tags');
       if (!remainingResponse.ok()) throw new Error(`Could not verify T09 tag cleanup: HTTP ${remainingResponse.status()}`);
@@ -313,9 +317,10 @@ test('Genre and Vibe edits work offline and stale sync keeps the server version'
 
 test('a delayed editor save cannot override Back or a newer editor session', async ({ page, request, t09Fixture }) => {
   const title = `T09 navigation race ${randomUUID()}`;
-  const sample = await request.get('/api/songs/29');
+  const sample = await request.get('/api/songs?q=Already%20Gone');
   expect(sample.ok()).toBeTruthy();
-  const artist = (await sample.json()).artist;
+  const artist = (await sample.json()).songs.find(song => song.title === 'Already Gone')?.artist;
+  expect(artist).toBeTruthy();
   const created = await request.post('/api/songs', {
     data: { title, artist, chart_written_key: 'C', chart_source: 'Verse\nInvented race fixture', release_year: null },
   });

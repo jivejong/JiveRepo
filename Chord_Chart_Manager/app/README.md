@@ -164,25 +164,30 @@ Client tests are in `test/unit/`; Playwright tests are in `test/e2e/`. The clien
 and production server use separate lockfiles, and Docker installs them with
 `npm ci`.
 
-From `app/`, install locked dependencies and Chromium once, then run unit tests:
+From `app/`, install locked dependencies, then run unit tests:
 
 ```powershell
 npm.cmd ci
-npx.cmd playwright install chromium
 npm.cmd test
 ```
 
-The Playwright suite targets the production app at <http://localhost:3000> by
-default, so start Compose before running it:
+The full T11 command builds the client, runs unit and scratch-database API tests,
+then runs the serial Playwright suite against a task-owned `ccm_test` database.
+It requires the local PostgreSQL settings from `app/.env`, refuses to run if
+`ccm_test` already exists, initializes it with the migration runner, and drops
+only the database it created after verifying cleanup and the protected main
+database fingerprints. Playwright uses installed system Chrome (`channel: chrome`)
+for this command; install Chrome before running it.
 
 ```powershell
-docker compose up --build -d
-npm.cmd run test:e2e
+npm.cmd run test:t11
 ```
 
-`app/package.json` also provides `npm.cmd run test:all` to run both suites when
-the target app is available. These commands use Windows `.cmd` shims; on macOS
-or Linux use `npm` and `npx`.
+Run `npm.cmd run test:t11` twice consecutively to check repeatability. The
+standalone `npm.cmd test` remains available for unit tests. Raw Playwright and
+T11 API integration commands refuse to run outside the isolated harness, so
+browser fixtures cannot write to the live `chords` database. These commands
+use Windows `.cmd` shims; on macOS or Linux use `npm`.
 
 Dependency checks:
 

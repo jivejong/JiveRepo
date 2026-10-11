@@ -281,7 +281,9 @@ test('danger text meets contrast on effective surfaces in Light and Dark', async
   const suffix = randomUUID();
   const setlistName = `T16 Contrast setlist ${suffix}`;
   const songTitle = `T16 Contrast song ${suffix}`;
-  const cleanupRequest = await playwrightRequest.newContext();
+  const cleanupRequest = await playwrightRequest.newContext({
+    baseURL: process.env.E2E_BASE_URL || 'http://localhost:3000',
+  });
   let setlist = null;
   let song = null;
   const measuredContrasts = [];
@@ -354,16 +356,16 @@ test('danger text meets contrast on effective surfaces in Light and Dark', async
     const cleanupFailures = [];
     if (song) {
       try {
-        const currentSong = await cleanupRequest.get(`http://localhost:3000/api/songs/${song.id}`);
+        const currentSong = await cleanupRequest.get(`/api/songs/${song.id}`);
         if (currentSong.status() !== 404) {
           if (!currentSong.ok()) throw new Error(`Could not inspect T16 contrast song ${song.id}: HTTP ${currentSong.status()}`);
           const latest = await currentSong.json();
-          const deletedSong = await cleanupRequest.delete(`http://localhost:3000/api/songs/${song.id}`, {
+          const deletedSong = await cleanupRequest.delete(`/api/songs/${song.id}`, {
             data: { base_updated_at: latest.updated_at },
           });
           if (!deletedSong.ok()) throw new Error(`Could not clean up T16 contrast song ${song.id}: HTTP ${deletedSong.status()}`);
         }
-        if ((await cleanupRequest.get(`http://localhost:3000/api/songs/${song.id}`)).status() !== 404) {
+        if ((await cleanupRequest.get(`/api/songs/${song.id}`)).status() !== 404) {
           throw new Error(`T16 contrast song ${song.id} remains after cleanup`);
         }
       } catch (error) {
@@ -372,15 +374,15 @@ test('danger text meets contrast on effective surfaces in Light and Dark', async
     }
     if (setlist) {
       try {
-        const latest = await cleanupRequest.get(`http://localhost:3000/api/setlists/${setlist.id}`);
+        const latest = await cleanupRequest.get(`/api/setlists/${setlist.id}`);
         if (!latest.ok()) throw new Error(`Could not inspect T16 contrast setlist ${setlist.id}: HTTP ${latest.status()}`);
         const current = await latest.json();
-        const deletedSetlist = await cleanupRequest.post('http://localhost:3000/api/setlists/mutations', { data: {
+        const deletedSetlist = await cleanupRequest.post('/api/setlists/mutations', { data: {
           operation_id: randomUUID(), type: 'delete', setlist_id: setlist.id,
           base_updated_at: current.updated_at, payload: {},
         } });
         if (!deletedSetlist.ok()) throw new Error(`Could not clean up T16 contrast setlist ${setlist.id}: HTTP ${deletedSetlist.status()}`);
-        if ((await cleanupRequest.get(`http://localhost:3000/api/setlists/${setlist.id}`)).status() !== 404) {
+        if ((await cleanupRequest.get(`/api/setlists/${setlist.id}`)).status() !== 404) {
           throw new Error(`T16 contrast setlist ${setlist.id} remains after cleanup`);
         }
       } catch (error) {
