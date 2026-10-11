@@ -844,7 +844,7 @@ page does not say.
 | `max_queued_bytes` | not set, so no byte limit | — | `0` (no maximum); "Once this limit has been reached, subsequent messages will be silently dropped" (not stated whether logged) |
 | `persistent_client_expiration` | `7d` | `mosquitto.lan.conf:27` | never expire; units `s h d w m y` (`m` is month) |
 | `queue_qos0_messages` | not set, so `false` (irrelevant: all traffic is QoS 1) | — | `false` |
-| `max_inflight_messages` | not set, so `20` (the page says it applies globally) | — | `20`; relevant to the planned bridge `manual_ack` change, below |
+| `max_inflight_messages` | not set, so `20` (the page says it applies globally). **`180` with the held broker-conf commit; it must be live before the `manual_ack` bridge is deployed** ("Acknowledging after landing", below) | — | `20`; "Set to 0 for no maximum" |
 | Bridge client id | `force-bridge` | `ingest/bridge/bridge.py:69` (`DEFAULT_CLIENT_ID`) | — |
 | Bridge session | `clean_session=False` | `bridge.py:449` (`build_client`) | — |
 | Bridge subscription | `force/telemetry/#` at QoS 1, re-subscribed on every connect | `bridge.py:471` | — |
@@ -871,7 +871,7 @@ those constants rather than hard-coding it.
 | Broker killed between autosaves (host crash, Docker Desktop killed, power) | Messages queued since the last save: the broker has already acknowledged them, so the Pi deleted them. A graceful stop saves on exit (per the `autosave_interval` entry) | At most `autosave_interval` seconds of arrivals: with `30`, up to one scan's 60 events, and only if the crash lands within 30 s after a scan burst while the bridge is down (30 / 900 = 3.3 % of the time). Messages delivered to a connected bridge are not in this window; they are in the next row |
 | Queue past `max_queued_messages` | Messages over the limit. What the broker does with them is not documented on the man page (only `max_queued_bytes` is said to drop "silently"), so assume a silent drop, unlogged | After 8.68 days with no bridge. Today the 7-day expiry strikes first |
 | Session expiry (`persistent_client_expiration`) | The whole session and queue | After 7 days with no bridge: up to 40,320 events (derived: 168 h × 240 an hour) |
-| Bridge killed after receiving a message but before its file is uploaded | Events held in the bridge's memory. paho acknowledges a message as soon as `on_message` returns (paho 2.1.0, `client.py:4147-4152`, unless `manual_ack` is set), so the broker has already discarded it and the Pi deleted its row | Events are held up to `DEFAULT_MAX_SECONDS` = 90 s (`bridge.py:66`) plus upload retries of up to 1+2+4+8+16 = 31 s; a complete scan flushes at once, so typically a fraction of one scan, at most about 60 events. Closed by acknowledging after upload (`manual_ack`, planned: `docs/ENGINEERING-LOG.md` open items) |
+| Bridge killed after receiving a message but before its file is uploaded | Events held in the bridge's memory. paho acknowledges a message as soon as `on_message` returns (paho 2.1.0, `client.py:4147-4152`, unless `manual_ack` is set), so the broker has already discarded it and the Pi deleted its row | Events are held up to `DEFAULT_MAX_SECONDS` = 90 s (`bridge.py:66`) plus upload retries of up to 1+2+4+8+16 = 31 s; a complete scan flushes at once, so typically a fraction of one scan, at most about 60 events. **Closed once the `manual_ack` bridge is deployed** ("Acknowledging after landing", below); until then it is open |
 
 What the 2026-10-09/10 outage showed: the persistence file was necessary (derived). The desktop crashed at 15:20:44Z and the
 broker container started fresh at 2026-10-09T15:26:20Z (`docker inspect` StartedAt, read on the evening of 2026-10-10;
@@ -884,6 +884,59 @@ grew in memory (saved to disk every 30 s) against a session restored from disk, 
 is an inference from that timeline and from how Mosquitto persists sessions, not from a broker log line: no "restored" line was
 captured. The live proof is a deliberate graceful restart, in "Checking the live broker" below.
 
+**Acknowledging after landing (`manual_ack`).** The bridge acknowledges a message (MQTT PUBACK) only after its batch has landed or
+its lines are in the dead-letter file, so the broker's persistent session holds every event until it is safe and a bridge killed
+at any moment loses nothing. It builds the client with `manual_ack=True` (`bridge.py`, `build_client`; paho 2.1.0 then does not
+acknowledge when `on_message` returns, `client.py:4147-4152`) and sends `ack(mid, qos)` itself. The rules, each with a test in
+`ingest/tests/test_bridge_ack.py`:
+
+- **In arrival order.** "It MUST send PUBACK packets in the order in which the corresponding PUBLISH packets were received"
+  (MQTT 3.1.1, MQTT-4.6.0-2). Batches complete out of order, so an acknowledgement is released only when every earlier message is
+  safe too.
+- **From one thread.** paho 2.1.0 has no `_out_packet_mutex`: `ack()` reaches `_packet_queue`, which appends to an unguarded deque
+  (`client.py:3776`) that paho's loop thread also pops (`:3163-3177`). So the uploader never calls `ack()`; it marks messages safe,
+  and `run()`'s main loop, the one other thread that touches the client, sends the released PUBACKs.
+- **Per connection.** On every connect the bridge forgets the acknowledgements it owed on the previous connection: a PUBACK for
+  a message id from an old connection could name a different message on the new one. If the broker kept the session
+  (`session present: True`) it redelivers everything unacknowledged, in order, with DUP set (MQTT-4.4.0-1, MQTT-4.6.0-1), so what
+  is still buffered is dropped and arrives again. A batch already uploading when the connection drops lands anyway, its
+  acknowledgements are suppressed, and the broker redelivers its messages, so they land a second time. That duplicate is
+  accepted and counted (`redelivered=` in the bridge's summary line).
+- **Killed after landing, before acknowledging.** The same: the broker redelivers and the events land again, in a new file. The
+  bridge does not deduplicate (doc 04); bronze keeps both copies (doc 03) and silver deduplicates on `event_id`.
+- **Dead letters.** An unreadable message, or a batch that exhausted its upload retries, is acknowledged after its line is
+  written to `logs/bridge_dead_letter.ndjson`. If that write itself fails three times (1 s, then 2 s apart), the message is not
+  acknowledged and the bridge stops with exit code 4; the scheduled task restarts it and the broker redelivers.
+- **Shutdown.** Buffered events are uploaded and acknowledged while the connection is still up, and DISCONNECT is queued behind
+  the last PUBACKs; paho's loop thread writes its queue empty before it exits (`client.py:2302-2306`). Killing the process instead
+  (`Stop-ScheduledTask`, which the windowless task needs, since there is no console to send Ctrl+C to) is safe: whatever was
+  unacknowledged is redelivered.
+
+*The in-flight window.* Holding acknowledgements means the broker may have to send a whole scan before the first one is
+released. Mosquitto's `max_inflight_messages` is "The maximum number of outgoing QoS 1 or 2 messages that can be in the process
+of being transmitted simultaneously" and "Defaults to 20". A scan is 60 events, so at 20 the broker sends 20, waits, and the
+bridge has no complete scan to flush: nothing lands until the bridge's 90 s timer fires, then 20 events as a 20-line file, and so
+on, about 270 s and three files per scan (derived from the flush rules); a 22-hour backlog would drain at roughly 800 events an
+hour against 240 arriving (derived). `ingest/e2e_local.py --scenario stall20` shows the first of these against a default broker.
+The fix is two settings that must be changed together: the broker window `max_inflight_messages 180` (three scans: one
+uploading while the next arrives, one of slack; bounded, about 72 KB of events) and the bridge's `--max-pending 120`, which
+flushes everything once 120 events are buffered without a complete scan, so that partial scans or events with no `scan_id`
+cannot wait for the timer. `--max-pending` plus one scan must not exceed the broker window; `ingest/tests/test_broker_config.py`
+asserts that for both broker confs. MQTT v5's Receive Maximum was considered and rejected: as I understand it, it can only lower
+what the broker sends, and v5 changes session semantics for no gain here. An unlimited window (`0`) would let a 50,000-message
+queue flood the bridge; the bounded window also gives back-pressure when uploads are slow.
+
+*Rollout (in this order; the broker window first).* A `manual_ack` bridge against the default window stalls, so:
+1. Apply the held broker-conf commit (`max_inflight_messages 180`, `autosave_interval 10`, `persistent_client_expiration 10d`)
+   and restart the broker gracefully (`docker restart force-mosquitto`); check the persistence log and `session present: True`
+   as described under "Checking the live broker".
+2. Deploy the bridge. **`Stop-ScheduledTask ForceBridge` stops the OLD bridge, which still acknowledges on receipt, so do it just
+   after a scan has landed (about :01 past :00/:15/:30/:45)**: stopped mid-scan it loses what it holds, up to one scan. The
+   repetition trigger starts the new bridge within 5 minutes (or `Start-ScheduledTask ForceBridge`).
+3. Watch `logs\bridge.log`: `received=` and `files=` rise by 60 and 1 per scan, `buffer_depth` returns to 0, every file has 60
+   lines, `redelivered=` stays 0 outside a deliberate kill, and bronze shows 60 of 60 for the first hour's scans.
+4. Roll back by reverting the bridge: unacknowledged messages are redelivered to the old bridge, so nothing is lost.
+
 **How the planned monitoring bounds these** (S1, bridge liveness, "Monitoring", to be written — not built). An alert after about
 30 minutes without the bridge makes the two multi-day paths (queue overflow, session expiry) unreachable in practice, because
 someone is told long before day 7. It does nothing for the two instantaneous paths (a broker kill between autosaves, a bridge kill
@@ -893,9 +946,12 @@ built, `manual_ack`.
 **Proposed change, not yet applied** (held until the reboot test of the bridge auto-start is finished, because the conf is
 bind-mounted and the next broker restart would pick it up): `autosave_interval 30` → `10` (the exposure window above shrinks to
 10 / 900 = 1.1 %); `persistent_client_expiration 7d` → `10d` (240 hours, longer than the 208.3-hour fill time, so the queue limit,
-not the expiry, is reached first); and the conf comment corrected to "about 8.7 days". When it is applied,
-`ingest/tests/test_broker_config.py` changes in the same commit (the two expected values, and the known-gap decorator comes off),
-and this paragraph becomes a statement of fact.
+not the expiry, is reached first); `max_inflight_messages` (unset, so 20) → `180`, which the `manual_ack` bridge needs
+(above); and the conf comment corrected to "about 8.7 days". When it is applied, `ingest/tests/test_broker_config.py` changes in
+the same commit (the two expected values, the window assertions, and the three known-gap decorators come off), and this
+paragraph becomes a statement of fact. The local-dev conf, `infra/mosquitto/mosquitto.conf`, already says 180: the live
+container never reads it (doc 05's `docker run` starts `mosquitto -c /mosquitto/config/mosquitto.lan.conf`), but the throwaway
+broker of `ingest/e2e_local.py` does.
 
 **Checking the live broker** (read-only; run by hand — the repo's tests cannot see the container):
 - `docker inspect force-mosquitto --format "{{json .Mounts}}"` — the repo's `infra\mosquitto` directory mounted at

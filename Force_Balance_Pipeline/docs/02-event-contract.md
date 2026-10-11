@@ -152,8 +152,11 @@ Hive-style `dt=` and `hh=` prefixes, inferred by Auto Loader as partition column
 wall-clock time for the prefix — it describes when the file was written, not what's in it.
 This holds for backfill files too: their `dt=` and `hh=` name the day and hour they were uploaded.
 
-Filename is `{source_id}-{ulid}.ndjson`. Immutable and uniquely named, so a retrying bridge
-cannot produce a duplicate and Auto Loader's file tracking prevents reprocessing.
+Filename is `{source_id}-{ulid}.ndjson`. Immutable and uniquely named, so a retrying upload
+cannot produce a duplicate *file* and Auto Loader's file tracking prevents reprocessing it. Duplicate *events* are possible: if
+the bridge is killed after a file landed but before it acknowledged the messages in it (or its connection drops mid-upload),
+the broker redelivers those messages and the bridge lands them again in a new file with a new ULID. Bronze keeps both copies
+(doc 03) and silver deduplicates on `event_id`.
 
 One JSON object per line. No wrapping array.
 
@@ -180,8 +183,13 @@ for reports, which arrive irregularly.
 
 Reports flush on the 90-second timer since they are low-volume and human-paced.
 
-If the bridge crashes with events buffered, those events are lost. Acceptable: the probe's SQLite
-buffer is the durability layer and clears only on confirmed publish.
+If the bridge crashes with events buffered, nothing is lost. The bridge acknowledges a message to the broker (MQTT PUBACK)
+only after the file holding it has landed, or after its line is written to the dead-letter file, and acknowledges in the
+order the messages arrived. The probe's SQLite buffer clears a row on the *broker's* PUBACK, so until the bridge acknowledges,
+the broker's persistent session for the fixed client id `force-bridge` (doc 05) is what holds the event; after a restart
+the broker redelivers it, marked DUP. The cost is at-least-once delivery from the broker to the landing zone (see Filename,
+above), and a bounded in-flight window: the broker must be allowed to have more messages in flight than the bridge waits for
+(`max_inflight_messages` 180, doc 05).
 
 ---
 
