@@ -21,8 +21,15 @@ Flush conditions (doc 02): 4 MB accumulated; 90 s since the first buffered event
 Uploads use upload.upload_file (live mode): the path and its ULID are chosen once per batch and reused on
 every retry, and the upload never overwrites. A 409 after an attempt with an unknown outcome means that
 attempt landed; a 409 with no unknown attempt is a real collision and the batch is re-keyed. (The backfill
-uses the same core in deterministic mode, where any 409 means "already landed".) Events buffered but not yet
-flushed when the bridge dies are lost (doc 02: acceptable; the probe's own buffer is the durability layer).
+uses the same core in deterministic mode, where any 409 means "already landed".)
+
+Acknowledgement (docs 02, 05): a message is acknowledged to the broker (MQTT PUBACK, paho manual_ack) only after
+its batch has landed or its lines have been written to the dead-letter file, and PUBACKs go out in the order the
+PUBLISHes arrived (MQTT-4.6.0-2). The probe deletes a row when the BROKER acknowledges it, so until the bridge
+acknowledges, the broker's persistent session is what holds the event: a bridge killed with events buffered loses
+nothing, and the broker redelivers them (DUP flag) after the reconnect. The price is at-least-once delivery: a
+bridge killed after a file landed but before the acknowledgement (or a connection that drops while a batch is
+uploading) lands those events a second time, in a new file. The bridge does not deduplicate (doc 04); silver does.
 
 The path prefix is ingest wall-clock time at flush, not event time (doc 02). Filenames use the events'
 source_id, so a flush containing several sources produces one file per source, each in arrival order.
@@ -38,6 +45,8 @@ Usage:
     python ingest/bridge/bridge.py --env-file path/to/.env.bridge --volume-path /Volumes/force/raw/telemetry
 """
 import argparse
+import collections
+import itertools
 import json
 import logging
 import os
@@ -72,6 +81,9 @@ LOG_MAX_BYTES, LOG_BACKUPS = 5 * 1024 * 1024, 5          # about 5 x 5 MB on dis
 RECONNECT_MIN_S, RECONNECT_MAX_S = 1, 60                 # paho's backoff: 1, 2, 4 ... capped at 60 s between attempts
 CONNECT_FAIL_LOG_INTERVAL_S = 60                         # an unreachable broker is logged at most once a minute
 EXIT_ALREADY_RUNNING = 3                                 # another bridge holds the lock (1 = failure, 2 = usage)
+EXIT_DEAD_LETTER_FAILED = 4                              # the dead-letter file could not be written (disk full, ...)
+DEFAULT_MAX_PENDING = 120                                # events buffered without a complete scan before everything flushes
+DEAD_LETTER_ATTEMPTS, DEAD_LETTER_BACKOFF = 3, (1, 2)    # writes tried before giving up; seconds waited between them
 DEFAULT_VOLUME_PATH = "/Volumes/force/raw/telemetry"
 
 ENVELOPE_KEYS = ("event_id", "source_id", "source_type", "schema_version", "event_time", "mode",
@@ -133,12 +145,78 @@ def check_structure(obj):
     return problems
 
 
+class DeadLetterFailure(Exception):
+    """The dead-letter file could not be written after the retries: the only safe place for an event the bridge cannot
+    land is gone, so the event is NOT acknowledged and the bridge stops (exit code EXIT_DEAD_LETTER_FAILED)."""
+
+
+class AckTracker:
+    """Releases PUBACKs in the order the PUBLISHes were received (MQTT 3.1.1, MQTT-4.6.0-2), each only once its message
+    is safe: its batch landed, or its line is in the dead-letter file (complete()). Thread-safe: on_message registers on
+    paho's loop thread, the uploader completes, and ONE thread (run()'s main loop) calls pop_ready() and client.ack(),
+    because paho 2.1.0's ack() appends to an unguarded deque (client.py:3776) that its loop thread also uses.
+
+    A connection generation guards against stale acknowledgements: new_generation() (on every connect) forgets everything
+    registered before it. Those messages are never acknowledged on the new connection; if the broker kept the session it
+    redelivers them (DUP) and they are registered afresh."""
+
+    def __init__(self, on_ready=None):
+        self._lock = threading.Lock()
+        self._entries = collections.OrderedDict()      # token -> [mid, qos, done], in arrival order
+        self._ready = []
+        self._numbers = itertools.count(1)
+        self.generation = 0
+        self.on_ready = on_ready
+
+    def new_generation(self):
+        with self._lock:
+            self.generation += 1
+            self._entries.clear()
+            self._ready.clear()
+
+    def register(self, mid, qos):
+        with self._lock:
+            token = (self.generation, next(self._numbers))
+            self._entries[token] = [mid, qos, False]
+            return token
+
+    def complete(self, token):
+        """The message is safe. A token from an earlier generation is ignored."""
+        if token is None:
+            return
+        released = False
+        with self._lock:
+            entry = self._entries.get(token)
+            if entry is None:
+                return
+            entry[2] = True
+            while self._entries:
+                first = next(iter(self._entries))
+                if not self._entries[first][2]:
+                    break
+                mid, qos, _ = self._entries.pop(first)
+                self._ready.append((mid, qos))
+                released = True
+        if released and self.on_ready:
+            self.on_ready()
+
+    def pop_ready(self):
+        with self._lock:
+            ready, self._ready = self._ready, []
+            return ready
+
+    def pending(self):
+        with self._lock:
+            return len(self._entries)
+
+
 class Batch:
     """The lines destined for one file. The relative path is chosen once and reused by every retry."""
 
     def __init__(self, source_id, lines, now):
         self.source_id = source_id
         self.lines = lines
+        self.tokens = []        # the AckTracker tokens of the messages these lines came from
         moment = datetime.fromtimestamp(now, timezone.utc)
         self._dt, self._hh, self._ms = f"{moment:%Y-%m-%d}", f"{moment:%H}", int(now * 1000)
         self.ulid = new_ulid(self._ms)
@@ -181,39 +259,47 @@ class Bridge:
 
     def __init__(self, uploader, *, dead_letter_path=DEFAULT_DEAD_LETTER, max_bytes=DEFAULT_MAX_BYTES,
                  max_seconds=DEFAULT_MAX_SECONDS, scan_size=DEFAULT_SCAN_SIZE, clock=time.time,
-                 sleep=time.sleep, max_attempts=5, backoff=(1, 2, 4, 8, 16), log=print):
+                 sleep=time.sleep, max_attempts=5, backoff=(1, 2, 4, 8, 16), log=print,
+                 max_pending=DEFAULT_MAX_PENDING, acks=None):
         self.uploader = uploader
         self.dead_letter_path = Path(dead_letter_path)
         self.max_bytes, self.max_seconds, self.scan_size = max_bytes, max_seconds, scan_size
+        self.max_pending = max_pending
+        self.acks = acks if acks is not None else AckTracker()
         self.clock, self.sleep, self.max_attempts, self.backoff, self.log = clock, sleep, max_attempts, backoff, log
-        self._buffer = []       # (arrival, source_id, scan_id, sector_id, line bytes), in arrival order
+        self._buffer = []       # (arrival, source_id, scan_id, sector_id, line bytes, ack token), in arrival order
         self._bytes = 0
         self._scans = {}        # scan_id -> set of sector_ids seen
         self._lock = threading.Lock()
         self.stats = {"received": 0, "dead_lettered": 0, "files_uploaded": 0, "events_written": 0,
                       "bytes_written": 0, "retries": 0, "landed_before_retry": 0, "rekeyed": 0,
-                      "failed_batches": 0, "last_flush_utc": None}
+                      "failed_batches": 0, "last_flush_utc": None, "redelivered": 0, "dropped_for_redelivery": 0}
 
     # ---- receiving -------------------------------------------------------------------------------
-    def handle_message(self, payload):
-        """One MQTT message. Returns the batches that are now ready to upload (possibly none)."""
+    def handle_message(self, payload, token=None, dup=False):
+        """One MQTT message. Returns the batches that are now ready to upload (possibly none). `token` is the
+        message's AckTracker token (None: nothing to acknowledge); it is completed once the event is safe, either
+        here (dead-lettered) or after its batch lands. `dup` is the MQTT DUP flag: the broker is redelivering."""
         now = self.clock()
         with self._lock:
             self.stats["received"] += 1
+            self.stats["redelivered"] += int(bool(dup))
             try:
                 obj = json.loads(payload)
             except ValueError:
                 self._dead_letter(payload, "not JSON", now)
+                self.acks.complete(token)
                 return []
             problems = check_structure(obj)
             if problems:
                 self._dead_letter(payload, "structure: " + "; ".join(problems), now)
+                self.acks.complete(token)
                 return []
             text = payload.rstrip(b"\r\n")
             if b"\n" in text or b"\r" in text:  # one line must be one event: same values, compact form
                 text = json.dumps(obj, separators=(",", ":")).encode()
             line = text + b"\n"
-            self._buffer.append((now, obj["source_id"], obj["scan_id"], obj["sector_id"], line))
+            self._buffer.append((now, obj["source_id"], obj["scan_id"], obj["sector_id"], line, token))
             self._bytes += len(line)
             scan_id = obj["scan_id"]
             if scan_id is not None:
@@ -223,7 +309,24 @@ class Bridge:
                     return self._take(lambda item: item[2] == scan_id, now)
             if self._bytes >= self.max_bytes:
                 return self._take(lambda item: True, now)
+            if self.max_pending and len(self._buffer) >= self.max_pending:
+                # No complete scan, yet this many events are waiting: flush them all. Held acknowledgements keep the
+                # broker from sending more than its in-flight window (max_inflight_messages), so waiting for the
+                # 90 s timer instead would stall delivery.
+                return self._take(lambda item: True, now)
             return []
+
+    def new_connection(self, session_present):
+        """Called on every (re)connect. Acknowledgements for messages received on an earlier connection are never sent
+        (AckTracker.new_generation). If the broker kept the session it redelivers everything unacknowledged, so what is
+        still BUFFERED (not yet in a batch) is dropped and will arrive again; if it did not, the buffer is kept and
+        lands. Batches already uploading land either way: with a kept session their messages come back too and land a
+        second time, which is the accepted at-least-once duplicate (counted in `redelivered`)."""
+        with self._lock:
+            self.acks.new_generation()
+            if session_present and self._buffer:
+                self.stats["dropped_for_redelivery"] += len(self._buffer)
+                self._buffer, self._bytes, self._scans = [], 0, {}
 
     def tick(self):
         """Called about once a second: flush everything once the oldest buffered event is max_seconds old."""
@@ -249,9 +352,16 @@ class Bridge:
         remaining_scans = {item[2] for item in self._buffer if item[2] is not None}
         self._scans = {s: ids for s, ids in self._scans.items() if s in remaining_scans}
         by_source = {}
-        for _, source_id, _, _, line in taken:
-            by_source.setdefault(source_id, []).append(line)  # arrival order kept within each file
-        return [Batch(source_id, lines, now) for source_id, lines in by_source.items()]
+        for _, source_id, _, _, line, token in taken:
+            lines, tokens = by_source.setdefault(source_id, ([], []))
+            lines.append(line)  # arrival order kept within each file
+            tokens.append(token)
+        batches = []
+        for source_id, (lines, tokens) in by_source.items():
+            batch = Batch(source_id, lines, now)
+            batch.tokens = tokens
+            batches.append(batch)
+        return batches
 
     # ---- uploading -------------------------------------------------------------------------------
     def upload(self, batch):
@@ -265,8 +375,14 @@ class Bridge:
             self.stats["landed_before_retry"] += int(result.landed_before_retry)
         if result.outcome in (UPLOADED, ALREADY_LANDED):
             self._uploaded(batch)
+            self._safe(batch)
             return True
         return self._fail(batch, result.reason)
+
+    def _safe(self, batch):
+        """The batch's events are on disk somewhere safe (landed, or dead-lettered): release their acknowledgements."""
+        for token in batch.tokens:
+            self.acks.complete(token)
 
     def _uploaded(self, batch):
         with self._lock:
@@ -283,21 +399,33 @@ class Bridge:
             for line in batch.lines:
                 self._dead_letter(line.rstrip(b"\r\n"), f"upload_failed: {reason}", now)
         self.log(f"bridge: gave up on {batch.relpath} ({reason}); {len(batch.lines)} events written to the dead-letter file")
+        self._safe(batch)
         return False
 
     def _dead_letter(self, raw, reason, now):
-        self.stats["dead_lettered"] += 1
+        """Append one record to the dead-letter file, retrying a few times; DeadLetterFailure if it cannot be written.
+        Returning means the line is on disk, which is what lets the caller acknowledge the message."""
         record = {"reason": reason, "received_utc": datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                   "raw": raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)}
-        self.dead_letter_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.dead_letter_path.open("a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(record) + "\n")
+        for attempt in range(DEAD_LETTER_ATTEMPTS):
+            try:
+                self.dead_letter_path.parent.mkdir(parents=True, exist_ok=True)
+                with self.dead_letter_path.open("a", encoding="utf-8", newline="\n") as f:
+                    f.write(json.dumps(record) + "\n")
+                self.stats["dead_lettered"] += 1
+                return
+            except OSError as e:
+                self.log(f"bridge: dead-letter write failed (attempt {attempt + 1} of {DEAD_LETTER_ATTEMPTS}): {e}")
+                if attempt + 1 < DEAD_LETTER_ATTEMPTS:
+                    self.sleep(DEAD_LETTER_BACKOFF[min(attempt, len(DEAD_LETTER_BACKOFF) - 1)])
+        raise DeadLetterFailure(f"could not write {self.dead_letter_path} after {DEAD_LETTER_ATTEMPTS} attempts")
 
     def summary(self):
         s = self.stats
         return (f"buffer_depth={self.depth()} received={s['received']} files={s['files_uploaded']} "
                 f"events={s['events_written']} bytes={s['bytes_written']} dead_lettered={s['dead_lettered']} "
-                f"retries={s['retries']} failed_batches={s['failed_batches']} last_flush={s['last_flush_utc']}")
+                f"retries={s['retries']} failed_batches={s['failed_batches']} last_flush={s['last_flush_utc']} "
+                f"redelivered={s['redelivered']}")
 
 
 # ---- credentials --------------------------------------------------------------------------------------
@@ -431,6 +559,9 @@ def parse_args(argv=None):
     p.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     p.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS)
     p.add_argument("--scan-size", type=int, default=DEFAULT_SCAN_SIZE, help="events in a complete scan (default %(default)s)")
+    p.add_argument("--max-pending", type=int, default=DEFAULT_MAX_PENDING,
+                   help="flush everything once this many events are buffered without a complete scan; keep it at least "
+                        "one scan below the broker's max_inflight_messages (default %(default)s)")
     p.add_argument("--dead-letter", type=Path, default=DEFAULT_DEAD_LETTER)
     p.add_argument("--log-file", type=Path, default=DEFAULT_LOG_PATH,
                    help="the bridge's rotating log file (default %(default)s)")
@@ -445,8 +576,10 @@ def parse_args(argv=None):
 
 def build_client(mqtt, args):
     """The MQTT client: a fixed id and clean_session=False, so the broker keeps the session (and queues QoS 1
-    messages for it) while the bridge is away."""
-    return mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=args.client_id, clean_session=False)
+    messages for it) while the bridge is away; and manual_ack=True, so paho does not acknowledge a message when
+    on_message returns (client.py:4147-4152) but only when run() calls ack() after the event is safe."""
+    return mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=args.client_id, clean_session=False,
+                       manual_ack=True)
 
 
 def _utc_stamp(clock):
@@ -455,19 +588,21 @@ def _utc_stamp(clock):
     return datetime.fromtimestamp(clock(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def make_on_connect(topic, clock=time.time):
+def make_on_connect(topic, clock=time.time, on_session=None):
     """Subscribe at QoS 1 on every connect (a persistent session keeps it, and re-subscribing is harmless). Logs
     the reason code and a UTC timestamp on every connect, success or refusal -- previously only a refusal was
     logged with its reason, which left a successful reconnect's own cause (clean vs. session-resumed vs. a prior
     disconnect's reason) unavailable from the bridge's own log (ENGINEERING-LOG, "Unplanned-outage bridge
-    reconnect blip")."""
+    reconnect blip"). on_session(session_present) is told about every successful connect."""
     def on_connect(client, userdata, flags, reason_code, properties=None):
         ts = _utc_stamp(clock)
         if reason_code.is_failure:
             print(f"bridge: MQTT connect refused: {reason_code} ({ts})", flush=True)
             return
-        print(f"bridge: connected (session present: {bool(getattr(flags, 'session_present', False))}, "
-              f"reason: {reason_code}, {ts})", flush=True)
+        session_present = bool(getattr(flags, 'session_present', False))
+        print(f"bridge: connected (session present: {session_present}, reason: {reason_code}, {ts})", flush=True)
+        if on_session is not None:
+            on_session(session_present)
         client.subscribe(topic, qos=1)
     return on_connect
 
@@ -692,7 +827,12 @@ def make_on_connect_fail(host, port, clock=time.time, interval=CONNECT_FAIL_LOG_
 def run(bridge, args, mqtt=None):
     """Wire the bridge to MQTT. Uploads happen on a worker thread so a slow upload never blocks the
     MQTT network loop (and its keepalive). An unreachable broker is not an error: the connection is retried in
-    the background with backoff until it comes up (a reboot starts this before Docker has the broker listening)."""
+    the background with backoff until it comes up (a reboot starts this before Docker has the broker listening).
+
+    Acknowledgements (manual_ack): on_message registers each message with bridge.acks; the uploader completes it once
+    the batch has landed or been dead-lettered; THIS thread (the only one besides paho's loop thread that touches the
+    client) sends the released PUBACKs in arrival order. On shutdown the buffer is drained and uploaded while the
+    connection is still up, the last acknowledgements are sent, and only then is DISCONNECT queued behind them."""
     if mqtt is None:
         try:
             import paho.mqtt.client as mqtt
@@ -700,14 +840,27 @@ def run(bridge, args, mqtt=None):
             raise SystemExit("paho-mqtt is not installed: pip install -r edge/requirements.txt (in the edge venv)")
     work = queue.Queue()
     stop = threading.Event()
+    wake = threading.Event()        # an acknowledgement was released, or the bridge must stop
+    fatal = []                      # an exit code, when the bridge cannot continue safely
     last_message = [time.time()]
+    bridge.acks.on_ready = wake.set
+
+    def fail(code, message):
+        print(f"bridge: FATAL: {message}", flush=True)
+        fatal.append(code)
+        stop.set()
+        wake.set()
 
     def worker():
         while True:
             batch = work.get()
             if batch is None:
                 return
-            bridge.upload(batch)
+            try:
+                bridge.upload(batch)
+            except DeadLetterFailure as e:
+                fail(EXIT_DEAD_LETTER_FAILED, f"{e}; its events stay unacknowledged and the broker keeps them")
+                continue
             if args.exit_after_files and bridge.stats["files_uploaded"] >= args.exit_after_files:
                 stop.set()
 
@@ -720,7 +873,7 @@ def run(bridge, args, mqtt=None):
     for name in ("SIGINT", "SIGBREAK"):
         number = getattr(signal, name, None)
         if number is not None:
-            previous_handlers[number] = signal.signal(number, lambda *_: stop.set())
+            previous_handlers[number] = signal.signal(number, lambda *_: (stop.set(), wake.set()))
 
     client = build_client(mqtt, args)
     apply_mqtt_credentials(client)
@@ -730,10 +883,20 @@ def run(bridge, args, mqtt=None):
 
     def on_message(client, userdata, message):
         last_message[0] = time.time()
-        for batch in bridge.handle_message(message.payload):
+        token = bridge.acks.register(message.mid, message.qos) if message.qos > 0 else None
+        try:
+            batches = bridge.handle_message(message.payload, token=token, dup=getattr(message, "dup", False))
+        except DeadLetterFailure as e:
+            fail(EXIT_DEAD_LETTER_FAILED, f"{e}; the message stays unacknowledged and the broker keeps it")
+            return
+        for batch in batches:
             work.put(batch)
 
-    client.on_connect = make_on_connect(args.topic, bridge.clock)
+    def send_acks():
+        for mid, qos in bridge.acks.pop_ready():
+            client.ack(mid, qos)
+
+    client.on_connect = make_on_connect(args.topic, bridge.clock, on_session=bridge.new_connection)
     client.on_disconnect = make_on_disconnect(bridge.clock)
     client.on_connect_fail = make_on_connect_fail(args.mqtt_host, args.mqtt_port, bridge.clock)
     client.on_subscribe, client.on_message = on_subscribe, on_message
@@ -747,9 +910,11 @@ def run(bridge, args, mqtt=None):
         next_stats = time.time() + args.stats_interval
         try:
             while not stop.is_set():
-                time.sleep(0.25)
+                wake.wait(0.25)
+                wake.clear()
                 for batch in bridge.tick():
                     work.put(batch)
+                send_acks()
                 if args.idle_exit and time.time() - last_message[0] > args.idle_exit:
                     print(f"bridge: idle for {args.idle_exit:g}s, exiting", flush=True)
                     break
@@ -757,17 +922,20 @@ def run(bridge, args, mqtt=None):
                     print("bridge: " + bridge.summary(), flush=True)
                     next_stats = time.time() + args.stats_interval
         finally:
-            client.loop_stop()
-            client.disconnect()
+            # A message that arrives from here on is registered but never completed, so it is never acknowledged and the
+            # broker redelivers it after the next connect.
             for batch in bridge.drain():
                 work.put(batch)
             work.put(None)
             uploader_thread.join(timeout=120)
+            send_acks()                 # the connection is still up: the last PUBACKs go out ...
+            client.disconnect()         # ... and DISCONNECT is queued behind them
+            client.loop_stop()          # paho's loop thread writes its queue empty before it exits (client.py:2302-2306)
     finally:
         for number, handler in previous_handlers.items():
             signal.signal(number, handler)
     print("bridge: final " + bridge.summary(), flush=True)
-    return 0
+    return fatal[0] if fatal else 0
 
 
 def main(argv=None, *, process_wide=True, mqtt=None):
@@ -787,7 +955,7 @@ def main(argv=None, *, process_wide=True, mqtt=None):
     try:
         uploader = build_uploader(args)
         bridge = Bridge(uploader, dead_letter_path=args.dead_letter, max_bytes=args.max_bytes,
-                        max_seconds=args.max_seconds, scan_size=args.scan_size)
+                        max_seconds=args.max_seconds, scan_size=args.scan_size, max_pending=args.max_pending)
         mode = f"local directory {args.local_dir}" if args.local_dir else f"workspace volume {args.volume_path}"
         logger.info(f"bridge: writing to {mode}; flush at {args.max_bytes} bytes, {args.max_seconds:g} s, or a complete "
                     f"scan of {args.scan_size}")

@@ -17,6 +17,8 @@ from probe.runtime import DEFAULT_INTERVAL  # noqa: E402  edge/probe/runtime.py:
 
 ROOT = S.ROOT
 CONF = ROOT / "infra" / "mosquitto" / "mosquitto.lan.conf"
+LOCAL_CONF = ROOT / "infra" / "mosquitto" / "mosquitto.conf"     # local-dev broker; read by ingest/e2e_local.py's throwaway broker
+MOSQUITTO_DEFAULT_INFLIGHT = 20                                   # mosquitto.conf(5): "Defaults to 20"
 
 # The values as committed. Round 3 proposes autosave_interval 10 and persistent_client_expiration 10d (the 7 d expiry is
 # shorter than the time the queue takes to fill, below); they change here in the same commit as the conf.
@@ -98,6 +100,34 @@ class BrokerConfTests(unittest.TestCase):
         self.assertEqual(self.conf.get("persistence_location"), "/mosquitto/data/")
 
 
+class InflightWindowTests(unittest.TestCase):
+    """The bridge acknowledges a message only after its batch lands, so the broker must be allowed to have more messages in
+    flight than the bridge waits for: Mosquitto's default window is 20 and a scan is 60 events, which would stall delivery
+    until the bridge's 90 s timer (doc 05). The window is 180 (three scans); the bridge flushes at 120 pending (--max-pending)."""
+
+    def window(self, path):
+        return int(parse_conf(path).get("max_inflight_messages", MOSQUITTO_DEFAULT_INFLIGHT))
+
+    def test_the_local_dev_conf_sets_the_window(self):
+        self.assertEqual(parse_conf(LOCAL_CONF).get("max_inflight_messages"), "180")
+
+    def test_the_pending_valve_leaves_room_for_a_scan_in_the_local_window(self):
+        self.assertLessEqual(bridge.DEFAULT_MAX_PENDING + bridge.DEFAULT_SCAN_SIZE, self.window(LOCAL_CONF))
+
+    # KNOWN GAP until the held broker-conf commit lands (mosquitto.lan.conf is bind-mounted into the live broker and must
+    # not change before the reboot test is done): the live conf does not set the window yet, so its effective value is the
+    # default 20. That commit adds `max_inflight_messages 180` and removes these two decorators; until then an unexpected
+    # pass fails the suite, so the conf and these tests cannot drift apart.
+    @unittest.expectedFailure
+    def test_both_confs_set_the_same_window(self):
+        self.assertEqual(parse_conf(CONF).get("max_inflight_messages"), parse_conf(LOCAL_CONF).get("max_inflight_messages"))
+
+    @unittest.expectedFailure
+    def test_the_pending_valve_leaves_room_for_a_scan_in_the_live_window(self):
+        self.assertLessEqual(bridge.DEFAULT_MAX_PENDING + bridge.DEFAULT_SCAN_SIZE, self.window(CONF),
+                             "with the default window of 20 the broker never sends a whole scan to a bridge that holds its acks")
+
+
 class QueueHeadroomTests(unittest.TestCase):
     def test_the_arrival_rate_is_240_events_an_hour(self):
         self.assertEqual(len(S.SECTORS), 60)
@@ -142,6 +172,10 @@ class BridgeSessionTests(unittest.TestCase):
         client = bridge.build_client(FakeMqtt, bridge.parse_args([]))
         self.assertEqual(client.kwargs["client_id"], "force-bridge")
         self.assertIs(client.kwargs["clean_session"], False)
+
+    def test_acknowledgement_is_manual(self):
+        client = bridge.build_client(FakeMqtt, bridge.parse_args([]))
+        self.assertIs(client.kwargs.get("manual_ack"), True, "paho would acknowledge on return from on_message, before the file lands")
 
     def test_the_subscription_is_qos_1(self):
         subscribed = []

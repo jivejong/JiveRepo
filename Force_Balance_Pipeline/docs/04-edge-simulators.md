@@ -234,8 +234,11 @@ concurrently and is interleaved. Returns to `CONNECTED` when the buffer is empty
 
 A batch of 500 is published, all 500 are acknowledged (QoS 1 PUBACK) and deleted in one transaction, and the probe then pauses
 10 seconds, the same pause the backfill models. A batch that is not fully acknowledged stays in the buffer and is resent, so
-delivery is at-least-once: a duplicate `event_id` is possible, and silver deduplicates. Live scans keep their schedule while the
-drain runs and are published with mode `BURST`.
+delivery is at-least-once: a duplicate `event_id` is possible, and silver deduplicates. The same holds on the next leg: the bridge
+acknowledges a message to the broker only after the file holding it has landed (or its line is in the dead-letter file), so a
+bridge killed between landing and acknowledging gets the message again and lands it a second time, in a new file; bronze keeps
+both copies (doc 03) and silver deduplicates. Live scans keep their schedule while the drain runs and are published with mode
+`BURST`.
 
 **Downstream:** this is the marquee feature. Replayed events arrive with `event_time` hours
 behind `_ingest_ts`, producing large `ingest_lag_seconds` and `is_replayed = true`. Historical
@@ -429,10 +432,11 @@ on the e2-micro parses YAML. The defaults below are checked against the code by
 | `--mqtt-host` | `localhost` | broker host |
 | `--mqtt-port` | `1883` | broker port |
 | `--topic` | `force/telemetry/#` | subscription, at QoS 1 |
-| `--client-id` | `force-bridge` | fixed id; with `clean_session=false` the broker keeps the session and queues QoS 1 messages while the bridge is down (Mosquitto `max_queued_messages 50000`, about 8 days of scans) |
+| `--client-id` | `force-bridge` | fixed id; with `clean_session=false` the broker keeps the session and queues QoS 1 messages while the bridge is down (Mosquitto `max_queued_messages 50000`, ~8.7 days of scans (derived: 50,000 / 240 an hour)) |
 | `--max-bytes` | `4194304` | flush when the buffer reaches this size |
 | `--max-seconds` | `90` | flush when the oldest buffered event is this old |
 | `--scan-size` | `60` | events in a complete scan, which flushes as its own file |
+| `--max-pending` | `120` | flush everything once this many events are buffered without a complete scan (two scans). The bridge acknowledges a message to the broker only after its batch has landed, so it must stay at least one scan below the broker's `max_inflight_messages` (180, doc 05) or delivery stalls until the 90-second timer |
 | `--volume-path` | `/Volumes/force/raw/telemetry` | the landing zone (workspace mode) |
 | `--oauth-scope` | `files` | the scope in the OAuth token request (workspace mode); the force-bridge secret is scoped to the Files API, and `all-apis` is for an unscoped secret |
 | `--local-dir` | none | write here instead of the volume (local demo and tests) |
