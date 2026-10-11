@@ -282,8 +282,10 @@ fencing token. If the owner renewed the lease, it schedules another bounded
 wait; leaving the page cancels the current wait.
 
 Service workers require HTTPS, except on `localhost`. A separate tablet cannot
-use the secure-context exception by visiting `http://<computer-ip>:3000`; the
-eventual deployment must provide trusted HTTPS.
+use the secure-context exception by visiting `http://<computer-ip>:3000`.
+For the tailnet-only setup, follow
+[`../docs/ANDROID_SETUP.md`](../docs/ANDROID_SETUP.md); Compose publishes both
+the app and PostgreSQL on loopback, and Tailscale Serve proxies only the app.
 
 ## Source layout
 

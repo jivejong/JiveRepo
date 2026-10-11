@@ -28,7 +28,7 @@ export default function ChartView({
   songId, songList = [], setlistId = null, setlistEntry = null,
   online, onSync, onBack, onEdit, onNavigateSong, onSetlistUpdated,
 }) {
-  const { song, loading, setSong } = useSong(songId, online);
+  const { song, loading, loadError, setSong } = useSong(songId, online);
 
   // Local transpose state — offsets from the song's WRITTEN key.
   // On open we start at the preferred key (falling back to the written /
@@ -157,8 +157,14 @@ export default function ChartView({
 
   // Retain an already-open chart while refreshing after online/offline changes
   // so its active scroller and animation controller keep the same DOM node.
-  if (loading && !song) return <div className="loading">Loading…</div>;
-  if (!song)   return <div className="loading">Song not found</div>;
+  if (loading && (!song || String(song.id) !== String(songId))) {
+    return <div className="loading">Loading…</div>;
+  }
+  if (!song || String(song.id) !== String(songId)) {
+    return <div className="loading">{loadError
+      ? <div className="form-error" role="status">{loadError}</div>
+      : 'Song not found'}</div>;
+  }
 
   const capo    = capoOverride ?? initialCapo;
   const baseKey = song.chart_written_key || 'C';
@@ -288,6 +294,7 @@ export default function ChartView({
           <EditIcon size={18} />
         </button>
       </div>
+      {loadError && <div className="form-error" role="status">{loadError}</div>}
 
       {/* Meta bar: key, capo, BB */}
       <div className="chart-meta-bar">

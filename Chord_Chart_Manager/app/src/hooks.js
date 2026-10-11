@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import * as api from './lib/api';
 import * as cache from './lib/cache';
+import { loadChartSong } from './lib/songLoading';
 import { buildCachedTagOptions } from './tagMutations';
 
 // ── Online/offline detection ──────────────────────────────────────────────────
@@ -97,43 +98,57 @@ export function useSongs(filters, online) {
 export function useSong(id, online) {
   const [song,    setSong]    = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
 
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
     setLoading(true);
+    setLoadError(null);
 
-    const load = async () => {
-      try {
-        const resolvedId = online ? await cache.getRedirectedSongId(id) : id;
-        const data = online
-          ? await api.songs.get(resolvedId)
-          : await cache.getCachedSong(id);
-        if (!cancelled) setSong(data);
-      } catch {
+    loadChartSong(id, {
+      online,
+      readCached: cache.getCachedSong,
+      resolveId: cache.getRedirectedSongId,
+      fetchRemote: api.songs.get,
+      deleteCachedIfUnchanged: cache.deleteCachedSongIfUnchanged,
+      writeCachedIfUnchanged: cache.writeCachedSongIfUnchanged,
+      onDiagnostic: message => { if (!cancelled) setLoadError(message); },
+      onCached: data => {
         if (!cancelled) {
-          const cached = await cache.getCachedSong(id).catch(() => null);
-          if (!cancelled) setSong(cached);
+          setSong(data);
+          setLoading(false);
         }
-      } finally {
-        if (!cancelled) setLoading(false);
+      },
+      onRemote: data => { if (!cancelled) setSong(data); },
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+      // A deterministic lifecycle signal lets browser checks distinguish a
+      // delivered response from completion of its cache reconciliation.
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('ccm:song-load-settled', { detail: { id: String(id) } }));
       }
-    };
+    });
 
-    load();
     return () => { cancelled = true; };
   }, [id, online]);
 
   const refresh = useCallback(async () => {
     if (!id) return;
-    try {
-      const resolvedId = online ? await cache.getRedirectedSongId(id) : id;
-      const data = online ? await api.songs.get(resolvedId) : await cache.getCachedSong(id);
-      setSong(data);
-    } catch {}
+    await loadChartSong(id, {
+      online,
+      readCached: cache.getCachedSong,
+      resolveId: cache.getRedirectedSongId,
+      fetchRemote: api.songs.get,
+      deleteCachedIfUnchanged: cache.deleteCachedSongIfUnchanged,
+      writeCachedIfUnchanged: cache.writeCachedSongIfUnchanged,
+      onDiagnostic: setLoadError,
+      onCached: setSong,
+      onRemote: setSong,
+    });
   }, [id, online]);
 
-  return { song, loading, setSong, refresh };
+  return { song, loading, loadError, setSong, refresh };
 }
 
 // ── All tags ──────────────────────────────────────────────────────────────────

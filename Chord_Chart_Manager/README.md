@@ -208,10 +208,11 @@ If the same existing song was changed on both the tablet and server, the server
 version wins. Settings reports that the tablet change was replaced. An offline
 song creation receives a temporary local ID until its first successful sync.
 
-The app shell can be installed from the browser's PWA/install menu. Service
-workers require either `localhost` or a trusted HTTPS origin. Opening
-`http://<computer-ip>:3000` from a tablet may reach the page, but it will not
-provide dependable PWA installation or offline service-worker behavior.
+The app shell can be installed from the browser's PWA/install menu. For
+tailnet-only tablet access over trusted HTTPS, follow
+[`docs/ANDROID_SETUP.md`](docs/ANDROID_SETUP.md). Direct LAN HTTP is not the
+tablet setup: service workers require a trusted HTTPS origin away from
+`localhost`.
 
 ## Operational notes
 

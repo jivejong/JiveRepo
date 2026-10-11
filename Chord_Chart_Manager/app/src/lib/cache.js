@@ -243,6 +243,49 @@ export async function deleteCachedSong(id) {
   return wrap(tx('songs', 'readwrite').delete(id));
 }
 
+// A remote 404 may retire only the exact clean snapshot that was checked.
+// This transaction prevents a concurrent local edit from being erased between
+// the caller's read and the cache deletion.
+export async function deleteCachedSongIfUnchanged(id, expected) {
+  await openDb();
+  const removed = await transact('songs', 'readwrite', (transaction, setValue) => {
+    const store = transaction.objectStore('songs');
+    const request = store.get(id);
+    request.onsuccess = () => {
+      const current = request.result;
+      if (current && !current._sync && JSON.stringify(current) === JSON.stringify(expected)) {
+        store.delete(id);
+        setValue(true);
+      } else setValue(false);
+    };
+  });
+  if (removed) notifyCacheChange();
+  return removed;
+}
+
+// Persist an accepted server snapshot only while the exact cache state observed
+// at request start is still current. This protects edits, deletions, and a
+// newer clean version that arrive between the caller's read and this write.
+export async function writeCachedSongIfUnchanged(id, expected, replacement) {
+  await openDb();
+  const written = await transact('songs', 'readwrite', (transaction, setValue) => {
+    const store = transaction.objectStore('songs');
+    const request = store.get(id);
+    request.onsuccess = () => {
+      const current = request.result || null;
+      const matches = expected === null
+        ? current === null
+        : Boolean(current && !current._sync && JSON.stringify(current) === JSON.stringify(expected));
+      if (matches) {
+        store.put(cleanServerSong(replacement));
+        setValue(true);
+      } else setValue(false);
+    };
+  });
+  if (written) notifyCacheChange();
+  return written;
+}
+
 export async function cancelPendingLocalSong(id) {
   await openDb();
   return transact(['songs', 'setlists', 'meta'], 'readwrite', (transaction, _setValue, fail) => {

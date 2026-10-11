@@ -8,8 +8,9 @@ const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { Pool } = require('../server/node_modules/pg');
-const { bounded, runCleanupStages } = require('./t11-lifecycle.cjs');
+const { bounded, runCleanupStages, startServerBounded, runWithCleanup } = require('./t11-lifecycle.cjs');
 const { verifyHarnessIdentity } = require('./t11-guards.cjs');
+const { readMainCounts, assertMainCountsUnchanged } = require('./t11-main-checks.cjs');
 
 const appDir = path.resolve(__dirname, '..');
 const scratchName = 'ccm_test';
@@ -139,9 +140,9 @@ async function main() {
   let testServer;
   let acceptingRequests = false;
   let runId;
-  let originalError;
   let importedBefore;
-  try {
+  let mainCountsBefore;
+  await runWithCleanup(async () => {
     const preflight = await admin.query(`SELECT
       EXISTS(SELECT 1 FROM pg_database WHERE datname=$1) AS exists,
       (SELECT rolcreatedb FROM pg_roles WHERE rolname=current_user) AS can_create`, [scratchName]);
@@ -149,6 +150,9 @@ async function main() {
       'Refusing T11 because task-owned ccm_test already exists; inspect its state before cleanup');
     assert.equal(preflight.rows[0].can_create, true,
       'T11 database role cannot create ccm_test; grant task authorization/prerequisites before running');
+    const initialStats = await fetch('http://127.0.0.1:3000/api/stats', { signal: AbortSignal.timeout(5_000) });
+    assert.equal(initialStats.status, 200, 'Main app /api/stats must be available before T11 starts');
+    mainCountsBefore = readMainCounts(await initialStats.json());
     importedBefore = await importedSnapshot(main);
     await admin.query(`CREATE DATABASE ${scratchName}`);
     ownsScratch = true;
@@ -183,13 +187,9 @@ async function main() {
       }
       app(req, res);
     });
-    acceptingRequests = true;
     appServer = testServer;
-    appServer.listen(0, '127.0.0.1');
-    await new Promise((resolve, reject) => {
-      appServer.once('listening', resolve);
-      appServer.once('error', reject);
-    });
+    await startServerBounded(appServer, () => appServer.listen(0, '127.0.0.1'));
+    acceptingRequests = true;
     const testEnv = { ...process.env, E2E_BASE_URL: `http://127.0.0.1:${appServer.address().port}`,
       E2E_SYSTEM_CHROME: '1', CCM_T11_ISOLATED: '1', CCM_T11_RUN_ID: runId, CI: '1' };
     await verifyHarnessIdentity({ baseUrl: testEnv.E2E_BASE_URL, runId });
@@ -200,14 +200,15 @@ async function main() {
     await runNode('Scratch-database API integration tests', path.join(appDir, 'test/integration/t11-api.test.cjs'), [], testEnv);
     await runNode('Serial Playwright E2E (installed system Chrome)', path.join(appDir, 'node_modules/@playwright/test/cli.js'),
       ['test', '--workers=1'], testEnv);
-  } catch (error) {
-    originalError = error;
-  } finally {
+  }, async () => {
     const cleanup = [];
     const stages = [];
     if (appServer) stages.push(['HTTP server shutdown', async () => {
       acceptingRequests = false;
-      const closed = new Promise((resolve, reject) => appServer.close(error => error ? reject(error) : resolve()));
+      const closed = new Promise((resolve, reject) => {
+        if (!appServer.listening) { resolve(); return; }
+        appServer.close(error => error ? reject(error) : resolve());
+      });
       await bounded(closed, 'HTTP server shutdown', 5_000, () => appServer.closeAllConnections?.());
     }]);
     if (testPool) stages.push(['test pool shutdown', () => bounded(() => testPool.end(), 'test pool shutdown', 5_000)]);
@@ -234,20 +235,16 @@ async function main() {
       assert.equal((await health.json()).status, 'ok');
       const statsResponse = await fetch('http://localhost:3000/api/stats', { signal: AbortSignal.timeout(5_000) });
       assert.equal(statsResponse.status, 200, 'Main app /api/stats must remain available');
-      const stats = await statsResponse.json();
-      assert.deepEqual([stats.totalSongs, stats.totalTags, stats.totalSetlists], [8, 1, 0]);
-      console.log('[T11] Main /healthz healthy; /api/stats remains 8 songs / 1 tag / 0 setlists.');
+      const statsAfter = readMainCounts(await statsResponse.json());
+      assertMainCountsUnchanged(mainCountsBefore, statsAfter);
+      console.log(`[T11] Main /healthz healthy; /api/stats counts unchanged (${statsAfter.totalSongs} songs / ${statsAfter.totalTags} tags / ${statsAfter.totalSetlists} setlists).`);
       }]);
     }
     stages.push(['main fingerprint pool shutdown', () => bounded(() => main.end(), 'main pool shutdown', 5_000)]);
     stages.push(['admin pool shutdown', () => bounded(() => admin.end(), 'admin pool shutdown', 5_000)]);
     try { await runCleanupStages(stages); } catch (error) { cleanup.push(error); }
-    if (cleanup.length) {
-      originalError = originalError ? new AggregateError([originalError, ...cleanup], 'T11 test and cleanup failed')
-        : cleanup.length === 1 ? cleanup[0] : new AggregateError(cleanup, 'T11 cleanup failed');
-    }
-  }
-  if (originalError) throw originalError;
+    if (cleanup.length) throw cleanup.length === 1 ? cleanup[0] : new AggregateError(cleanup, 'T11 cleanup failed');
+  });
 }
 
 main().catch(error => {
