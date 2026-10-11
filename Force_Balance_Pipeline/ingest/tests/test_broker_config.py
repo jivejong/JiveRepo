@@ -20,14 +20,15 @@ CONF = ROOT / "infra" / "mosquitto" / "mosquitto.lan.conf"
 LOCAL_CONF = ROOT / "infra" / "mosquitto" / "mosquitto.conf"     # local-dev broker; read by ingest/e2e_local.py's throwaway broker
 MOSQUITTO_DEFAULT_INFLIGHT = 20                                   # mosquitto.conf(5): "Defaults to 20"
 
-# The values as committed. Round 3 proposes autosave_interval 10 and persistent_client_expiration 10d (the 7 d expiry is
-# shorter than the time the queue takes to fill, below); they change here in the same commit as the conf.
+# The values as committed. persistent_client_expiration must outlast the time the queue takes to fill (below), and
+# max_inflight_messages must be a few scans (the bridge acknowledges after landing; see InflightWindowTests).
 EXPECTED = {
     "persistence": "true",
     "persistence_location": "/mosquitto/data/",
-    "autosave_interval": "30",
+    "autosave_interval": "10",
     "max_queued_messages": "50000",
-    "persistent_client_expiration": "7d",
+    "persistent_client_expiration": "10d",
+    "max_inflight_messages": "180",
 }
 # Left at Mosquitto's defaults on purpose (mosquitto.conf(5)): max_queued_bytes 0 = no byte limit; autosave_on_changes
 # false = autosave_interval is a number of seconds. Setting either would change what the numbers above mean.
@@ -114,15 +115,12 @@ class InflightWindowTests(unittest.TestCase):
     def test_the_pending_valve_leaves_room_for_a_scan_in_the_local_window(self):
         self.assertLessEqual(bridge.DEFAULT_MAX_PENDING + bridge.DEFAULT_SCAN_SIZE, self.window(LOCAL_CONF))
 
-    # KNOWN GAP until the held broker-conf commit lands (mosquitto.lan.conf is bind-mounted into the live broker and must
-    # not change before the reboot test is done): the live conf does not set the window yet, so its effective value is the
-    # default 20. That commit adds `max_inflight_messages 180` and removes these two decorators; until then an unexpected
-    # pass fails the suite, so the conf and these tests cannot drift apart.
-    @unittest.expectedFailure
+    def test_the_live_conf_sets_the_window(self):
+        self.assertEqual(parse_conf(CONF).get("max_inflight_messages"), EXPECTED["max_inflight_messages"])
+
     def test_both_confs_set_the_same_window(self):
         self.assertEqual(parse_conf(CONF).get("max_inflight_messages"), parse_conf(LOCAL_CONF).get("max_inflight_messages"))
 
-    @unittest.expectedFailure
     def test_the_pending_valve_leaves_room_for_a_scan_in_the_live_window(self):
         self.assertLessEqual(bridge.DEFAULT_MAX_PENDING + bridge.DEFAULT_SCAN_SIZE, self.window(CONF),
                              "with the default window of 20 the broker never sends a whole scan to a bridge that holds its acks")
@@ -137,11 +135,9 @@ class QueueHeadroomTests(unittest.TestCase):
     def test_the_queue_fills_in_about_8_7_days(self):
         self.assertAlmostEqual(queue_fill_hours(parse_conf()["max_queued_messages"]) / 24, 8.68, places=2)
 
-    # KNOWN GAP, not a pass: the committed expiry (7 d = 168 h) is shorter than the queue's fill time (208.3 h), so the
-    # session -- and every message queued for it -- would be discarded before the queue could overflow. That makes the
-    # expiry, not max_queued_messages, the binding limit (doc 05). The Round 3 conf change (10d) makes this pass; the
-    # same commit removes this decorator. Until then an unexpected pass fails the suite, so the two cannot drift apart.
-    @unittest.expectedFailure
+    # The expiry used to be 7 d (168 h), shorter than the queue's fill time (208.3 h): the session -- and every message
+    # queued for it -- would have been discarded before the queue could overflow, which made the expiry, not
+    # max_queued_messages, the binding limit (doc 05). 10d (240 h) puts the queue limit first.
     def test_session_expiry_outlasts_the_time_the_queue_takes_to_fill(self):
         conf = parse_conf()
         self.assertGreaterEqual(duration_hours(conf["persistent_client_expiration"]),
