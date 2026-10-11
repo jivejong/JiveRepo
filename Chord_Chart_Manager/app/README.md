@@ -242,8 +242,14 @@ now** is selected in Settings, it:
 3. Replaces the local cache with that server snapshot.
 
 Existing-song updates and deletions include the server `updated_at` value on
-which the tablet change was based. The API checks that version while holding a
-row lock. A stale mutation receives HTTP 409, the server copy is kept, and
+which the tablet change was based. Online editor and chart updates use the
+same queue and acknowledgement path as offline changes. Each update dispatch
+freezes its payload and local revision; if a newer edit arrives in flight, the
+response advances its base token and leaves that newer edit queued. The API
+checks the version while holding a row lock. Each queued update also carries a
+stable operation ID and receipt: if the server commits but the response is
+lost, retry returns that operation's original result without applying the
+update twice. A stale first attempt receives HTTP 409, the server copy is kept, and
 Settings reports that the tablet change was replaced. Offline-created songs
 use temporary `local-*` IDs until the server assigns permanent IDs. A dispatched
 create keeps its exact payload under its operation ID so a lost response can be
@@ -265,8 +271,9 @@ tokens return 409. The song filter sends `tag_filters` as a JSON list of
 `{category,name}` values; every selected Genre, Feel, or Era must match.
 Setlist conflict notices are stored in IndexedDB and remain visible after a
 later sync failure or reload. When Web Locks are unavailable, another tab
-waits once for the active IndexedDB lease to expire, then rechecks ownership
-and its fencing token before pushing.
+waits to the active IndexedDB lease expiry and rechecks ownership and its
+fencing token. If the owner renewed the lease, it schedules another bounded
+wait; leaving the page cancels the current wait.
 
 Service workers require HTTPS, except on `localhost`. A separate tablet cannot
 use the secure-context exception by visiting `http://<computer-ip>:3000`; the

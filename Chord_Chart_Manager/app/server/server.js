@@ -113,8 +113,10 @@ app.post("/api/songs", async (req, res, next) => {
 
 app.put("/api/songs/:id", async (req, res, next) => {
   try {
-    const song = await dbx.updateSongFull(parseInt(req.params.id, 10), req.body || {});
+    const { operation_id: operationId, ...patch } = req.body || {};
+    const song = await dbx.updateSongFull(parseInt(req.params.id, 10), patch, operationId);
     if (!song) return res.status(404).json({ error: "Song not found" });
+    if (song._operation_replayed) res.set("X-Operation-Replayed", "true");
     res.json(song);
   } catch (e) { next(e); }
 });

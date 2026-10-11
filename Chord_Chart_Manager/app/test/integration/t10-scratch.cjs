@@ -75,7 +75,8 @@ async function main() {
       headers: { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    return { status: response.status, body: await response.json() };
+    return { status: response.status, body: await response.json(),
+      replayed: response.headers.get('x-operation-replayed') === 'true' };
   };
   const mutate = (type, payload = {}, setlistId = null, baseUpdatedAt = null, operationId = uuid()) =>
     api('POST', '/api/setlists/mutations', {
@@ -97,6 +98,57 @@ async function main() {
     assert.equal(songReplay.status, 201);
     assert.equal(songReplay.body.id, songCreated.body.id);
     assert.equal((await api('POST', '/api/songs', { ...songCreatePayload, title: 'T10 altered retry' })).status, 409);
+
+    // Song UPDATE receipts serialize duplicate attempts, reject UUID reuse
+    // with a changed body, and remain historical after a later server edit.
+    const updateBase = songCreated.body.updated_at;
+    const updateOperation = uuid();
+    const updatePayload = { bpm: 91, genres: [{ name: 'T10 receipt genre', is_primary: true }],
+      base_updated_at: updateBase, operation_id: updateOperation };
+    const updateUrl = `/api/songs/${songCreated.body.id}`;
+    assert.equal((await api('PUT', updateUrl, { bpm: 91, base_updated_at: updateBase })).status, 400,
+      'song updates require a replay-safe operation UUID');
+    assert.equal((await api('PUT', updateUrl, { ...updatePayload, operation_id: 'not-a-uuid' })).status, 400);
+    const duplicateUpdates = await Promise.all([
+      api('PUT', updateUrl, updatePayload), api('PUT', updateUrl, updatePayload),
+    ]);
+    assert.deepEqual(duplicateUpdates.map(item => item.status), [200, 200]);
+    assert.equal(duplicateUpdates.filter(item => item.replayed).length, 1);
+    assert.equal(duplicateUpdates[0].body.updated_at, duplicateUpdates[1].body.updated_at);
+    assert.equal(duplicateUpdates[0].body.bpm, 91);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM public.mutation_receipts WHERE operation_id=$1',
+      [updateOperation])).rows[0].n, 1);
+    const updateReceipt = duplicateUpdates[0].body;
+    assert.ok(updateReceipt.updated_at > updateBase);
+    const changedReuse = await api('PUT', updateUrl, { ...updatePayload, bpm: 92 });
+    assert.equal(changedReuse.status, 409);
+    assert.equal((await api('GET', updateUrl)).body.bpm, 91);
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM public.genres g
+      JOIN public.song_genres sg ON sg.genre_id=g.id WHERE sg.song_id=$1 AND g.name='T10 receipt genre'`,
+      [songCreated.body.id])).rows[0].n, 1, 'changed-payload rejection does not duplicate the tag assignment');
+
+    const laterEdit = await api('PUT', updateUrl, {
+      bpm: 103, base_updated_at: updateReceipt.updated_at, operation_id: uuid(),
+    });
+    assert.equal(laterEdit.status, 200);
+    assert.notEqual(laterEdit.body.updated_at, updateReceipt.updated_at);
+    const historicalReplay = await api('PUT', updateUrl, updatePayload);
+    assert.equal(historicalReplay.status, 200);
+    assert.equal(historicalReplay.replayed, true);
+    assert.equal(historicalReplay.body.bpm, 91);
+    assert.equal(historicalReplay.body.updated_at, updateReceipt.updated_at);
+    const currentAfterReplay = await api('GET', updateUrl);
+    assert.equal(currentAfterReplay.body.bpm, 103);
+    assert.equal(currentAfterReplay.body.updated_at, laterEdit.body.updated_at);
+
+    const staleOperation = uuid();
+    const staleUpdate = await api('PUT', updateUrl, {
+      bpm: 117, base_updated_at: updateBase, operation_id: staleOperation,
+    });
+    assert.equal(staleUpdate.status, 409, 'a stale first attempt remains a conflict');
+    assert.equal((await pool.query('SELECT 1 FROM public.mutation_receipts WHERE operation_id=$1',
+      [staleOperation])).rowCount, 0, 'rejected stale attempt records no receipt');
+    assert.equal((await api('GET', updateUrl)).body.bpm, 103);
 
     // Fresh create receipt replay is safe and maps one stable server identity.
     const createId = uuid();

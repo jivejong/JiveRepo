@@ -137,7 +137,7 @@ function pendingQueueRequest(meta, callback, deferPersist = false) {
 }
 
 function cleanServerSong(song) {
-  const { _sync, ...clean } = song;
+  const { _sync, _operation_replayed, ...clean } = song;
   return clean;
 }
 
@@ -223,10 +223,13 @@ export async function savePendingSong(song, operationId = null) {
       }
       if (redirectedId) {
         operation.id = targetId;
-        operation.op_id = mutationId();
-        operation.sent = false;
-        delete operation.sent_payload;
-        delete operation.sent_revision;
+        // Keep a dispatched update's identity and frozen payload intact. Its
+        // acknowledgement will observe this newer revision and rebase it.
+        if (!operation.sent) {
+          operation.op_id = mutationId();
+          delete operation.sent_payload;
+          delete operation.sent_revision;
+        }
       }
       operation.local_revision = (operation.local_revision || 0) + 1;
       meta.put({ key: 'pending_mutations', value: queue, updatedAt: Date.now() });
@@ -567,6 +570,85 @@ async function markSongCreateDispatched(songId) {
   });
 }
 
+async function markSongUpdateDispatched(songId) {
+  return transact(['songs', 'meta'], 'readwrite', (transaction, setValue, fail) => {
+    const songs = transaction.objectStore('songs');
+    const meta = transaction.objectStore('meta');
+    const songRequest = songs.get(songId);
+    const queueRequest = meta.get('pending_mutations');
+    let readyCount = 0;
+    const ready = () => {
+      if (++readyCount !== 2) return;
+      const local = songRequest.result;
+      const queue = queueRequest.result?.value || [];
+      const operation = queue.find(item => item.entity === 'song' && String(item.id) === String(songId));
+      if (!local || !operation) return fail(new Error('Pending song update disappeared before dispatch.'));
+      if (!operation.sent_payload) {
+        operation.sent_payload = {
+          ...editablePayload(local),
+          base_updated_at: local._sync?.base_updated_at ?? local.updated_at ?? null,
+          operation_id: operation.op_id,
+        };
+        operation.sent_revision = operation.local_revision || 0;
+      } else if (!operation.sent_payload.operation_id) {
+        // Add the already assigned UUID to updates queued by an older client.
+        operation.sent_payload = { ...operation.sent_payload, operation_id: operation.op_id };
+      }
+      operation.sent = true;
+      meta.put({ key: 'pending_mutations', value: queue, updatedAt: Date.now() });
+      setValue({ local, operation: structuredClone(operation) });
+    };
+    songRequest.onsuccess = queueRequest.onsuccess = ready;
+  });
+}
+
+async function acknowledgeSongUpdate(songId, sentRevision, sentOperationId, saved, replayLatest = null) {
+  const conflict = await transact(['songs', 'meta'], 'readwrite', (transaction, setValue) => {
+    const songs = transaction.objectStore('songs');
+    const meta = transaction.objectStore('meta');
+    const songRequest = songs.get(songId);
+    const queueRequest = meta.get('pending_mutations');
+    let readyCount = 0;
+    const ready = () => {
+      if (++readyCount !== 2) return;
+      const current = songRequest.result;
+      const queue = queueRequest.result?.value || [];
+      const operation = queue.find(item => item.entity === 'song' && item.op_id === sentOperationId);
+      if (!operation) { setValue(false); return; }
+      const changedAfterDispatch = (operation.local_revision || 0) !== sentRevision;
+      const laterServerVersion = replayLatest && replayLatest.updated_at !== saved.updated_at;
+      if (laterServerVersion && changedAfterDispatch) {
+        songs.put(cleanServerSong(replayLatest));
+        queue.splice(queue.indexOf(operation), 1);
+        meta.put({ key: 'pending_mutations', value: queue, updatedAt: Date.now() });
+        setValue(true);
+        return;
+      }
+      if (changedAfterDispatch && current) {
+        // Keep edits made during the request, but rebase them on its committed
+        // server version. The next sync dispatches a fresh immutable payload.
+        current.updated_at = saved.updated_at;
+        current._sync = { ...current._sync, operation: 'update', base_updated_at: saved.updated_at };
+        // The acknowledged UUID now names the dispatched revision's receipt;
+        // later local work needs a new idempotency key.
+        operation.op_id = mutationId();
+        operation.sent = false;
+        delete operation.sent_payload;
+        delete operation.sent_revision;
+        songs.put(current);
+      } else {
+        songs.put(cleanServerSong(laterServerVersion ? replayLatest : saved));
+        queue.splice(queue.indexOf(operation), 1);
+      }
+      meta.put({ key: 'pending_mutations', value: queue, updatedAt: Date.now() });
+      setValue(false);
+    };
+    songRequest.onsuccess = queueRequest.onsuccess = ready;
+  });
+  notifyCacheChange();
+  return conflict;
+}
+
 async function acknowledgeSongCreate(localId, sentRevision, sentOperationId, saved) {
   const serverId = saved.id;
   await transact(['songs', 'setlists', 'meta'], 'readwrite', transaction => {
@@ -665,14 +747,19 @@ async function pushPendingSongs(songApi, assertSyncOwned) {
         await assertSyncOwned();
         await deleteCachedSong(songId);
       } else {
-        const saved = await songApi.update(songId, {
-          ...editablePayload(local),
-          base_updated_at: baseUpdatedAt,
-        });
+        const dispatchUpdate = await markSongUpdateDispatched(songId);
+        local = dispatchUpdate.local;
+        const sent = dispatchUpdate.operation.sent_payload;
+        const saved = await songApi.update(songId, sent);
         await assertSyncOwned();
-        await updateCachedSong(cleanServerSong(saved));
+        const replayLatest = saved._operation_replayed
+          ? cleanServerSong(await songApi.get(songId))
+          : null;
+        const conflict = await acknowledgeSongUpdate(songId, dispatchUpdate.operation.sent_revision || 0,
+          dispatchUpdate.operation.op_id, saved, replayLatest);
+        if (conflict) conflicts.push({ id: songId, title: local.title, operation, replayConflict: true });
       }
-      if (operation !== 'create') await clearDirty(songId);
+      if (operation === 'delete') await clearDirty(songId);
       pushed += 1;
     } catch (error) {
       await assertSyncOwned();
@@ -873,10 +960,11 @@ async function withSyncOwnership(callback) {
     };
   });
   let ownership = await claim();
-  if (!ownership.fence && ownership.waitMs > 0) {
-    // A single expiry wait is bounded by the lease duration. On wake, claim
-    // again inside IndexedDB so the new owner receives a fresh fence. A page
-    // navigation cancels the timer; no polling loop keeps an abandoned tab busy.
+  let cancelled = false;
+  while (!ownership.fence && ownership.waitMs > 0 && !cancelled) {
+    // Each wait is bounded by the latest observed expiry. If the owner renews
+    // during that interval, claim() returns its new expiry and the waiter
+    // schedules one new timer. Navigation cancels the current timer/listener.
     const ready = await new Promise(resolve => {
       let finished = false;
       const finish = value => {
@@ -887,10 +975,11 @@ async function withSyncOwnership(callback) {
         resolve(value);
       };
       const onPageHide = () => finish(false);
-      const timer = setTimeout(() => finish(true), ownership.waitMs + 50);
+      const timer = setTimeout(() => finish(true), Math.max(1, ownership.waitMs) + 50);
       if (typeof window !== 'undefined') window.addEventListener('pagehide', onPageHide, { once: true });
     });
-    if (ready) ownership = await claim();
+    if (!ready) { cancelled = true; break; }
+    ownership = await claim();
   }
   const fence = ownership.fence;
   if (!fence) return { ok: false, error: 'Sync is already running in another tab.' };

@@ -220,7 +220,25 @@ export default function ChartView({
             if (!result.ok) throw new Error(result.error || 'The pending song could not be synced.');
             const redirectedId = await cache.getRedirectedSongId(song.id);
             setSong(await cache.getCachedSong(redirectedId));
-          } else await api.songs.update(target.songId, target.payload);
+          } else {
+            const patched = {
+              ...song,
+              ...target.payload,
+              _sync: {
+                operation: 'update',
+                base_updated_at: song._sync?.base_updated_at ?? song.updated_at ?? null,
+              },
+            };
+            await cache.savePendingSong(patched);
+            const result = await cache.syncWithServer({
+              library: api.library, setlists: api.setlists, songs: api.songs,
+            });
+            if (!result.ok) throw new Error(result.error || 'The song update remains queued for sync.');
+            if (result.conflicts?.some(conflict => String(conflict.id) === String(song.id))) {
+              throw new Error('The server song changed; its version was kept.');
+            }
+            setSong(await cache.getCachedSong(song.id));
+          }
         } else {
           const patched = {
             ...song,

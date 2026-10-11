@@ -240,7 +240,7 @@ async function createSong(patch, operationId = null) {
   }
 }
 
-async function updateSongFull(id, patch) {
+async function updateSongFull(id, patch, operationId) {
   const genres = Object.hasOwn(patch, "genres") ? normalizeTagSet(patch.genres, "Genres") : null;
   const vibes = Object.hasOwn(patch, "vibes") ? normalizeTagSet(patch.vibes, "Vibes") : null;
   if (genres?.length) {
@@ -251,6 +251,25 @@ async function updateSongFull(id, patch) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+
+    if (typeof operationId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operationId)) {
+      const error = new Error("operation_id must be a UUID"); error.status = 400; throw error;
+    }
+    const requestHash = crypto.createHash("sha256").update(canonicalJson({
+      entity: "song", song_id: Number(id), payload: patch,
+    })).digest("hex");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [operationId]);
+    const prior = await client.query(
+      "SELECT request_hash,response FROM public.mutation_receipts WHERE operation_id=$1", [operationId]);
+    if (prior.rowCount) {
+      if (prior.rows[0].request_hash !== requestHash) {
+        const error = new Error("Operation ID was already used for a different request"); error.status = 409; throw error;
+      }
+      await client.query("COMMIT");
+      const replay = prior.rows[0].response;
+      Object.defineProperty(replay, "_operation_replayed", { value: true });
+      return replay;
+    }
 
     // Tablet sync supplies the version it originally downloaded. Lock the row
     // while comparing so a desktop write cannot race between this check and
@@ -319,8 +338,13 @@ async function updateSongFull(id, patch) {
     if (genres !== null || vibes !== null) {
       await client.query("UPDATE songs SET updated_at = now() WHERE id = $1", [id]);
     }
+    const saved = await getSongFull(id, client);
+    await client.query(
+      `INSERT INTO public.mutation_receipts(operation_id,request_hash,entity_type,resource_id,response)
+       VALUES($1,$2,'song',$3,$4::jsonb)`,
+      [operationId, requestHash, String(id), JSON.stringify(saved)]);
     await client.query("COMMIT");
-    return getSongFull(id);
+    return saved;
   } catch (e) {
     await client.query("ROLLBACK");
     throw e;

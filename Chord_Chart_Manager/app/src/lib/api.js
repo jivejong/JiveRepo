@@ -31,7 +31,11 @@ async function request(method, path, body) {
     error.status = res.status;
     throw error;
   }
-  return res.json();
+  const result = await res.json();
+  if (res.headers.get('X-Operation-Replayed') === 'true' && result && typeof result === 'object') {
+    Object.defineProperty(result, '_operation_replayed', { value: true });
+  }
+  return result;
 }
 
 const get    = (path)        => request('GET',    path);

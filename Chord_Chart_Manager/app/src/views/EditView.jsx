@@ -114,21 +114,35 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
           onSaved(await cache.getCachedSong(serverId));
           return;
         }
-        const saved = song?.id && !isOfflineCreate
-          ? await api.songs.update(song.id, {
+        if (song?.id && !isOfflineCreate) {
+          const preserveStructured = isGeneratedSourceUnchanged(
+            originalChartSource.current, originalChartContent.current, payload.chart_source,
+          );
+          const patched = {
+            ...song,
             ...payload,
-            base_updated_at: song?._sync?.base_updated_at ?? song?.updated_at ?? null,
-          })
-          : await api.songs.create({
-            ...payload,
-            operation_id: cache.makeMutationId(),
+            era: eraForYear(payload.release_year),
+            genre: payload.genres.find(tag => tag.is_primary)?.name || payload.genres[0]?.name || null,
+            feel: payload.vibes[0] || null,
+            chart_content: preserveStructured ? originalChartContent.current : parseChartBody(payload.chart_source),
+            _sync: {
+              operation: 'update',
+              base_updated_at: song?._sync?.base_updated_at ?? song?.updated_at ?? null,
+            },
+          };
+          await cache.savePendingSong(patched);
+          const result = await cache.syncWithServer({
+            library: api.library, setlists: api.setlists, songs: api.songs,
           });
-        if (song?.id) {
-          await cache.deleteCachedSong(song.id);
-          await cache.updateCachedSong(saved);
-          await cache.clearDirty(song.id);
+          if (!result.ok) throw new Error(result.error || 'The song update remains queued for sync.');
+          if (result.conflicts?.some(conflict => String(conflict.id) === String(song.id))) {
+            throw new Error('The server song changed; its version was kept.');
+          }
+          onSaved(await cache.getCachedSong(song.id));
+        } else {
+          const saved = await api.songs.create({ ...payload, operation_id: cache.makeMutationId() });
+          onSaved(saved);
         }
-        onSaved(saved);
       } else {
         const id = song?.id ?? cache.makeLocalSongId();
         const operation = song?._sync?.operation === 'create'
