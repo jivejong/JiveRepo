@@ -8,6 +8,7 @@ import {
 import { useTags } from '../hooks';
 import { eraForYear, normalizeSongTags } from '../tagMutations';
 import { offlineSongCreatedAt, primaryGenreFromAssignments } from '../lib/offlineSongFields';
+import ArtistAutocomplete from '../components/ArtistAutocomplete';
 
 /**
  * EditView — edit a song's chart content and key metadata fields.
@@ -253,9 +254,8 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
         </div>
 
         <div className="form-group">
-          <label className="form-label">Artist</label>
-          <input className="form-input" value={form.artist}
-            onChange={e => set('artist', e.target.value)} />
+          <label className="form-label" htmlFor="song-artist">Artist</label>
+          <ArtistAutocomplete value={form.artist} onChange={value => set('artist', value)} />
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>

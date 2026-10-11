@@ -47,6 +47,26 @@ app.get("/api/tags", async (_req, res, next) => {
   try { res.json(await dbx.getTags()); } catch (e) { next(e); }
 });
 
+// Shared Genre/Vibe definition management is online-only: these operations
+// can affect multiple songs and have no existing offline queue contract.
+app.get("/api/tag-definitions", async (_req, res, next) => {
+  try { res.json(await dbx.listManagedTagDefinitions()); } catch (e) { next(e); }
+});
+app.post("/api/tag-definitions", async (req, res, next) => {
+  try { res.status(201).json(await dbx.createTagDefinition(req.body?.category, req.body?.name)); }
+  catch (e) { next(e); }
+});
+app.put("/api/tag-definitions/:category/:id", async (req, res, next) => {
+  try {
+    res.json(await dbx.mutateTagDefinition(req.params.category, Number(req.params.id), { name: req.body?.name }));
+  } catch (e) { next(e); }
+});
+app.delete("/api/tag-definitions/:category/:id", async (req, res, next) => {
+  try {
+    res.json(await dbx.mutateTagDefinition(req.params.category, Number(req.params.id), req.body || {}));
+  } catch (e) { next(e); }
+});
+
 app.get("/api/stats", async (_req, res, next) => {
   try { res.json(await dbx.getStats()); } catch (e) { next(e); }
 });

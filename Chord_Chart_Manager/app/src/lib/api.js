@@ -63,6 +63,13 @@ export const tags = {
   update: (name, data)             => put(`/api/tags/${encodeURIComponent(name)}`, data),
 };
 
+export const tagDefinitions = {
+  all: () => get('/api/tag-definitions'),
+  create: (category, name) => post('/api/tag-definitions', { category, name }),
+  rename: (category, id, name) => put(`/api/tag-definitions/${category}/${id}`, { name }),
+  remove: (category, id, decision) => del(`/api/tag-definitions/${category}/${id}`, decision),
+};
+
 // ── Setlists ──────────────────────────────────────────────────────────────────
 export const setlists = {
   all:         ()               => get('/api/setlists'),

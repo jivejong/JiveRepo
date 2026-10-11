@@ -1009,6 +1009,69 @@ body {
   text-align: center;
 }
 
+.tag-definition-manager { margin: 0 0 24px; }
+.tag-definition-manager > h2 { margin: 0 0 12px; }
+.definition-category {
+  margin: 0 0 12px;
+  padding: 12px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.definition-category h3 { margin: 0 0 10px; font-size: 14px; }
+.definition-create, .definition-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.definition-create .form-input, .definition-row .form-input { min-width: 0; flex: 1; }
+.definition-row { padding-top: 8px; border-top: 1px solid var(--border); }
+.definition-name { min-width: 0; flex: 1; overflow-wrap: anywhere; font-size: 14px; }
+.definition-name small { display: block; color: var(--text-muted); font-size: 11px; }
+.definition-confirm {
+  position: fixed;
+  z-index: 45;
+  inset: auto 0 0;
+  max-width: 768px;
+  max-height: 85vh;
+  overflow-y: auto;
+  margin: 0 auto;
+  padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+  color: var(--text-primary);
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  box-shadow: 0 -8px 32px rgba(0,0,0,.25);
+}
+.definition-confirm h3 { margin: 0 0 12px; font-size: 16px; }
+.definition-confirm p, .definition-confirm label { display: block; margin: 10px 0; font-size: 14px; line-height: 1.45; }
+.definition-confirm input[type="radio"] { margin-right: 8px; }
+.definition-confirm select { margin-top: 8px; }
+.definition-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.artist-autocomplete { position: relative; }
+.artist-suggestions {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 20px rgba(0,0,0,.25);
+}
+.artist-suggestion { min-height: 42px; display: flex; align-items: center; padding: 8px 10px; border-radius: 4px; cursor: pointer; }
+.artist-suggestion:hover, .artist-suggestion.active { background: var(--accent-dim); color: var(--text-primary); }
+@media (max-width: 420px) {
+  .definition-row { flex-wrap: wrap; }
+  .definition-row .definition-name { flex-basis: 100%; }
+  .definition-row .btn { flex: 1; }
+}
+
 /* ── Modal / bottom sheet ─────────────────────────────────────────────────── */
 .sheet-backdrop {
   position: fixed;

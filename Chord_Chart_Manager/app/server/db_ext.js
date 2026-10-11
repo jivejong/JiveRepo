@@ -440,6 +440,143 @@ async function getTags() {
   return out;
 }
 
+function tagDefinitionTable(category) {
+  if (category === "Genre") return { table: "public.genres", join: "public.song_genres", fk: "genre_id" };
+  if (category === "Vibe") return { table: "public.vibes", join: "public.song_vibes", fk: "vibe_id" };
+  const error = new Error("Only Genre and Vibe definitions can be managed.");
+  error.status = 400;
+  throw error;
+}
+
+function cleanDefinitionName(value) {
+  const name = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
+  if (!name || name.length > 120) {
+    const error = new Error("Definition name must contain 1 to 120 characters.");
+    error.status = 400;
+    throw error;
+  }
+  return name;
+}
+
+async function listManagedTagDefinitions() {
+  const [genres, vibes] = await Promise.all([
+    pool.query(`SELECT g.id, g.name, count(DISTINCT sg.song_id)::int AS song_count
+      FROM public.genres g LEFT JOIN public.song_genres sg ON sg.genre_id=g.id
+      GROUP BY g.id ORDER BY lower(g.name), g.id`),
+    pool.query(`SELECT v.id, v.name, count(DISTINCT sv.song_id)::int AS song_count
+      FROM public.vibes v LEFT JOIN public.song_vibes sv ON sv.vibe_id=v.id
+      GROUP BY v.id ORDER BY lower(v.name), v.id`),
+  ]);
+  return { genres: genres.rows, vibes: vibes.rows };
+}
+
+async function createTagDefinition(category, rawName) {
+  const { table } = tagDefinitionTable(category);
+  const name = cleanDefinitionName(rawName);
+  try {
+    const { rows } = await pool.query(`INSERT INTO ${table}(name) VALUES($1) RETURNING id,name`, [name]);
+    return { ...rows[0], category, song_count: 0 };
+  } catch (error) {
+    if (error.code === "23505") { error.status = 409; error.message = `A ${category} named “${name}” already exists.`; }
+    throw error;
+  }
+}
+
+async function mutateTagDefinition(category, id, mutation) {
+  const { table, join, fk } = tagDefinitionTable(category);
+  if (!Number.isSafeInteger(id) || id < 1 || !mutation || typeof mutation !== "object") {
+    const error = new Error("A valid definition ID and operation are required."); error.status = 400; throw error;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const source = await client.query(`SELECT id,name FROM ${table} WHERE id=$1`, [id]);
+    if (!source.rowCount) { const error = new Error("Definition not found."); error.status = 404; throw error; }
+    const initiallyAffected = await client.query(`SELECT DISTINCT song_id FROM ${join} WHERE ${fk}=$1 ORDER BY song_id`, [id]);
+    let songIds = initiallyAffected.rows.map(row => row.song_id);
+    if (songIds.length) {
+      await client.query("SELECT id FROM public.songs WHERE id=ANY($1::int[]) ORDER BY id FOR UPDATE", [songIds]);
+    }
+    const locked = await client.query(`SELECT id,name FROM ${table} WHERE id=$1 FOR UPDATE`, [id]);
+    if (!locked.rowCount) { const error = new Error("Definition no longer exists."); error.status = 404; throw error; }
+
+    // The definition row lock fences new FK assignments. Re-read after it is
+    // acquired; if an assignment appeared while song rows were being locked,
+    // require a fresh count/confirmation rather than mutate an unseen song.
+    const currentAffected = await client.query(`SELECT DISTINCT song_id FROM ${join} WHERE ${fk}=$1 ORDER BY song_id`, [id]);
+    const currentSongIds = currentAffected.rows.map(row => row.song_id);
+    if (currentSongIds.some(songId => !songIds.includes(songId))) {
+      const error = new Error("Assignments changed while this action was being prepared. Reload the usage count and confirm again.");
+      error.status = 409;
+      throw error;
+    }
+    songIds = currentSongIds;
+
+    let result;
+    if (Object.hasOwn(mutation, "name")) {
+      const name = cleanDefinitionName(mutation.name);
+      await client.query(`UPDATE ${table} SET name=$1 WHERE id=$2`, [name, id]);
+      result = { id, name, category, affected_songs: songIds.length };
+    } else {
+      const mode = mutation.mode;
+      if (!['remove', 'reassign'].includes(mode)) {
+        const error = new Error("Choose whether to remove these assignments or reassign them."); error.status = 400; throw error;
+      }
+      if (!Number.isSafeInteger(mutation.expected_song_count) || mutation.expected_song_count !== songIds.length) {
+        const error = new Error("Assignment count changed. Reload the definition and confirm the current song count.");
+        error.status = 409;
+        throw error;
+      }
+      if (mode === "reassign") {
+        const replacementId = Number(mutation.replacement_id);
+        if (!Number.isSafeInteger(replacementId) || replacementId < 1 || replacementId === id) {
+          const error = new Error("Choose a different replacement definition in the same category."); error.status = 400; throw error;
+        }
+        const replacement = await client.query(`SELECT id FROM ${table} WHERE id=$1 FOR UPDATE`, [replacementId]);
+        if (!replacement.rowCount) { const error = new Error("Replacement definition not found in this category."); error.status = 400; throw error; }
+        if (category === "Genre") {
+          for (const songId of songIds) {
+            const from = await client.query("SELECT is_primary FROM public.song_genres WHERE song_id=$1 AND genre_id=$2", [songId, id]);
+            if (!from.rowCount) continue;
+            const to = await client.query("SELECT is_primary FROM public.song_genres WHERE song_id=$1 AND genre_id=$2", [songId, replacementId]);
+            if (to.rowCount) {
+              await client.query("DELETE FROM public.song_genres WHERE song_id=$1 AND genre_id=$2", [songId, id]);
+              if (from.rows[0].is_primary && !to.rows[0].is_primary) {
+                await client.query("UPDATE public.song_genres SET is_primary=false WHERE song_id=$1 AND is_primary", [songId]);
+                await client.query("UPDATE public.song_genres SET is_primary=true WHERE song_id=$1 AND genre_id=$2", [songId, replacementId]);
+              }
+            } else {
+              await client.query("UPDATE public.song_genres SET genre_id=$1 WHERE song_id=$2 AND genre_id=$3", [replacementId, songId, id]);
+            }
+          }
+        } else {
+          await client.query(`UPDATE ${join} SET ${fk}=$1 WHERE ${fk}=$2`, [replacementId, id]);
+        }
+      } else {
+        await client.query(`DELETE FROM ${join} WHERE ${fk}=$1`, [id]);
+        if (category === "Genre" && songIds.length) {
+          await client.query(`UPDATE public.song_genres sg SET is_primary=true
+            WHERE sg.song_id=ANY($1::int[]) AND NOT EXISTS
+              (SELECT 1 FROM public.song_genres p WHERE p.song_id=sg.song_id AND p.is_primary)
+              AND sg.genre_id=(SELECT min(next.genre_id) FROM public.song_genres next WHERE next.song_id=sg.song_id)`, [songIds]);
+        }
+      }
+      await client.query(`DELETE FROM ${table} WHERE id=$1`, [id]);
+      result = { id, name: locked.rows[0].name, category, mode, replacement_id: mode === 'reassign' ? Number(mutation.replacement_id) : null, affected_songs: songIds.length };
+    }
+    // A shared definition edit changes each affected song's observable tag set.
+    // The existing strict-version trigger advances updated_at and makes queued
+    // stale song edits follow the established 409/server-wins path.
+    if (songIds.length) await client.query("UPDATE public.songs SET updated_at=updated_at WHERE id=ANY($1::int[])", [songIds]);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    if (error.code === "23505") { error.status = 409; error.message = "That definition conflicts with an existing name or assignment."; }
+    throw error;
+  } finally { client.release(); }
+}
+
 // ---------------------------------------------------------------- song tags
 
 // Add a tag to a song. Category routes to the right table: Genre -> genres
@@ -803,7 +940,8 @@ async function getStats() {
 
 module.exports = {
   mapSongOut, getSongFull, createSong, updateSongFull, deleteSong,
-  getTags, addSongTag, removeSongTag, listSetlists, getSetlist, createSetlist,
+  getTags, listManagedTagDefinitions, createTagDefinition, mutateTagDefinition,
+  addSongTag, removeSongTag, listSetlists, getSetlist, createSetlist,
   updateSetlist, deleteSetlist, addSetlistSong, updateSetlistSong, removeSetlistSong,
   reorderSetlist, getStats,
 };

@@ -292,6 +292,25 @@ matches any assigned vibe. Era is derived from `release_year` by decade;
 missing years do not match. The opening-screen All control clears only its
 category, while Clear all removes every active category filter. These rules
 are the same for server search and the offline IndexedDB cache.
+
+**Settings → Genre and Vibe definitions** lists shared definitions and their
+current song-usage counts. Definition creation, rename, reassignment, and
+deletion require a connection because these operations affect shared data and
+do not have an offline mutation-queue contract. While offline, those controls
+are disabled; individual song assignments can still be edited offline through
+the existing song queue. Deleting an in-use definition requires choosing either
+to remove those assignments or to reassign them to another definition of the
+same category, then confirming the affected-song count. Era is derived from
+release year and is not managed as a definition. A shared change advances the
+versions of affected songs, so stale queued edits follow the normal 409/server-
+wins behavior. Settings reports when the server change succeeded but the cache
+refresh still needs Sync now.
+The Artist field in song create/edit offers a short case-insensitive prefix
+list drawn from songs in the local cache, including pending and locally created
+songs. Suggestions also work offline. Typing remains ordinary free text; the
+stored value changes to an existing spelling only when a suggestion is chosen.
+Use the arrow keys and Enter to select from the list, Escape to close it, or tap
+a suggestion on a touch screen. New artist names remain valid.
 Setlist conflict notices are stored in IndexedDB and remain visible after a
 later sync failure or reload. When Web Locks are unavailable, another tab
 waits to the active IndexedDB lease expiry and rechecks ownership and its

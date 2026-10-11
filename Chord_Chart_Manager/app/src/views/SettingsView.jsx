@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { SyncIcon } from '../components/Icons';
 import * as api from '../lib/api';
+import TagDefinitionManager from '../components/TagDefinitionManager';
 
 export default function SettingsView({
   online, syncing, lastSync, dirty, conflicts, syncError, onSync,
@@ -52,6 +53,8 @@ export default function SettingsView({
           </div>
           <p className="theme-help">System follows this device’s appearance setting.</p>
         </fieldset>
+
+        <TagDefinitionManager online={online} onSync={onSync} />
 
         {/* Sync status */}
         <div style={{ marginBottom: 24 }}>

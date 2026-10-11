@@ -198,8 +198,13 @@ async function main() {
     process.env.CCM_T11_ISOLATED = '1';
     await runNode('Unit tests (Vitest)', path.join(appDir, 'node_modules/vitest/vitest.mjs'), ['run'], testEnv);
     await runNode('Scratch-database API integration tests', path.join(appDir, 'test/integration/t11-api.test.cjs'), [], testEnv);
+    const e2eArgs = ['test', '--workers=1'];
+    if (process.env.CCM_T11_E2E_GREP) {
+      e2eArgs.push('--grep', process.env.CCM_T11_E2E_GREP);
+      console.log('[T11] Applying requested guarded E2E name filter.');
+    }
     await runNode('Serial Playwright E2E (installed system Chrome)', path.join(appDir, 'node_modules/@playwright/test/cli.js'),
-      ['test', '--workers=1'], testEnv);
+      e2eArgs, testEnv);
   }, async () => {
     const cleanup = [];
     const stages = [];
