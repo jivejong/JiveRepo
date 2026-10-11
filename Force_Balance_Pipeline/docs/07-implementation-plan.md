@@ -222,9 +222,11 @@ human to notice and act. Before the next build step:
 1. The bridge task should wait/retry for the broker rather than exit when it's unreachable, and the task (or its
    wrapper) should restart automatically on failure — it exited `0xC000013A` (`CONTROL_C_EXIT`) and simply stayed
    down.
-2. A landing-freshness alert — moves the Phase 8 freshness-monitoring open item forward, since the same class of
-   problem (a healthy-looking pipeline silently not receiving new data) applies to both the bridge and to Job 1's
-   own quota exhaustion.
+2. A landing-freshness alert, as three signals reported to an external dead-man's-switch so that alerting shares no failure
+   domain with the desktop or with Databricks quota: S1 bridge liveness, S2 Job 1 liveness, S3 data freshness (doc 05,
+   "Monitoring"). It replaces doc 03's 45-minute bronze freshness test, which would trip between hourly runs and in every
+   scheduled DISCONNECTED window, and it covers the same class of silent failure (a healthy-looking pipeline not receiving
+   new data) in Job 1's own quota exhaustion (an open item in `docs/ENGINEERING-LOG.md`).
 3. Document and test the broker persistence and queue settings that actually made recovery possible
    (`persistence`, `max_queued_messages`) and the bridge's own session settings (`clean_session`, a fixed
    `client_id`) — currently true/correct in the deployed config, but asserted nowhere.

@@ -436,6 +436,8 @@ Minimum set. Part of the deliverable.
 - Cooldown assertion: no two `gold.disturbance` rows for the same sector within 2 hours
 - Every `gold.deployment` references a `gold.disturbance` with `agent_processed = true`
 - Every `signature` value has at least one matching Jedi specialty available in `dim_jedi`
-- Freshness: warn if no new `bronze.events` rows in 45 minutes (three missed scans)
+- Freshness is **not** a dbt test: it is monitored outside dbt by three dead-man's-switch signals (S1 bridge alive, S2 Job 1
+  succeeding, S3 data landed), doc 05 "Monitoring". (A 45-minute `bronze.events` rule would trip between hourly Job 1 runs and in
+  every scheduled DISCONNECTED window.)
 - `synthetic_ingest_ts` is null on every bronze row where `is_synthetic` is false, and not null
   where it is true

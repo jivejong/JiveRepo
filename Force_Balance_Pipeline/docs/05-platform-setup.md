@@ -410,7 +410,7 @@ warehouse/dbt/
 │   ├── fault_injection_<period>.csv   # converted from the Pi's fault_injection.jsonl, one seed per reconciliation period
 │   └── ENRICHMENT_PROVENANCE.md
 ├── models/
-│   ├── sources.yml               # force.bronze.events, 45-minute freshness
+│   ├── sources.yml               # force.bronze.events (freshness is monitored outside dbt: Monitoring)
 │   ├── staging/
 │   │   ├── _staging__models.yml
 │   │   ├── _staging__unit_tests.yml
@@ -949,7 +949,7 @@ window ended in a BURST (backlog 660) and the bridge landed 11 files of exactly 
 the old window of 20 they would have been 20-line files. 28 of 28 real scans over 02:15–09:00Z were 60 of 60 with 0 duplicate
 rows.
 
-**How the planned monitoring bounds these** (S1, bridge liveness, "Monitoring", to be written — not built). An alert after about
+**How the monitoring bounds these** (S1, bridge liveness; see "Monitoring", below — implemented, not yet deployed). An alert after about
 30 minutes without the bridge makes the two multi-day paths (queue overflow, session expiry) unreachable in practice, because
 someone is told long before day 7. It does nothing for the two instantaneous paths (a broker kill between autosaves, a bridge kill
 before upload): each loses at most about one scan, and S1 does not see it. Those are bounded by `autosave_interval` and, once
@@ -1050,7 +1050,7 @@ Removing a task that was registered *elevated* with the any-user trigger is expe
 **A reboot with no logon starts nothing — a decision, not an oversight.** The task runs in the interactive session, so it starts at
 logon, and so does the broker (derived from the 2026-10-09 timeline: bridge task 15:21:40Z, broker container 15:26:20Z). A reboot nobody logs in after (a
 Windows Update restart overnight, say) starts neither the broker nor the bridge, and the Pi's messages wait in its own buffer. No
-auto-logon is configured. The planned Phase 5 bridge-liveness signal (S1, "Monitoring", to be written) is what turns that case into
+auto-logon is configured. The Phase 5 bridge-liveness signal (S1, see "Monitoring", below; not yet deployed) is what turns that case into
 an alert.
 
 **Docker Desktop must start when you sign in.** The broker container has `--restart unless-stopped`, but it only comes back once
@@ -1090,6 +1090,126 @@ throwaway task with the same triggers registered unelevated with a `PT5M` interv
 killed bridge on its first repetition tick; on 2026-10-11 a reboot with nobody touching anything started the bridge at logon with no
 console window, it retried the broker once a minute until Docker was up, and the buffered scan landed 22 s after it connected. A
 repetition tick that finds the bridge running is ignored (Task Scheduler event 322, `MultipleInstances IgnoreNew`).
+
+### Monitoring
+
+Nothing noticed the 22-hour bridge outage of 2026-10-09/10: Job 1 stayed green throughout, and the same class of silent failure
+(a healthy-looking pipeline not receiving new data) is how Databricks quota exhaustion shows up, because no run is created at all
+(`docs/ENGINEERING-LOG.md`, Stage 4c). Freshness is therefore monitored **outside** dbt and outside the desktop, by three signals
+that each send a ping to an external dead-man's-switch, [Healthchecks.io](https://healthchecks.io) (hosted, free tier, email
+notifications only). A check that stops receiving pings goes late and then down, and that silence is the alarm: nothing has to be
+alive to report a failure, and the alerting shares no failure domain with the desktop or with Databricks. This replaces the
+45-minute `bronze.events` freshness test that used to be in doc 03 and `sources.yml`, which would have tripped between hourly Job 1
+runs and in every scheduled DISCONNECTED window.
+
+**Status (2026-10-11).** S1 and S3 are implemented in `ingest/bridge/monitor.py` and wired into `bridge.py`, with tests, and are **not
+yet deployed** (the running bridge predates them). S2 is **not wired**: its mechanism is still being proven (below). The four checks
+in the table are being created on Healthchecks.io by the owner.
+
+| Signal | What it says | Sent by | Ping | Check | Period | Grace | Alert after |
+|---|---|---|---|---|---|---|---|
+| **S1** | the bridge is alive and connected | `bridge.py` (`monitor.py`) | every 5 min while `client.is_connected()`, data or not | `fbp-s1-bridge-alive` | 5 min | 25 min | 30 min of silence |
+| **S2** | Job 1 is running and succeeding | Databricks, on each successful Job 1 run (design below) | once per success | `fbp-s2-job1-success` | 1 h | 1 h | 2 h of silence |
+| **S3** | data is landing | `bridge.py` (`monitor.py`) | after an upload that landed at least 1 line, at most one per 5 min | `fbp-s3-data-landed` | 15 min | 3 h 45 min | 4 h of silence |
+| (test) | exercises the alert path only | by hand | — | `fbp-test` | 1 min | 1 min | 2 min |
+
+"Grace" here is the Healthchecks.io grace time and the alert comes after period plus grace, i.e. **total silence** (decision, Q-B1).
+
+**What Healthchecks.io does** (from its own documentation, read 2026-10-11).
+- *Ping URLs:* `https://hc-ping.com/<uuid>` for success, with `/start`, `/fail`, `/log` and `/<exit-status>` variants, or
+  `https://hc-ping.com/<ping-key>/<slug>`; methods HEAD, GET and POST; a good answer is HTTP 200 `OK`
+  ([Pinging API](https://healthchecks.io/docs/http_api/)). No special request header is required, and the page does not say how
+  `User-Agent` is used.
+- *Rate:* "Please do not ping a single check more than 5 times per minute" (same page). S1 and S3 send at most one ping per five
+  minutes each.
+- *States:* a check is *late* when its success signal "is due but has not arrived yet" and the grace time has not elapsed, and
+  *down* once the grace time has passed, which is when the alert is sent ([documentation index](https://healthchecks.io/docs/),
+  [cron guide](https://healthchecks.io/docs/monitoring_cron_jobs/): "notifies you as soon as a ping does not arrive on time").
+  For a simple schedule a check becomes late when its period passes. Account settings can repeat the email every hour or day while
+  any check stays down (same cron guide).
+- *Email pings:* "any email received at the displayed address" counts as a success signal unless keyword filters are set
+  ([Email pinging](https://healthchecks.io/docs/email/)).
+- *Free (Hobbyist) plan:* "Monitor 20 jobs" and "100 log entries per job" ([pricing](https://healthchecks.io/pricing/)); four checks
+  are in use.
+- **Unconfirmed:** the format of the email-ping address (the page shows it only as an image); the minimum and maximum period and
+  grace time; the free plan's team-member and notification limits (the pricing page states none); and whether the service reads
+  `User-Agent`.
+
+**Why these numbers (derived).**
+- *S1, 30 minutes.* The longest normal gap in S1 pings is a reboot. In the reboot test of 2026-10-11 the shutdown was at 17:50:44Z
+  and the bridge was connected again at 18:04:40Z, 13 min 56 s later, because Docker Desktop took about 12.5 minutes to start.
+  30 minutes covers that with a margin and still catches a bridge, desktop or broker that stays down. S1 stops when the MQTT client is
+  disconnected, so it also fires when the broker or Docker is down even though the bridge process is up.
+- *S2, 2 hours.* Job 1 runs hourly at :03 (cron `0 3 * * * ?`), takes about 6 minutes normally (median transform 338–358 s observed)
+  and up to about 18–20 minutes after a backlog, with a 40-minute task timeout. A period of 1 h plus 1 h grace alerts after two
+  consecutive hourly runs fail to succeed, so one slow or late run never alerts. Quota exhaustion, where no run is created for
+  hours, alerts within 2 hours.
+- *S3, 4 hours.* Scans are every 15 minutes (hourly in STEALTH), but the probe's scheduled DISCONNECTED windows last 1–3 hours
+  (`edge/probe/modes.py:55`, `min_hours=1.0, max_hours=3.0`), two a day, one per half of the UTC day, and nothing lands during one;
+  its buffer arrives as a BURST when it ends. So the longest normal silence is about 3 hours plus up to one scan interval, under 4.
+  Two windows can touch at the half-day boundary and merge; a Monte Carlo over the schedule's own rule puts a merged silence over
+  4 hours at about 2 in 10,000 per boundary (roughly one false alert in seven years; the longest merged silence found was about 6.1
+  hours). S3 is silent by design during a window while S1 keeps pinging, which is how to tell the two apart.
+
+**What each signal catches, and what it does not.**
+- **S1** catches: the bridge process down, the desktop off, asleep or rebooting for over 30 minutes, Docker or the broker down, no
+  network. It does *not* see data stop (a bridge that is connected but receiving nothing keeps pinging) or uploads failing.
+- **S2** catches: Job 1 not running (quota exhaustion) or not succeeding, the workspace down. It does *not* see stale bronze: Job 1
+  succeeds on empty input.
+- **S3** catches: nothing landing although the bridge may be up (the Pi or its link down, the probe stopped, the Databricks Files API
+  failing, **the OAuth secret lapsed**). It does *not* see partial scans, duplicates, silver or gold problems, or wrong values, and it
+  is silent through a scheduled DISCONNECTED window by design.
+- *Reading them together:* S1 down, others late → the desktop, Docker, broker or bridge. S1 up, S3 late → data is not arriving
+  (check whether a scheduled window is running, then the Pi). S1 up, S3 late, bridge log full of `gave up on …` → uploads failing.
+  S2 down alone → Databricks.
+- **The OAuth secret** for `force-bridge` expires 2026-12-25 13:59Z. When it lapses every upload fails and is dead-lettered, but MQTT
+  stays connected (S1 keeps pinging) and Job 1 keeps succeeding on empty input (S2 keeps pinging); only **S3** fires. Derived: the
+  last good upload is at most about 1 hour after expiry (the cached token lives up to `expires_in`, default 3,600 s) and S3 then
+  needs 4 hours, so the alert comes roughly 5 hours after expiry, about 18:00–19:15Z on 2026-12-25.
+
+**Where the ping URLs live.** A ping URL is credential-like (whoever holds it can mark a check up), so it is never committed, printed,
+logged or put in an error message.
+- S1 and S3: `BRIDGE_PING_S1_URL` and `BRIDGE_PING_S3_URL`, in `.env.bridge` (gitignored; `.env.bridge.example` has empty
+  placeholders) or the process environment (which wins). Only workspace mode reads them; a `--local-dir` run, an e2e or a test never
+  pings. A missing key disables that signal with one warning that names the key and never its value; a value that is not an `https://`
+  URL is treated as missing.
+- S2 and `fbp-test`: the email-ping addresses are supplied at deploy time (a bundle variable, like `warehouse_id`, or a session
+  environment variable for a test) and are never committed.
+- **Order of rollout matters:** until the bridge is running the new code, `.env.bridge` must **not** contain the ping keys, because the
+  current `read_env_file` refuses any key outside the three Databricks keys and the bridge would exit at its next start. Deploy the
+  code first, then add the keys and restart.
+
+**How a ping is sent, and what it can never do.** `monitor.py` queues the ping (a queue of 16; a full queue drops the ping), and one
+daemon thread sends it through `files_api.http_request`, the repo's one outbound HTTP path, with no headers: the only header is the
+project User-Agent, and there is no Databricks session or credential in reach. The timeout is 10 s. Every failure is caught; a
+failing ping is logged at most once every 15 minutes, described by status or exception type only, and never touches the MQTT, upload
+or acknowledgement paths.
+
+**S2: how Job 1 will ping (design; not built).** The smallest mechanism is a job-level `email_notifications.on_success` entry in
+`resources/force_pipeline.job.yml` whose address is the S2 check's email-ping address, supplied as a bundle variable. Databricks
+sends the email itself, so the compute needs no outbound access and no secret scope. The Databricks documentation lists
+"Successful completion" as a notification event for email addresses and for system destinations, and says an administrator creates
+system destinations ([Job notifications](https://docs.databricks.com/aws/en/jobs/notifications)); it does not say whether the
+recipient must be a workspace user (external addresses appear to be allowed, unconfirmed). The Free Edition limitations page
+([Free Edition limitations](https://docs.databricks.com/aws/en/getting-started/free-edition-limitations)) says nothing about
+notifications, webhooks or secrets, so none of that is confirmed for Free Edition; it says outbound internet access is "restricted to
+a limited set of trusted domains" without listing them, so a webhook or an in-job ping to `hc-ping.com` is unconfirmed too. Read-only
+inspection on 2026-10-11: the API answers (`databricks notification-destinations list` returns an empty list), the signed-in user is
+in `admins`, and Job 1 has empty `email_notifications` and `webhook_notifications`. A throwaway job with `on_success` to the
+`fbp-test` address settles it before Job 1 is touched.
+
+**How to prove each alert fires** (each step needs the owner's OK; nothing here runs automatically).
+1. *The alert path:* ping `fbp-test` once, then stop. After about 2 minutes the check goes late and then down, and the notification
+   email arrives (check the inbox and the check's log); pinging it again returns it to up.
+2. *S1, for real:* disable the task (`Disable-ScheduledTask ForceBridge`) so the 5-minute repetition cannot restart it, stop it
+   (`Stop-ScheduledTask ForceBridge`; safe, because messages are acknowledged only after landing), wait 35 minutes, expect
+   `fbp-s1-bridge-alive` late at about 5 minutes and down at about 30, with an email; then `Enable-ScheduledTask` and
+   `Start-ScheduledTask` and expect it back to up.
+3. *S3, cadence and silence:* in the check's log, pings appear after landings at most once per 5 minutes; and across one scheduled
+   DISCONNECTED window (at most 3 hours, from `mode_transitions` or `bridge.log`) `fbp-s3-data-landed` never goes down.
+4. *S2:* the throwaway job's email reaches `fbp-test` (above); after the real wiring, `fbp-s2-job1-success` shows a ping about every
+   hour at :03 plus the run time.
+5. *The disabled paths:* with the keys absent the bridge logs one warning per start and runs normally.
 
 ### The Pi
 

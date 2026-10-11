@@ -6,9 +6,9 @@
 
   DBT CONCEPTS USED HERE (this file, for a reader learning dbt):
   - `{{ source('bronze', 'events') }}`: refers to a table dbt does not build -- declared once in
-    models/sources.yml (name, columns, freshness), not hardcoded here. Using source() instead of a literal
-    table name is what lets `dbt docs generate` draw this into the lineage graph and `dbt source freshness`
-    check it; a raw `FROM force.bronze.events` would do neither.
+    models/sources.yml (name, columns), not hardcoded here. Using source() instead of a literal table name
+    is what lets `dbt docs generate` draw this into the lineage graph; a raw `FROM force.bronze.events`
+    would not. (Freshness is not a dbt check here: it is monitored outside dbt, doc 05, "Monitoring".)
   - `{{ config(materialized='view') }}`: a config block, evaluated once when dbt builds this model.
     materialized='view' means dbt issues `CREATE VIEW`, not `CREATE TABLE` -- no storage, always current,
     cheap to keep in the DAG purely for the extraction logic below. Every downstream model reads this view

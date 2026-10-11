@@ -12,12 +12,10 @@ sources:
           volume's own arrival time when known (every row ingested since the Q1 backfill column landed), falling
           back to the notebook's own processing time for any row that predates it. dbt's loaded_at_field accepts
           an expression, not just a bare column name (dbt Developer Hub, "freshness" reference), so this needs no
-          loaded_at_query. Not run against a live warehouse here -- confirm the compiled freshness query once Job
-          1 exists (task 1 of this round).
+          loaded_at_query. Freshness is NOT a dbt check: it is monitored outside dbt by three dead-man's-switch
+          signals (doc 05, "Monitoring"). loaded_at_field is kept so `dbt source freshness` can still be run ad hoc
+          if a `freshness:` block is ever added back.
         loaded_at_field: "COALESCE(_file_modified_ts, _ingest_ts)"
-        freshness:
-          warn_after: {count: 45, period: minute}
-          error_after: null
         columns:
           - name: event_id
             description: ULID. Primary dedup key (doc 02).
