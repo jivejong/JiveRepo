@@ -490,10 +490,64 @@ class _UtcFormatter(logging.Formatter):
         return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)) + f".{int(record.msecs):03d}Z"
 
 
-def configure_logging(log_path, stdout=None):
+class _QuietErrors:
+    """logging.Handler.handleError reports a handler's failure by writing to sys.stderr. Once capture_process_output
+    has run, sys.stderr is the logger-backed stream, so a failing handler would log its own failure through itself
+    (and each traceback line is another record). This reports to the ORIGINAL stderr instead, at most once a minute,
+    and to nothing when there is none (pythonw.exe). It never raises."""
+    failures = 0
+    report_stream = None
+    _reported_at = 0.0
+
+    def handleError(self, record):
+        self.failures += 1
+        now = time.time()
+        if self.report_stream is None or now - self._reported_at < 60:
+            return
+        self._reported_at = now
+        try:
+            exc = sys.exc_info()[1]
+            self.report_stream.write(f"bridge: logging failed ({type(exc).__name__}: {exc}); "
+                                     f"{self.failures} failure(s) so far\n")
+            self.report_stream.flush()
+        except Exception:
+            pass
+
+
+class _SafeRotatingFileHandler(_QuietErrors, RotatingFileHandler):
+    """RotatingFileHandler that survives a rotation it cannot do. On Windows the rename fails while any other process
+    holds the file open without delete sharing (Get-Content -Wait, an editor, a virus scanner); the stock handler then
+    raises before writing the record, so every line is lost for as long as the file is held. This one keeps writing to
+    the current file (it grows past maxBytes meanwhile) and tries to rotate again a minute later."""
+    ROLLOVER_RETRY_S = 60
+    rollover_failures = 0
+    _retry_rollover_at = 0.0
+
+    def shouldRollover(self, record):
+        if time.time() < self._retry_rollover_at:
+            return False
+        return super().shouldRollover(record)
+
+    def doRollover(self):
+        try:
+            super().doRollover()
+        except OSError:
+            self.rollover_failures += 1
+            self._retry_rollover_at = time.time() + self.ROLLOVER_RETRY_S
+            if self.stream is None:        # the stock doRollover closed it before the rename failed
+                self.stream = self._open()
+
+
+class _QuietStreamHandler(_QuietErrors, logging.StreamHandler):
+    pass
+
+
+def configure_logging(log_path, stdout=None, stderr=None):
     """The bridge's logger: a rotating file always, and a console stream only when there is one. Started with
     pythonw.exe (no console) sys.stdout is None, and a print() to it silently vanishes -- the file is then the only
-    record there is. The handlers are replaced on every call, so calling it twice never doubles a line."""
+    record there is. The handlers are replaced on every call, so calling it twice never doubles a line. Pass the
+    ORIGINAL stdout and stderr (before capture_process_output replaces them): the console handler writes to `stdout`,
+    and a handler failure is reported to `stderr`."""
     logger = logging.getLogger(LOGGER_NAME)
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
@@ -502,38 +556,45 @@ def configure_logging(log_path, stdout=None):
     logger.propagate = False
     path = Path(log_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    file_handler = RotatingFileHandler(path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8")
+    file_handler = _SafeRotatingFileHandler(path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8")
     file_handler.setFormatter(_UtcFormatter("%(asctime)s %(levelname)s %(message)s"))
+    file_handler.report_stream = stderr
     logger.addHandler(file_handler)
     if stdout is not None:
-        console = logging.StreamHandler(stdout)
+        console = _QuietStreamHandler(stdout)
         console.setFormatter(logging.Formatter("%(message)s"))
+        console.report_stream = stderr
         logger.addHandler(console)
     return logger
 
 
+_LOGGING = threading.local()    # shared by the stdout and stderr streams: "this thread is inside a log call"
+
+
 class _LoggerStream:
     """Stands in for sys.stdout / sys.stderr: every complete line written to it becomes a log record, so the existing
-    print() calls (and any traceback printed to stderr) reach the log file without being rewritten."""
+    print() calls (and any traceback printed to stderr) reach the log file without being rewritten. Output written
+    while this thread is already inside a log call (a handler printing to either stream) is dropped, never logged, so
+    a handler that writes to a captured stream cannot loop."""
     encoding = "utf-8"
     errors = "replace"
 
     def __init__(self, logger, level):
         self._logger, self._level = logger, level
-        self._buffer, self._lock, self._local = "", threading.Lock(), threading.local()
+        self._buffer, self._lock = "", threading.Lock()
 
     def write(self, text):
-        if getattr(self._local, "busy", False):   # logging reporting its own failure through stderr: drop it, never loop
+        if getattr(_LOGGING, "busy", False):
             return len(text)
         with self._lock:
             *lines, self._buffer = (self._buffer + text).split("\n")
-        self._local.busy = True
+        _LOGGING.busy = True
         try:
             for line in lines:
                 if line.strip():
                     self._logger.log(self._level, line.rstrip("\r"))
         finally:
-            self._local.busy = False
+            _LOGGING.busy = False
         return len(text)
 
     def flush(self):
@@ -713,7 +774,7 @@ def main(argv=None, *, process_wide=True, mqtt=None):
     """process_wide=False (tests) leaves sys.stdout, sys.stderr and the exception hooks alone; mqtt injects a fake
     client module."""
     args = parse_args(argv)
-    logger = configure_logging(args.log_file, stdout=sys.stdout)
+    logger = configure_logging(args.log_file, stdout=sys.stdout, stderr=sys.stderr)   # the originals, before capture
     if process_wide:
         capture_process_output(logger)
     lock = InstanceLock(args.lock_file)

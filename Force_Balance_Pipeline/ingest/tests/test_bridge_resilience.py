@@ -211,7 +211,8 @@ class LoggingTests(BridgeTestCase):
         text = path.read_text(encoding="utf-8")
         self.assertRegex(text, rf"(?m)^{UTC_STAMP} INFO bridge: hello from a windowless process$")
         handlers = logging.getLogger(bridge.LOGGER_NAME).handlers
-        self.assertEqual([type(h) for h in handlers], [RotatingFileHandler], "no console stream without a console")
+        self.assertEqual(len(handlers), 1, "no console stream without a console")
+        self.assertIsInstance(handlers[0], RotatingFileHandler)
         self.assertEqual((handlers[0].maxBytes, handlers[0].backupCount), (5 * 1024 * 1024, 5))
 
     def test_with_a_console_the_same_lines_go_to_both(self):
@@ -267,6 +268,114 @@ class LoggingTests(BridgeTestCase):
         self.assertEqual(args.log_file, ROOT / "logs" / "bridge.log")
         self.assertEqual(args.lock_file, ROOT / "logs" / "bridge.lock")
         self.assertTrue(args.log_file.is_absolute() and args.lock_file.is_absolute())
+
+
+class DiskFull(io.StringIO):
+    def write(self, text):
+        raise OSError(28, "No space left on device")
+
+
+class LoggingFailureTests(BridgeTestCase):
+    """A log write or a log rotation that fails must neither loop through the logger-backed stderr nor drop records,
+    and must never stop the bridge. On Windows a reader of bridge.log (Get-Content -Wait, an editor, a scanner) blocks
+    rotation, and that is also the case under pythonw.exe, where the log file is the only record there is."""
+
+    def logger_with_rotation_due(self, path, console=None, err=None):
+        with mock.patch.object(bridge, "LOG_MAX_BYTES", 300):          # the third record needs a rollover
+            logger = bridge.configure_logging(path, stdout=console, stderr=err)
+        handler = logger.handlers[0]
+        stats = {"emits": 0, "depth": 0, "max_depth": 0}
+        real_emit = handler.emit
+
+        def counting_emit(record):
+            stats["emits"] += 1
+            stats["depth"] += 1
+            stats["max_depth"] = max(stats["max_depth"], stats["depth"])
+            try:
+                return real_emit(record)
+            finally:
+                stats["depth"] -= 1
+        handler.emit = counting_emit
+        return logger, handler, stats
+
+    def test_a_blocked_rotation_neither_recurses_nor_drops_records(self):
+        path = self.dir / "logs" / "bridge.log"
+        console, err = io.StringIO(), io.StringIO()
+        logger, handler, stats = self.logger_with_rotation_due(path, console, err)
+        restore = bridge.capture_process_output(logger)
+        try:
+            with mock.patch.object(handler, "rotate", side_effect=PermissionError(32, "in use by another process")):
+                for i in range(6):
+                    print(f"bridge: printed {i} " + "x" * 80, flush=True)
+                for i in range(2):
+                    logger.info(f"bridge: direct {i} " + "x" * 80)
+        finally:
+            restore()
+        self.assertEqual(stats["emits"], 8, "each record is emitted once; more means a failure was logged through the logger")
+        self.assertEqual(stats["max_depth"], 1, "an emit must never run inside another emit")
+        text = path.read_text(encoding="utf-8")
+        for name in ("printed", "direct"):
+            for i in range(6 if name == "printed" else 2):
+                self.assertIn(f"bridge: {name} {i} ", text, "a record was lost while rotation was blocked")
+        self.assertEqual(handler.rollover_failures, 1, "a blocked rotation is retried later, not on every record")
+        self.assertNotIn("Logging error", text + console.getvalue() + err.getvalue())
+        handler._retry_rollover_at = 0.0                               # the blocker has gone away
+        logger.info("bridge: after the blocker went away " + "x" * 80)
+        self.assertTrue(Path(str(path) + ".1").exists(), "rotation should resume once it can")
+
+    @unittest.skipUnless(os.name == "nt", "a file held open without delete sharing blocks a rename on Windows only")
+    def test_a_file_held_open_like_a_tail_blocks_rotation_but_not_logging(self):
+        path = self.dir / "logs" / "bridge.log"
+        logger, handler, stats = self.logger_with_rotation_due(path)
+        logger.info("bridge: first " + "x" * 80)
+        blocker = open(path, "rb")                                     # what a tail of the file does
+        self.addCleanup(blocker.close)
+        for i in range(5):
+            logger.info(f"bridge: held {i} " + "x" * 80)
+        self.assertEqual(stats["emits"], 6)
+        self.assertGreaterEqual(handler.rollover_failures, 1, "the OS did not refuse the rename; the test proves nothing")
+        text = path.read_text(encoding="utf-8")
+        for i in range(5):
+            self.assertIn(f"bridge: held {i} ", text)
+
+    def test_a_failing_log_write_does_not_stop_the_bridge_and_is_reported_once_to_the_original_stderr(self):
+        err, console = io.StringIO(), io.StringIO()
+        with mock.patch.object(bridge._SafeRotatingFileHandler, "_open", lambda self: DiskFull()):
+            try:
+                with contextlib.redirect_stdout(console), contextlib.redirect_stderr(err):
+                    rc = bridge.main(self.argv("--idle-exit", "0.5"), process_wide=False, mqtt=FakeMqtt())
+            except Exception as e:
+                self.fail(f"a failing log write stopped the bridge: {e!r}")
+        self.assertEqual(rc, 0)
+        self.assertIn("bridge: logging failed (OSError: [Errno 28] No space left on device)", err.getvalue())
+        self.assertEqual(err.getvalue().count("logging failed"), 1, "reported at most once a minute")
+        self.assertNotIn("Logging error", err.getvalue())              # logging's own multi-line report
+        self.assertIn("bridge: final", console.getvalue())             # the console handler kept working
+
+    def test_a_failing_log_write_with_no_stderr_is_dropped_silently(self):
+        with mock.patch.object(bridge._SafeRotatingFileHandler, "_open", lambda self: DiskFull()):
+            logger = bridge.configure_logging(self.dir / "logs" / "bridge.log", stdout=None, stderr=None)
+        logger.info("bridge: nobody will see this")                    # must not raise
+        self.assertEqual(logger.handlers[0].failures, 1)
+
+    def test_output_written_while_logging_is_dropped_not_looped(self):
+        class Chatty(logging.Handler):
+            n = 0
+
+            def emit(self, record):
+                Chatty.n += 1
+                sys.stderr.write("chatty: " + record.getMessage() + "\n")   # a handler that reports through stderr
+        logger = bridge.configure_logging(self.dir / "logs" / "bridge.log")
+        logger.addHandler(Chatty())
+        restore = bridge.capture_process_output(logger)
+        try:
+            try:
+                print("bridge: hello", flush=True)
+            except RecursionError:
+                self.fail("a handler writing to the captured stderr looped through the logger")
+        finally:
+            restore()
+        self.assertEqual(Chatty.n, 1, "the handler's own stderr output was logged again")
 
 
 class SingleInstanceTests(BridgeTestCase):
