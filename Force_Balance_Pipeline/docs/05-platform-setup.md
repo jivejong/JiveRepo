@@ -938,7 +938,9 @@ queue flood the bridge; the bounded window also gives back-pressure when uploads
    `session present: True` as described under "Checking the live broker".
 2. Deploy the bridge. **`Stop-ScheduledTask ForceBridge` stops the OLD bridge, which still acknowledges on receipt, so do it just
    after a scan has landed (about :01 past :00/:15/:30/:45)**: stopped mid-scan it loses what it holds, up to one scan. The
-   repetition trigger starts the new bridge within 5 minutes (or `Start-ScheduledTask ForceBridge`).
+   repetition trigger starts the new bridge within 5 minutes, or wait until no bridge process remains and then
+   `Start-ScheduledTask ForceBridge` (see "Restarting the bridge by hand", under "Bridge auto-start": a Start straight after the Stop
+   races the old process's exit).
 3. Watch `logs\bridge.log`: `received=` and `files=` rise by 60 and 1 per scan, `buffer_depth` returns to 0, every file has 60
    lines, `redelivered=` stays 0 outside a deliberate kill, and bronze shows 60 of 60 for the first hour's scans.
 4. Roll back by reverting the bridge: unacknowledged messages are redelivered to the old bridge, so nothing is lost.
@@ -949,7 +951,7 @@ window ended in a BURST (backlog 660) and the bridge landed 11 files of exactly 
 the old window of 20 they would have been 20-line files. 28 of 28 real scans over 02:15–09:00Z were 60 of 60 with 0 duplicate
 rows.
 
-**How the monitoring bounds these** (S1, bridge liveness; see "Monitoring", below — implemented, not yet deployed). An alert after about
+**How the monitoring bounds these** (S1, bridge liveness; see "Monitoring", below — deployed 2026-10-11). An alert after about
 30 minutes without the bridge makes the two multi-day paths (queue overflow, session expiry) unreachable in practice, because
 someone is told long before day 7. It does nothing for the two instantaneous paths (a broker kill between autosaves, a bridge kill
 before upload): each loses at most about one scan, and S1 does not see it. Those are bounded by `autosave_interval` and, once
@@ -1050,7 +1052,7 @@ Removing a task that was registered *elevated* with the any-user trigger is expe
 **A reboot with no logon starts nothing — a decision, not an oversight.** The task runs in the interactive session, so it starts at
 logon, and so does the broker (derived from the 2026-10-09 timeline: bridge task 15:21:40Z, broker container 15:26:20Z). A reboot nobody logs in after (a
 Windows Update restart overnight, say) starts neither the broker nor the bridge, and the Pi's messages wait in its own buffer. No
-auto-logon is configured. The Phase 5 bridge-liveness signal (S1, see "Monitoring", below; not yet deployed) is what turns that case into
+auto-logon is configured. The Phase 5 bridge-liveness signal (S1, see "Monitoring", below; deployed 2026-10-11) is what turns that case into
 an alert.
 
 **Docker Desktop must start when you sign in.** The broker container has `--restart unless-stopped`, but it only comes back once
@@ -1073,6 +1075,25 @@ No secrets or real addresses live in the script or in the registered task's own 
 root (above), read by the bridge process itself at startup — the task's command line never carries them. `-VenvPath` defaults to
 `edge\.venv`; `-User` defaults to the current user. Un-register with `Unregister-ScheduledTask -TaskName ForceBridge` (prompts for
 confirmation; stop the running bridge process first, the same way you would before closing a manually-started one).
+
+**Restarting the bridge by hand: stop, wait, then start.** `Stop-ScheduledTask` returns before the process has exited. On 2026-10-11 a
+`Stop-ScheduledTask; Start-ScheduledTask` pair raced: the new instance reached the lock at 19:38:00.476Z and exited with code 3
+(`another bridge holds …`), 177 ms before the old instance wrote its last summary line at 19:38:00.653Z; the repetition tick at
+19:39:44Z then started the bridge cleanly, 1 min 44 s late. **The lock did its job: it prevented two bridges from running at once**,
+and the cost was only that delay. To avoid it, wait until no bridge process remains before starting:
+
+```powershell
+Stop-ScheduledTask ForceBridge
+# Stop-ScheduledTask returns before the process has exited. Wait (up to 60 s) until no bridge.py process remains:
+$deadline = (Get-Date).AddSeconds(60)
+while ((Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
+        Where-Object CommandLine -like '*bridge.py*') -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+# This must print nothing; if it prints a process, do not start another bridge, find out why it is still there:
+Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" | Where-Object CommandLine -like '*bridge.py*'
+Start-ScheduledTask ForceBridge
+```
+
+(Leaving the start to the 5-minute repetition tick is also fine, and needs no waiting.)
 
 Every cmdlet that can fail carries an explicit `-ErrorAction Stop`, so the "Registered…" message can only print after the
 registration actually succeeded. The running-bridge guard fails closed: a failed process-list query stops the script rather than
@@ -1102,9 +1123,9 @@ alive to report a failure, and the alerting shares no failure domain with the de
 45-minute `bronze.events` freshness test that used to be in doc 03 and `sources.yml`, which would have tripped between hourly Job 1
 runs and in every scheduled DISCONNECTED window.
 
-**Status (2026-10-11).** S1 and S3 are implemented in `ingest/bridge/monitor.py` and wired into `bridge.py`, with tests, and are **not
-yet deployed** (the running bridge predates them). S2 is **not wired**: its mechanism is still being proven (below). The four checks
-in the table are being created on Healthchecks.io by the owner.
+**Status (2026-10-11).** S1 and S3 are implemented in `ingest/bridge/monitor.py` and wired into `bridge.py`, with tests, and are
+**deployed**: the new bridge started at 19:39:44Z, logged `monitoring pings enabled for S1, S3` and connected with `session present:
+True`. S2 is **decided and in the bundle but not yet deployed** (below). The four checks in the table are on Healthchecks.io.
 
 | Signal | What it says | Sent by | Ping | Check | Period | Grace | Alert after |
 |---|---|---|---|---|---|---|---|
@@ -1128,11 +1149,11 @@ in the table are being created on Healthchecks.io by the owner.
   For a simple schedule a check becomes late when its period passes. Account settings can repeat the email every hour or day while
   any check stays down (same cron guide).
 - *Email pings:* "any email received at the displayed address" counts as a success signal unless keyword filters are set
-  ([Email pinging](https://healthchecks.io/docs/email/)).
+  ([Email pinging](https://healthchecks.io/docs/email/)). The address has the form `<uuid>@hc-ping.com` and is shown on the check's
+  Email tab (confirmed 2026-10-11, from the owner's check).
 - *Free (Hobbyist) plan:* "Monitor 20 jobs" and "100 log entries per job" ([pricing](https://healthchecks.io/pricing/)); four checks
   are in use.
-- **Unconfirmed:** the format of the email-ping address (the page shows it only as an image); the minimum and maximum period and
-  grace time; the free plan's team-member and notification limits (the pricing page states none); and whether the service reads
+- **Unconfirmed:** the minimum and maximum period and grace time; the free plan's team-member and notification limits (the pricing page states none); and whether the service reads
   `User-Agent`.
 
 **Why these numbers (derived).**
@@ -1173,11 +1194,12 @@ logged or put in an error message.
   placeholders) or the process environment (which wins). Only workspace mode reads them; a `--local-dir` run, an e2e or a test never
   pings. A missing key disables that signal with one warning that names the key and never its value; a value that is not an `https://`
   URL is treated as missing.
-- S2 and `fbp-test`: the email-ping addresses are supplied at deploy time (a bundle variable, like `warehouse_id`, or a session
-  environment variable for a test) and are never committed.
-- **Order of rollout matters:** until the bridge is running the new code, `.env.bridge` must **not** contain the ping keys, because the
-  current `read_env_file` refuses any key outside the three Databricks keys and the bridge would exit at its next start. Deploy the
-  code first, then add the keys and restart.
+- S2: the check's email-ping address is the bundle variable `s2_ping_email` (`databricks.yml`), supplied at deploy time through
+  `BUNDLE_VAR_s2_ping_email`, set the same way as `BUNDLE_VAR_warehouse_id`. `fbp-test`'s address is a session environment variable
+  for a test. Neither is ever committed.
+- **The order mattered:** before the bridge ran this code, `.env.bridge` could not contain the ping keys, because the previous
+  `read_env_file` refused any key outside the three Databricks keys and the bridge would have exited at its next start. The new
+  bridge started with the keys present (2026-10-11 19:39:44Z).
 
 **How a ping is sent, and what it can never do.** `monitor.py` queues the ping (a queue of 16; a full queue drops the ping), and one
 daemon thread sends it through `files_api.http_request`, the repo's one outbound HTTP path, with no headers: the only header is the
@@ -1185,18 +1207,44 @@ project User-Agent, and there is no Databricks session or credential in reach. T
 failing ping is logged at most once every 15 minutes, described by status or exception type only, and never touches the MQTT, upload
 or acknowledgement paths.
 
-**S2: how Job 1 will ping (design; not built).** The smallest mechanism is a job-level `email_notifications.on_success` entry in
-`resources/force_pipeline.job.yml` whose address is the S2 check's email-ping address, supplied as a bundle variable. Databricks
-sends the email itself, so the compute needs no outbound access and no secret scope. The Databricks documentation lists
-"Successful completion" as a notification event for email addresses and for system destinations, and says an administrator creates
-system destinations ([Job notifications](https://docs.databricks.com/aws/en/jobs/notifications)); it does not say whether the
-recipient must be a workspace user (external addresses appear to be allowed, unconfirmed). The Free Edition limitations page
-([Free Edition limitations](https://docs.databricks.com/aws/en/getting-started/free-edition-limitations)) says nothing about
-notifications, webhooks or secrets, so none of that is confirmed for Free Edition; it says outbound internet access is "restricted to
-a limited set of trusted domains" without listing them, so a webhook or an in-job ping to `hc-ping.com` is unconfirmed too. Read-only
-inspection on 2026-10-11: the API answers (`databricks notification-destinations list` returns an empty list), the signed-in user is
-in `admins`, and Job 1 has empty `email_notifications` and `webhook_notifications`. A throwaway job with `on_success` to the
-`fbp-test` address settles it before Job 1 is touched.
+**S2: how Job 1 pings (decided; in the bundle, not yet deployed).** Job 1 has a job-level `email_notifications.on_success` entry
+(`resources/force_pipeline.job.yml`) whose address is the S2 check's email-ping address, the bundle variable `s2_ping_email`
+(`databricks.yml`). It is success only: a failed or skipped run sends nothing, and the silence is the alarm. Job 2 is untouched.
+Databricks sends the email itself, so the compute needs no outbound access and no secret scope.
+- *Evidence.* The Databricks documentation lists "Successful completion" as a notification event for email addresses and says an
+  administrator creates system destinations ([Job notifications](https://docs.databricks.com/aws/en/jobs/notifications)). It does
+  not say whether the recipient must be a workspace user, and the Free Edition limitations page
+  ([Free Edition limitations](https://docs.databricks.com/aws/en/getting-started/free-edition-limitations)) says nothing about
+  notifications, webhooks or secrets. So it was tested: **on 2026-10-11 a throwaway serverless job with `on_success` email to the
+  `fbp-test` check's address (`<uuid>@hc-ping.com`) produced an email ping on `fbp-test`**; the job and its workspace folder were
+  deleted afterwards. Job emails to an external address are therefore delivered on Free Edition. The webhook-destination route was
+  not needed and not tried (it would need an administrator-created destination and outbound access to `hc-ping.com`, which the
+  Free Edition page, "restricted to a limited set of trusted domains", leaves unconfirmed).
+- *No default, on purpose.* The variable has no `default`, so `databricks bundle validate` and `deploy` fail with `no value assigned to
+  required variable s2_ping_email` instead of deploying an empty notification (checked 2026-10-11; validate exits 1).
+- *Precedence.* The Databricks CLI takes a variable's value from the first of: a `--var` option, a `BUNDLE_VAR_` environment variable,
+  `variable-overrides.json`, a target's `variables` mapping, then the `default`
+  ([Bundle variables](https://docs.databricks.com/aws/en/dev-tools/bundles/variables)). Checked on this CLI (v1.17.0) on
+  2026-10-11: with both set, `--var` won over `BUNDLE_VAR_s2_ping_email`.
+- *Every successful run pings,* manual runs included, and a run that exhausts the quota never starts, which is what S2 is for.
+- *Deploy* (the owner runs this; `bundle deploy` reconciles the whole definition of both jobs, and Job 2 is unchanged):
+  ```powershell
+  # Once. setx only affects NEW terminals, like BUNDLE_VAR_warehouse_id. The address is the S2 check's, from its Email tab:
+  setx BUNDLE_VAR_s2_ping_email "<uuid>@hc-ping.com"
+  # In a new terminal, from Force_Balance_Pipeline\:
+  databricks bundle validate        # "Validation OK!"; without the variable: "no value assigned to required variable s2_ping_email"
+  databricks bundle deploy
+  ```
+- *Read-only check that the deployed jobs have it, without printing the address:*
+  ```powershell
+  function Count-Notified($job, $kind) { @($job.settings.email_notifications.$kind | Where-Object { $_ }).Count }
+  $j1 = databricks jobs get 692051683030737 -o json | ConvertFrom-Json
+  "Job 1: on_success=$(Count-Notified $j1 'on_success') (expect 1), on_failure=$(Count-Notified $j1 'on_failure') (expect 0)"
+  "Job 1 address is a hc-ping.com address: $([bool](@($j1.settings.email_notifications.on_success) -like '*@hc-ping.com'))"
+  $j2 = databricks jobs get 38074271722750 -o json | ConvertFrom-Json
+  "Job 2: on_success=$(Count-Notified $j2 'on_success') (expect 0)"
+  ```
+  Then, after the next Job 1 run succeeds, `fbp-s2-job1-success` should show its first ping.
 
 **How to prove each alert fires** (each step needs the owner's OK; nothing here runs automatically).
 1. *The alert path:* ping `fbp-test` once, then stop. After about 2 minutes the check goes late and then down, and the notification
@@ -1204,11 +1252,11 @@ in `admins`, and Job 1 has empty `email_notifications` and `webhook_notification
 2. *S1, for real:* disable the task (`Disable-ScheduledTask ForceBridge`) so the 5-minute repetition cannot restart it, stop it
    (`Stop-ScheduledTask ForceBridge`; safe, because messages are acknowledged only after landing), wait 35 minutes, expect
    `fbp-s1-bridge-alive` late at about 5 minutes and down at about 30, with an email; then `Enable-ScheduledTask` and
-   `Start-ScheduledTask` and expect it back to up.
+   `Start-ScheduledTask` (after confirming the process has exited, per "Restarting the bridge by hand") and expect it back to up.
 3. *S3, cadence and silence:* in the check's log, pings appear after landings at most once per 5 minutes; and across one scheduled
    DISCONNECTED window (at most 3 hours, from `mode_transitions` or `bridge.log`) `fbp-s3-data-landed` never goes down.
-4. *S2:* the throwaway job's email reaches `fbp-test` (above); after the real wiring, `fbp-s2-job1-success` shows a ping about every
-   hour at :03 plus the run time.
+4. *S2:* the throwaway job's email reached `fbp-test` (2026-10-11, above); after the deploy, `fbp-s2-job1-success` shows a ping about
+   every hour at :03 plus the run time.
 5. *The disabled paths:* with the keys absent the bridge logs one warning per start and runs normally.
 
 ### The Pi
