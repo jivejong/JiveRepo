@@ -168,6 +168,7 @@ From `app/`, install locked dependencies, then run unit tests:
 
 ```powershell
 npm.cmd ci
+npm.cmd --prefix server ci
 npm.cmd test
 ```
 

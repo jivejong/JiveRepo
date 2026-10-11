@@ -1,9 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-if (process.env.CCM_T11_ISOLATED !== '1') {
-  throw new Error('Refusing T11 API tests without the guarded ccm_test harness; use npm.cmd run test:t11.');
-}
+const { requireIsolatedTarget, verifyHarnessIdentity } = require('../t11-guards.cjs');
+requireIsolatedTarget({ isolated: process.env.CCM_T11_ISOLATED,
+  baseUrl: process.env.E2E_BASE_URL, runId: process.env.CCM_T11_RUN_ID });
 const { pool } = require('../../server/db.js');
 
 const base = process.env.E2E_BASE_URL;
@@ -25,6 +25,7 @@ const json = async (method, path, body) => {
 };
 
 test('song, tag, setlist, and entry API contract on migrated ccm_test', async () => {
+  await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
   assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'ccm_test',
     'T11 API integration tests must target only ccm_test');
   let primarySong;

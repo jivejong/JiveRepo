@@ -329,21 +329,26 @@ From `app/`:
 
 ```powershell
 npm.cmd ci
-npx.cmd playwright install chromium
+npm.cmd --prefix server ci
 npm.cmd test
 ```
 
-The Playwright suite targets the production app at <http://localhost:3000> by
-default, so start Compose before running it:
+The guarded T11 command builds the client, runs unit and scratch-database API
+tests, then runs serial browser tests against a harness server backed by a
+task-owned `ccm_test`. It refuses an existing scratch database and verifies
+cleanup and imported-record preservation. Install system Chrome for its browser
+project, then run the full command twice consecutively:
 
 ```powershell
-docker compose up --build -d
-npm.cmd run test:e2e
+npm.cmd run test:t11
 ```
 
-Set `E2E_BASE_URL` to test another deployment. `npm.cmd run test:all` runs both
-suites when the target application is already available. On Windows systems
-where PowerShell blocks `npm.ps1`, use `npm.cmd` and `npx.cmd`.
+`npm.cmd run test:all` is an alias for the guarded T11 command. Raw Playwright
+and API integration runs require the current harness identity and explicit
+isolated URL; they do not target the production stack. T11's recorded browser
+coverage is serial installed system Chrome. Parallel execution, bundled
+Chromium, and physical Android remain unverified. On Windows systems where
+PowerShell blocks `npm.ps1`, use `npm.cmd` and `npx.cmd`.
 
 Dependency checks:
 

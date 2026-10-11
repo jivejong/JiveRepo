@@ -736,6 +736,49 @@ test('offline song creation verifies successful two-tab pulls and rejects a fail
   await context.setOffline(false);
   await expect.poll(async () => (await request.get(`/api/setlists/${syncedSetlist.id}`)).status()).toBe(404);
 });
+
+test('deleting a persisted song offline queues and acknowledges the delete after reconnect', async ({ page, context, request, t10Owned }) => {
+  const title = `T11 offline delete ${t10Owned.suffix}`;
+  const created = await request.post('/api/songs', { data: {
+    title, artist: 'T11 invented delete artist', chart_written_key: 'C',
+    chart_source: 'Invented delete verse\\nInvented delete line', genres: [], vibes: [],
+  } });
+  expect(created.status()).toBe(201);
+  const song = await created.json();
+  t10Owned.songIds.add(song.id);
+
+  await page.goto('/');
+  await expect(page.getByPlaceholder('Search songs, artists…')).toBeVisible();
+  await page.getByPlaceholder('Search songs, artists…').fill(title);
+  await page.getByText(title, { exact: true }).click();
+  await expect(page.locator('.chart-line')).toBeVisible();
+  await page.getByRole('button', { name: 'Edit' }).click();
+  await context.setOffline(true);
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('.btn-danger').click();
+  await expect(page.getByPlaceholder('Search songs, artists…')).toBeVisible();
+  const queued = await page.evaluate(async songId => {
+    const db = await new Promise((resolve, reject) => {
+      const opening = indexedDB.open('chart-manager');
+      opening.onerror = () => reject(opening.error);
+      opening.onsuccess = () => resolve(opening.result);
+    });
+    const state = await new Promise((resolve, reject) => {
+      const transaction = db.transaction(['songs', 'meta']);
+      const songRequest = transaction.objectStore('songs').get(songId);
+      const queueRequest = transaction.objectStore('meta').get('pending_mutations');
+      transaction.oncomplete = () => resolve({ song: songRequest.result, queue: queueRequest.result?.value || [] });
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+    return { operation: state.song?._sync?.operation,
+      queued: state.queue.some(item => item.entity === 'song' && Number(item.id) === songId) };
+  }, song.id);
+  expect(queued).toEqual({ operation: 'delete', queued: true });
+
+  await context.setOffline(false);
+  await expect.poll(async () => (await request.get(`/api/songs/${song.id}`)).status()).toBe(404);
+});
 });
 
 test('stale setlist sync discards the whole local aggregate and shows the server version', async ({ page, context, request, t10Owned }) => {

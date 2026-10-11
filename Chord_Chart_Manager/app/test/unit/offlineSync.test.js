@@ -59,6 +59,38 @@ describe('offline cache and push-then-pull sync', () => {
     expect((await cache.getPendingMutations()).filter(item => String(item.id) === id)).toEqual([]);
   });
 
+  it('queues deletion of an existing song and clears it only after server acknowledgement', async () => {
+    const id = 7412;
+    const saved = { id, title: 'Invented persisted song', artist: 'T11 synthetic', updated_at: version };
+    await cache.cacheSongs([saved]);
+    await cache.updateCachedSong({ ...saved, _sync: { operation: 'delete', base_updated_at: version } });
+    await cache.markDirty(id);
+    try {
+      const pending = await cache.getPendingMutations();
+      expect(pending).toContainEqual(expect.objectContaining({ entity: 'song', id }));
+      const cached = await cache.getCachedSong(id);
+      expect(cached._sync).toEqual({ operation: 'delete', base_updated_at: version });
+
+      let removed = false;
+      const result = await cache.syncWithServer({
+        library: async () => ({ songs: [] }),
+        songs: { remove: async (songId, payload) => {
+          expect(songId).toBe(id);
+          expect(payload.base_updated_at).toBe(version);
+          removed = true;
+        } },
+        setlists: { all: async () => [] },
+      });
+      expect(result.ok).toBe(true);
+      expect(removed).toBe(true);
+      expect(await cache.getCachedSong(id)).toBeUndefined();
+      expect((await cache.getPendingMutations()).some(item => Number(item.id) === id)).toBe(false);
+    } finally {
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
   it('keeps push before pull and applies server-wins after a 409', async () => {
     const id = 7401;
     const server = { id, title: 'Authoritative server title', artist: 'T11 synthetic', updated_at: version };
@@ -68,7 +100,7 @@ describe('offline cache and push-then-pull sync', () => {
     const result = await cache.syncWithServer({
       library: async () => { order.push('pull'); return { songs: [server] }; },
       songs: { update: async () => { order.push('push'); const error = new Error('stale'); error.status = 409; throw error; },
-        get: async () => server },
+        get: async () => server, remove: async () => {} },
       setlists: { all: async () => [] },
     });
     expect(result.ok).toBe(true);

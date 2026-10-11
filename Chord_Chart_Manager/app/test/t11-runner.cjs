@@ -4,8 +4,12 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const http = require('node:http');
+const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { Pool } = require('../server/node_modules/pg');
+const { bounded, runCleanupStages } = require('./t11-lifecycle.cjs');
+const { verifyHarnessIdentity } = require('./t11-guards.cjs');
 
 const appDir = path.resolve(__dirname, '..');
 const scratchName = 'ccm_test';
@@ -34,13 +38,28 @@ function databaseUrl(env, database) {
   return url.toString();
 }
 
-function runNode(label, script, args = [], env = process.env) {
+function runNode(label, script, args = [], env = process.env, timeoutMs = 600_000) {
   console.log(`\n[T11] ${label}`);
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script, ...args], { cwd: appDir, env, stdio: 'inherit' });
-    child.once('error', error => reject(new Error(`${label} could not start: ${error.message}`)));
-    child.once('exit', (code, signal) => code === 0 ? resolve()
-      : reject(new Error(`${label} failed with ${signal || `exit code ${code}`}`)));
+    let timer;
+    let killTimer;
+    let timedOut = false;
+    const settle = (error) => {
+      clearTimeout(timer);
+      clearTimeout(killTimer);
+      error ? reject(error) : resolve();
+    };
+    timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 2_000);
+    }, timeoutMs);
+    child.once('error', error => settle(new Error(`${label} could not start: ${error.message}`)));
+    child.once('exit', (code, signal) => {
+      if (timedOut) return settle(new Error(`${label} exceeded its ${timeoutMs} ms subprocess budget.`));
+      settle(code === 0 ? null : new Error(`${label} failed with ${signal || `exit code ${code}`}`));
+    });
   });
 }
 
@@ -117,6 +136,9 @@ async function main() {
   let ownsScratch = false;
   let testPool;
   let appServer;
+  let testServer;
+  let acceptingRequests = false;
+  let runId;
   let originalError;
   let importedBefore;
   try {
@@ -138,13 +160,39 @@ async function main() {
     testPool = require('../server/db.js').pool;
     await seedSyntheticChartFixtures(testPool);
     const app = require('../server/server.js');
-    appServer = app.listen(0, '127.0.0.1');
+    runId = randomUUID();
+    testServer = http.createServer(async (req, res) => {
+      if (req.url === '/__t11_identity' && req.method === 'GET') {
+        try {
+          const requestedRun = req.headers['x-ccm-t11-run'];
+          const database = (await testPool.query('SELECT current_database() AS name')).rows[0].name;
+          if (requestedRun !== runId || database !== scratchName) {
+            res.writeHead(404).end();
+            return;
+          }
+          res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.end(JSON.stringify({ runId, database }));
+        } catch {
+          res.writeHead(503).end();
+        }
+        return;
+      }
+      if (!acceptingRequests) {
+        res.writeHead(503).end();
+        return;
+      }
+      app(req, res);
+    });
+    acceptingRequests = true;
+    appServer = testServer;
+    appServer.listen(0, '127.0.0.1');
     await new Promise((resolve, reject) => {
       appServer.once('listening', resolve);
       appServer.once('error', reject);
     });
     const testEnv = { ...process.env, E2E_BASE_URL: `http://127.0.0.1:${appServer.address().port}`,
-      E2E_SYSTEM_CHROME: '1', CCM_T11_ISOLATED: '1', CI: '1' };
+      E2E_SYSTEM_CHROME: '1', CCM_T11_ISOLATED: '1', CCM_T11_RUN_ID: runId, CI: '1' };
+    await verifyHarnessIdentity({ baseUrl: testEnv.E2E_BASE_URL, runId });
     process.env.E2E_BASE_URL = testEnv.E2E_BASE_URL;
     process.env.E2E_SYSTEM_CHROME = '1';
     process.env.CCM_T11_ISOLATED = '1';
@@ -155,40 +203,49 @@ async function main() {
   } catch (error) {
     originalError = error;
   } finally {
-    if (appServer) await new Promise(resolve => appServer.close(resolve));
-    if (testPool) await testPool.end();
-    if (ownsScratch) {
-      try {
+    const cleanup = [];
+    const stages = [];
+    if (appServer) stages.push(['HTTP server shutdown', async () => {
+      acceptingRequests = false;
+      const closed = new Promise((resolve, reject) => appServer.close(error => error ? reject(error) : resolve()));
+      await bounded(closed, 'HTTP server shutdown', 5_000, () => appServer.closeAllConnections?.());
+    }]);
+    if (testPool) stages.push(['test pool shutdown', () => bounded(() => testPool.end(), 'test pool shutdown', 5_000)]);
+    if (ownsScratch) stages.push(['owned scratch cleanup', async () => {
         await admin.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
           WHERE datname=$1 AND pid<>pg_backend_pid()`, [scratchName]);
+        const connected = await admin.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=$1', [scratchName]);
+        assert.equal(connected.rows[0].n, 0, 'Refusing to drop ccm_test while database sessions remain.');
         await admin.query(`DROP DATABASE ${scratchName}`);
         const remaining = await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [scratchName]);
         assert.equal(remaining.rowCount, 0, 'Task-owned ccm_test remains after T11 cleanup');
         console.log('[T11] ccm_test dropped and absence verified.');
-      } catch (error) {
-        originalError = originalError
-          ? new AggregateError([originalError, error], 'T11 test and scratch cleanup both failed') : error;
-      }
-    }
+    }]);
     if (importedBefore) {
-      try {
+      stages.push(['imported-row preservation check', async () => {
         const after = await importedSnapshot(main);
         assert.deepEqual(after, importedBefore,
           'T11 must preserve every imported song row, exact version, and association');
         console.log('[T11] Imported rows 29–36, exact versions, and associations match.');
-      const health = await fetch('http://localhost:3000/healthz');
+      }]);
+      stages.push(['main health and baseline check', async () => {
+      const health = await fetch('http://localhost:3000/healthz', { signal: AbortSignal.timeout(5_000) });
       assert.equal(health.status, 200, 'Main app /healthz must remain healthy');
       assert.equal((await health.json()).status, 'ok');
-      const statsResponse = await fetch('http://localhost:3000/api/stats');
+      const statsResponse = await fetch('http://localhost:3000/api/stats', { signal: AbortSignal.timeout(5_000) });
       assert.equal(statsResponse.status, 200, 'Main app /api/stats must remain available');
       const stats = await statsResponse.json();
       assert.deepEqual([stats.totalSongs, stats.totalTags, stats.totalSetlists], [8, 1, 0]);
       console.log('[T11] Main /healthz healthy; /api/stats remains 8 songs / 1 tag / 0 setlists.');
-      } catch (error) {
-        originalError = originalError ? new AggregateError([originalError, error], 'T11 preservation check failed') : error;
-      }
+      }]);
     }
-    await Promise.allSettled([main.end(), admin.end()]);
+    stages.push(['main fingerprint pool shutdown', () => bounded(() => main.end(), 'main pool shutdown', 5_000)]);
+    stages.push(['admin pool shutdown', () => bounded(() => admin.end(), 'admin pool shutdown', 5_000)]);
+    try { await runCleanupStages(stages); } catch (error) { cleanup.push(error); }
+    if (cleanup.length) {
+      originalError = originalError ? new AggregateError([originalError, ...cleanup], 'T11 test and cleanup failed')
+        : cleanup.length === 1 ? cleanup[0] : new AggregateError(cleanup, 'T11 cleanup failed');
+    }
   }
   if (originalError) throw originalError;
 }
