@@ -849,9 +849,10 @@ page does not say.
 | Bridge session | `clean_session=False` | `bridge.py:449` (`build_client`) | — |
 | Bridge subscription | `force/telemetry/#` at QoS 1, re-subscribed on every connect | `bridge.py:471` | — |
 
-The values above are the ones in the repo. The running broker reads `mosquitto.lan.conf` only when it starts, so it keeps the
-previous values (`autosave_interval 30`, `persistent_client_expiration 7d`, window `20`) until it is restarted; the rollout
-below does that, with a check.
+The values above are the ones in the repo, and the running broker has used them since it was restarted on 2026-10-11 (02:46:35Z
+and 02:48:52Z): the container saw `autosave_interval 10`, `persistent_client_expiration 10d` and `max_inflight_messages 180`
+through the bind mount, and the autosave rhythm in its log changed from about every 31 s to about every 11 s. (The broker reads
+`mosquitto.lan.conf` only when it starts, so a conf edit is not live until the next restart.)
 
 **Headroom (derived).** The probe publishes one event per planet per scan: 60 planets (the `dim_sector` seed, 60 sectors) every
 900 s (`edge/probe/runtime.py:43`, `DEFAULT_INTERVAL`), so 60 × 3600 / 900 = **240 events an hour**. The test computes this from
@@ -875,7 +876,7 @@ those constants rather than hard-coding it.
 | Broker killed between autosaves (host crash, Docker Desktop killed, power) | Messages queued since the last save: the broker has already acknowledged them, so the Pi deleted them. A graceful stop saves on exit (per the `autosave_interval` entry) | At most `autosave_interval` seconds of arrivals: with `10`, up to one scan's 60 events, and only if the crash lands within 10 s after a scan burst while the bridge is down (10 / 900 = 1.1 % of the time; it was 30 / 900 = 3.3 % at `30`). Messages delivered to a connected bridge are not in this window; they are in the next row |
 | Queue past `max_queued_messages` | Messages over the limit. What the broker does with them is not documented on the man page (only `max_queued_bytes` is said to drop "silently"), so assume a silent drop, unlogged | After 8.68 days with no bridge; this now comes before the session expires |
 | Session expiry (`persistent_client_expiration`) | The whole session and queue | After 10 days with no bridge, when the queue has already been full for 1.3 days (derived: 240 h − 208.3 h); at most the 50,000 events it holds. (At the old `7d`: up to 40,320 events, derived: 168 h × 240 an hour) |
-| Bridge killed after receiving a message but before its file is uploaded | Events held in the bridge's memory. paho acknowledges a message as soon as `on_message` returns (paho 2.1.0, `client.py:4147-4152`, unless `manual_ack` is set), so the broker has already discarded it and the Pi deleted its row | Events are held up to `DEFAULT_MAX_SECONDS` = 90 s (`bridge.py:66`) plus upload retries of up to 1+2+4+8+16 = 31 s; a complete scan flushes at once, so typically a fraction of one scan, at most about 60 events. **Closed once the `manual_ack` bridge is deployed** ("Acknowledging after landing", below); until then it is open |
+| Bridge killed after receiving a message but before its file is uploaded | Events held in the bridge's memory. paho acknowledges a message as soon as `on_message` returns (paho 2.1.0, `client.py:4147-4152`, unless `manual_ack` is set), so the broker has already discarded it and the Pi deleted its row | Events are held up to `DEFAULT_MAX_SECONDS` = 90 s (`bridge.py:66`) plus upload retries of up to 1+2+4+8+16 = 31 s; a complete scan flushes at once, so typically a fraction of one scan, at most about 60 events. **Closed: the `manual_ack` bridge has run since 2026-10-11 02:51:52Z** ("Acknowledging after landing", below) |
 
 What the 2026-10-09/10 outage showed: the persistence file was necessary (derived). The desktop crashed at 15:20:44Z and the
 broker container started fresh at 2026-10-09T15:26:20Z (`docker inspect` StartedAt, read on the evening of 2026-10-10;
@@ -884,9 +885,10 @@ it). A new broker process starts with empty memory, so the `force-bridge` sessio
 only have come from `mosquitto.db` on the `force-mosquitto-data` volume, restored at that start. Without it nothing would have
 been subscribed to the topic after 15:26:20Z; the Pi, which reconnected at 15:26:23Z, would have had its QoS 1 publishes
 acknowledged and dropped (no subscriber), and it deletes a row on acknowledgement: about 22 hours of data lost. Instead the queue
-grew in memory (saved to disk every 30 s) against a session restored from disk, and the manual bridge restart collected it. This
-is an inference from that timeline and from how Mosquitto persists sessions, not from a broker log line: no "restored" line was
-captured. The live proof is a deliberate graceful restart, in "Checking the live broker" below.
+grew in memory (saved to disk every 30 s) against a session restored from disk, and the manual bridge restart collected it. That
+account is an inference from the timeline (no broker log from that start was kept), but the mechanism has since been observed
+directly: each of the two broker restarts of 2026-10-11 logged `Restored 1 clients` and `Restored 1 subscriptions`, and the
+bridge then connected with `session present: True` ("Checking the live broker", below).
 
 **Acknowledging after landing (`manual_ack`).** The bridge acknowledges a message (MQTT PUBACK) only after its batch has landed or
 its lines are in the dead-letter file, so the broker's persistent session holds every event until it is safe and a bridge killed
@@ -941,6 +943,12 @@ queue flood the bridge; the bounded window also gives back-pressure when uploads
    lines, `redelivered=` stays 0 outside a deliberate kill, and bronze shows 60 of 60 for the first hour's scans.
 4. Roll back by reverting the bridge: unacknowledged messages are redelivered to the old bridge, so nothing is lost.
 
+*Done 2026-10-11* (`docs/ENGINEERING-LOG.md`, "Phase 5", Round 3b): the old bridge was stopped at 02:51:14Z, between scans, and the
+new one connected at 02:51:52Z. The first scan after it landed as one 60-line file (03:00:05Z). Overnight, a scheduled DISCONNECTED
+window ended in a BURST (backlog 660) and the bridge landed 11 files of exactly 60 lines in 11 seconds (06:27:43–06:27:54Z); at
+the old window of 20 they would have been 20-line files. 28 of 28 real scans over 02:15–09:00Z were 60 of 60 with 0 duplicate
+rows.
+
 **How the planned monitoring bounds these** (S1, bridge liveness, "Monitoring", to be written — not built). An alert after about
 30 minutes without the bridge makes the two multi-day paths (queue overflow, session expiry) unreachable in practice, because
 someone is told long before day 7. It does nothing for the two instantaneous paths (a broker kill between autosaves, a bridge kill
@@ -960,13 +968,36 @@ but the throwaway broker of `ingest/e2e_local.py` does.
   `/mosquitto/config` read-only, plus the `force-mosquitto-secrets` and `force-mosquitto-data` volumes.
 - `docker exec force-mosquitto ls -l /mosquitto/data` — `mosquitto.db` present; its modification time advances while messages
   flow.
-- After a deliberate restart, `docker logs force-mosquitto --tail 30` — look for a line saying the persistent database was
-  restored from `/mosquitto/data/mosquitto.db` rather than a cold start (Mosquitto 2.x writes a "Restoring persistent database"
-  line at INFO level; that wording is from memory of the source and has not been confirmed against this broker's log — confirm it
-  on the next restart and correct this line).
-- A restart is the real proof: publish while the bridge is down, restart the broker, start the bridge, and every scan published
-  while it was down lands (the procedure in "The checkpoint cut"). That needs the bridge stopped and Docker, so it is a
-  deliberate maintenance step, not a routine check.
+- After a deliberate (graceful) restart, `docker logs force-mosquitto --since <a couple of minutes before>`. On the two restarts of
+  2026-10-11 (02:46:35Z and 02:48:52Z) the live log showed, on the way down, `mosquitto version 2.1.2 terminating` followed by
+  `Saving in-memory database to /mosquitto/data//mosquitto.db.` (log timestamps 1791686795 and 1791686932), and on the way up:
+  ```
+  Restored 0 base messages
+  Restored 0 retained messages
+  Restored 1 clients
+  Restored 1 subscriptions
+  Restored 0 client messages
+  ```
+  `Restored 1 clients` and `Restored 1 subscriptions` are the `force-bridge` session coming back from `mosquitto.db`; `0 client
+  messages` because the queue was empty when the broker stopped. (These are the lines as pasted from the live log; they replace an
+  earlier guess at the wording.)
+- `Client force-bridge [(null):0] disconnected: session taken over` is logged at each start, against the restored offline session,
+  just before the bridge connects. **Verified 2026-10-11** (both restarts): it is the resumption of the persistent session, not a
+  second client.
+- The bridge's own log after a restart: `disconnected: …`, then `connected (session present: True …)` a few seconds after the
+  broker is back. The Pi logged `link_lost` and `link_restored` around each restart with a backlog of 0, and the SQL check over
+  02:15–03:00Z found 4 scans, all 60 of 60, with 0 duplicate rows.
+- **What this does and does not prove.** It proves the *session* (the client and its subscription) persists across a restart.
+  Queued-message persistence across a restart was **not** tested: both restarts logged `Restored 0 client messages` because the
+  queue was empty. The test that would show it is: stop the bridge (safe now that it acknowledges after landing), let two scans
+  publish, restart the broker, start the bridge, and check that both scans land.
+
+**A Windows shutdown or reboot stops the broker ungracefully.** Observed in the reboot test of 2026-10-11: at the shutdown
+(17:50:44Z) the broker logged both clients as `connection closed by client` and **no `terminating` line**, because Windows stops
+Docker Desktop hard and the container never receives its stop signal. The broker therefore does not get its exit save, and after
+the next start it restored its state (`Restored 1 clients`, `Restored 1 subscriptions`, 18:04:37Z) from the **last autosave**. A
+graceful `docker restart` saves on exit, so it is not representative of a reboot. On a reboot the exposure is the first row of the
+loss table: up to `autosave_interval` (now 10 s) of arrivals, not zero.
 
 ### Bridge auto-start
 
@@ -1022,6 +1053,15 @@ Windows Update restart overnight, say) starts neither the broker nor the bridge,
 auto-logon is configured. The planned Phase 5 bridge-liveness signal (S1, "Monitoring", to be written) is what turns that case into
 an alert.
 
+**Docker Desktop must start when you sign in.** The broker container has `--restart unless-stopped`, but it only comes back once
+Docker Desktop itself is running, so Docker Desktop's setting *Settings > General > "Start Docker Desktop when you sign in to your
+computer"* must be on. It is, and it works unattended (the reboot test of 2026-10-11), but the start is slow and variable: the
+broker was up about 4m40s after logon on 2026-10-09 (container 15:26:20Z, bridge task 15:21:40Z) and about 12.5 minutes after logon
+on 2026-10-11 (logon 17:51:48Z, Docker Desktop 18:04:27Z, broker 18:04:37Z). That is slow, not a fault. The bridge's retry
+absorbs it: it logged `cannot reach the MQTT broker at …:1883 … retrying, at most 60 s apart` once a minute from logon without
+exiting, and connected 3 s after the broker (18:04:40Z, `session present: True`); the Pi reconnected at 18:05:00Z, and the 18:00Z
+scan it had buffered landed at 18:05:02Z. A Windows shutdown also stops the broker ungracefully (above).
+
 ```powershell
 # from Force_Balance_Pipeline\infra\desktop, in an ordinary (NON-elevated) PowerShell
 .\register-bridge-task.ps1 -MqttHost <DESKTOP_IP_or_broker_host>              # registers only
@@ -1045,8 +1085,11 @@ anything (`New-BridgeTaskDefinition`). `ingest/tests/test_bridge_resilience.py` 
 a real paho client against a closed port), the backoff, rate-limited failure logging, SIGINT before the connect, the log file with
 no console, uncaught-exception capture, and the lock. Run Pester with `Invoke-Pester infra\desktop\register-bridge-task.Tests.ps1`.
 What these cannot show is that Task Scheduler *accepts* the empty-duration repetition and starts the task unattended after a reboot.
-That is checked by hand after registering (the step list and its results are in `docs/ENGINEERING-LOG.md`, "Phase 5 Round 2");
-until results are recorded there, treat it as unproven.
+That was checked by hand, and both held (`docs/ENGINEERING-LOG.md`, "Phase 5 Round 2", "Live install and results"): on 2026-10-10 a
+throwaway task with the same triggers registered unelevated with a `PT5M` interval and no duration, and the real task restarted a
+killed bridge on its first repetition tick; on 2026-10-11 a reboot with nobody touching anything started the bridge at logon with no
+console window, it retried the broker once a minute until Docker was up, and the buffered scan landed 22 s after it connected. A
+repetition tick that finds the bridge running is ignored (Task Scheduler event 322, `MultipleInstances IgnoreNew`).
 
 ### The Pi
 
