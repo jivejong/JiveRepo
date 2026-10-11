@@ -20,7 +20,12 @@ bundle:
 variables:
   warehouse_id:
     description: SQL warehouse id for the dbt tasks (doc 05, "select the 2X-Small warehouse"). No default -- must
-      be supplied at deploy time via DATABRICKS_BUNDLE_VAR_warehouse_id, never committed.
+      be supplied at deploy time via BUNDLE_VAR_warehouse_id (or --var), never committed.
+  s2_ping_email:
+    description: The S2 dead-man's-switch check's email-ping address (<uuid>@hc-ping.com, from the check's Email tab on
+      Healthchecks.io). Job 1 emails it once per SUCCESSFUL run (doc 05, "Monitoring"). No default, on purpose -- a deploy
+      without it must fail rather than deploy an empty notification. Supply it at deploy time via BUNDLE_VAR_s2_ping_email
+      (or --var); credential-like (anyone who knows it can mark the check up), so never committed.
 
 include:
   - resources/*.yml

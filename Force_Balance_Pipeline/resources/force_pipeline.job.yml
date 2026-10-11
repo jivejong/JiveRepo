@@ -50,6 +50,14 @@ resources:
         git_url: https://github.com/jivejong/JiveRepo
         git_provider: gitHub
         git_branch: main
+      # S2, Job 1 liveness (doc 05, "Monitoring"): Databricks emails the S2 dead-man's-switch check's email-ping address
+      # once per SUCCESSFUL run, and never on start or failure -- silence is the alarm, so a failed run simply sends
+      # nothing. Databricks sends the email itself, so the compute needs no outbound access and no secret. The address
+      # is the bundle variable s2_ping_email (databricks.yml): no default, so a deploy without it fails instead of
+      # deploying an empty notification. Proven 2026-10-11 with a throwaway job (an email ping arrived on fbp-test).
+      email_notifications:
+        on_success:
+          - ${var.s2_ping_email}
       schedule:
         quartz_cron_expression: "0 3 * * * ?"
         timezone_id: UTC
