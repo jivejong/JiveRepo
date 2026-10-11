@@ -31,6 +31,10 @@ nothing, and the broker redelivers them (DUP flag) after the reconnect. The pric
 bridge killed after a file landed but before the acknowledgement (or a connection that drops while a batch is
 uploading) lands those events a second time, in a new file. The bridge does not deduplicate (doc 04); silver does.
 
+Monitoring (doc 05, "Monitoring"): in workspace mode, if BRIDGE_PING_S1_URL / BRIDGE_PING_S3_URL are set (process environment
+or .env.bridge), monitor.py pings an external dead-man's-switch: S1 every 5 minutes while the MQTT client is connected, S3 after an
+upload that landed. It never raises into, or waits for, the MQTT, upload or acknowledgement paths. A --local-dir run never pings.
+
 The path prefix is ingest wall-clock time at flush, not event time (doc 02). Filenames use the events'
 source_id, so a flush containing several sources produces one file per source, each in arrival order.
 
@@ -62,6 +66,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from files_api import CONFLICT, DEFAULT_SCOPE, FilesApiUploader, TokenProvider, normalise_scope
+from monitor import build_monitor
 from upload import ALREADY_LANDED, UPLOADED, upload_file
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -70,6 +75,8 @@ DEFAULT_LOG_PATH = REPO_ROOT / "logs" / "bridge.log"     # absolute, derived fro
 DEFAULT_LOCK_PATH = REPO_ROOT / "logs" / "bridge.lock"
 ENV_FILE_DEFAULT = REPO_ROOT / ".env.bridge"
 BRIDGE_ENV_KEYS = ("DATABRICKS_HOST", "BRIDGE_DATABRICKS_CLIENT_ID", "BRIDGE_DATABRICKS_CLIENT_SECRET")
+BRIDGE_OPTIONAL_ENV_KEYS = ("BRIDGE_PING_S1_URL", "BRIDGE_PING_S3_URL")      # monitoring (monitor.py); credential-like, never logged
+ALLOWED_ENV_KEYS = BRIDGE_ENV_KEYS + BRIDGE_OPTIONAL_ENV_KEYS
 
 DEFAULT_MAX_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_SECONDS = 90
@@ -260,8 +267,9 @@ class Bridge:
     def __init__(self, uploader, *, dead_letter_path=DEFAULT_DEAD_LETTER, max_bytes=DEFAULT_MAX_BYTES,
                  max_seconds=DEFAULT_MAX_SECONDS, scan_size=DEFAULT_SCAN_SIZE, clock=time.time,
                  sleep=time.sleep, max_attempts=5, backoff=(1, 2, 4, 8, 16), log=print,
-                 max_pending=DEFAULT_MAX_PENDING, acks=None):
+                 max_pending=DEFAULT_MAX_PENDING, acks=None, on_landed=None):
         self.uploader = uploader
+        self.on_landed = on_landed     # called with the number of lines after a batch LANDS (never for a dead-lettered one)
         self.dead_letter_path = Path(dead_letter_path)
         self.max_bytes, self.max_seconds, self.scan_size = max_bytes, max_seconds, scan_size
         self.max_pending = max_pending
@@ -391,6 +399,11 @@ class Bridge:
             self.stats["bytes_written"] += len(batch.data)
             self.stats["last_flush_utc"] = datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.log(f"bridge: landed {batch.relpath} ({len(batch.lines)} lines, {len(batch.data)} bytes)")
+        if self.on_landed is not None:
+            try:
+                self.on_landed(len(batch.lines))
+            except Exception:
+                pass   # MONITORING-LANDED-GUARD: monitoring must never reach the upload path
 
     def _fail(self, batch, reason):
         with self._lock:
@@ -431,8 +444,8 @@ class Bridge:
 # ---- credentials --------------------------------------------------------------------------------------
 def read_env_file(path):
     """The bridge's env file: KEY=VALUE lines, # comments, optional quotes. It may hold ONLY the three
-    bridge keys. DATABRICKS_TOKEN (the dbt personal access token) is refused outright. Error messages
-    name the file and line, never a value."""
+    bridge keys and the two optional monitoring URLs. DATABRICKS_TOKEN (the dbt personal access token) is refused
+    outright. Error messages name the file and line, never a value."""
     path = Path(path)
     values = {}
     for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -448,9 +461,9 @@ def read_env_file(path):
         if key == "DATABRICKS_TOKEN":
             raise SystemExit(f"{path.name} line {number}: DATABRICKS_TOKEN is your dbt personal access token and "
                              "never belongs in the bridge's env file (doc 05). Remove it.")
-        if key not in BRIDGE_ENV_KEYS:
+        if key not in ALLOWED_ENV_KEYS:
             raise SystemExit(f"{path.name} line {number}: {key} is not allowed; this file holds only "
-                             + ", ".join(BRIDGE_ENV_KEYS))
+                             + ", ".join(ALLOWED_ENV_KEYS))
         if key in values:
             raise SystemExit(f"{path.name} line {number}: {key} is set twice")
         values[key] = value
@@ -480,6 +493,28 @@ def build_uploader(args, environ=os.environ, default_env_file=ENV_FILE_DEFAULT):
     tokens = TokenProvider(env["DATABRICKS_HOST"], env["BRIDGE_DATABRICKS_CLIENT_ID"],
                            env["BRIDGE_DATABRICKS_CLIENT_SECRET"], scope=scope)
     return FilesApiUploader(env["DATABRICKS_HOST"], args.volume_path, tokens)
+
+
+def monitoring_env(args, environ=os.environ, default_env_file=ENV_FILE_DEFAULT):
+    """{key: value} for the optional ping URLs, from the process environment and .env.bridge (the environment wins), or None
+    in --local-dir mode: a local run, an e2e or a test must never ping the production checks."""
+    if args.local_dir:
+        return None   # MONITORING-LOCAL-GUARD
+    env = {key: environ.get(key) for key in BRIDGE_OPTIONAL_ENV_KEYS}
+    env_file = Path(args.env_file) if args.env_file else Path(default_env_file)
+    if env_file.exists():
+        for key, value in read_env_file(env_file).items():
+            if key in BRIDGE_OPTIONAL_ENV_KEYS and value and not env.get(key):  # the process environment wins over the file
+                env[key] = value
+    return env
+
+
+def make_monitor(args, environ=os.environ, default_env_file=ENV_FILE_DEFAULT, log=print, **options):
+    """A monitor.Monitor for this run, or None in --local-dir mode. Missing or invalid URLs give a disabled one and one warning."""
+    env = monitoring_env(args, environ, default_env_file)
+    if env is None:
+        return None
+    return build_monitor(env, log=log, **options)
 
 
 # ---- MQTT credentials (Phase 3 staging: the authenticated LAN broker) ------------------------------------
@@ -824,7 +859,7 @@ def make_on_connect_fail(host, port, clock=time.time, interval=CONNECT_FAIL_LOG_
     return on_connect_fail
 
 
-def run(bridge, args, mqtt=None):
+def run(bridge, args, mqtt=None, monitor=None):
     """Wire the bridge to MQTT. Uploads happen on a worker thread so a slow upload never blocks the
     MQTT network loop (and its keepalive). An unreachable broker is not an error: the connection is retried in
     the background with backoff until it comes up (a reboot starts this before Docker has the broker listening).
@@ -915,6 +950,8 @@ def run(bridge, args, mqtt=None):
                 for batch in bridge.tick():
                     work.put(batch)
                 send_acks()
+                if monitor is not None:
+                    monitor.tick(client.is_connected())
                 if args.idle_exit and time.time() - last_message[0] > args.idle_exit:
                     print(f"bridge: idle for {args.idle_exit:g}s, exiting", flush=True)
                     break
@@ -931,6 +968,8 @@ def run(bridge, args, mqtt=None):
             send_acks()                 # the connection is still up: the last PUBACKs go out ...
             client.disconnect()         # ... and DISCONNECT is queued behind them
             client.loop_stop()          # paho's loop thread writes its queue empty before it exits (client.py:2302-2306)
+            if monitor is not None:
+                monitor.close()
     finally:
         for number, handler in previous_handlers.items():
             signal.signal(number, handler)
@@ -960,7 +999,13 @@ def main(argv=None, *, process_wide=True, mqtt=None):
         logger.info(f"bridge: writing to {mode}; flush at {args.max_bytes} bytes, {args.max_seconds:g} s, or a complete "
                     f"scan of {args.scan_size}")
         logger.info(f"bridge: log file {args.log_file}")
-        return run(bridge, args, mqtt=mqtt)
+        monitor = make_monitor(args, log=logger.info)
+        if monitor is not None and monitor.enabled:
+            bridge.on_landed = monitor.landed
+            logger.info("bridge: monitoring pings enabled for " + ", ".join(sorted(monitor.urls)))
+        else:
+            monitor = None
+        return run(bridge, args, mqtt=mqtt, monitor=monitor)
     finally:
         lock.release()
 

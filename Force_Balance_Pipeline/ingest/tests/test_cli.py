@@ -208,8 +208,8 @@ class EnvFileTests(unittest.TestCase):
         ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
         self.assertIn(".env.bridge", [l.strip() for l in ignored])
         template = (ROOT / ".env.bridge.example").read_text(encoding="utf-8")
-        assignments = re.findall(r"(?m)^([A-Z_]+)=(.*)$", template)
-        self.assertEqual([k for k, _ in assignments], list(bridge.BRIDGE_ENV_KEYS))
+        assignments = re.findall(r"(?m)^([A-Z0-9_]+)=(.*)$", template)
+        self.assertEqual([k for k, _ in assignments], list(bridge.ALLOWED_ENV_KEYS))
         self.assertTrue(all(v == "" for _, v in assignments), "the template holds no values")
         bridge.read_env_file(ROOT / ".env.bridge.example")  # and the bridge accepts it as written
         self.assertNotIn("BRIDGE_DATABRICKS", (ROOT / ".env.example").read_text(encoding="utf-8").replace("BRIDGE_DATABRICKS_CLIENT", "").replace("bridge's own", ""))
