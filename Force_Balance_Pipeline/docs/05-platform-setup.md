@@ -817,6 +817,99 @@ e2-micro come together in a later phase. Nothing below is committed with a real 
    setting, then test both ways with the VPN on and off: `Test-NetConnection <PI_IP> -Port 22` from the desktop and
    `nc -vz <DESKTOP_IP> 1883` from the Pi. If the desktop sleeps, the Pi sees an outage.
 
+### Broker persistence and the bridge session
+
+The 2026-10-09/10 outage (`docs/ENGINEERING-LOG.md`, "Stage 4d — Phase 4 close") delivered about 22 hours of data intact on a
+manual bridge restart. That worked because of a handful of broker and bridge settings that were correct but asserted nowhere.
+This section lists them with their effective values, the headroom they give, the ways data can still be lost silently, and how
+to check the live broker. `ingest/tests/test_broker_config.py` fails if any value here changes in the repo.
+
+**Where the broker reads its configuration.** `infra/mosquitto/mosquitto.lan.conf` is *bind-mounted* from the repo working tree
+(the `docker run` above: `-v "<REPO>\Force_Balance_Pipeline\infra\mosquitto:/mosquitto/config:ro"`, started with
+`mosquitto -c /mosquitto/config/mosquitto.lan.conf`), not copied into a volume as the password and ACL files are. An edit to the
+file is therefore visible to the container at once, takes effect at the broker's next start, and goes live on whatever restarts
+the container first — including an unplanned reboot. Edit it deliberately, and restart the broker on purpose.
+
+**Effective values.** Defaults are from `mosquitto.conf(5)` (mosquitto.org/man/mosquitto-conf-5.html); "not stated" means that
+page does not say.
+
+| Setting | Effective value | Source | Mosquitto default |
+|---|---|---|---|
+| `persistence` | `true` | `mosquitto.lan.conf:23` | `false` — "If enabled, connection, subscription and message data will be written to disk in mosquitto.db" |
+| `persistence_location` | `/mosquitto/data/` — the `force-mosquitto-data` volume | `mosquitto.lan.conf:24`; doc 05 `docker run` (`-v force-mosquitto-data:/mosquitto/data`) | the current directory |
+| `persistence_file` | not set, so `mosquitto.db` (`/mosquitto/data/mosquitto.db`) | — | `mosquitto.db` |
+| `autosave_interval` | `30` seconds | `mosquitto.lan.conf:25` | `1800` seconds; `0` saves only on exit or on SIGUSR1 |
+| `autosave_on_changes` | not set, so `autosave_interval` is a number of seconds | — | not stated; the page says that when it is false the interval is seconds |
+| `max_queued_messages` | `50000`, per client | `mosquitto.lan.conf:26` | `1000`; the page does not say what happens to messages over the limit |
+| `max_queued_bytes` | not set, so no byte limit | — | `0` (no maximum); "Once this limit has been reached, subsequent messages will be silently dropped" (not stated whether logged) |
+| `persistent_client_expiration` | `7d` | `mosquitto.lan.conf:27` | never expire; units `s h d w m y` (`m` is month) |
+| `queue_qos0_messages` | not set, so `false` (irrelevant: all traffic is QoS 1) | — | `false` |
+| `max_inflight_messages` | not set, so `20` (the page says it applies globally) | — | `20`; relevant to the planned bridge `manual_ack` change, below |
+| Bridge client id | `force-bridge` | `ingest/bridge/bridge.py:69` (`DEFAULT_CLIENT_ID`) | — |
+| Bridge session | `clean_session=False` | `bridge.py:449` (`build_client`) | — |
+| Bridge subscription | `force/telemetry/#` at QoS 1, re-subscribed on every connect | `bridge.py:471` | — |
+
+**Headroom (derived).** The probe publishes one event per planet per scan: 60 planets (the `dim_sector` seed, 60 sectors) every
+900 s (`edge/probe/runtime.py:43`, `DEFAULT_INTERVAL`), so 60 × 3600 / 900 = **240 events an hour**. The test computes this from
+those constants rather than hard-coding it.
+
+- The queue fills at 50,000 / 240 = 208.3 hours = **8.68 days**. The comment in `mosquitto.lan.conf` still says "about 8 days" (corrected with the conf change,
+  below); doc 04's flag table now says ~8.7 days (derived).
+- The session expires after `7d` = 168 hours. **That is shorter than the fill time, so the expiry, not the queue limit, is the
+  binding limit.** After seven days of the bridge being away the broker discards the session and everything queued for it (up to
+  168 × 240 = 40,320 events, derived) — and the Pi deleted each of those rows when the broker acknowledged it
+  (`edge/probe/buffer.py:3`: a row is "deleted only when its QoS 1 PUBACK arrives"), so nothing is left to resend. The test
+  `test_session_expiry_outlasts_the_time_the_queue_takes_to_fill` records this as a known gap (an expected failure) until the
+  conf is changed.
+- Mosquitto counts the expiry from the moment the client is disconnected ("if they do not reconnect within a certain time frame");
+  this was read from the man page, not tested.
+
+**Ways data can still be lost silently.** Each is bounded, and none is visible in Job 1 or in the broker log unless stated.
+
+| Path | What is lost | Exposure (derived) |
+|---|---|---|
+| Broker killed between autosaves (host crash, Docker Desktop killed, power) | Messages queued since the last save: the broker has already acknowledged them, so the Pi deleted them. A graceful stop saves on exit (per the `autosave_interval` entry) | At most `autosave_interval` seconds of arrivals: with `30`, up to one scan's 60 events, and only if the crash lands within 30 s after a scan burst while the bridge is down (30 / 900 = 3.3 % of the time). Messages delivered to a connected bridge are not in this window; they are in the next row |
+| Queue past `max_queued_messages` | Messages over the limit. What the broker does with them is not documented on the man page (only `max_queued_bytes` is said to drop "silently"), so assume a silent drop, unlogged | After 8.68 days with no bridge. Today the 7-day expiry strikes first |
+| Session expiry (`persistent_client_expiration`) | The whole session and queue | After 7 days with no bridge: up to 40,320 events (derived: 168 h × 240 an hour) |
+| Bridge killed after receiving a message but before its file is uploaded | Events held in the bridge's memory. paho acknowledges a message as soon as `on_message` returns (paho 2.1.0, `client.py:4147-4152`, unless `manual_ack` is set), so the broker has already discarded it and the Pi deleted its row | Events are held up to `DEFAULT_MAX_SECONDS` = 90 s (`bridge.py:66`) plus upload retries of up to 1+2+4+8+16 = 31 s; a complete scan flushes at once, so typically a fraction of one scan, at most about 60 events. Closed by acknowledging after upload (`manual_ack`, planned: `docs/ENGINEERING-LOG.md` open items) |
+
+What the 2026-10-09/10 outage showed: the persistence file was necessary (derived). The desktop crashed at 15:20:44Z and the
+broker container started fresh at 2026-10-09T15:26:20Z (`docker inspect` StartedAt, read on the evening of 2026-10-10;
+`RestartCount 0` only means Docker's own restart policy did not restart it — the Docker VM came back after the reboot and started
+it). A new broker process starts with empty memory, so the `force-bridge` session — its subscription to `force/telemetry/#` — can
+only have come from `mosquitto.db` on the `force-mosquitto-data` volume, restored at that start. Without it nothing would have
+been subscribed to the topic after 15:26:20Z; the Pi, which reconnected at 15:26:23Z, would have had its QoS 1 publishes
+acknowledged and dropped (no subscriber), and it deletes a row on acknowledgement: about 22 hours of data lost. Instead the queue
+grew in memory (saved to disk every 30 s) against a session restored from disk, and the manual bridge restart collected it. This
+is an inference from that timeline and from how Mosquitto persists sessions, not from a broker log line: no "restored" line was
+captured. The live proof is a deliberate graceful restart, in "Checking the live broker" below.
+
+**How the planned monitoring bounds these** (S1, bridge liveness, "Monitoring", to be written — not built). An alert after about
+30 minutes without the bridge makes the two multi-day paths (queue overflow, session expiry) unreachable in practice, because
+someone is told long before day 7. It does nothing for the two instantaneous paths (a broker kill between autosaves, a bridge kill
+before upload): each loses at most about one scan, and S1 does not see it. Those are bounded by `autosave_interval` and, once
+built, `manual_ack`.
+
+**Proposed change, not yet applied** (held until the reboot test of the bridge auto-start is finished, because the conf is
+bind-mounted and the next broker restart would pick it up): `autosave_interval 30` → `10` (the exposure window above shrinks to
+10 / 900 = 1.1 %); `persistent_client_expiration 7d` → `10d` (240 hours, longer than the 208.3-hour fill time, so the queue limit,
+not the expiry, is reached first); and the conf comment corrected to "about 8.7 days". When it is applied,
+`ingest/tests/test_broker_config.py` changes in the same commit (the two expected values, and the known-gap decorator comes off),
+and this paragraph becomes a statement of fact.
+
+**Checking the live broker** (read-only; run by hand — the repo's tests cannot see the container):
+- `docker inspect force-mosquitto --format "{{json .Mounts}}"` — the repo's `infra\mosquitto` directory mounted at
+  `/mosquitto/config` read-only, plus the `force-mosquitto-secrets` and `force-mosquitto-data` volumes.
+- `docker exec force-mosquitto ls -l /mosquitto/data` — `mosquitto.db` present; its modification time advances while messages
+  flow.
+- After a deliberate restart, `docker logs force-mosquitto --tail 30` — look for a line saying the persistent database was
+  restored from `/mosquitto/data/mosquitto.db` rather than a cold start (Mosquitto 2.x writes a "Restoring persistent database"
+  line at INFO level; that wording is from memory of the source and has not been confirmed against this broker's log — confirm it
+  on the next restart and correct this line).
+- A restart is the real proof: publish while the bridge is down, restart the broker, start the bridge, and every scan published
+  while it was down lands (the procedure in "The checkpoint cut"). That needs the bridge stopped and Docker, so it is a
+  deliberate maintenance step, not a routine check.
+
 ### Bridge auto-start
 
 The bridge runs as a Windows Scheduled Task, `ForceBridge`, registered by `infra/desktop/register-bridge-task.ps1`. The design
