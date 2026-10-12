@@ -29,12 +29,15 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
   const reload = useCallback(async () => {
     if (!online) return false;
     const sequence = ++loadSequenceRef.current;
+    let loadedResult = null;
+    let published = false;
     if (isCurrent()) setLoading(true);
     try {
-      const result = await api.tagDefinitions.all();
+      loadedResult = await api.tagDefinitions.all();
       if (!isCurrent() || sequence !== loadSequenceRef.current) return false;
-      setDefinitions(category === 'Genre' ? result.genres : result.vibes);
+      setDefinitions(category === 'Genre' ? loadedResult.genres : loadedResult.vibes);
       setError('');
+      published = true;
       return true;
     } catch (reason) {
       if (isCurrent() && sequence === loadSequenceRef.current) {
@@ -43,6 +46,13 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
       return false;
     } finally {
       if (isCurrent() && sequence === loadSequenceRef.current) setLoading(false);
+      const requestId = loadedResult?.__ccmTestLoadId;
+      if (typeof window !== 'undefined' && window.__CCM_TEST_OBSERVE_TAG_LOAD__ === true
+        && typeof requestId === 'string') {
+        window.dispatchEvent(new CustomEvent('ccm:test-tag-definition-load-settled', {
+          detail: { requestId, category, published },
+        }));
+      }
     }
   }, [category, online]);
 

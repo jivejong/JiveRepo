@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 
 test('late category load cannot update a different management view', async ({ page, context }) => {
+  const requestId = randomUUID();
   const leakedName = `T19 stale Genre ${randomUUID()}`;
   let releaseHeld;
   let markHeld;
@@ -17,12 +18,33 @@ test('late category load cannot update a different management view', async ({ pa
       const body = await response.json();
       await route.fulfill({ response, json: {
         ...body,
+        __ccmTestLoadId: requestId,
         genres: [...body.genres, { id: -1, name: leakedName, song_count: 0 }],
       } });
       return;
     }
     await route.continue();
   };
+  await page.addInitScript(() => {
+    const events = [];
+    const waiters = new Map();
+    window.__CCM_TEST_OBSERVE_TAG_LOAD__ = true;
+    window.__CCM_TEST_TAG_LOAD_EVENTS__ = events;
+    window.__CCM_TEST_WAIT_FOR_TAG_LOAD__ = id => {
+      const existing = events.find(detail => detail.requestId === id);
+      if (existing) return Promise.resolve(existing);
+      return new Promise(resolve => waiters.set(id, resolve));
+    };
+    window.__CCM_TEST_TAG_LOAD_WAITING__ = id => waiters.has(id);
+    window.addEventListener('ccm:test-tag-definition-load-settled', event => {
+      events.push(event.detail);
+      const resolve = waiters.get(event.detail.requestId);
+      if (resolve) {
+        waiters.delete(event.detail.requestId);
+        resolve(event.detail);
+      }
+    });
+  });
   await context.route('**/api/tag-definitions', routeHandler);
   try {
     await page.goto('/');
@@ -34,7 +56,11 @@ test('late category load cannot update a different management view', async ({ pa
     await page.getByRole('button', { name: 'Manage Vibes' }).click();
     await expect(page.locator('.topbar-title')).toHaveText('Manage Vibes');
 
+    const completion = page.evaluate(id => window.__CCM_TEST_WAIT_FOR_TAG_LOAD__(id), requestId);
+    expect(await page.evaluate(id => window.__CCM_TEST_TAG_LOAD_WAITING__(id), requestId),
+      'the exact held Genre load completion must still be pending before release').toBe(true);
     releaseHeld();
+    await expect(completion).resolves.toMatchObject({ requestId, category: 'Genre', published: false });
     await expect(page.locator('.topbar-title')).toHaveText('Manage Vibes');
     await expect(page.getByText(leakedName, { exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: 'Back to Settings' }).click();
