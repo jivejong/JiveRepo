@@ -5,6 +5,7 @@ import * as api from '../lib/api';
 export default function SettingsView({
   online, syncing, lastSync, dirty, conflicts, syncError, onSync,
   themePreference = 'system', onThemeChange = () => {}, onManageDefinitions = () => {},
+  chartSize = '0', onChartSizeChange = () => {},
 }) {
   const [stats,    setStats]    = useState(null);
   const [checking, setChecking] = useState(false);
@@ -52,6 +53,18 @@ export default function SettingsView({
           </div>
           <p className="theme-help">System follows this device’s appearance setting.</p>
         </fieldset>
+
+        <div className="chart-size-setting">
+          <label className="form-label" htmlFor="chart-size-select">Chart text size</label>
+          <select id="chart-size-select" value={chartSize} onChange={event => onChartSizeChange(event.target.value)}>
+            <option value="-2">-2 Smallest</option>
+            <option value="-1">-1 Smaller</option>
+            <option value="0">Default</option>
+            <option value="1">+1 Larger</option>
+            <option value="2">+2 Largest</option>
+          </select>
+          <p className="theme-help">Smaller text can show more of a chart at once.</p>
+        </div>
 
         <section className="settings-definition-links" aria-labelledby="settings-definitions-title">
           <div id="settings-definitions-title" className="form-label">Shared definitions</div>

@@ -36,6 +36,23 @@ server. If browser storage is unavailable or unreadable, the app falls back to
 System for the current session. Theme changes affect colors only, so chart
 anchors, pipe groups, spacers, and auto-scroll positioning are preserved.
 
+### Chart text size
+
+Choose **-2 Smallest**, **-1 Smaller**, **Default**, **+1 Larger**, or
+**+2 Largest** in Settings. Each step changes chart text by 7.5% (0.85× to
+1.15× across the full range) and is saved on this device for offline use.
+Smaller text can show more chart content at once, but does not guarantee that
+an entire song fits without scrolling. At tablet widths, chart content uses
+the available width with 12px side padding; phone and desktop shell widths
+remain unchanged. Chords and lyrics scale together, with their measured
+positions recalculated by the existing chart layout observers.
+
+### Chart metadata while scrolling
+
+The Key/BPM/BeatBuddy row stays pinned directly below the chart title while the
+chart scrolls. It remains in normal layout flow, so the first chart rows begin
+below it; BeatBuddy uses the Key text size and long values stay within the row.
+
 Paired chord and lyric rows use the same monospace character grid. They stay
 unwrapped and scroll together horizontally on narrow screens. Overlapping chord
 labels appear in original order on one row separated by pipes. Each group starts
@@ -293,12 +310,15 @@ missing years do not match. The opening-screen All control clears only its
 category, while Clear all removes every active category filter. These rules
 are the same for server search and the offline IndexedDB cache.
 
-**Settings → Genre and Vibe definitions** lists shared definitions and their
-current song-usage counts. Definition creation, rename, reassignment, and
-deletion require a connection because these operations affect shared data and
-do not have an offline mutation-queue contract. While offline, those controls
-are disabled; individual song assignments can still be edited offline through
-the existing song queue. Deleting an in-use definition requires choosing either
+**Settings → Manage Genres / Manage Vibes** opens one category at a time and
+shows shared definitions with current song-usage counts. The last successful
+definition list is cached locally for offline viewing. Creation, rename,
+reassignment, and deletion still require a working connection because these
+operations affect shared data and do not have an offline mutation-queue
+contract. While offline, or when a definition request fails, those controls
+remain disabled with a connection message; Back to Settings remains available.
+Individual song assignments can still be edited offline through the existing
+song queue. Deleting an in-use definition requires choosing either
 to remove those assignments or to reassign them to another definition of the
 same category, then confirming the affected-song count. Era is derived from
 release year and is not managed as a definition. A shared change advances the

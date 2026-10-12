@@ -1,6 +1,10 @@
 import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 
+// Route-controlled definition loads and offline state are tested without a
+// service worker that could satisfy requests before Playwright sees them.
+test.use({ serviceWorkers: 'block' });
+
 test('late category load cannot update a different management view', async ({ page, context }) => {
   const requestId = randomUUID();
   const leakedName = `T19 stale Genre ${randomUUID()}`;
@@ -82,6 +86,13 @@ test('Settings manages Genre and Vibe definitions with explicit assignment decis
   const longVibeName = `T19 long Vibe ${suffix} ${'extended-definition-name-'.repeat(1)}`;
   const fixtureTitle = `T19 management fixture ${suffix}`;
   const fixtureArtist = `T19 artist ${suffix}`;
+  let failedDefinitionReads = 0;
+  const unavailableHandler = async route => {
+    if (route.request().method() === 'GET') {
+      failedDefinitionReads += 1;
+      await route.abort('internetdisconnected');
+    } else await route.continue();
+  };
   const ownedDefinitions = [];
   let songId = null;
   let primaryError = null;
@@ -179,6 +190,12 @@ test('Settings manages Genre and Vibe definitions with explicit assignment decis
     }
     await vibeRow.getByRole('button', { name: 'Delete' }).click();
     await page.getByRole('dialog').getByLabel('Remove these assignments').check();
+    await context.setOffline(true);
+    await expect(page.getByRole('dialog').getByLabel('Remove these assignments')).toBeDisabled();
+    await expect(page.getByRole('dialog').getByLabel('Reassign to')).toBeDisabled();
+    await expect(page.getByRole('dialog').getByRole('button', { name: 'Confirm deletion' })).toBeDisabled();
+    await context.setOffline(false);
+    await expect(page.getByRole('dialog').getByLabel('Remove these assignments')).toBeEnabled();
     const removeVibeResponsePromise = page.waitForResponse(response => response.url().endsWith(`/api/tag-definitions/Vibe/${vibe.id}`)
       && response.request().method() === 'DELETE');
     await page.getByRole('dialog').getByRole('button', { name: 'Confirm deletion' }).click();
@@ -190,11 +207,31 @@ test('Settings manages Genre and Vibe definitions with explicit assignment decis
     expect((await call('GET', `/api/songs/${songId}`)).value.vibes).not.toContain(vibeName);
 
     await context.setOffline(true);
-    await expect(page.getByText('Definition changes require a connection.')).toBeVisible();
+    await expect(page.locator('.tag-definition-manager [role="status"]')
+      .filter({ hasText: 'Definition changes require a connection. Existing song assignments' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Add' }).first()).toBeDisabled();
+    await expect(vibeSection.locator('.definition-row').filter({ hasText: longVibeName })).toBeVisible();
+    await page.getByRole('button', { name: 'Back to Settings' }).click();
+    await page.getByRole('button', { name: 'Manage Genres' }).click();
+    await expect(page.locator('.topbar-title')).toHaveText('Manage Genres');
+    const offlineGenreRow = page.locator('.definition-row').filter({ hasText: targetName });
+    await expect(offlineGenreRow).toBeVisible();
+    await expect(offlineGenreRow.getByRole('button', { name: 'Rename' })).toBeDisabled();
+    await expect(offlineGenreRow.getByRole('button', { name: 'Delete' })).toBeDisabled();
     await context.setOffline(false);
     await page.getByRole('button', { name: 'Back to Settings' }).click();
     await expect(page.getByRole('button', { name: 'Manage Genres' })).toBeVisible();
+
+    await page.route('**/api/tag-definitions', unavailableHandler);
+    await page.getByRole('button', { name: 'Manage Vibes' }).click();
+    await expect(page.getByText(/Could not reach the server\. Showing saved definitions/)).toBeVisible();
+    expect(failedDefinitionReads).toBe(1);
+    await expect(page.locator('.definition-row').filter({ hasText: longVibeName })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add' })).toBeDisabled();
+    await expect(page.locator('.definition-row').first().getByRole('button', { name: 'Rename' })).toBeDisabled();
+    await expect(page.locator('.definition-row').first().getByRole('button', { name: 'Delete' })).toBeDisabled();
+    await expect(page.getByText('Failed to fetch', { exact: false })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Back to Settings' }).click();
   } catch (error) {
     primaryError = error;
   } finally {

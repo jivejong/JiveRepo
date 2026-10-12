@@ -105,6 +105,10 @@ body {
   position: relative;
 }
 
+@media (min-width: 600px) and (max-width: 1100px) {
+  .app.app--chart-wide { width: 100%; max-width: none; }
+}
+
 .screen {
   flex: 1;
   overflow-y: auto;
@@ -577,6 +581,9 @@ body {
   align-items: center;
   flex-wrap: wrap;
   background: var(--bg-raised);
+  position: sticky;
+  top: var(--topbar-height);
+  z-index: 9;
 }
 
 .key-pill {
@@ -598,7 +605,7 @@ body {
   color: var(--text-secondary);
 }
 .bb-pill {
-  font-size: 11px;
+  font-size: 14px;
   padding: 3px 10px;
   background: var(--bg-overlay);
   border: 1px solid var(--border);
@@ -606,9 +613,11 @@ body {
   color: var(--text-muted);
   flex: 1;
   min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+  text-overflow: clip;
 }
 
 /* Transpose bar */
@@ -657,11 +666,32 @@ body {
   min-width: 20px;
   text-align: center;
 }
+.transpose-original-key {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  flex: 0 0 auto;
+  gap: 1px;
+  margin-left: var(--space-2);
+  color: var(--text-secondary);
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.transpose-original-key span { font-size: 10px; color: var(--text-muted); }
+.transpose-original-key strong {
+  font: 500 13px var(--font-chord);
+  color: var(--text-primary);
+}
 
 /* Chart body — the actual chart content */
 .chart-body {
   padding: var(--space-4) var(--space-4) 80px;
   font-family: var(--font-chord);
+  font-size: calc(16px * var(--chart-font-scale, 1));
+}
+
+@media (min-width: 600px) and (max-width: 1100px) {
+  .chart-body { padding-left: 12px; padding-right: 12px; }
 }
 
 .chart-section { margin-bottom: var(--space-5); }
@@ -691,7 +721,7 @@ body {
 
 .chord-line {
   font-family: var(--font-chord);
-  font-size: 15px;
+  font-size: calc(15px * var(--chart-font-scale, 1));
   font-weight: 500;
   color: var(--text-chord);
   position: relative;
@@ -714,7 +744,7 @@ body {
 
 .lyric-line {
   font-family: var(--font-ui);
-  font-size: 15px;
+  font-size: calc(15px * var(--chart-font-scale, 1));
   color: var(--text-primary);
   white-space: pre-wrap;
   line-height: 1.4;
@@ -729,7 +759,7 @@ body {
 
 .chord-only-line {
   font-family: var(--font-chord);
-  font-size: 15px;
+  font-size: calc(15px * var(--chart-font-scale, 1));
   font-weight: 500;
   color: var(--text-chord);
   white-space: pre;
@@ -766,7 +796,7 @@ body {
 }
 .section-with-chords-chords {
   font-family: var(--font-chord);
-  font-size: 15px;
+  font-size: calc(15px * var(--chart-font-scale, 1));
   font-weight: 500;
   color: var(--text-chord);
 }
@@ -807,7 +837,7 @@ body {
 }
 .tab-line {
   font-family: var(--font-chord);
-  font-size: 13px;
+  font-size: calc(13px * var(--chart-font-scale, 1));
   color: var(--text-muted);
   white-space: pre;
   line-height: 1.6;
@@ -817,7 +847,7 @@ body {
 .inline-chord-lyric { margin-bottom: var(--space-3); }
 .icl-chord-row {
   font-family: var(--font-chord);
-  font-size: 14px;
+  font-size: calc(14px * var(--chart-font-scale, 1));
   font-weight: 500;
   color: var(--text-chord);
   white-space: pre;
@@ -826,7 +856,7 @@ body {
 }
 .icl-lyric-row {
   font-family: var(--font-ui);
-  font-size: 15px;
+  font-size: calc(15px * var(--chart-font-scale, 1));
   color: var(--text-primary);
   line-height: 1.4;
 }
@@ -1013,6 +1043,18 @@ body {
 .tag-definition-manager > h2 { margin: 0 0 12px; }
 .settings-definition-links { margin: 0 0 24px; }
 .settings-definition-links > .form-label { margin-bottom: 10px; }
+.chart-size-setting { margin: 0 0 24px; }
+.chart-size-setting .form-label { display: block; margin-bottom: 8px; }
+.chart-size-setting select {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+}
 .definition-nav-link {
   width: 100%;
   min-height: 52px;

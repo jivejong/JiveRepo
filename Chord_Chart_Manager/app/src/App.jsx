@@ -10,6 +10,7 @@ import TagDefinitionManager from './components/TagDefinitionManager';
 import { useOnline, useSync } from './hooks';
 import { applyTheme, getSystemPrefersDark, readThemePreference, resolveTheme,
   subscribeToSystemTheme, writeThemePreference } from './lib/theme';
+import { chartScale, readChartSize, writeChartSize } from './lib/chartDisplay';
 
 /**
  * Navigation state machine:
@@ -27,6 +28,7 @@ export default function App() {
   const { syncing, lastSync, dirty, conflicts, syncError, syncNow } = useSync(online);
   const [themePreference, setThemePreference] = useState(readThemePreference);
   const [systemPrefersDark, setSystemPrefersDark] = useState(getSystemPrefersDark);
+  const [chartSize, setChartSize] = useState(readChartSize);
 
   useEffect(() => subscribeToSystemTheme(setSystemPrefersDark), []);
   useLayoutEffect(() => {
@@ -39,6 +41,11 @@ export default function App() {
       return;
     }
     setThemePreference(preference);
+  };
+
+  const chooseChartSize = value => {
+    writeChartSize(value);
+    setChartSize(value);
   };
 
   const [tab,  setTab]  = useState('songs');
@@ -125,6 +132,7 @@ export default function App() {
         setlistId={view.setlistId}
         setlistEntry={view.setlistEntry}
         online={online}
+        chartScale={chartScale(chartSize)}
         onSync={syncNow}
         onBack={goBack}
         onEdit={openEdit}
@@ -202,6 +210,8 @@ export default function App() {
         onSync={syncNow}
         themePreference={themePreference}
         onThemeChange={chooseTheme}
+        chartSize={chartSize}
+        onChartSizeChange={chooseChartSize}
         onManageDefinitions={openTagDefinitions}
       />
     );
@@ -217,7 +227,7 @@ export default function App() {
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
-    <div className="app">
+    <div className={`app${view?.type === 'chart' ? ' app--chart-wide' : ''}`}>
       {!online && (
         <div className="offline-banner">Offline — showing cached charts</div>
       )}

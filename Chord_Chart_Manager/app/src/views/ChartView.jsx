@@ -27,6 +27,7 @@ import { AUTO_SCROLL_DEFAULT_SPEED, AUTO_SCROLL_MAX_SPEED, AUTO_SCROLL_MIN_SPEED
 export default function ChartView({
   songId, songList = [], setlistId = null, setlistEntry = null,
   online, onSync, onBack, onEdit, onNavigateSong, onSetlistUpdated,
+  chartScale = 1,
 }) {
   const { song, loading, loadError, setSong } = useSong(songId, online);
 
@@ -273,7 +274,7 @@ export default function ChartView({
   };
 
   return (
-    <div className="chart-view">
+    <div className="chart-view" style={{ '--chart-font-scale': chartScale }}>
     <div className="screen chart-scroll" ref={scrollRef} tabIndex={0} aria-label="Chart content"
       {...swipeHandlers} onWheel={onWheel} onTouchStart={event => {
         onTouchStart(event); swipeHandlers.onTouchStart(event);
@@ -342,6 +343,11 @@ export default function ChartView({
           <button className="t-btn" onClick={() => adjustCapo(-1)} aria-label="Decrease capo">−</button>
           <span className="capo-val">{capo}</span>
           <button className="t-btn" onClick={() => adjustCapo(1)} aria-label="Increase capo">+</button>
+        </div>
+
+        <div className="transpose-original-key" aria-label={`Original key: ${song.original_key || 'Unknown'}`}>
+          <span>Original key</span>
+          <strong>{song.original_key || 'Unknown'}</strong>
         </div>
 
         {hasChanges && (

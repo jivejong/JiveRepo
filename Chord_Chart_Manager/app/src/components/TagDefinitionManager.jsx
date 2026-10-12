@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft } from './Icons';
 import * as api from '../lib/api';
+import * as cache from '../lib/cache';
+
+const DEFINITION_CACHE_KEY = 'managed_tag_definitions';
+const isUnavailableRequest = reason => reason instanceof TypeError
+  || /failed to fetch|network request failed|load failed/i.test(reason?.message || '');
 
 export default function TagDefinitionManager({ category, online, onSync, onBack }) {
   const [definitions, setDefinitions] = useState([]);
@@ -11,12 +16,14 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
   const [deletion, setDeletion] = useState(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [serverReady, setServerReady] = useState(false);
   const mountedRef = useRef(false);
   const categoryRef = useRef(category);
   const loadSequenceRef = useRef(0);
   categoryRef.current = category;
 
   const isCurrent = () => mountedRef.current && categoryRef.current === category;
+  const canManage = online && serverReady;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -27,21 +34,64 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
   }, []);
 
   const reload = useCallback(async () => {
-    if (!online) return false;
     const sequence = ++loadSequenceRef.current;
     let loadedResult = null;
     let published = false;
     if (isCurrent()) setLoading(true);
+    if (!online) {
+      if (isCurrent()) setServerReady(false);
+      try {
+        const cached = await cache.getMeta(DEFINITION_CACHE_KEY);
+        if (isCurrent() && sequence === loadSequenceRef.current) {
+          setDefinitions(category === 'Genre' ? (cached?.genres || []) : (cached?.vibes || []));
+          setNotice('Offline: showing saved definitions. Definition changes require a connection.');
+          setError('');
+        }
+      } catch (reason) {
+        if (isCurrent() && sequence === loadSequenceRef.current) {
+          setDefinitions([]);
+          setError(`Could not read saved definitions: ${reason.message || 'local storage unavailable'}. Definition changes require a connection.`);
+        }
+      } finally {
+        if (isCurrent() && sequence === loadSequenceRef.current) setLoading(false);
+      }
+      return false;
+    }
     try {
       loadedResult = await api.tagDefinitions.all();
       if (!isCurrent() || sequence !== loadSequenceRef.current) return false;
       setDefinitions(category === 'Genre' ? loadedResult.genres : loadedResult.vibes);
       setError('');
+      setNotice('');
+      setServerReady(true);
       published = true;
+      try {
+        await cache.setMeta(DEFINITION_CACHE_KEY, {
+          genres: loadedResult.genres,
+          vibes: loadedResult.vibes,
+        });
+      } catch (reason) {
+        if (isCurrent() && sequence === loadSequenceRef.current) {
+          setError(`Definitions loaded, but the offline copy could not be saved: ${reason.message || 'local storage unavailable'}.`);
+        }
+      }
       return true;
     } catch (reason) {
       if (isCurrent() && sequence === loadSequenceRef.current) {
-        setError(`Could not load shared definitions: ${reason.message}`);
+        setServerReady(false);
+        try {
+          const cached = await cache.getMeta(DEFINITION_CACHE_KEY);
+          if (isCurrent() && sequence === loadSequenceRef.current) {
+            setDefinitions(category === 'Genre' ? (cached?.genres || []) : (cached?.vibes || []));
+            setNotice('Could not reach the server. Showing saved definitions; changes require a connection.');
+            setError('');
+          }
+        } catch (cacheError) {
+          if (isCurrent() && sequence === loadSequenceRef.current) {
+            setDefinitions([]);
+            setError(`Could not reach the server or read saved definitions: ${cacheError.message || reason.message || 'request unavailable'}.`);
+          }
+        }
       }
       return false;
     } finally {
@@ -74,8 +124,17 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
     }
   };
 
+  const showMutationError = reason => {
+    if (!isCurrent()) return;
+    if (isUnavailableRequest(reason)) {
+      setServerReady(false);
+      setError(`Could not reach the server. ${category} and Vibe definition changes require a working connection; the result of the last request was not confirmed.`);
+    } else setError(reason.message || 'The definition change could not be completed.');
+  };
+
   const create = async event => {
     event.preventDefault();
+    if (!canManage) return;
     const value = name.trim();
     if (!value) return;
     if (isCurrent()) { setBusy(true); setError(''); setNotice(''); }
@@ -84,13 +143,14 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
       if (isCurrent()) setName('');
       await refreshAfterMutation(`${category} created.`);
     } catch (reason) {
-      if (isCurrent()) setError(reason.message);
+      showMutationError(reason);
     } finally {
       if (isCurrent()) setBusy(false);
     }
   };
 
   const saveRename = async () => {
+    if (!canManage) return;
     const currentRename = rename;
     if (!currentRename) return;
     if (isCurrent()) { setBusy(true); setError(''); setNotice(''); }
@@ -99,13 +159,14 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
       if (isCurrent()) setRename(null);
       await refreshAfterMutation(`${category} renamed.`);
     } catch (reason) {
-      if (isCurrent()) setError(reason.message);
+      showMutationError(reason);
     } finally {
       if (isCurrent()) setBusy(false);
     }
   };
 
   const remove = async () => {
+    if (!canManage) return;
     const currentDeletion = deletion;
     if (!currentDeletion) return;
     if (isCurrent()) { setBusy(true); setError(''); setNotice(''); }
@@ -119,7 +180,7 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
       if (isCurrent()) setDeletion(null);
       await refreshAfterMutation(message);
     } catch (reason) {
-      if (isCurrent()) setError(reason.message);
+      showMutationError(reason);
     } finally {
       if (isCurrent()) setBusy(false);
     }
@@ -133,7 +194,9 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
     <div className="tag-manager-content">
       <section className="tag-definition-manager" aria-labelledby="tag-definitions-title">
         <h1 id="tag-definitions-title" className="form-label">{category} definitions</h1>
-        {!online && <p role="status" className="form-help">Definition changes require a connection. Existing song assignments can still be edited offline and will sync later.</p>}
+        {!canManage && <p role="status" className="form-help">{online
+          ? 'Could not confirm a connection to the server. Changes to definitions require a working connection. Existing song assignments can still be edited offline and will sync later.'
+          : 'Definition changes require a connection. Existing song assignments can still be edited offline and will sync later.'}</p>}
         {error && <p role="alert" className="form-error">{error}</p>}
         {notice && <p role="status" className="form-help">{notice}</p>}
         {loading && <p className="form-help">Loading definitions…</p>}
@@ -142,21 +205,21 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
             <label className="sr-only" htmlFor={`create-${category}`}>New {category} name</label>
             <input id={`create-${category}`} className="form-input" value={name}
               onChange={event => setName(event.target.value)}
-              maxLength={120} placeholder={`New ${category}`} disabled={!online || busy} />
-            <button className="btn btn-primary btn-sm" type="submit" disabled={!online || busy || !name.trim()}>Add</button>
+              maxLength={120} placeholder={`New ${category}`} disabled={!canManage || busy} />
+            <button className="btn btn-primary btn-sm" type="submit" disabled={!canManage || busy || !name.trim()}>Add</button>
           </form>
           {definitions.map(item => <div className="definition-row" key={item.id}>
             {rename?.id === item.id
               ? <>
                 <input className="form-input" aria-label={`Rename ${category}`} value={rename.name}
                   onChange={event => setRename(current => ({ ...current, name: event.target.value }))} disabled={busy} />
-                <button className="btn btn-primary btn-sm" onClick={() => void saveRename()} disabled={!online || busy || !rename.name.trim()}>Save</button>
+                <button className="btn btn-primary btn-sm" onClick={() => void saveRename()} disabled={!canManage || busy || !rename.name.trim()}>Save</button>
                 <button className="btn btn-ghost btn-sm" onClick={() => setRename(null)} disabled={busy}>Cancel</button>
               </>
               : <>
                 <span className="definition-name">{item.name}<small>{item.song_count} song{item.song_count === 1 ? '' : 's'}</small></span>
-                <button className="btn btn-ghost btn-sm" onClick={() => setRename({ id: item.id, name: item.name })} disabled={!online || busy}>Rename</button>
-                <button className="btn btn-danger btn-sm" onClick={() => setDeletion({ ...item, mode: null, replacementId: '' })} disabled={!online || busy}>Delete</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => setRename({ id: item.id, name: item.name })} disabled={!canManage || busy}>Rename</button>
+                <button className="btn btn-danger btn-sm" onClick={() => setDeletion({ ...item, mode: null, replacementId: '' })} disabled={!canManage || busy}>Delete</button>
               </>}
           </div>)}
           {!definitions.length && !loading && online && <p className="form-help">No {category} definitions.</p>}
@@ -167,9 +230,9 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
       <h3 id="definition-delete-title">Delete {category} “{deletion.name}”?</h3>
       {deletion.song_count > 0 ? <>
         <p>This affects {deletion.song_count} song{deletion.song_count === 1 ? '' : 's'}. Choose what happens to those assignments before deleting.</p>
-        <label><input type="radio" name="definition-delete-mode" checked={deletion.mode === 'remove'} onChange={() => setDeletion(current => ({ ...current, mode: 'remove' }))} /> Remove these assignments</label>
-        <label><input type="radio" name="definition-delete-mode" checked={deletion.mode === 'reassign'} onChange={() => setDeletion(current => ({ ...current, mode: 'reassign' }))} /> Reassign to</label>
-        {deletion.mode === 'reassign' && <select className="form-input" aria-label="Replacement definition" value={deletion.replacementId}
+        <label><input type="radio" name="definition-delete-mode" checked={deletion.mode === 'remove'} onChange={() => setDeletion(current => ({ ...current, mode: 'remove' }))} disabled={!canManage} /> Remove these assignments</label>
+        <label><input type="radio" name="definition-delete-mode" checked={deletion.mode === 'reassign'} onChange={() => setDeletion(current => ({ ...current, mode: 'reassign' }))} disabled={!canManage} /> Reassign to</label>
+        {deletion.mode === 'reassign' && <select className="form-input" aria-label="Replacement definition" value={deletion.replacementId} disabled={!canManage}
           onChange={event => setDeletion(current => ({ ...current, replacementId: event.target.value }))}>
           <option value="">Choose {category}</option>
           {definitions.filter(item => item.id !== deletion.id).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
@@ -178,7 +241,7 @@ export default function TagDefinitionManager({ category, online, onSync, onBack 
       <div className="definition-confirm-actions">
         <button className="btn btn-ghost" onClick={() => setDeletion(null)} disabled={busy}>Cancel</button>
         <button className="btn btn-danger" onClick={() => void remove()}
-          disabled={!online || busy || (deletion.song_count > 0 && (!deletion.mode || (deletion.mode === 'reassign' && !deletion.replacementId)))}>
+          disabled={!canManage || busy || (deletion.song_count > 0 && (!deletion.mode || (deletion.mode === 'reassign' && !deletion.replacementId)))}>
           Confirm deletion
         </button>
       </div>
