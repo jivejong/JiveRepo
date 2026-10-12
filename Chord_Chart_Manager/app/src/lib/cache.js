@@ -5,7 +5,7 @@
  * The API checks that version while holding a row lock. If the server changed
  * first, the queued tablet mutation is discarded and the server copy wins.
  */
-import { matchesSongTagFilters } from '../tagMutations';
+import { filterSongList } from '../tagMutations';
 import { discardSetlistOperations, enqueueSetlistOperation, rebaseSetlistOperations,
   resolveSetlistOperationIds } from '../setlistQueue';
 
@@ -504,7 +504,10 @@ export async function queueSetlistMutation({ type, setlistId = null, payload = {
 
 export async function setMeta(key, value) {
   await openDb();
-  return wrap(tx('meta', 'readwrite').put({ key, value, updatedAt: Date.now() }));
+  const store = tx('meta', 'readwrite');
+  const request = store.put({ key, value, updatedAt: Date.now() });
+  const [result] = await Promise.all([wrap(request), transactionDone(store)]);
+  return result;
 }
 
 export async function getMeta(key) {
@@ -1084,6 +1087,14 @@ export async function syncWithServer({ library, setlists: setlistApi, songs: son
     await setMeta('last_synced', syncedAt);
     await appendConflictNotices(pending.conflicts);
     notifyCacheChange();
+    // Test-only lifecycle signal. Its payload token comes from this exact
+    // export response, and dispatch occurs only after all pull cache writes
+    // and the last-synced marker have committed.
+    if (typeof window !== 'undefined' && window.__CCM_TEST_OBSERVE_SYNC_PULL__ === true) {
+      window.dispatchEvent(new CustomEvent('ccm:test-sync-pull-applied', {
+        detail: { pullId: lib.__t10_test_pull_id ?? null, exportedAt: lib.exported_at, syncedAt },
+      }));
+    }
     return {
       ok: true,
       pushed: pending.pushed,
@@ -1093,8 +1104,9 @@ export async function syncWithServer({ library, setlists: setlistApi, songs: son
       syncedAt,
     };
   } catch (error) {
-    console.warn('Sync failed:', error.message);
-    return { ok: false, error: error.message };
+    const message = error?.message || 'IndexedDB transaction failed';
+    console.warn('Sync failed:', message);
+    return { ok: false, error: message };
   }
   });
 }
@@ -1105,16 +1117,7 @@ export const syncFromServer = syncWithServer;
 // ── Offline search ───────────────────────────────────────────────────────────
 
 export async function searchCached({ q, query, tags, tag_filters }) {
-  const text = (q ?? query ?? '').toLowerCase();
-  const wanted = (typeof tags === 'string' ? tags.split(',') : (tags || []))
-    .map(tag => tag.trim().toLowerCase()).filter(Boolean);
-  const selected = tag_filters ? JSON.parse(tag_filters) : [];
   const all = await getCachedSongs();
-  return all.filter(song => {
-    if (song._sync?.operation === 'delete') return false;
-    if (text && !song.title?.toLowerCase().includes(text)
-        && !song.artist?.toLowerCase().includes(text)) return false;
-    if (!matchesSongTagFilters(song, selected, wanted)) return false;
-    return true;
-  }).sort((a, b) => a.title?.localeCompare(b.title));
+  return filterSongList(all, { q, query, tags, tag_filters })
+    .sort((a, b) => a.title?.localeCompare(b.title));
 }

@@ -56,18 +56,27 @@ test('auto-scroll is manual, timed, offline, input-aware, and cleaned up', async
   }
 
     await page.setViewportSize({ width: 1280, height: 900 });
+    // Online search is intentionally client-side: T18 fetches the unfiltered
+    // lightweight list and applies the query to the effective cached/server
+    // projection. Observe that initial list load, then wait for rendered rows
+    // after typing rather than expecting a query-bearing network request.
+    const unfilteredListResponse = page.waitForResponse(response => {
+      const url = new URL(response.url());
+      return url.pathname === '/api/songs' && !url.searchParams.has('q');
+    });
     await page.goto('/');
+    const response = await unfilteredListResponse;
+    const apiResult = await response.json();
+    const serverTitles = new Set(apiResult.songs.map(song => song.title));
+    expect(titles.every(title => serverTitles.has(title))).toBeTruthy();
     const search = page.getByPlaceholder('Search songs, artists…');
     const query = `T15 Auto Scroll ${suffix}`;
-    const searchResponse = page.waitForResponse(response => {
-      const url = new URL(response.url());
-      return url.pathname === '/api/songs' && url.searchParams.get('q') === query;
-    });
     await search.fill(query);
-    const response = await searchResponse;
-    const apiResult = await response.json();
-    const observedTitles = apiResult.songs.map(song => song.title).sort();
-    expect(observedTitles).toEqual([...titles].sort());
+    const visibleRows = page.locator('.song-row');
+    await expect(visibleRows).toHaveCount(titles.length);
+    for (const title of titles) {
+      await expect(visibleRows.filter({ hasText: title })).toBeVisible();
+    }
     const fixtureRow = page.locator('.song-row').filter({ hasText: titles[0] });
     await expect(fixtureRow).toBeVisible();
     await fixtureRow.click();

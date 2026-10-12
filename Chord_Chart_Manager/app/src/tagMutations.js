@@ -61,6 +61,37 @@ export function matchesSongTagFilters(song, selected = [], legacyNames = []) {
     && legacyNames.every(name => names.has(name.toLocaleLowerCase()));
 }
 
+// Build the list view from an unfiltered server snapshot plus only local rows
+// with pending mutations. This lets an offline edit enter or leave a filter
+// before its push is acknowledged without making a filtered server response
+// authoritative for the whole local library.
+export function mergePendingSongProjections(serverSongs = [], cachedSongs = []) {
+  const effective = new Map(serverSongs.map(song => [String(song.id), song]));
+  for (const song of cachedSongs) {
+    const operation = song?._sync?.operation;
+    if (!operation) continue;
+    const id = String(song.id);
+    if (operation === 'delete') effective.delete(id);
+    else effective.set(id, song);
+  }
+  return [...effective.values()];
+}
+
+export function filterSongList(songs = [], filters = {}) {
+  const text = String(filters.q ?? filters.query ?? '').trim().toLocaleLowerCase();
+  const legacyNames = (typeof filters.tags === 'string' ? filters.tags.split(',') : (filters.tags || []))
+    .map(tag => String(tag).trim().toLocaleLowerCase()).filter(Boolean);
+  const selected = filters.tag_filters
+    ? (typeof filters.tag_filters === 'string' ? JSON.parse(filters.tag_filters) : filters.tag_filters)
+    : [];
+  return songs.filter(song => {
+    if (song?._sync?.operation === 'delete') return false;
+    if (text && !String(song.title || '').toLocaleLowerCase().includes(text)
+        && !String(song.artist || '').toLocaleLowerCase().includes(text)) return false;
+    return matchesSongTagFilters(song, selected, legacyNames);
+  });
+}
+
 export function buildCachedTagOptions(songs = [], facets = {}) {
   const options = new Map();
   const add = (category, name, count = false) => {

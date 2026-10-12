@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import * as api from './lib/api';
 import * as cache from './lib/cache';
 import { loadChartSong } from './lib/songLoading';
-import { buildCachedTagOptions } from './tagMutations';
+import { buildCachedTagOptions, filterSongList, mergePendingSongProjections } from './tagMutations';
 
 // ── Online/offline detection ──────────────────────────────────────────────────
 export function useOnline() {
@@ -59,13 +59,23 @@ export function useSongs(filters, online) {
 
   useEffect(() => {
     let cancelled = false;
+    let serverSongs = null;
     setLoading(true);
 
+    const publishOnline = async () => {
+      if (cancelled || !serverSongs) return;
+      const cached = await cache.getCachedSongs();
+      if (!cancelled) setSongs(filterSongList(mergePendingSongProjections(serverSongs, cached), filters));
+    };
     const load = async () => {
       try {
         if (online) {
-          const result = await api.songs.search(filters);
-          if (!cancelled) setSongs(result.songs);
+          // Fetch an unfiltered lightweight list. A pending edit may have
+          // moved a song into a filter even though its server version would
+          // not be present in a filtered response.
+          const result = await api.songs.search({});
+          serverSongs = result.songs;
+          await publishOnline();
         } else {
           const result = await cache.searchCached(filters);
           if (!cancelled) setSongs(result);
@@ -88,7 +98,10 @@ export function useSongs(filters, online) {
     };
 
     load();
-    return () => { cancelled = true; };
+    const unsubscribe = online ? cache.onCacheChange(() => { void publishOnline().catch(err => {
+      if (!cancelled) setError(`Could not refresh pending songs: ${err.message}`);
+    }); }) : () => {};
+    return () => { cancelled = true; unsubscribe(); };
   }, [JSON.stringify(filters), online]);
 
   return { songs, loading, error };
@@ -158,16 +171,32 @@ export function useTags(online) {
 
   useEffect(() => {
     let cancelled = false;
+    let serverTags = [];
     const setFromSongs = async () => {
       const [songs, facets] = await Promise.all([
         cache.getCachedSongs(), cache.getMeta('facets'),
       ]);
       if (!cancelled) setTags(buildCachedTagOptions(songs, facets));
     };
+    const setOnlineOptions = async () => {
+      const songs = await cache.getCachedSongs();
+      const pendingOptions = buildCachedTagOptions(songs.filter(song => song._sync), {});
+      const known = new Set(serverTags.map(tag => `${tag.category === 'Vibe' ? 'Feel' : tag.category}:${tag.name.toLocaleLowerCase()}`));
+      const extras = pendingOptions.filter(tag => {
+        const key = `${tag.category}:${tag.name.toLocaleLowerCase()}`;
+        if (known.has(key)) return false;
+        known.add(key);
+        return true;
+      });
+      if (!cancelled) setTags([...serverTags, ...extras]);
+    };
     const load = async () => {
       setLoading(true);
       try {
-        if (online) setTags(await api.tags.all());
+        if (online) {
+          serverTags = await api.tags.all();
+          await setOnlineOptions();
+        }
         else await setFromSongs();
       } catch {
         await setFromSongs().catch(() => {});
@@ -176,7 +205,8 @@ export function useTags(online) {
       }
     };
     load();
-    return () => { cancelled = true; };
+    const unsubscribe = online ? cache.onCacheChange(() => { void setOnlineOptions().catch(() => {}); }) : () => {};
+    return () => { cancelled = true; unsubscribe(); };
   }, [online]);
 
   return { tags, loading };

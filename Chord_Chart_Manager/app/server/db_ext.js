@@ -550,6 +550,11 @@ async function mutateTagDefinition(category, id, mutation) {
             }
           }
         } else {
+          // A song may already carry both Vibes. Remove only the redundant
+          // source link in that case; moving it directly would violate the
+          // (song_id, vibe_id) key. All affected song rows are locked above.
+          await client.query(`DELETE FROM ${join} source USING ${join} target
+            WHERE source.${fk}=$1 AND target.${fk}=$2 AND source.song_id=target.song_id`, [id, replacementId]);
           await client.query(`UPDATE ${join} SET ${fk}=$1 WHERE ${fk}=$2`, [replacementId, id]);
         }
       } else {

@@ -184,23 +184,30 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
     const managedSource = await createDefinition('Genre', `${mgmtName} source`);
     const managedTarget = await createDefinition('Genre', `${mgmtName} target`);
     const managedVibe = await createDefinition('Vibe', `${mgmtName} source`);
+    const replacementVibe = await createDefinition('Vibe', `${mgmtName} replacement`);
     const unused = await createDefinition('Genre', `${mgmtName} unused`);
     const managedSongUpdate = await json('PUT', `/api/songs/${primarySong.id}`, {
       genres: [{ name: managedSource.name, is_primary: true }, { name: 'T11 API secondary', is_primary: false }],
-      vibes: [managedVibe.name], base_updated_at: removedTag.value.updated_at, operation_id: randomUUID(),
+      vibes: [managedVibe.name, replacementVibe.name], base_updated_at: removedTag.value.updated_at, operation_id: randomUUID(),
     });
     assert.equal(managedSongUpdate.response.status, 200, JSON.stringify(managedSongUpdate.value));
     const secondManagedSong = await json('PUT', `/api/songs/${secondSong.id}`, {
-      genres: [{ name: managedSource.name, is_primary: true }],
+      genres: [{ name: managedSource.name, is_primary: true }], vibes: [replacementVibe.name],
       base_updated_at: secondSong.updated_at, operation_id: randomUUID(),
     });
     assert.equal(secondManagedSong.response.status, 200, JSON.stringify(secondManagedSong.value));
+    const sourceOnlySong = await json('POST', '/api/songs', { title: `${mgmtName} source only`, artist: 'T11 API synthetic artist',
+      chart_written_key: 'C', chart_source: 'Verse\nInvented T19 source-only fixture', genres: [], vibes: [managedVibe.name], operation_id: randomUUID() });
+    assert.equal(sourceOnlySong.response.status, 201, JSON.stringify(sourceOnlySong.value));
+    createdSongs.push(sourceOnlySong.value.id);
+    const sourceOnlyVersion = sourceOnlySong.value.updated_at;
     const renamedAssignedVibe = await definition('PUT', `/api/tag-definitions/Vibe/${managedVibe.id}`, {
       name: `${mgmtName} renamed vibe`,
     });
     assert.equal(renamedAssignedVibe.response.status, 200, JSON.stringify(renamedAssignedVibe.value));
-    assert.equal(renamedAssignedVibe.value.affected_songs, 1);
+    assert.equal(renamedAssignedVibe.value.affected_songs, 2);
     managedVibe.name = `${mgmtName} renamed vibe`;
+    createdVibeNames.set(managedVibe.id, managedVibe.name);
     const afterAssignedRename = await json('GET', `/api/songs/${primarySong.id}`);
     assert.ok(afterAssignedRename.value.vibes.includes(managedVibe.name));
     assert.notEqual(afterAssignedRename.value.updated_at, managedSongUpdate.value.updated_at,
@@ -208,7 +215,8 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
     const beforeDefinitionChange = afterAssignedRename.value.updated_at;
     const definitions = await json('GET', '/api/tag-definitions');
     assert.equal(definitions.value.genres.find(item => item.id === managedSource.id).song_count, 2);
-    assert.equal(definitions.value.vibes.find(item => item.id === managedVibe.id).song_count, 1);
+    assert.equal(definitions.value.vibes.find(item => item.id === managedVibe.id).song_count, 2);
+    assert.equal(definitions.value.vibes.find(item => item.id === replacementVibe.id).song_count, 2);
     assert.equal(definitions.value.genres.some(item => item.name.startsWith('Era')), false,
       'derived Era is not exposed as a managed definition');
     const renamed = await definition('PUT', `/api/tag-definitions/Genre/${unused.id}`, { name: `${mgmtName} renamed` });
@@ -244,11 +252,32 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
     const afterRemoval = await json('GET', `/api/songs/${primarySong.id}`);
     assert.ok(afterRemoval.value.genres.some(tag => tag.name === 'T11 API secondary' && tag.is_primary),
       'removing the prior primary promotes a remaining assignment');
+    const replacementOnlyVersion = (await json('GET', `/api/songs/${secondSong.id}`)).value.updated_at;
     const removedVibe = await definition('DELETE', `/api/tag-definitions/Vibe/${managedVibe.id}`, {
-      mode: 'remove', expected_song_count: 1,
+      mode: 'reassign', replacement_id: replacementVibe.id, expected_song_count: 2,
     });
     assert.equal(removedVibe.response.status, 200, JSON.stringify(removedVibe.value));
-    assert.equal((await json('GET', `/api/songs/${primarySong.id}`)).value.vibes.includes(managedVibe.name), false);
+    assert.equal(removedVibe.value.affected_songs, 2);
+    const afterVibeMerge = await json('GET', `/api/songs/${primarySong.id}`);
+    assert.deepEqual(afterVibeMerge.value.vibes.sort(), [replacementVibe.name]);
+    assert.notEqual(afterVibeMerge.value.updated_at, beforeDefinitionChange,
+      'the overlapping source assignment is merged and the song version advances');
+    const afterSourceOnlyMerge = await json('GET', `/api/songs/${sourceOnlySong.value.id}`);
+    assert.deepEqual(afterSourceOnlyMerge.value.vibes, [replacementVibe.name], 'source-only Vibe moves to replacement');
+    assert.notEqual(afterSourceOnlyMerge.value.updated_at, sourceOnlyVersion);
+    const afterReplacementOnly = await json('GET', `/api/songs/${secondSong.id}`);
+    assert.deepEqual(afterReplacementOnly.value.vibes, [replacementVibe.name], 'replacement-only assignment remains exactly once');
+    assert.equal(afterReplacementOnly.value.updated_at, replacementOnlyVersion,
+      'replacement-only song is not an affected source assignment');
+    const afterVibeDefinitions = await json('GET', '/api/tag-definitions');
+    assert.equal(afterVibeDefinitions.value.vibes.some(item => item.id === managedVibe.id), false, 'source definition is removed');
+    assert.equal(afterVibeDefinitions.value.vibes.find(item => item.id === replacementVibe.id).song_count, 3);
+    const removedReplacement = await definition('DELETE', `/api/tag-definitions/Vibe/${replacementVibe.id}`, {
+      mode: 'remove', expected_song_count: 3,
+    });
+    assert.equal(removedReplacement.response.status, 200, JSON.stringify(removedReplacement.value));
+    assert.deepEqual((await json('GET', `/api/songs/${primarySong.id}`)).value.vibes, []);
+    assert.deepEqual((await json('GET', `/api/songs/${sourceOnlySong.value.id}`)).value.vibes, []);
     assert.equal((await json('DELETE', `/api/tag-definitions/Genre/${unused.id}`, { mode: 'remove', expected_song_count: 0 })).response.status, 200);
     assert.equal((await definition('POST', '/api/tag-definitions', { category: 'Era', name: '1980s' })).response.status, 400);
 
@@ -284,7 +313,8 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
     for (const id of createdVibes) {
       await pool.query(`DELETE FROM public.vibes v WHERE id=$1 AND name=$2
         AND NOT EXISTS (SELECT 1 FROM public.song_vibes sv WHERE sv.vibe_id=v.id)`, [id, createdVibeNames.get(id)]);
-      assert.equal((await pool.query('SELECT 1 FROM public.vibes WHERE id=$1', [id])).rowCount, 0);
+      assert.equal((await pool.query('SELECT 1 FROM public.vibes WHERE id=$1', [id])).rowCount, 0,
+        `owned T11 Vibe definition ${id} (${createdVibeNames.get(id)}) remains after cleanup`);
     }
   }
 });

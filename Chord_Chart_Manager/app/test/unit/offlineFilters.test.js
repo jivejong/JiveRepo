@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it } from 'vitest';
 import * as cache from '../../src/lib/cache.js';
+import { filterSongList, mergePendingSongProjections } from '../../src/tagMutations.js';
 
 const fixtureIds = [];
 afterEach(async () => {
@@ -11,6 +12,31 @@ afterEach(async () => {
 });
 
 describe('offline categorized filters', () => {
+  it('overlays pending create/update/delete on a full server list before applying filters', () => {
+    const server = [
+      { id: 1, title: 'Changed into match', artist: 'Artist', genres: [{ name: 'Old', is_primary: true }], vibes: [], release_year: 1978 },
+      { id: 2, title: 'Changed out of match', artist: 'Artist', genres: [{ name: 'Target', is_primary: true }], vibes: ['Calm'], release_year: 1978 },
+      { id: 3, title: 'Deleted', artist: 'Artist', genres: [{ name: 'Target', is_primary: true }], vibes: ['Calm'], release_year: 1978 },
+    ];
+    const cached = [
+      { ...server[0], genres: [{ name: 'Target', is_primary: true }], vibes: ['Calm'], _sync: { operation: 'update', base_updated_at: 'v1' } },
+      { ...server[1], genres: [{ name: 'Other', is_primary: true }], vibes: [], release_year: null,
+        _sync: { operation: 'update', base_updated_at: 'v2' } },
+      { ...server[2], _sync: { operation: 'delete', base_updated_at: 'v3' } },
+      { id: 'local-1', title: 'Offline create', artist: 'Artist', genres: [{ name: 'Other', is_primary: true }],
+        vibes: ['Driving'], release_year: 1982, _sync: { operation: 'create' } },
+    ];
+    const merged = mergePendingSongProjections(server, cached);
+    expect(merged).toHaveLength(3);
+    expect(merged.find(song => song.id === 1).genres[0].name).toBe('Target');
+    expect(merged.find(song => song.id === 2).release_year).toBeNull();
+    expect(merged.some(song => song.id === 3)).toBe(false);
+    const selected = [{ category: 'Genre', name: 'Target' }, { category: 'Vibe', name: 'Calm' }, { category: 'Era', name: '1970s' }];
+    expect(filterSongList(merged, { q: 'changed', tag_filters: selected }).map(song => song.id)).toEqual([1]);
+    expect(server[0].genres[0].name).toBe('Old');
+    expect(server[1].genres[0].name).toBe('Target');
+  });
+
   it('filters cached pending edits and local songs with online-equivalent OR/AND semantics', async () => {
     const suffix = `T18 ${Date.now()} ${Math.random()}`;
     const records = [

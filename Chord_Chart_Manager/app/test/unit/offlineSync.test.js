@@ -283,4 +283,64 @@ describe('offline cache and push-then-pull sync', () => {
     expect((await cache.getCachedSong(id)).title).toBe(server.title);
     expect((await cache.getPendingMutations()).some(item => String(item.id) === String(id))).toBe(false);
   });
+
+  it('signals exact-pull completion only after metadata transactions commit', async () => {
+    const originalWindow = globalThis.window;
+    const testWindow = new EventTarget();
+    testWindow.__CCM_TEST_OBSERVE_SYNC_PULL__ = true;
+    const signals = [];
+    testWindow.addEventListener('ccm:test-sync-pull-applied', event => signals.push(event.detail));
+    vi.stubGlobal('window', testWindow);
+    try {
+      const response = { songs: [], exported_at: 'export-commit-synthetic',
+        __t10_test_pull_id: 'pull-commit-synthetic' };
+      const success = await cache.syncWithServer({
+        library: async () => response,
+        songs: {},
+        setlists: { all: async () => [] },
+      });
+      expect(success.ok).toBe(true);
+      expect(signals).toHaveLength(1);
+      expect(signals[0]).toMatchObject({ pullId: 'pull-commit-synthetic', exportedAt: response.exported_at });
+      expect(await cache.getMeta('last_synced')).toBe(signals[0].syncedAt);
+
+      signals.length = 0;
+      const originalPut = IDBObjectStore.prototype.put;
+      let lastSyncedPutSucceeded = false;
+      const putSpy = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (value, key) {
+        const request = originalPut.call(this, value, key);
+        if (value?.key === 'last_synced') {
+          const transaction = this.transaction;
+          request.addEventListener('success', () => {
+            lastSyncedPutSucceeded = true;
+            transaction.abort();
+          });
+        }
+        return request;
+      });
+      try {
+        const failed = await cache.syncWithServer({
+          library: async () => ({ ...response, __t10_test_pull_id: 'pull-abort-synthetic' }),
+          songs: {},
+          setlists: { all: async () => [] },
+        });
+        expect(lastSyncedPutSucceeded).toBe(true);
+        expect(failed.ok).toBe(false);
+        expect(signals).toEqual([]);
+
+        // This is the same fail-closed condition used by teardown: without the
+        // exact applied-pull signal, local fixture cleanup is not authorized.
+        const requestFinished = true;
+        const noPendingWork = true;
+        const cleanupAuthorized = signals.some(signal => signal.pullId === 'pull-abort-synthetic')
+          && requestFinished && noPendingWork;
+        expect(cleanupAuthorized).toBe(false);
+      } finally {
+        putSpy.mockRestore();
+      }
+    } finally {
+      if (originalWindow === undefined) vi.unstubAllGlobals();
+      else vi.stubGlobal('window', originalWindow);
+    }
+  });
 });

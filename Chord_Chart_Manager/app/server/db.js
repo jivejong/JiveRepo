@@ -79,6 +79,10 @@ async function searchSongs(filters = {}) {
            s.alt_key, s.capo_fret, s.bpm, s.release_year,
            (s.release_year / 10 * 10)::text || 's' AS era,
            COALESCE(pg.name, NULL) AS primary_genre,
+           (SELECT COALESCE(jsonb_agg(jsonb_build_object('name', g_all.name, 'is_primary', sg_all.is_primary)
+             ORDER BY sg_all.is_primary DESC, lower(g_all.name)), '[]'::jsonb)
+            FROM song_genres sg_all JOIN genres g_all ON g_all.id = sg_all.genre_id
+            WHERE sg_all.song_id = s.id) AS genres,
            COALESCE(array_agg(DISTINCT v.name) FILTER (WHERE v.name IS NOT NULL), '{}') AS vibes
     FROM songs s
     JOIN artists a ON a.id = s.artist_id

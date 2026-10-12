@@ -14,14 +14,38 @@ const test = base.extend({
     };
     const pendingReleases = new Set();
     const serverSettledRequests = new Set();
+    const requestInfo = new Map();
+    fixture.setExportIdentity = (req, exportedAt) => {
+      const info = requestInfo.get(req);
+      if (!info) throw new Error('T10 export request identity was not registered at request start.');
+      info.exportedAt = exportedAt;
+    };
+    fixture.setExportTestIdentity = (req, testPullId) => {
+      const info = requestInfo.get(req);
+      if (!info) throw new Error('T10 export request identity was not registered at request start.');
+      info.testPullId = testPullId;
+    };
+    const requestEvents = [];
+    let requestSequence = 0;
+    const recordRequestEvent = (event, info, extra = {}) => {
+      requestEvents.push({ sequence: ++requestSequence, event, method: info.method, path: info.path,
+        ...(info.exportedAt ? { exportedAt: info.exportedAt } : {}),
+        ...(info.testPullId ? { testPullId: info.testPullId } : {}), ...extra });
+    };
     fixture.testBodyEnded = false;
+    fixture.requestEvents = requestEvents;
+    fixture.requestSequence = () => requestSequence;
     fixture.holdUntilCleanup = release => pendingReleases.add(release);
     fixture.releaseHeldRequests = () => {
       for (const release of pendingReleases) release();
       pendingReleases.clear();
     };
     const outstanding = new Set();
-    const mutationKey = req => `${req.method()} ${req.url()} ${req.postDataJSON()?.operation_id ?? ''}`;
+    const mutationKey = req => {
+      let operationId = '';
+      try { operationId = req.postDataJSON()?.operation_id ?? ''; } catch { /* GET or non-JSON request. */ }
+      return `${req.method()} ${req.url()} ${operationId}`;
+    };
     fixture.markServerMutationSettled = req => {
       const key = mutationKey(req);
       serverSettledRequests.add(key);
@@ -35,18 +59,48 @@ const test = base.extend({
       return removed;
     };
     const trackRequest = req => {
-      if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method())
-          || !/\/api\/(songs|setlists)(\/mutations)?(?:\/|$)/.test(new URL(req.url()).pathname)) return;
-      if (serverSettledRequests.has(mutationKey(req))) return;
+      const url = new URL(req.url());
+      if (!url.pathname.startsWith('/api/')) return;
+      const info = { method: req.method(), path: url.pathname, started: ++requestSequence, status: null, finished: false };
+      if (req.method() === 'POST' && url.pathname === '/api/songs') {
+        try { info.songTitle = req.postDataJSON()?.title; } catch { /* Keep diagnostics path-only. */ }
+      }
+      requestInfo.set(req, info);
+      requestEvents.push({ sequence: info.started, event: 'start', method: info.method, path: info.path });
+      const mutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method())
+        && /\/api\/(songs|setlists)(\/mutations)?(?:\/|$)/.test(url.pathname);
+      // The song-list endpoint only feeds the current React projection; it
+      // cannot write IndexedDB. Keep it in sanitized diagnostics, but don't
+      // let an unrelated UI read block exact cache cleanup certification.
+      const cacheRefresh = req.method() === 'GET' && (url.pathname === '/api/export'
+        || url.pathname === '/api/setlists' || /^\/api\/(?:songs|setlists)\/\d+$/.test(url.pathname));
+      if (!mutation && !cacheRefresh) return;
+      if (mutation && serverSettledRequests.has(mutationKey(req))) return;
       outstanding.add(req);
     };
-    const finishRequest = req => outstanding.delete(req);
+    const finishRequest = (req, outcome) => {
+      const info = requestInfo.get(req);
+      if (info) {
+        info.finished = true;
+        info.finishedAt = ++requestSequence;
+        recordRequestEvent(outcome, info, outcome === 'failed' ? { error: req.failure()?.errorText || 'request failed' } : {});
+      }
+      outstanding.delete(req);
+    };
+    const onRequestFinished = req => finishRequest(req, 'finish');
+    const onRequestFailed = req => finishRequest(req, 'failed');
     context.on('request', trackRequest);
-    context.on('requestfinished', finishRequest);
-    context.on('requestfailed', finishRequest);
+    context.on('requestfinished', onRequestFinished);
+    context.on('requestfailed', onRequestFailed);
     context.on('response', response => {
+      const req = response.request();
+      const info = requestInfo.get(req);
+      if (info) {
+        info.status = response.status();
+        info.responseAt = ++requestSequence;
+        recordRequestEvent('response', info, { status: info.status });
+      }
       void (async () => {
-        const req = response.request();
         if (!response.ok() || req.method() !== 'POST') return;
         const url = new URL(req.url());
         const body = req.postDataJSON();
@@ -59,7 +113,9 @@ const test = base.extend({
 
     fixture.testBodyEnded = true;
     const failures = [];
-    try { fixture.releaseHeldRequests(); } catch (error) { failures.push(error); }
+    if (!fixture.requirePullAfterCreate) {
+      try { fixture.releaseHeldRequests(); } catch (error) { failures.push(error); }
+    }
     try { await context.setOffline(false); } catch (error) { failures.push(error); }
     try {
       // The fixture receives its own 90-second teardown budget. Wait for
@@ -68,6 +124,80 @@ const test = base.extend({
       const cleanupDeadline = Date.now() + 80_000;
       let settleTimeoutReported = false;
       let stablePolls = 0;
+      let syncCompletionRecorded = false;
+      fixture.cleanupBarrierPassed = false;
+      const readAppliedPulls = async () => page.evaluate(() => window.__ccmTestAppliedPulls || []);
+      const syncPullComplete = () => {
+        if (!fixture.requirePullAfterCreate) return true;
+        const created = [...requestInfo.values()].find(info => info.method === 'POST' && info.path === '/api/songs'
+          && info.songTitle === fixture.titles[0] && info.status >= 200 && info.status < 300 && info.finished);
+        if (!created) return false;
+        const target = [...requestInfo.values()].find(info => info.method === 'GET'
+          && info.path === '/api/export' && info.status >= 200 && info.status < 300 && info.finished
+          && info.started > created.responseAt && info.exportedAt === fixture.targetExportedAt
+          && info.testPullId === fixture.targetPullId);
+        return Boolean(target);
+      };
+      const targetPullApplied = async () => {
+        if (!fixture.requirePullAfterCreate) return true;
+        return (await readAppliedPulls()).some(pull => pull.pullId === fixture.targetPullId
+          && Number.isFinite(pull.syncedAt));
+      };
+
+      if (fixture.requirePullAfterCreate) {
+        try {
+          await expect.poll(() => fixture.exportResponseHeld === true && Number.isFinite(fixture.delayedCreateResponseStatus)
+            && fixture.delayedCreateResponseStatus >= 200 && fixture.delayedCreateResponseStatus < 300).toBeTruthy();
+          // Simulate an independent sync marker write while the target export
+          // response is still held. This must not release the exact-pull gate.
+          await page.evaluate(async value => {
+            const db = await new Promise((resolve, reject) => {
+              const opening = indexedDB.open('chart-manager');
+              opening.onerror = () => reject(opening.error);
+              opening.onsuccess = () => resolve(opening.result);
+            });
+            await new Promise((resolve, reject) => {
+              const transaction = db.transaction('meta', 'readwrite');
+              transaction.objectStore('meta').put({ key: 'last_synced', value, updatedAt: Date.now() });
+              transaction.oncomplete = resolve;
+              transaction.onerror = () => reject(transaction.error);
+              transaction.onabort = () => reject(transaction.error || new Error('marker-interference transaction aborted'));
+            });
+            db.close();
+          }, Date.now() + 1);
+          const markerAfterInterference = await page.evaluate(async () => {
+            const db = await new Promise((resolve, reject) => {
+              const opening = indexedDB.open('chart-manager');
+              opening.onerror = () => reject(opening.error);
+              opening.onsuccess = () => resolve(opening.result);
+            });
+            const value = await new Promise((resolve, reject) => {
+              const transaction = db.transaction('meta');
+              const request = transaction.objectStore('meta').get('last_synced');
+              request.onsuccess = () => resolve(request.result?.value ?? null);
+              request.onerror = () => reject(request.error);
+            });
+            db.close();
+            return value;
+          });
+          if (!Number.isFinite(markerAfterInterference) || markerAfterInterference <= fixture.lastSyncedBeforeCreate) {
+            throw new Error('The unrelated marker interference did not advance last_synced.');
+          }
+          fixture.markerAdvancedWhileTargetHeld = markerAfterInterference;
+          if (await targetPullApplied()) throw new Error('Held target export was reported applied before it was released.');
+          if (fixture.cleanupBarrierPassed) throw new Error('Cleanup barrier passed while the exact export response remained held.');
+          const targetRequest = [...requestInfo.entries()].find(([, info]) => info.path === '/api/export'
+            && info.exportedAt === fixture.targetExportedAt && info.testPullId === fixture.targetPullId)?.[0];
+          if (!targetRequest || !outstanding.has(targetRequest)) {
+            throw new Error('Target export was not still outstanding while the unrelated marker advanced.');
+          }
+          requestEvents.push({ sequence: ++requestSequence, event: 'unrelated-sync-marker-advanced-target-still-held' });
+        } catch (error) {
+          failures.push(new Error(`T10 exact-pull gate did not remain blocked while target export was held: ${error.message}`));
+        } finally {
+          try { fixture.releaseHeldRequests(); } catch (error) { failures.push(error); }
+        }
+      }
       while (Date.now() < cleanupDeadline) {
         const pendingOwned = await page.evaluate(async ({ titles, setlistNames }) => {
           const db = await new Promise((resolve, reject) => {
@@ -88,25 +218,38 @@ const test = base.extend({
           return (values[2]?.value || []).filter(item => (item.entity === 'song' && songIds.has(String(item.id)))
             || (item.entity === 'setlist' && listIds.has(String(item.setlist_id))));
         }, { titles: fixture.titles, setlistNames: [...fixture.setlistNames] });
-        if (outstanding.size === 0 && pendingOwned.length === 0) stablePolls += 1;
-        else stablePolls = 0;
-        if (stablePolls >= 3) break;
+        const applicationSyncFinished = syncPullComplete() && await targetPullApplied();
+        if (applicationSyncFinished && fixture.requirePullAfterCreate && !syncCompletionRecorded) {
+          requestEvents.push({ sequence: ++requestSequence, event: 'target-export-indexeddb-application-complete',
+            pullId: fixture.targetPullId, exportedAt: fixture.targetExportedAt });
+          syncCompletionRecorded = true;
+        }
+        const settled = outstanding.size === 0 && pendingOwned.length === 0 && applicationSyncFinished;
+        stablePolls = settled ? stablePolls + 1 : 0;
+        if ((fixture.requirePullAfterCreate && settled) || stablePolls >= 3
+            || (Date.now() >= initialSettleDeadline && settled)) {
+          fixture.cleanupBarrierPassed = true;
+          break;
+        }
         if (Date.now() >= initialSettleDeadline && outstanding.size > 0 && !settleTimeoutReported) {
           settleTimeoutReported = true;
           const activePaths = [...outstanding].map(req => {
             const body = ['POST', 'PUT'].includes(req.method()) ? req.postDataJSON() : null;
-            const title = req.method() === 'POST' && new URL(req.url()).pathname === '/api/songs' ? body?.title : null;
+            const path = new URL(req.url()).pathname;
+            const title = req.method() === 'POST' && path === '/api/songs' ? body?.title : null;
             const marker = fixture.titles.includes(title) ? ` (${title})`
-              : req.method() === 'PUT' && fixture.songIds.has(Number(new URL(req.url()).pathname.split('/').pop()))
-                ? ` (song ${new URL(req.url()).pathname.split('/').pop()}, bpm ${body?.bpm}, op ${body?.operation_id})` : '';
-            return `${req.method()} ${new URL(req.url()).pathname}${marker}`;
+              : req.method() === 'PUT' && fixture.songIds.has(Number(path.split('/').pop()))
+                ? ` (song ${path.split('/').pop()}, bpm ${body?.bpm}, op ${body?.operation_id})` : '';
+            return `${req.method()} ${path}${marker}`;
           });
           console.warn(`T10 initial request-settle budget elapsed with ${activePaths.join(', ')}; continuing to wait before deletion.`);
         }
-        if (Date.now() >= initialSettleDeadline && outstanding.size === 0) break;
         await new Promise(resolve => setTimeout(resolve, 50));
       }
-      if (outstanding.size) failures.push(new Error(`T10 teardown still has ${outstanding.size} unfinished API request(s) after its independent wait budget.`));
+      if (outstanding.size) failures.push(new Error(`T10 teardown still has ${outstanding.size} unfinished API request(s) after its independent wait budget: ${JSON.stringify([...outstanding].map(req => `${req.method()} ${new URL(req.url()).pathname}`))}`));
+      if (fixture.requirePullAfterCreate && (!syncPullComplete() || !await targetPullApplied())) {
+        failures.push(new Error(`T10 owned-song pull was not fully processed before local cleanup. Request order: ${JSON.stringify(requestEvents.slice(-24))}`));
+      }
       if (fixture.trackingError) failures.push(fixture.trackingError);
       if (fixture.lateCommitError) failures.push(fixture.lateCommitError);
       if (fixture.requireLateCommit && (!fixture.lateCommitAfterBody || !fixture.lateCommitVerifiedPresent
@@ -117,6 +260,23 @@ const test = base.extend({
       // A timed-out test can leave only local projections. Remove only cache
       // records and queue operations bearing this fixture's exact marker.
       try {
+      if (fixture.requirePullAfterCreate && (!fixture.cleanupBarrierPassed
+          || !syncPullComplete() || !await targetPullApplied() || outstanding.size > 0)) {
+        throw new Error('Refusing local fixture deletion before this export pull is applied and all cache writers are settled.');
+      }
+      requestEvents.push({ sequence: ++requestSequence, event: 'local-cleanup-start' });
+      if (fixture.requirePullAfterCreate) {
+        const syncCompleted = requestEvents.find(event => event.event === 'target-export-indexeddb-application-complete'
+          && event.pullId === fixture.targetPullId);
+        const exportFinished = requestEvents.find(event => event.method === 'GET' && event.path === '/api/export'
+          && event.event === 'finish' && event.exportedAt === fixture.targetExportedAt
+          && event.testPullId === fixture.targetPullId
+          && event.sequence > (requestEvents.find(item => item.method === 'POST'
+            && item.path === '/api/songs' && item.event === 'response')?.sequence ?? Number.POSITIVE_INFINITY));
+        if (!syncCompleted || !exportFinished || syncCompleted.sequence >= requestSequence) {
+          failures.push(new Error(`T10 cleanup began before post-create cache pull completion: ${JSON.stringify(requestEvents.slice(-24))}`));
+        }
+      }
       await page.evaluate(async ({ titles, setlistNames }) => {
         const db = await new Promise((resolve, reject) => {
           const opening = indexedDB.open('chart-manager');
@@ -183,8 +343,9 @@ const test = base.extend({
         };
       }, { titles: fixture.titles, setlistNames: [...fixture.setlistNames] });
       if (remainingLocal.songs.length || remainingLocal.lists.length || remainingLocal.pending.length) {
-        failures.push(new Error(`T10 local cleanup remains: songs=${remainingLocal.songs.join(',')}; lists=${remainingLocal.lists.join(',')}; pending=${remainingLocal.pending.map(item => `${item.entity}:${item.type || item.id}`).join(',')}`));
+        failures.push(new Error(`T10 local cleanup remains: songs=${remainingLocal.songs.join(',')}; lists=${remainingLocal.lists.join(',')}; pending=${remainingLocal.pending.map(item => `${item.entity}:${item.type || item.id}`).join(',')}; request order=${JSON.stringify(requestEvents.slice(-24))}`));
       }
+      requestEvents.push({ sequence: ++requestSequence, event: 'local-cleanup-verified-absent' });
       } catch (error) { failures.push(error); }
 
       try {
@@ -249,8 +410,8 @@ const test = base.extend({
       }
     } catch (error) { failures.push(error); }
     context.off('request', trackRequest);
-    context.off('requestfinished', finishRequest);
-    context.off('requestfailed', finishRequest);
+    context.off('requestfinished', onRequestFinished);
+    context.off('requestfailed', onRequestFailed);
     if (failures.length) throw new AggregateError(failures, 'T10 exact-ID fixture cleanup failed');
   }, { timeout: 90_000 }],
 });
@@ -925,54 +1086,110 @@ test('a lost song-create response replays its frozen body and maps dependent set
 
   let firstCommit;
   const committed = new Promise(resolve => { firstCommit = resolve; });
+  const failedFirstRequest = page.waitForEvent('requestfailed', requestEvent => {
+    if (requestEvent.method() !== 'POST' || new URL(requestEvent.url()).pathname !== '/api/songs') return false;
+    return requestEvent.postDataJSON()?.title === title;
+  });
   let loseResponse = true;
+  let dispatchedCreateOperationId;
   await page.route('**/api/songs', async route => {
     if (route.request().method() === 'POST' && loseResponse) {
       loseResponse = false;
-      await route.fetch();
-      firstCommit();
+      const requestBody = route.request().postDataJSON();
+      dispatchedCreateOperationId = requestBody?.operation_id;
+      const serverResponse = await route.fetch();
+      expect(serverResponse.status()).toBe(201);
+      const committedSong = await serverResponse.json();
+      expect(Number.isInteger(committedSong.id) && committedSong.id > 0).toBe(true);
+      firstCommit({ id: committedSong.id, updated_at: committedSong.updated_at });
       await route.abort('failed');
       return;
     }
     await route.continue();
   });
   await context.setOffline(false);
-  await committed;
+  const firstCommittedSong = await committed;
+  await failedFirstRequest;
   await context.setOffline(true);
-
-  await page.evaluate(async ({ title }) => {
-    const db = await new Promise((resolve, reject) => {
-      const opening = indexedDB.open('chart-manager');
-      opening.onerror = () => reject(opening.error);
-      opening.onsuccess = () => resolve(opening.result);
+  // requestfailed fires at the browser/network layer before the app's catch
+  // handler has necessarily settled. Wait for its visible offline sync error
+  // and idle button before making the follow-up edit through the real UI.
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await expect(page.getByText(/Sync failed:/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sync now' })).toBeVisible();
+  await page.getByRole('button', { name: 'Songs' }).click();
+  await page.getByRole('searchbox').fill(title);
+  await page.locator('.song-row').filter({ hasText: title }).click();
+  await page.getByRole('button', { name: 'Edit' }).click();
+  await page.locator('.form-group').filter({ hasText: 'BPM' }).locator('input').fill('123');
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
+  const editedWhilePending = await page.evaluate(async ({ title }) => {
+    const opening = indexedDB.open('chart-manager');
+    const db = await new Promise((resolve, reject) => { opening.onerror = () => reject(opening.error); opening.onsuccess = () => resolve(opening.result); });
+    const state = await new Promise((resolve, reject) => {
+      const transaction = db.transaction(['songs', 'meta']);
+      const songsRequest = transaction.objectStore('songs').getAll();
+      const queueRequest = transaction.objectStore('meta').get('pending_mutations');
+      const done = () => {
+        if (songsRequest.readyState !== 'done' || queueRequest.readyState !== 'done') return;
+        const local = songsRequest.result.find(song => song.title === title && String(song.id).startsWith('local-'));
+        const operation = (queueRequest.result?.value || []).find(item => item.entity === 'song'
+          && String(item.id) === String(local?.id));
+        resolve({ localId: String(local?.id), bpm: local?.bpm, operationId: operation?.op_id,
+          sentRevision: operation?.sent_revision, editedRevision: operation?.local_revision,
+          sentBpm: operation?.sent_payload?.bpm ?? null });
+      };
+      songsRequest.onsuccess = queueRequest.onsuccess = done;
+      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => db.close();
     });
-    await new Promise((resolve, reject) => {
-      const transaction = db.transaction(['songs', 'meta'], 'readwrite');
-      const songs = transaction.objectStore('songs');
-      const meta = transaction.objectStore('meta');
-      const allSongs = songs.getAll();
-      const queueRequest = meta.get('pending_mutations');
+    return state;
+  }, { title });
+  expect(editedWhilePending.localId).toMatch(/^local-/);
+  expect(editedWhilePending.operationId).toBe(dispatchedCreateOperationId);
+  expect(editedWhilePending.editedRevision).toBeGreaterThan(editedWhilePending.sentRevision);
+  expect(editedWhilePending.bpm).toBe(123);
+  expect(editedWhilePending.sentBpm).toBe(null);
+  await page.getByRole('button', { name: 'Back' }).click();
+  await page.getByRole('button', { name: 'Setlists' }).click();
+  await page.unroute('**/api/songs');
+  const replayResponsePromise = page.waitForResponse(response => {
+    const requestBody = response.request().postDataJSON();
+    return response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/api/songs'
+      && requestBody?.title === title;
+  });
+  await context.setOffline(false);
+  const replayResponse = await replayResponsePromise;
+  expect(replayResponse.status()).toBe(201);
+  const replayedSong = await replayResponse.json();
+  expect(replayedSong.id).toBe(firstCommittedSong.id);
+  expect(replayResponse.request().postDataJSON().operation_id).toBe(dispatchedCreateOperationId);
+
+  await expect.poll(() => page.evaluate(async ({ title, serverId }) => {
+    const opening = indexedDB.open('chart-manager');
+    const db = await new Promise((resolve, reject) => { opening.onsuccess = () => resolve(opening.result); opening.onerror = () => reject(opening.error); });
+    const state = await new Promise((resolve, reject) => {
+      const transaction = db.transaction(['songs', 'meta']);
+      const songsRequest = transaction.objectStore('songs').getAll();
+      const queueRequest = transaction.objectStore('meta').get('pending_mutations');
       let ready = 0;
       const done = () => {
-        ready += 1;
-        if (ready !== 2) return;
-        const local = allSongs.result.find(song => song.title === title && String(song.id).startsWith('local-'));
-        if (!local) throw new Error('Lost-response fixture local song was not retained.');
-        local.bpm = 123;
-        songs.put(local);
-        const queue = queueRequest.result.value;
-        const operation = queue.find(item => item.entity === 'song' && String(item.id) === String(local.id));
-        if (!operation?.sent_payload) throw new Error('Create body was not frozen at dispatch.');
-        operation.local_revision += 1;
-        meta.put({ key: 'pending_mutations', value: queue, updatedAt: Date.now() });
+        if (++ready !== 2) return;
+        const song = songsRequest.result.find(item => item.title === title);
+        const queued = (queueRequest.result?.value || []).find(item => item.entity === 'song' && Number(item.id) === serverId);
+        resolve({ id: song?.id, bpm: song?.bpm, operation: song?._sync?.operation,
+          baseUpdatedAt: song?._sync?.base_updated_at, pending: Boolean(queued) });
       };
-      allSongs.onsuccess = queueRequest.onsuccess = done;
-      transaction.oncomplete = () => { db.close(); resolve(); };
+      songsRequest.onsuccess = queueRequest.onsuccess = done;
       transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => db.close();
     });
-  }, { title });
-  await page.unroute('**/api/songs');
-  await context.setOffline(false);
+    return state;
+  }, { title, serverId: firstCommittedSong.id }), { timeout: 5_000 }).toMatchObject({
+    id: firstCommittedSong.id, bpm: 123, operation: 'update', baseUpdatedAt: firstCommittedSong.updated_at, pending: true,
+  });
 
   let serverSetlist;
   await expect.poll(async () => {
@@ -991,8 +1208,67 @@ test('a lost song-create response replays its frozen body and maps dependent set
   const mappedSongId = details.songs[0].song_id;
   expect(mappedSongId).toBeGreaterThan(0);
 
+  const cachedBeforeManualSync = await page.evaluate(async ({ title, id }) => {
+    const opening = indexedDB.open('chart-manager');
+    const db = await new Promise((resolve, reject) => { opening.onsuccess = () => resolve(opening.result); opening.onerror = () => reject(opening.error); });
+    const state = await new Promise((resolve, reject) => {
+      const transaction = db.transaction(['songs', 'meta']);
+      const songsRequest = transaction.objectStore('songs').getAll();
+      const queueRequest = transaction.objectStore('meta').get('pending_mutations');
+      let ready = 0;
+      const done = () => {
+        if (++ready !== 2) return;
+        const song = songsRequest.result.find(item => Number(item.id) === id && item.title === title);
+        const operation = (queueRequest.result?.value || []).find(item => item.entity === 'song' && Number(item.id) === id);
+        resolve({ bpm: song?.bpm, pending: Boolean(operation), operationId: operation?.op_id, sent: Boolean(operation?.sent),
+          localRevision: operation?.local_revision, sentRevision: operation?.sent_revision,
+          sentPayloadBpm: operation?.sent_payload?.bpm ?? null });
+      };
+      songsRequest.onsuccess = queueRequest.onsuccess = done;
+      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => db.close();
+    });
+    return state;
+  }, { title, id: firstCommittedSong.id });
+  expect(cachedBeforeManualSync, 'local edited value and queued operation state before manual sync')
+    .toMatchObject({ bpm: 123, pending: true });
   await page.getByRole('button', { name: 'Settings' }).click();
-  await page.getByRole('button', { name: 'Sync now' }).click();
+  const syncButton = page.getByRole('button', { name: 'Sync now' });
+  await expect(syncButton).toBeVisible();
+  await expect(syncButton).toBeEnabled();
+  const followupUpdateRequest = page.waitForRequest(requestEvent => requestEvent.method() === 'PUT'
+    && new URL(requestEvent.url()).pathname === `/api/songs/${firstCommittedSong.id}`
+    && requestEvent.postDataJSON()?.operation_id === cachedBeforeManualSync.operationId);
+  await syncButton.click();
+  const updateRequest = await followupUpdateRequest;
+  const updateResponse = await updateRequest.response();
+  expect(updateResponse, 'the acknowledged response must belong to the dispatched update request').not.toBeNull();
+  expect(updateResponse.status()).toBe(200);
+  expect(updateRequest.postDataJSON().bpm, JSON.stringify({ cachedBeforeManualSync,
+    dispatched: updateRequest.postDataJSON() })).toBe(123);
+  expect(updateRequest.postDataJSON().base_updated_at).toBe(firstCommittedSong.updated_at);
+  await expect.poll(() => page.evaluate(async ({ title, id }) => {
+    const opening = indexedDB.open('chart-manager');
+    const db = await new Promise((resolve, reject) => { opening.onsuccess = () => resolve(opening.result); opening.onerror = () => reject(opening.error); });
+    const state = await new Promise((resolve, reject) => {
+      const transaction = db.transaction(['songs', 'meta']);
+      const songsRequest = transaction.objectStore('songs').getAll();
+      const queueRequest = transaction.objectStore('meta').get('pending_mutations');
+      let ready = 0;
+      const done = () => {
+        if (++ready !== 2) return;
+        const song = songsRequest.result.find(item => Number(item.id) === id && item.title === title);
+        const pending = (queueRequest.result?.value || []).some(item => item.entity === 'song' && Number(item.id) === id);
+        resolve({ bpm: song?.bpm, hasSyncProjection: Boolean(song?._sync), pending });
+      };
+      songsRequest.onsuccess = queueRequest.onsuccess = done;
+      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => db.close();
+    });
+    return state;
+  }, { title, id: firstCommittedSong.id }), { timeout: 5_000 }).toMatchObject({
+    bpm: 123, hasSyncProjection: false, pending: false,
+  });
   let songs;
   await expect.poll(async () => {
     const response = await request.get(`/api/songs?q=${encodeURIComponent(title)}`);
@@ -1310,19 +1586,68 @@ test('setlist conflicts stay visible after a later unrelated push failure and re
     .toBe('T10 authoritative server note');
 });
 
-test('fixture teardown waits for a delayed server commit after the test body completes', async ({ page, context, t10Owned }) => {
+test.describe('T10 cache reconciliation teardown', () => {
+test.use({ serviceWorkers: 'block' });
+
+test('fixture teardown waits for cache reconciliation after a delayed create acknowledgement', async ({ page, context, t10Owned }) => {
   t10Owned.settleBudgetMs = 100;
-  let commitStarted;
-  const committed = new Promise(resolve => { commitStarted = resolve; });
+  t10Owned.requirePullAfterCreate = true;
+  t10Owned.targetPullId = randomUUID();
+  let releasePull;
+  const heldPull = new Promise(resolve => { releasePull = resolve; });
+  t10Owned.holdUntilCleanup(releasePull);
+  await page.addInitScript(() => {
+    window.__CCM_TEST_OBSERVE_SYNC_PULL__ = true;
+    window.__ccmTestAppliedPulls = [];
+    window.addEventListener('ccm:test-sync-pull-applied', event => {
+      window.__ccmTestAppliedPulls.push(event.detail);
+    });
+  });
+  const readSyncState = () => page.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => {
+      const opening = indexedDB.open('chart-manager');
+      opening.onerror = () => reject(opening.error);
+      opening.onsuccess = () => resolve(opening.result);
+    });
+    const state = await new Promise((resolve, reject) => {
+      const transaction = db.transaction('meta');
+      const lastSynced = transaction.objectStore('meta').get('last_synced');
+      const pending = transaction.objectStore('meta').get('pending_mutations');
+      transaction.oncomplete = () => resolve({ lastSynced: lastSynced.result?.value ?? null,
+        pending: pending.result?.value || [] });
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+    return state;
+  });
   await page.route('**/api/songs', async route => {
     if (route.request().method() !== 'POST') return route.continue();
     const response = await route.fetch();
-    commitStarted();
+    t10Owned.delayedCreateResponseStatus = response.status();
     await new Promise(resolve => setTimeout(resolve, 700));
     await route.fulfill({ response });
   });
   await page.goto('/');
   await expect(page.getByPlaceholder('Search songs, artists…')).toBeVisible();
+  await expect.poll(async () => {
+    const state = await readSyncState();
+    return Number.isFinite(state.lastSynced) && state.pending.length === 0;
+  }).toBeTruthy();
+  t10Owned.lastSyncedBeforeCreate = (await readSyncState()).lastSynced;
+  await page.route('**/api/export', async route => {
+    t10Owned.exportRouteEntered = true;
+    const response = await route.fetch();
+    t10Owned.exportFetchStatus = response.status();
+    const payload = await response.json();
+    t10Owned.targetExportedAt = payload.exported_at;
+    if (!t10Owned.targetExportedAt) throw new Error('Held T10 export omitted its response identity.');
+    t10Owned.setExportIdentity(route.request(), payload.exported_at);
+    t10Owned.setExportTestIdentity(route.request(), t10Owned.targetPullId);
+    const heldPayload = { ...payload, __t10_test_pull_id: t10Owned.targetPullId };
+    t10Owned.exportResponseHeld = true;
+    await heldPull;
+    await route.fulfill({ status: response.status(), contentType: 'application/json', body: JSON.stringify(heldPayload) });
+  });
   await context.setOffline(true);
   await page.getByRole('button', { name: 'Add a new song' }).click();
   await page.locator('.form-group').filter({ hasText: 'Title' }).locator('input').fill(t10Owned.titles[0]);
@@ -1330,11 +1655,31 @@ test('fixture teardown waits for a delayed server commit after the test body com
   await page.locator('.form-textarea').fill('Invented delayed cleanup fixture');
   await page.getByRole('button', { name: 'Save changes' }).click();
   await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
+  const reconnectSequence = t10Owned.requestSequence();
   await context.setOffline(false);
-  // The server has committed, but the app has not received the response when
-  // the test body ends. Fixture teardown must wait, discover the exact ID,
-  // delete it, and verify it remains absent.
-  await committed;
+  await expect.poll(() => t10Owned.requestEvents.some(event => event.sequence > reconnectSequence
+    && event.method === 'POST' && event.path === '/api/songs' && event.event === 'start'), {
+    message: () => `Owned song push did not start after reconnect; request order=${JSON.stringify(t10Owned.requestEvents.slice(-24))}`,
+  }).toBeTruthy();
+  // The server has committed, but its response is delayed. After the
+  // acknowledgement, hold the exact export response so teardown can verify
+  // application-side IndexedDB completion for this response identity.
+  await expect.poll(() => t10Owned.delayedCreateResponseStatus).toBe(201);
+  await expect.poll(() => t10Owned.requestEvents.some(event => event.sequence > reconnectSequence
+    && event.method === 'POST' && event.path === '/api/songs' && event.event === 'finish')).toBeTruthy();
+  try {
+    await expect.poll(() => ({
+      exportFetchStatus: t10Owned.exportFetchStatus,
+      exportResponseHeld: t10Owned.exportResponseHeld,
+    })).toEqual({ exportFetchStatus: 200, exportResponseHeld: true });
+  } catch (error) {
+    const syncState = await readSyncState();
+    const appState = await page.locator('body').innerText().catch(() => '[page unavailable]');
+    throw new Error(`Post-create pull did not enter/hold its response. routeEntered=${Boolean(t10Owned.exportRouteEntered)}; `
+      + `requestOrder=${JSON.stringify(t10Owned.requestEvents.filter(event => event.sequence > reconnectSequence))}; `
+      + `syncState=${JSON.stringify(syncState)}; pageState=${appState.slice(0, 1200)}; ${error.message}`);
+  }
+});
 });
 
 test('fixture teardown catches a create that commits after the test body ends', async ({ page, request, t10Owned }) => {
