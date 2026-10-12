@@ -324,6 +324,21 @@ class ChecklistTests(unittest.TestCase):
         self.assertIn(f'localStorage.removeItem("{key}")', CHECKLIST)
         self.assertIn(f"`{key}`", CHECKLIST)
 
+    def test_the_dismiss_and_give_back_behaviour_it_describes_is_the_page_s(self):
+        app, render = (WEB / "app.js").read_text(encoding="utf-8"), (WEB / "render.js").read_text(encoding="utf-8")
+        self.assertIn('entry.code === "blocked_by_model"', app)
+        self.assertIn('"Dismiss"', render)
+        step9 = FLAT[FLAT.index("**9. "):FLAT.index("### E.")]
+        step13 = FLAT[FLAT.index("**13. "):FLAT.index("### G.")]
+        step15 = FLAT[FLAT.index("**15. "):FLAT.index("**16. ")]
+        step19 = FLAT[FLAT.index("**19. "):FLAT.index("## Results")]
+        self.assertIn("is back in the text box", step9)
+        self.assertIn("and a Dismiss button", step13)
+        self.assertIn("Click Dismiss", step13)
+        self.assertIn("no** Dismiss button", step15)
+        self.assertNotIn("site data", step19)                    # nothing from step 13 is left behind any more
+        self.assertIn("site data", FLAT[FLAT.index("## Setup"):FLAT.index("## Steps")])
+
     def test_it_holds_no_secret_or_address(self):
         for pattern in (r"AIza", r"hooks\.", r"https?://(?!127\.0\.0\.1)", r"\b192\.168\.", r"password\s*=", r"dbc-"):
             self.assertNotRegex(CHECKLIST, pattern)

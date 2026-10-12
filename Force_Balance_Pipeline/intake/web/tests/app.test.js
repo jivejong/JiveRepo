@@ -6,6 +6,7 @@ import { validateDescription } from "../api.js";
 import { startApp } from "../app.js";
 import { REPORTER_RE } from "../identity.js";
 import { ULID_RE } from "../ulid.js";
+import { IndexedDbStore } from "../store.js";
 import { FakeClock, FakeDocument, FakeIDB, PAGE_IDS, flush, okReport, reply } from "./helpers.js";
 
 const SECTORS = [{ sector_id: "coruscant", sector_name: "Coruscant" }, { sector_id: "tatooine", sector_name: "Tatooine" }];
@@ -257,6 +258,63 @@ describe("when the report cannot be sent", () => {
     await page.ui.queueList.find((e) => e.tagName === "BUTTON")[0].fire("click");
     assert.equal(page.ui.queueList.children.length, 0);
     assert.deepEqual(await page.app.store.list(), []);
+  });
+
+  it("gives the text back after the model refuses it, when the box is empty", async () => {
+    const page = await boot({ handlers: { "/api/report": reply(422, { error: "blocked_by_model", message: "Reword it." }) } });
+    await submit(page, "coruscant", "Saw something odd near the docks");
+    assert.equal(page.ui.message.textContent, "Reword it.");
+    assert.equal(page.ui.description.value, "Saw something odd near the docks");
+    assert.equal(page.ui.counter.textContent, `${Array.from("Saw something odd near the docks").length} / 8000`);
+    assert.equal(page.ui.queueList.children[0].className, "queue-dropped");
+  });
+
+  it("copes with a stored report whose text cannot be read back", async () => {
+    for (const body of ["not json", JSON.stringify({ description: 5 }), JSON.stringify({ description: "" }), "null"]) {
+      const idb = new FakeIDB();
+      const clock = new FakeClock();
+      await new IndexedDbStore(idb).put({ report_id: "01KX0000000000000000000001", sector_id: "coruscant", body, created_at: clock.now(), attempts: 0,
+        next_attempt_at: 0, state: "queued", status: null, message: null });
+      const page = await boot({ idb, clock, handlers: { "/api/report": reply(422, { error: "blocked_by_model", message: "Reword it." }) } });
+      assert.equal(page.ui.message.textContent, "Reword it.", body);
+      assert.equal(page.ui.description.value, "", body);
+    }
+  });
+
+  it("leaves what the reporter has started typing in the meantime alone", async () => {
+    const page = await boot();
+    page.table["/api/report"] = async () => {
+      page.ui.description.value = "a new draft";
+      return reply(422, { error: "blocked_by_model", message: "Reword it." });
+    };
+    await submit(page, "coruscant", "the refused text");
+    assert.equal(page.ui.description.value, "a new draft");
+  });
+
+  it("gives the text back only for a refusal by the model", async () => {
+    const answers = [reply(422, { error: "empty_description", message: "empty" }), reply(409, { error: "report_id_reused" }), reply(413, {}), reply(403, {}),
+      reply(422, {}), reply(503), reply(429, {}, { "Retry-After": "60" })];
+    for (const answer of answers) {
+      const page = await boot({ handlers: { "/api/report": answer } });
+      await submit(page, "coruscant", "some text");
+      assert.equal(page.ui.description.value, "", `status ${answer.status}`);
+    }
+  });
+
+  it("lets the reporter dismiss a report that is waiting on a 429, and no other waiting report", async () => {
+    const held = await boot({ handlers: { "/api/report": reply(429, { message: "Daily limit." }, { "Retry-After": "3600" }) } });
+    await submit(held, "coruscant", "one too many");
+    assert.match(held.ui.queueStatus.textContent, /^1 report is waiting to be sent/);
+    const buttons = held.ui.queueList.find((e) => e.tagName === "BUTTON");
+    assert.equal(buttons.length, 1);
+    await buttons[0].fire("click");
+    assert.equal(held.ui.queueList.children.length, 0);
+    assert.equal(held.ui.queueStatus.textContent, "Nothing is waiting to be sent.");
+    assert.deepEqual(await held.app.store.list(), []);
+
+    const retrying = await boot({ handlers: { "/api/report": reply(503) } });
+    await submit(retrying, "coruscant", "model down");
+    assert.equal(retrying.ui.queueList.find((e) => e.tagName === "BUTTON").length, 0);
   });
 
   it("shows 'could not be assessed' after the fifth failed attempt", async () => {

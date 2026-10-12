@@ -67,6 +67,20 @@ export async function startApp(env) {
       say("Saved on this device. Sending...");
     } else if (["retry", "rate_limited", "dropped", "failed"].includes(event.type)) {
       say(entry.message || "");
+      if (event.type === "dropped" && entry.code === "blocked_by_model") restoreText(entry);
+    }
+  }
+
+  /** The model refused the wording: give the reporter their text back to reword, unless they have already started something new. */
+  function restoreText(entry) {
+    if (ui.description.value !== "") return;
+    try {
+      const description = JSON.parse(entry.body).description;
+      if (typeof description !== "string" || description === "") return;
+      ui.description.value = description;
+      updateCounter();
+    } catch (e) {
+      // an unreadable stored body: nothing to give back
     }
   }
 

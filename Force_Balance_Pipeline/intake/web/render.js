@@ -3,6 +3,7 @@
 // scans for them, and the Content-Security-Policy would stop an injected script anyway.
 
 import { formatWait } from "./messages.js";
+import { canDismiss } from "./queue.js";
 
 function element(doc, tag, { text = null, className = null } = {}) {
   const el = doc.createElement(tag);
@@ -65,7 +66,7 @@ export function renderRecent(doc, list, note, reports) {
   );
 }
 
-/** The queue on this device: reports waiting, and finished ones the reporter can dismiss. */
+/** The queue on this device: reports waiting, and the ones the reporter can dismiss (finished, or waiting on a 429 with nothing in flight). */
 export function renderQueue(doc, statusEl, listEl, snapshot, { onDismiss, nowMs, persistent = true }) {
   const waiting = snapshot.queued.length;
   const parts = [];
@@ -80,7 +81,7 @@ export function renderQueue(doc, statusEl, listEl, snapshot, { onDismiss, nowMs,
     const item = element(doc, "li", { className: `queue-${entry.state}` });
     item.appendChild(element(doc, "p", { className: "state", text: `${entry.sector_id}: ${entry.state}` }));
     if (entry.message) item.appendChild(element(doc, "p", { className: "message", text: entry.message }));
-    if (entry.state !== "queued") {
+    if (canDismiss(entry, nowMs)) {
       const button = element(doc, "button", { text: "Dismiss" });
       button.setAttribute("type", "button");
       button.addEventListener("click", () => onDismiss(entry.report_id));

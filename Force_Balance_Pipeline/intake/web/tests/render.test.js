@@ -170,6 +170,16 @@ describe("renderQueue", () => {
     assert.equal(list.children[2].children[1].textContent, "This report could not be assessed.");
   });
 
+  it("gives a waiting report a dismiss button only when its last answer was a 429 and nothing is in flight", async () => {
+    const dismissed = [];
+    const entries = [queued("held", { status: 429, in_flight_since: null }), queued("sending", { status: 429, in_flight_since: 1000 - 100 }),
+      queued("stale", { status: 429, in_flight_since: 1000 - 200_000 }), queued("retrying", { status: 503 }), queued("fresh", { status: null })];
+    const { list } = run(snapshot(entries), options({ onDismiss: (id) => dismissed.push(id) }));
+    assert.deepEqual(list.children.map((li) => li.find((e) => e.tagName === "BUTTON").length), [1, 0, 1, 0, 0]);
+    for (const button of list.find((e) => e.tagName === "BUTTON")) await button.fire("click");
+    assert.deepEqual(dismissed, ["held", "stale"]);
+  });
+
   it("keeps hostile messages and planet ids as text", () => {
     for (const hostile of HOSTILE) {
       const { list } = run(snapshot([queued("q", { message: hostile, sector_id: hostile })]));

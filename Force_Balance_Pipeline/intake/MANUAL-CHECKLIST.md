@@ -31,7 +31,7 @@ You run it and paste the results (the table at the end) back to me. Allow about 
    shows any other broker or port, press Ctrl+C and tell me. Leave the terminal visible: it prints `[landed] ...` for each file the
    bridge writes (a few seconds after each accepted report).
 3. In your browser: open `http://127.0.0.1:8081/`, then DevTools -> Application -> Storage -> "Clear site data" for this origin, and
-   reload. (An earlier run can leave a waiting report in the browser's IndexedDB.)
+   reload. (A run that was stopped part-way can leave a waiting report in the browser's IndexedDB.)
 
 ## Steps
 
@@ -90,7 +90,9 @@ the recent list shows all three lines, in order, nothing garbled. (Tally: 6.)
 **9. A report the model refuses.** Send `This will be refused [stub:blocked]`. Expect: the message "This report could not be assessed. Try
 describing what you saw in different words."; the panel shows an entry "coruscant: dropped" with a Dismiss button and **no** retry
 (the terminal shows no new `[landed]` line; `intake.log` in the folder the banner printed has one `report refused: blocked_by_model`
-line for it, not several; the Network tab shows exactly one `/api/report` request). Click Dismiss: the entry goes. (Not tallied.)
+line for it, not several; the Network tab shows exactly one `/api/report` request). The text you sent, `This will be refused
+[stub:blocked]`, is back in the text box so you can reword it, and the counter matches it. Click Dismiss: the entry goes. Then clear the
+box. (Not tallied.)
 
 ### E. A slow server, two tabs
 
@@ -117,8 +119,10 @@ report once in the recent list. (Tally: 9. This identity has 1 of 4.)
 **13. The daily cap.** Send `A report about nothing in particular`, then `The Force is strong here`, then `Another quiet day`
 (these are this identity's 2nd, 3rd and 4th). Then send a fifth, `One report too many`. Expect: the message "You have filed as many
 reports as are allowed today. Try again tomorrow. It stays on this device and will be sent in about N hours." (N = hours until the next
-UTC midnight); the panel: "1 report is waiting to be sent. Next attempt in about N hours." with "coruscant: queued"; no Dismiss
-button; IndexedDB `attempts` is 0 (a refusal for the daily cap is not an attempt). No `[landed]` line for it. (Tally: 12.)
+UTC midnight); the panel: "1 report is waiting to be sent. Next attempt in about N hours." with "coruscant: queued" and a Dismiss
+button (a report waiting on a 429 can be dismissed; one waiting on anything else cannot, which step 15 shows); IndexedDB `attempts` is 0
+(a refusal for the daily cap is not an attempt). No `[landed]` line for it. Click Dismiss: the entry goes, the panel says "Nothing is
+waiting to be sent.", and the IndexedDB `queue` is empty. (Tally: 12.)
 
 ### G. A private window (fresh identity and queue)
 
@@ -130,7 +134,8 @@ windows it reads "This browser cannot keep reports between visits: closing this 
 you saw and the browser name. (Tally: 13.)
 
 **15. The model is unavailable.** Send `The model is down [stub:503]`. Expect: "The report could not be sent yet ... in 30 seconds
-(attempt 1 of 5)" (the server's Retry-After of 30 seconds is longer than the page's own 5 second step); "1 report is waiting";
+(attempt 1 of 5)" (the server's Retry-After of 30 seconds is longer than the page's own 5 second step); "1 report is waiting", with
+**no** Dismiss button (it is not waiting on a 429);
 after 30 seconds "attempt 2 of 5" (in 30 seconds), then "attempt 3 of 5" (in 2 minutes).
 
 **16. A waiting report survives a reload.** While step 15's report is waiting (and only if step 14 showed IndexedDB working), reload the
@@ -152,9 +157,8 @@ button; no further requests (Network tab). Click Dismiss. Close the private wind
 Expect: the line count equals your tally of "Report filed" messages (13 if you did every step once), and the second command prints
 nothing (no event_id landed twice).
 
-**19. Clean-up.** Ctrl+C in the terminal. Expect "removed container fbp-e2e-manual". `docker ps -a` shows no `fbp-e2e-manual`. In the
-browser, clear site data for `http://127.0.0.1:8081` again (a report waiting for tomorrow, from step 13, would otherwise be sent by the
-next run). Confirm `force-mosquitto` was never stopped: `docker ps` still lists it as Up.
+**19. Clean-up.** Ctrl+C in the terminal. Expect "removed container fbp-e2e-manual". `docker ps -a` shows no `fbp-e2e-manual`.
+Confirm `force-mosquitto` was never stopped: `docker ps` still lists it as Up.
 
 ## Results (paste this table back)
 

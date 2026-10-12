@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { BACKOFF_MS, DEFAULT_RATE_LIMIT_WAIT_MS, FETCH_TIMEOUT_MS, MAX_ATTEMPTS, MAX_RETRY_AFTER_MS, ReportQueue, STATES, WINDOW_MS, classify,
-  parseRetryAfter } from "../queue.js";
+import { BACKOFF_MS, DEFAULT_RATE_LIMIT_WAIT_MS, FETCH_TIMEOUT_MS, IN_FLIGHT_SLACK_MS, MAX_ATTEMPTS, MAX_RETRY_AFTER_MS, ReportQueue, STATES, WINDOW_MS,
+  canDismiss, classify, parseRetryAfter } from "../queue.js";
 import { FakeClock, FakeStore, flush, makeReport, okReport, reply, scriptedFetch } from "./helpers.js";
 
 function setup({ steps = [], otherwise = null, lock = null, store = null, log = [] } = {}) {
@@ -605,5 +605,185 @@ describe("dismissing and the snapshot", () => {
     await t.queue.enqueue(report);
     t.store.map.get(report.report_id).next_attempt_at = t.clock.now() + 3 * WINDOW_MS;
     assert.equal((await t.queue.snapshot()).wakeAt, t.store.entry(report.report_id).created_at + WINDOW_MS + 1);
+  });
+});
+
+describe("dismissing a report that is waiting on a 429", () => {
+  const TIMEOUT_AND_SLACK = FETCH_TIMEOUT_MS + IN_FLIGHT_SLACK_MS;
+
+  async function held(t) { // a report whose first answer was a 429 (so it waits for tomorrow)
+    const report = makeReport();
+    await t.queue.enqueue(report);
+    await t.queue.drain();
+    return report;
+  }
+
+  const waiting429 = (extra = {}) => ({ report_id: "r", state: "queued", status: 429, in_flight_since: null, ...extra });
+
+  it("is allowed when the last answer was a 429 and no request is out", async () => {
+    const t = setup({ steps: [reply(429, { message: "Daily limit." }, { "Retry-After": "3600" })] });
+    const report = await held(t);
+    assert.equal(t.store.entry(report.report_id).status, 429);
+    assert.equal(await t.queue.dismiss(report.report_id), true);
+    assert.equal(t.store.entry(report.report_id), undefined);
+    assert.deepEqual(t.store.deletes, [["delete", report.report_id]]);
+    assert.deepEqual(await t.queue.drain(), []);
+    assert.equal(t.fetchFn.calls.length, 1);
+  });
+
+  it("is refused for every other waiting report", async () => {
+    const answers = { "a 5xx": reply(503), "a network error": { throws: new TypeError("Failed to fetch") }, "an unexpected 204": reply(204), "a timeout": { hang: true } };
+    for (const [name, step] of Object.entries(answers)) {
+      const t = setup({ steps: [step] });
+      const report = makeReport();
+      await t.queue.enqueue(report);
+      const drained = t.queue.drain();
+      await flush();
+      await t.clock.advance(FETCH_TIMEOUT_MS);
+      await drained;
+      assert.equal(await t.queue.dismiss(report.report_id), false, name);
+      assert.ok(t.store.entry(report.report_id), name);
+    }
+    const fresh = setup();
+    const never = makeReport();
+    await fresh.queue.enqueue(never);
+    assert.equal(await fresh.queue.dismiss(never.report_id), false, "not yet tried");
+    assert.ok(fresh.store.entry(never.report_id));
+  });
+
+  it("is refused while a request for it is out in this tab, and allowed once it has been answered with another 429", async () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const t = setup({ steps: [reply(429, {}, { "Retry-After": "60" }), { wait: gate, response: reply(429, {}, { "Retry-After": "60" }) }] });
+    const report = await held(t);
+    await t.clock.advance(60_000);
+    const drained = t.queue.drain();
+    await flush();
+    assert.equal(t.fetchFn.calls.length, 2);
+    assert.equal(t.store.entry(report.report_id).in_flight_since, t.clock.now());
+    assert.equal(await t.queue.dismiss(report.report_id), false);
+    assert.ok(t.store.entry(report.report_id));
+    release();
+    await drained;
+    assert.equal(t.store.entry(report.report_id).in_flight_since, null);
+    assert.equal(await t.queue.dismiss(report.report_id), true);
+  });
+
+  it("clears the in-flight marker with every outcome", async () => {
+    const outcomes = { "a 5xx": [reply(503), "queued"], "a 4xx": [reply(422), "dropped"], "a 429": [reply(429, {}, { "Retry-After": "60" }), "queued"],
+      "a network error": [{ throws: new TypeError("x") }, "queued"] };
+    for (const [name, [step, state]] of Object.entries(outcomes)) {
+      const t = setup({ steps: [step] });
+      const report = makeReport();
+      await t.queue.enqueue(report);
+      await t.queue.drain();
+      const entry = t.store.entry(report.report_id);
+      assert.deepEqual([entry.state, entry.in_flight_since], [state, null], name);
+    }
+    const failing = setup({ otherwise: reply(503) });
+    const report = makeReport();
+    await failing.queue.enqueue(report);
+    for (let i = 1; i <= MAX_ATTEMPTS; i++) {
+      await failing.queue.drain();
+      if (i < MAX_ATTEMPTS) await failing.clock.advance(BACKOFF_MS[i - 1]);
+    }
+    assert.deepEqual([failing.store.entry(report.report_id).state, failing.store.entry(report.report_id).in_flight_since], ["failed", null]);
+  });
+
+  it("sees a request that another tab has out, but not one that tab left behind when it died", async () => {
+    const t = setup();
+    const report = makeReport();
+    await t.queue.enqueue(report);
+    const mark = (since) => { Object.assign(t.store.map.get(report.report_id), { status: 429, in_flight_since: since }); };
+    mark(t.clock.now() - 1_000);
+    assert.equal(await t.queue.dismiss(report.report_id), false);
+    mark(t.clock.now() - (TIMEOUT_AND_SLACK - 1));
+    assert.equal(await t.queue.dismiss(report.report_id), false, "one millisecond inside the limit");
+    mark(t.clock.now() - TIMEOUT_AND_SLACK);
+    assert.equal(await t.queue.dismiss(report.report_id), true, "exactly at the limit");
+  });
+
+  it("refuses a report this tab has a request out for, even before the marker reaches the store", async () => {
+    const t = setup({ steps: [reply(429, {}, { "Retry-After": "60" })] });
+    const report = await held(t);
+    t.queue._attempting = report.report_id; // the request has just been started (white box: the store has not caught up)
+    assert.equal(await t.queue.dismiss(report.report_id), false);
+    t.queue._attempting = null;
+    assert.equal(await t.queue.dismiss(report.report_id), true);
+  });
+
+  it("refuses when a request for the report starts while the store is being read", async () => {
+    const t = setup({ steps: [reply(429, {}, { "Retry-After": "60" })] });
+    const report = await held(t);
+    const original = t.store.list.bind(t.store);
+    t.store.list = async () => {
+      const snapshot = await original(); // the entry as it was: a 429 with nothing in flight
+      t.queue._attempting = report.report_id; // and now a request starts
+      return snapshot;
+    };
+    assert.equal(await t.queue.dismiss(report.report_id), false);
+    assert.ok(t.store.entry(report.report_id));
+  });
+
+  it("canDismiss: finished ones, and waiting ones only on a 429 with nothing in flight", () => {
+    const now = 1_000_000;
+    assert.equal(canDismiss({ state: "failed", status: null }, now), true);
+    assert.equal(canDismiss({ state: "dropped", status: 422 }, now), true);
+    assert.equal(canDismiss({ state: "dropped", status: 429 }, now), true);
+    assert.equal(canDismiss({ state: "queued", status: null }, now), false);
+    assert.equal(canDismiss({ state: "queued", status: 503 }, now), false);
+    assert.equal(canDismiss({ state: "queued", status: 503, in_flight_since: null }, now), false);
+    assert.equal(canDismiss(waiting429(), now), true);
+    assert.equal(canDismiss(waiting429({ in_flight_since: undefined }), now), true);
+    assert.equal(canDismiss(waiting429({ in_flight_since: now - 1 }), now), false);
+    assert.equal(canDismiss(waiting429({ in_flight_since: now - TIMEOUT_AND_SLACK + 1 }), now), false);
+    assert.equal(canDismiss(waiting429({ in_flight_since: now - TIMEOUT_AND_SLACK }), now), true);
+    assert.equal(canDismiss(waiting429({ in_flight_since: now - 15_000 }), now, 10_000), true, "a shorter timeout is honoured");
+    assert.equal(canDismiss(waiting429({ in_flight_since: now - 14_999 }), now, 10_000), false);
+  });
+
+  it("does not let a drain send a report while its dismissal is under way", async () => {
+    const t = setup({ steps: [reply(429, {}, { "Retry-After": "60" })], otherwise: reply(200, okReport()) });
+    const report = await held(t);
+    t.store.map.get(report.report_id).next_attempt_at = 0; // due again, so a drain would send it
+    const original = t.store.delete.bind(t.store);
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    let first = true;
+    t.store.delete = async (id) => {
+      if (first) { first = false; await gate; }
+      return original(id);
+    };
+    const dismissing = t.queue.dismiss(report.report_id);
+    await flush();
+    const outcomes = await t.queue.drain();
+    assert.equal(t.fetchFn.calls.length, 1);
+    assert.deepEqual(outcomes.map((o) => o.kind), ["waiting"]);
+    release();
+    assert.equal(await dismissing, true);
+    assert.equal(t.store.map.size, 0);
+  });
+
+  it("answers a second dismissal of the same report while the first is under way with no, and is free again afterwards", async () => {
+    const t = setup({ steps: [reply(503), reply(429, {}, { "Retry-After": "60" })] });
+    const report = makeReport();
+    await t.queue.enqueue(report);
+    await t.queue.drain();
+    assert.equal(await t.queue.dismiss(report.report_id), false); // refused: still waiting on a 5xx
+    await t.clock.advance(BACKOFF_MS[0]);
+    await t.queue.drain(); // now a 429
+    assert.equal(await t.queue.dismiss(report.report_id), true);
+  });
+
+  it("keeps the code the server gave with a refusal, for the page to act on", async () => {
+    const cases = [[422, { error: "blocked_by_model", message: "x" }, "blocked_by_model"], [409, { error: "report_id_reused" }, "report_id_reused"],
+      [422, {}, null], [404, "BAD", null], [422, { error: 5 }, null], [422, { error: "x".repeat(100) }, "x".repeat(64)]];
+    for (const [status, body, code] of cases) {
+      const t = setup({ steps: [reply(status, body)] });
+      const report = makeReport();
+      await t.queue.enqueue(report);
+      await t.queue.drain();
+      assert.equal(t.store.entry(report.report_id).code, code, JSON.stringify(body));
+    }
   });
 });

@@ -9,6 +9,8 @@
 //   * any other 4xx ends it ("dropped"), with a message; the server said no and asking again would get the same answer
 //   * at most 5 attempts, and none after 24 h from the first submit; then it is marked "could not be assessed" and left alone
 //   * Retry-After is honoured as a minimum wait
+//   * the reporter may dismiss a finished report, and a waiting report whose last answer was a 429 while no request for it is in
+//     flight (it is waiting for tomorrow); any other waiting report cannot be dismissed
 // The server makes a repeat of a finished report harmless (the stored answer, no second model call), so the one unavoidable
 // repeat, a tab closed after the server answered but before the delete, is safe.
 
@@ -21,6 +23,7 @@ export const FETCH_TIMEOUT_MS = 60 * 1000;
 export const BACKOFF_MS = [5 * 1000, 30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000]; // the wait after attempt 1, 2, 3, 4
 export const DEFAULT_RATE_LIMIT_WAIT_MS = 60 * 1000; // a 429 without a usable Retry-After
 export const MAX_RETRY_AFTER_MS = WINDOW_MS;
+export const IN_FLIGHT_SLACK_MS = 5 * 1000; // a stored "request in flight" marker older than the timeout plus this is a tab that died
 export const STATES = Object.freeze({ QUEUED: "queued", FAILED: "failed", DROPPED: "dropped" });
 
 class TimeoutError extends Error {}
@@ -39,6 +42,18 @@ export function classify(status) {
   return "retry";
 }
 
+/**
+ * May the reporter dismiss this entry now? A finished (failed or dropped) one, yes. A waiting one only if its last answer was a 429
+ * and no request for it is in flight: `in_flight_since` is written before every attempt and cleared with its outcome, so another
+ * tab's request shows here too; one older than the timeout (plus slack) belongs to a tab that died and no longer counts.
+ */
+export function canDismiss(entry, nowMs, timeoutMs = FETCH_TIMEOUT_MS) {
+  if (entry.state !== STATES.QUEUED) return true;
+  if (entry.status !== 429) return false;
+  const sent = entry.in_flight_since;
+  return !(typeof sent === "number" && nowMs - sent < timeoutMs + IN_FLIGHT_SLACK_MS);
+}
+
 const byAge = (a, b) => a.created_at - b.created_at || (a.report_id < b.report_id ? -1 : a.report_id > b.report_id ? 1 : 0);
 
 export class ReportQueue {
@@ -53,6 +68,8 @@ export class ReportQueue {
     Object.assign(this, { store, fetchFn, now, setTimeoutFn, clearTimeoutFn, lock, timeoutMs, url, onEvent });
     this._draining = null;
     this._again = false;
+    this._attempting = null; // the report this tab has a request out for
+    this._dismissing = new Set(); // reports whose dismissal is under way: a drain must not send them
   }
 
   /** Save a report for sending. A report_id already in the store is not added again. */
@@ -93,6 +110,10 @@ export class ReportQueue {
     for (;;) {
       const head = (await this.store.list()).filter((e) => e.state === STATES.QUEUED).sort(byAge)[0];
       if (!head) break;
+      if (this._dismissing.has(head.report_id)) {
+        outcomes.push({ kind: "waiting", report_id: head.report_id });
+        break;
+      }
       if (this.now() - head.created_at > WINDOW_MS) {
         await this._finish(head, STATES.FAILED, "expired", COULD_NOT_BE_ASSESSED);
         outcomes.push({ kind: "failed", report_id: head.report_id });
@@ -110,7 +131,16 @@ export class ReportQueue {
   }
 
   async _attempt(entry) {
-    const attempting = { ...entry, attempts: entry.attempts + 1 };
+    this._attempting = entry.report_id;
+    try {
+      return await this._attemptOnce(entry);
+    } finally {
+      this._attempting = null;
+    }
+  }
+
+  async _attemptOnce(entry) {
+    const attempting = { ...entry, attempts: entry.attempts + 1, in_flight_since: this.now() };
     await this.store.put(attempting); // counted before it is sent, so a tab that dies mid-request still used the attempt
     this.onEvent({ type: "sending", entry: attempting });
     let answer;
@@ -127,14 +157,15 @@ export class ReportQueue {
     }
     if (kind === "rate_limited") {
       const wait = answer.retryAfterMs ?? DEFAULT_RATE_LIMIT_WAIT_MS;
-      const waiting = { ...attempting, attempts: entry.attempts, next_attempt_at: this.now() + wait, status: 429,
+      const waiting = { ...attempting, attempts: entry.attempts, next_attempt_at: this.now() + wait, status: 429, in_flight_since: null,
         message: messageForRateLimited(answer.json, wait) };
       await this.store.put(waiting);
       this.onEvent({ type: "rate_limited", entry: waiting, waitMs: wait });
       return { kind: "rate_limited", report_id: waiting.report_id, waitMs: wait };
     }
     if (kind === "dropped") {
-      await this._finish(attempting, STATES.DROPPED, String(answer.status), messageForDropped(answer.status, answer.json), answer.status);
+      const code = answer.json && typeof answer.json.error === "string" ? answer.json.error.slice(0, 64) : null;
+      await this._finish(attempting, STATES.DROPPED, String(answer.status), messageForDropped(answer.status, answer.json), answer.status, code);
       return { kind: "dropped", report_id: attempting.report_id, status: answer.status };
     }
     return this._retryOrFail(attempting, `status ${answer.status}`, answer.retryAfterMs, answer.status);
@@ -146,14 +177,15 @@ export class ReportQueue {
       return { kind: "failed", report_id: entry.report_id };
     }
     const wait = Math.max(BACKOFF_MS[Math.min(entry.attempts, BACKOFF_MS.length) - 1], retryAfterMs ?? 0);
-    const waiting = { ...entry, next_attempt_at: this.now() + wait, status, message: messageForRetry(entry.attempts, MAX_ATTEMPTS, wait) };
+    const waiting = { ...entry, next_attempt_at: this.now() + wait, status, in_flight_since: null,
+      message: messageForRetry(entry.attempts, MAX_ATTEMPTS, wait) };
     await this.store.put(waiting);
     this.onEvent({ type: "retry", entry: waiting, waitMs: wait, reason });
     return { kind: "retry", report_id: waiting.report_id, waitMs: wait };
   }
 
-  async _finish(entry, state, reason, message, status = null) {
-    const done = { ...entry, state, reason, message, status, finished_at: this.now() };
+  async _finish(entry, state, reason, message, status = null, code = null) {
+    const done = { ...entry, state, reason, message, status, code, in_flight_since: null, finished_at: this.now() };
     await this.store.put(done); // kept, so the reporter sees what happened even after a reload
     this.onEvent({ type: state, entry: done });
   }
@@ -186,12 +218,22 @@ export class ReportQueue {
     }
   }
 
-  /** The reporter acknowledges a finished (failed or dropped) report; a report still waiting cannot be dismissed. */
+  /**
+   * The reporter dismisses a report: a finished one, or one waiting on a 429 with no request in flight (see canDismiss). Returns
+   * whether it was removed. While a dismissal is under way a drain skips that report, so it cannot be re-saved by an attempt.
+   */
   async dismiss(reportId) {
-    const entry = (await this.store.list()).find((e) => e.report_id === reportId);
-    if (!entry || entry.state === STATES.QUEUED) return false;
-    await this.store.delete(reportId);
-    return true;
+    if (this._dismissing.has(reportId)) return false;
+    this._dismissing.add(reportId);
+    try {
+      const entry = (await this.store.list()).find((e) => e.report_id === reportId);
+      if (!entry || !canDismiss(entry, this.now(), this.timeoutMs)) return false;
+      if (this._attempting === reportId) return false; // a request started while the store was being read
+      await this.store.delete(reportId);
+      return true;
+    } finally {
+      this._dismissing.delete(reportId);
+    }
   }
 
   /** What the page shows: waiting reports (oldest first), finished ones, and when to look again. */
