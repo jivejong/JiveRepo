@@ -43,6 +43,8 @@ sys.path.insert(0, str(ROOT / "ingest"))
 import intake_core as core  # noqa: E402
 import files_api  # noqa: E402
 import e2e_local  # noqa: E402  (its bridge runner and waiters; the file is not modified)
+import stub_model  # noqa: E402
+from stub_model import STUB_ANSWER, stub_answer_body  # noqa: E402,F401  (re-exported: the tests and the checks use them from here)
 
 CONTAINER_DEFAULT = "fbp-e2e-mosquitto"
 CONTAINER_RE = re.compile(r"^fbp-e2e-[a-z0-9-]{1,30}$")
@@ -50,8 +52,8 @@ LAN_CONF = ROOT / "infra" / "mosquitto" / "mosquitto.lan.conf"
 ANON_CONF = ROOT / "infra" / "mosquitto" / "mosquitto.conf"
 ACL_FILE = ROOT / "infra" / "mosquitto" / "acl"
 LANDED_RE = re.compile(r"^dt=(\d{4}-\d{2}-\d{2})/hh=(\d{2})/web-([a-z0-9]{4,16})-([0-9A-HJKMNP-TV-Z]{26})\.ndjson$")
-STUB_ANSWER = {"relevance_score": 0.95, "midichlorian_ppm": 26400.0, "kyber_resonance": 30.0, "dark_side_activity": 85.0,
-               "inference_rationale": "e2e stub: a named dark side figure"}
+LIVE_BROKER_PORT = 1883
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 DESCRIPTION = "Saw a figure in black robes near the eastern spaceport.\nThe air felt cold \u2014 \U0001F311 caf\u00e9"
 BRIDGE_FLUSH_S = 3          # the bridge's --max-seconds for these runs (production: 90)
 IMAGE = "eclipse-mosquitto:2"
@@ -94,8 +96,26 @@ def expected_line(body, now):
     return core.serialize_envelope(envelope) + b"\n"
 
 
-def stub_answer_body():
-    return json.dumps({"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": json.dumps(STUB_ANSWER)}]}}]}).encode()
+def guard_stub_run(args):
+    """--serve-stub invents the model's answer, so a report it publishes must never reach the live broker: a report through
+    the live broker lands in prod bronze. Refused unless the broker is on loopback at a port other than the live 1883, the HTTP
+    port is not the default, and no file or lock the real intake process uses is named (its credentials, report log, log, lock)."""
+    import intake_mqtt
+    import intake_server
+    problems = []
+    if str(args.mqtt_host).lower() not in LOOPBACK_HOSTS:
+        problems.append(f"the broker host must be loopback, not {args.mqtt_host!r}")
+    if args.mqtt_port == LIVE_BROKER_PORT:
+        problems.append(f"the broker port is the live broker's ({LIVE_BROKER_PORT}); use a throwaway broker on another port")
+    if args.http_port == intake_server.DEFAULT_HTTP_PORT:
+        problems.append(f"the HTTP port is the real intake's default ({intake_server.DEFAULT_HTTP_PORT})")
+    for name, value, default in (("--env-file", args.env_file, core.DEFAULT_ENV_FILE), ("--mqtt-env-file", args.mqtt_env_file, intake_mqtt.MQTT_ENV_FILE_DEFAULT),
+                                 ("--report-log", args.report_log, intake_server.DEFAULT_REPORT_LOG),
+                                 ("--log-file", args.log_file, intake_server.DEFAULT_LOG_PATH), ("--lock-file", args.lock_file, intake_server.DEFAULT_LOCK_PATH)):
+        if Path(value).resolve() == Path(default).resolve():
+            problems.append(f"{name} is the real intake's own file; pass a file in a temporary folder")
+    if problems:
+        raise SystemExit("refusing to run the stub model: " + "; ".join(problems))
 
 
 def make_request(number, now):
@@ -192,12 +212,12 @@ def free_port():
 class RunningIntake:
     """The real intake process (intake_server.main) with a stub model, on a free port."""
 
-    def __init__(self, work, broker_port, intake_password, extra=()):
-        self.port, self.work = free_port(), Path(work)
+    def __init__(self, work, broker_port, intake_password, extra=(), http_port=None, varied=False):
+        self.port, self.work = http_port or free_port(), Path(work)
         self.calls_file = self.work / "model_calls.txt"
         (self.work / ".env.intake").write_text("GEMINI_API_KEY=e2e-not-a-real-key\nINFERENCE_MODEL=e2e-model\n", encoding="utf-8")
         (self.work / ".env.intake.mqtt").write_text(f"INTAKE_MQTT_USERNAME=web-intake\nINTAKE_MQTT_PASSWORD={intake_password}\n", encoding="utf-8")
-        cmd = [sys.executable, "-B", str(Path(__file__).resolve()), "--serve-stub", str(self.calls_file), "--",
+        cmd = [sys.executable, "-B", str(Path(__file__).resolve()), "--serve-stub", str(self.calls_file), *(["--stub-varied"] if varied else []), "--",
                "--http-port", str(self.port), "--mqtt-host", "127.0.0.1", "--mqtt-port", str(broker_port),
                "--env-file", str(self.work / ".env.intake"), "--mqtt-env-file", str(self.work / ".env.intake.mqtt"),
                "--report-log", str(self.work / "reports.ndjson"), "--log-file", str(self.work / "intake.log"),
@@ -236,15 +256,12 @@ class RunningIntake:
             self.proc.wait(timeout=15)
 
 
-def serve_stub(calls_file, argv):
-    """--serve-stub: run intake_server.main with a model that answers from STUB_ANSWER and counts its calls in `calls_file`."""
+def serve_stub(calls_file, argv, varied=False):
+    """--serve-stub: run intake_server.main with the stub model (stub_model.py) and count its calls in `calls_file`. Refuses, before
+    anything starts, any arguments that could reach the live broker or the real intake's files (guard_stub_run)."""
     import intake_server
-
-    def http(method, url, *, headers=None, data=None, timeout=60, opener=None):
-        with open(calls_file, "a", encoding="utf-8") as f:
-            f.write(url.split("?")[0] + "\n")
-        return 200, stub_answer_body()
-    return intake_server.main(argv, http=http)
+    guard_stub_run(intake_server.parse_args(argv))
+    return intake_server.main(argv, http=stub_model.make_http(calls_file, varied=varied))
 
 
 class Landing:
@@ -501,6 +518,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--run-all", action="store_true", help="create the throwaway container, run everything, remove it")
     p.add_argument("--serve-stub", metavar="CALLS_FILE", help="(internal) run the intake process with a stub model, then the intake args after --")
+    p.add_argument("--stub-varied", action="store_true", help="(internal, with --serve-stub) answers follow the text and [stub:...] triggers work")
     p.add_argument("--container", default=CONTAINER_DEFAULT, help="the throwaway container (must be named fbp-e2e-<name>)")
     p.add_argument("--port", type=int, default=18883, help="host port, bound on 127.0.0.1 only")
     p.add_argument("--only", action="append", choices=("report", "broker_down", "negative"))
@@ -509,7 +527,7 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     args = p.parse_args(argv)
     if args.serve_stub:
-        return serve_stub(args.serve_stub, [a for a in args.rest if a != "--"])
+        return serve_stub(args.serve_stub, [a for a in args.rest if a != "--"], varied=args.stub_varied)
     if not args.run_all:
         p.error("nothing to do: pass --run-all")
     args.host, args.bridge_script = "127.0.0.1", ROOT / "ingest" / "bridge" / "bridge.py"
