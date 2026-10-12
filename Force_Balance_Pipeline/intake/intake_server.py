@@ -5,7 +5,8 @@ the broker's PUBACK. The bridge, unchanged, lands what is published.
 
     POST /api/report   {"sector_id", "description", "report_id", "reporter_id", "observed_at"?}
     GET  /api/sectors  [{"sector_id", "sector_name"}, ...]
-    GET  /             a placeholder until the page arrives (Round 4)
+    GET  /api/reports?sector_id=ID   the 20 newest finished reports for one planet (from the report log), newest first
+    GET  /             the page (intake/web/index.html); its scripts and stylesheet are under /static/
 
 Bound to 127.0.0.1 only; there is no flag to change that. Runs on demand (no scheduled task this phase), with a single-instance lock
 and a rotating log under logs/, using the bridge's own lock and log classes.
@@ -30,10 +31,12 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
 import traceback
+import urllib.parse
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -56,9 +59,14 @@ DEFAULT_REPORT_LOG = core.ROOT / "logs" / "intake_reports.ndjson"
 DEFAULT_LOG_PATH = core.ROOT / "logs" / "intake.log"
 DEFAULT_LOCK_PATH = core.ROOT / "logs" / "intake.lock"
 REQUEST_TIMEOUT_S = 30                      # a client that stalls mid-request is dropped
+WEB_DIR = HERE / "web"
+STATIC_NAME_RE = re.compile(r"[a-z0-9_-]+\.(js|css|html)")   # the only file names ever served; matched with fullmatch
+STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8"}
+# Scripts and styles only from this origin, no inline code or handlers, no framing, no <base>, forms only to this origin.
+PAGE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+RECENT_LIMIT = 20
 EXIT_CONFIG, EXIT_ALREADY_RUNNING, EXIT_PORT = 2, bridge.EXIT_ALREADY_RUNNING, 4
-PLACEHOLDER_PAGE = (b"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Council intake</title></head>"
-                    b"<body><p>The intake page arrives in a later round. Reports are filed with POST /api/report.</p></body></html>")
 UNAVAILABLE_MESSAGE = "The assessment service is not available right now. Try again shortly."
 BROKER_MESSAGE = "The report could not be passed on right now. Try again shortly."
 INTERNAL_MESSAGE = "Something went wrong on our side. Try again later."
@@ -137,7 +145,7 @@ class ReportLog:
             return self._per_day.get(day, 0) if source_id is None else self._per_reporter.get((day, source_id), 0)
 
     def recent(self, sector_id, limit=20):
-        """Newest first. Used by the page's recent-reports list (Round 4); the descriptions are the reporters' own text."""
+        """Newest first. Used by the page's recent-reports list; the descriptions are the reporters' own text."""
         with self._lock:
             found = [e for e in self._by_id.values() if e["sector_id"] == sector_id]
         return sorted(found, key=lambda e: e["accepted_at"], reverse=True)[:limit]
@@ -279,6 +287,43 @@ class IntakeService:
         return sorted(({"sector_id": s.sector_id, "sector_name": s.sector_name} for s in self.sectors.values()),
                       key=lambda row: row["sector_name"].lower())
 
+    # -- GET /api/reports?sector_id=
+    def recent_reports(self, sector_id):
+        """The newest finished reports for one planet, for the page's list. Only what the page shows: never the reporter's id, the
+        report_id (the idempotency key) or the fingerprint. The descriptions are other people's text; the page renders them as text."""
+        if not isinstance(sector_id, str) or sector_id not in self.sectors:
+            return error_response(422, "unknown_sector", "sector_id is not a known planet")
+        rows = []
+        for entry in self.reports.recent(sector_id, RECENT_LIMIT):
+            stored = entry["response"] if isinstance(entry["response"], dict) else {}
+            rows.append({"description": entry["description"], "event_time": stored.get("event_time"),
+                         "relevance_score": stored.get("relevance_score"), "midichlorian_ppm": stored.get("midichlorian_ppm"),
+                         "kyber_resonance": stored.get("kyber_resonance"), "dark_side_activity": stored.get("dark_side_activity"),
+                         "inference_rationale": stored.get("inference_rationale"), "event_id": entry["event_id"]})
+        return Response(200, rows)
+
+
+# ---- the page's files -----------------------------------------------------------------------------------------
+class StaticSite:
+    """The page's files, read once at start from the TOP LEVEL of the web directory. Only names matching STATIC_NAME_RE are
+    taken (so not package.json, not the tests/ directory, not a dotfile, not Markdown); index.html is served at "/" and every
+    other file at /static/<name>. A request is answered only by an exact match on a path read here: the request path is never
+    percent-decoded or joined to a directory, so there is no way to name a file that was not loaded."""
+
+    def __init__(self, web_dir=WEB_DIR):
+        self.pages = {}
+        web_dir = Path(web_dir)
+        try:
+            names = sorted(p.name for p in web_dir.iterdir() if p.is_file() and not p.is_symlink())
+            for name in names:
+                if STATIC_NAME_RE.fullmatch(name):
+                    route = "/" if name == "index.html" else f"/static/{name}"
+                    self.pages[route] = (STATIC_TYPES[Path(name).suffix], (web_dir / name).read_bytes())
+        except OSError as e:
+            raise core.ConfigError(f"the page files cannot be read from {web_dir.name} ({type(e).__name__})") from None
+        if "/" not in self.pages:
+            raise core.ConfigError(f"{web_dir.name}/index.html is missing")
+
 
 # ---- the HTTP layer -----------------------------------------------------------------------------------------
 class IntakeHTTPServer(ThreadingHTTPServer):
@@ -286,7 +331,10 @@ class IntakeHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = False         # on Windows SO_REUSEADDR would let a second process share the port
 
 
-def make_handler(service, logger):
+def make_handler(service, logger, site=None):
+    site = site or StaticSite(WEB_DIR)
+    routes = {"/api/sectors": ("GET",), "/api/reports": ("GET",), "/api/report": ("POST",), **{path: ("GET",) for path in site.pages}}
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "ForceIntake/0.1"
         sys_version = ""
@@ -329,19 +377,30 @@ def make_handler(service, logger):
 
         def _dispatch(self, method):
             path = self._route()
-            routes = {"/": ("GET",), "/api/sectors": ("GET",), "/api/report": ("POST",)}
             if not self._host_ok():
                 return self._error(403, "bad_host", "This service answers only on its own address.")
             if path not in routes:
                 return self._error(404, "not_found", "No such page.")
             if method not in routes[path]:
                 return self._error(405, "method_not_allowed", "That method is not allowed here.", Allow=", ".join(routes[path]))
-            if path == "/":
-                return self._send(Response(200, None), "text/html; charset=utf-8", PLACEHOLDER_PAGE,
-                                  {"Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'", "Referrer-Policy": "no-referrer"})
+            if path in site.pages:
+                content_type, data = site.pages[path]
+                return self._send(Response(200, None), content_type, data,
+                                  {"Content-Security-Policy": PAGE_CSP, "Referrer-Policy": "no-referrer"})
             if path == "/api/sectors":
                 return self._send(Response(200, service.sectors_listing()))
+            if path == "/api/reports":
+                return self._get_reports()
             return self._post_report()
+
+        def _get_reports(self):
+            try:
+                params = urllib.parse.parse_qs(self.path.partition("?")[2], keep_blank_values=True, max_num_fields=5)
+            except ValueError:
+                params = {}
+            if set(params) != {"sector_id"} or len(params["sector_id"]) != 1:
+                return self._error(400, "bad_query", "Ask for one planet: /api/reports?sector_id=ID.")
+            self._send(service.recent_reports(params["sector_id"][0]))
 
         def _post_report(self):
             origin = self.headers.get("Origin")
@@ -385,8 +444,8 @@ def make_handler(service, logger):
     return Handler
 
 
-def make_server(service, port, logger):
-    return IntakeHTTPServer((BIND_HOST, port), make_handler(service, logger))
+def make_server(service, port, logger, site=None):
+    return IntakeHTTPServer((BIND_HOST, port), make_handler(service, logger, site))
 
 
 # ---- process plumbing (the bridge's patterns) -----------------------------------------------------------------
@@ -454,6 +513,7 @@ def main(argv=None, *, process_wide=True, publisher=None, http=files_api.http_re
         try:
             api_key, model = core.intake_settings(environ, args.env_file)
             sectors = core.load_sectors()
+            site = StaticSite(WEB_DIR)
             if publisher is None:
                 username, password = intake_mqtt.mqtt_credentials(environ, args.mqtt_env_file)
                 publisher = owned_publisher = intake_mqtt.MqttPublisher(args.mqtt_host, args.mqtt_port, username, password,
@@ -471,7 +531,7 @@ def main(argv=None, *, process_wide=True, publisher=None, http=files_api.http_re
                                 global_cap=args.global_cap, thinking_level=args.thinking_level, publish_timeout=args.publish_timeout,
                                 now=now, http=http, log=logger.info)
         try:
-            server = make_server(service, args.http_port, logger)
+            server = make_server(service, args.http_port, logger, site)
         except OSError as e:
             logger.error(f"intake: cannot listen on {BIND_HOST}:{args.http_port} ({type(e).__name__})")
             return EXIT_PORT

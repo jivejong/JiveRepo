@@ -128,13 +128,13 @@ class RoutesTests(ServerCase):
         self.assertEqual([r["sector_name"].lower() for r in rows], sorted(r["sector_name"].lower() for r in rows))
         self.assertTrue(all(set(r) == {"sector_id", "sector_name"} for r in rows))
 
-    def test_the_root_serves_a_placeholder_page_with_a_locked_down_policy(self):
+    def test_the_root_serves_the_page_with_a_locked_down_policy(self):
         status, headers, payload = raw_request(self.port, "GET", "/")
         self.assertEqual(status, 200)
-        self.assertTrue(headers["content-type"].startswith("text/html"))
-        self.assertIn("default-src 'self'", headers["content-security-policy"])
-        self.assertIn(b"POST /api/report", payload)
-        self.assertNotIn(b"<script", payload)
+        self.assertTrue(headers.get("content-type", "").startswith("text/html"))
+        self.assertIn("default-src 'self'", headers.get("content-security-policy", ""))
+        self.assertIn(b'<script type="module" src="/static/main.js"></script>', payload)
+        self.assertNotIn(b"later round", payload)
 
     def test_a_query_string_does_not_change_the_route(self):
         self.assertEqual(raw_request(self.port, "GET", "/api/sectors?x=1")[0], 200)
@@ -142,10 +142,12 @@ class RoutesTests(ServerCase):
 
     def test_unknown_paths_are_404_and_wrong_methods_405_with_allow(self):
         self.assertEqual(raw_request(self.port, "GET", "/nope")[0], 404)
-        self.assertEqual(raw_request(self.port, "GET", "/api/reports")[0], 404)
+        self.assertEqual(raw_request(self.port, "GET", "/api/reportsx")[0], 404)
+        self.assertEqual(raw_request(self.port, "GET", "/api/reports/")[0], 404)
         for method, path, allow in (("GET", "/api/report", "POST"), ("POST", "/api/sectors", "GET"), ("POST", "/", "GET"),
                                     ("PUT", "/api/report", "POST"), ("DELETE", "/api/report", "POST"), ("OPTIONS", "/api/report", "POST"),
-                                    ("PATCH", "/api/sectors", "GET"), ("HEAD", "/", "GET")):
+                                    ("PATCH", "/api/sectors", "GET"), ("HEAD", "/", "GET"), ("POST", "/api/reports", "GET"),
+                                    ("POST", "/static/main.js", "GET")):
             with self.subTest(method=method, path=path):
                 status, headers, _ = raw_request(self.port, method, path)
                 self.assertEqual((status, headers["allow"]), (405, allow))
@@ -157,6 +159,7 @@ class RoutesTests(ServerCase):
 
     def test_every_answer_is_uncacheable_and_has_no_cors_headers_and_no_python_version(self):
         answers = [raw_request(self.port, "GET", "/"), raw_request(self.port, "GET", "/api/sectors"), raw_request(self.port, "GET", "/nope"),
+                   raw_request(self.port, "GET", "/static/main.js"), raw_request(self.port, "GET", "/api/reports?sector_id=coruscant"),
                    post_report(self.port, report_body(1)), post_report(self.port, b"{"), raw_request(self.port, "OPTIONS", "/api/report")]
         for status, headers, _ in answers:
             self.assertEqual(headers.get("cache-control"), "no-store")
@@ -174,7 +177,7 @@ class BrowserSafetyTests(ServerCase):
     """A page in the user's browser can reach 127.0.0.1; these checks stop it using the service."""
 
     def test_a_request_with_a_foreign_or_missing_host_is_refused(self):
-        for host in ("evil.example", "evil.example:8080", f"127.0.0.1", f"192.168.0.5:{self.port}", f"localhost:{self.port + 1}", None):
+        for host in ("evil.example", "evil.example:8080", f"127.0.0.1", f"203.0.113.5:{self.port}", f"localhost:{self.port + 1}", None):
             with self.subTest(host=host):
                 self.assertEqual(raw_request(self.port, "GET", "/api/sectors", host=host)[0], 403)
                 self.assertEqual(post_report(self.port, report_body(1), host=host)[0], 403)

@@ -238,9 +238,9 @@ class BrokerClientLifecycleTests(unittest.TestCase):
         def run(server):
             seen["events_while_serving"] = list(OwnedPublisher.instances[0].events)
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(go(tmp, "--mqtt-host", "10.1.2.3", "--mqtt-port", "1884", publisher=None, environ=self.environ, run=run), 0)
+            self.assertEqual(go(tmp, "--mqtt-host", "203.0.113.7", "--mqtt-port", "1884", publisher=None, environ=self.environ, run=run), 0)
             (publisher,) = OwnedPublisher.instances
-            self.assertEqual(publisher.args, ("10.1.2.3", 1884, "web-intake", "pw-NOT-A-REAL-ONE"))
+            self.assertEqual(publisher.args, ("203.0.113.7", 1884, "web-intake", "pw-NOT-A-REAL-ONE"))
             self.assertEqual(seen["events_while_serving"], ["start"])
             self.assertEqual(publisher.events, ["start", "close"])
             self.assertNotIn("pw-NOT-A-REAL-ONE", log_text(tmp))
