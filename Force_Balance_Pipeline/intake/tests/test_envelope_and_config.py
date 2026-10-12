@@ -88,6 +88,7 @@ class EndToEndTests(unittest.TestCase):
         http = ScriptedHttp(script, clock=clock)
         envelope_ = core.make_report_envelope(raw, sectors=SECTORS, api_key=KEY, model=MODEL, now=now, http=http,
                                               clock=clock.now, sleep=http.sleep)
+        self.assertIsInstance(envelope_, dict)                                 # the envelope, not (envelope, values)
         return envelope_, http
 
     def test_a_report_becomes_an_envelope(self):
@@ -123,6 +124,28 @@ class EndToEndTests(unittest.TestCase):
                 with self.assertRaises(core.InferenceError):
                     core.make_report_envelope(body(), sectors=SECTORS, api_key=KEY, model=MODEL, now=S.NOW, http=http,
                                               sleep=lambda _: None)
+
+    def test_a_report_the_model_refuses_is_a_422_and_stores_nothing(self):
+        refusal = json.dumps({"promptFeedback": {"blockReason": "SAFETY"}}).encode()
+        http = ScriptedHttp([(200, refusal), (200, model_answer())])
+        with self.assertRaises(core.RequestError) as caught:
+            core.make_report_envelope(body(), sectors=SECTORS, api_key=KEY, model=MODEL, now=S.NOW, http=http, sleep=lambda _: None)
+        self.assertEqual((caught.exception.status, caught.exception.code, caught.exception.retryable), (422, "blocked_by_model", False))
+        self.assertEqual(len(http.calls), 1)
+
+    def test_no_request_error_is_ever_retryable(self):
+        for raw in (body(description=""), body(sector_id="nowhere"), body(report_id="x"), b"{", b"x" * 140000):
+            with self.assertRaises(core.RequestError) as caught:
+                core.parse_request(raw, SECTORS)
+            self.assertIs(caught.exception.retryable, False)
+            self.assertLess(caught.exception.status, 500)
+
+    def test_assess_report_also_returns_what_the_clamp_changed(self):
+        http = ScriptedHttp([(200, model_answer(relevance_score=9.9, kyber_resonance=-5))])
+        env, values = core.assess_report(body(), sectors=SECTORS, api_key=KEY, model=MODEL, now=S.NOW, http=http)
+        self.assertEqual(values.clamped, ("kyber_resonance", "relevance_score"))
+        self.assertEqual(env["payload"]["relevance_score"], 1.0)
+        self.assertEqual(env["payload"]["kyber_resonance"], 0.0)
 
     def test_a_model_that_overshoots_cannot_put_a_value_out_of_range(self):
         env, _ = self.make(body(), [(200, model_answer(relevance_score=9.9, midichlorian_ppm=1e9, kyber_resonance=-5,

@@ -69,6 +69,10 @@ RETRY_DELAY_S = 1.0
 MAX_ATTEMPTS = 2                      # one retry, only for a transport error, 429 or 5xx
 RETRY_STATUS = (429, 500, 502, 503, 504)
 RETRY_AFTER_TRANSIENT_S, RETRY_AFTER_OTHER_S = 30, 300
+# The model refused to assess the text. That is the reporter's input, not a service fault, so it is a 422 the browser queue
+# must not retry (it retries 5xx). finishReason values that mean the same as promptFeedback.blockReason:
+BLOCKED_FINISH_REASONS = ("SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII")
+BLOCKED_MESSAGE = "This report could not be assessed. Try describing what you saw in different words."
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _ULID_RE = re.compile(r"^[0-7][0-9A-HJKMNP-TV-Z]{25}$")
@@ -100,8 +104,10 @@ Return ONLY JSON: relevance_score, midichlorian_ppm, kyber_resonance, dark_side_
 
 # ---- errors --------------------------------------------------------------------------------------------------
 class RequestError(Exception):
-    """The browser's request is not acceptable. `status` is the HTTP status to answer with, `code` a stable
-    machine-readable reason. Raised before any model call."""
+    """The report cannot be accepted as it is. `status` is the HTTP status to answer with, `code` a stable
+    machine-readable reason, `message` text safe to show the reporter. Raised before any model call, except
+    blocked_by_model (422), which the model's own refusal raises. Never retryable: the browser queue retries 5xx only."""
+    retryable = False
 
     def __init__(self, status, code, message):
         super().__init__(message)
@@ -307,7 +313,8 @@ def build_inference_request(sector, description, thinking_level=DEFAULT_THINKING
 
 
 def parse_model_response(raw):
-    """The model's JSON object out of a generateContent response body. Raises InferenceError; messages carry no model text."""
+    """The model's JSON object out of a generateContent response body. Raises InferenceError (a service problem: 503), or
+    RequestError 422 blocked_by_model when the model refused the text. Messages carry no model text."""
     try:
         data = json.loads(raw)
     except (ValueError, RecursionError):
@@ -316,12 +323,14 @@ def parse_model_response(raw):
         raise InferenceError("bad_output", "the response is not a JSON object", retryable=True)
     feedback = data.get("promptFeedback")
     if isinstance(feedback, dict) and feedback.get("blockReason"):
-        raise InferenceError("blocked", "the prompt was blocked by the API", retryable=False)
+        raise RequestError(422, "blocked_by_model", BLOCKED_MESSAGE)
     candidates = data.get("candidates")
     if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
         raise InferenceError("bad_output", "no candidates in the response", retryable=True)
     candidate = candidates[0]
     finish = candidate.get("finishReason")
+    if finish in BLOCKED_FINISH_REASONS:
+        raise RequestError(422, "blocked_by_model", BLOCKED_MESSAGE)
     if finish != "STOP":
         kind = "truncated" if finish == "MAX_TOKENS" else "bad_output"
         raise InferenceError(kind, f"finishReason {str(finish)[:30]!r}, expected 'STOP'", retryable=True)
@@ -388,7 +397,8 @@ def run_inference(sector, description, *, api_key, model, thinking_level=DEFAULT
                   http=files_api.http_request, clock=time.monotonic, sleep=time.sleep):
     """One inference, at most MAX_ATTEMPTS tries inside TOTAL_BUDGET_S, each attempt capped at PER_ATTEMPT_TIMEOUT_S and at
     what is left of the budget. Only a transport error, 429 or 5xx is retried; a bad key or a bad request is not. A
-    malformed answer is not retried either (it is reported, and the browser retries later). Raises InferenceError."""
+    malformed answer is not retried either (it is reported, and the browser retries later). Raises InferenceError, or
+    RequestError 422 blocked_by_model when the model refused the text (not retried either)."""
     if not api_key:
         raise InferenceError("auth", "no API key is configured", retryable=False)
     if not isinstance(model, str) or not _MODEL_RE.fullmatch(model):
@@ -463,15 +473,21 @@ def public_response(envelope):
     }
 
 
-def make_report_envelope(body, *, sectors, api_key, model, now, thinking_level=DEFAULT_THINKING_LEVEL, **transport):
-    """body (bytes) -> envelope. Order matters: the request is validated before the model is called, and an inference
-    failure raises before any envelope exists, so nothing can be stored for a report that was not scored.
-    `transport` passes http, clock and sleep through to run_inference."""
+def assess_report(body, *, sectors, api_key, model, now, thinking_level=DEFAULT_THINKING_LEVEL, **transport):
+    """body (bytes) -> (envelope, InferredValues). Order matters: the request is validated before the model is called, and
+    an inference failure raises before any envelope exists, so nothing can be stored for a report that was not scored.
+    The InferredValues carry the names of the values the clamp had to pull into range. `transport` passes http, clock and
+    sleep through to run_inference."""
     request = parse_request(body, sectors)
     values = run_inference(sectors[request.sector_id], request.description, api_key=api_key, model=model,
                            thinking_level=thinking_level, **transport)
     event_time, _ = resolve_event_time(request.observed_at, now)
-    return build_envelope(request, values, model, event_time)
+    return build_envelope(request, values, model, event_time), values
+
+
+def make_report_envelope(body, **options):
+    """body (bytes) -> envelope; see assess_report."""
+    return assess_report(body, **options)[0]
 
 
 # ---- configuration (.env.intake) ----------------------------------------------------------------------------

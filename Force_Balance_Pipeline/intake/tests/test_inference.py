@@ -102,11 +102,45 @@ class ModelAnswerTests(unittest.TestCase):
             self.fail(f"the thought part leaked into the answer: {e.kind}")
         self.assertEqual(result, {"a": 1})
 
-    def test_a_blocked_prompt_is_not_retryable(self):
-        raw = json.dumps({"promptFeedback": {"blockReason": "SAFETY"}}).encode()
-        with self.assertRaises(core.InferenceError) as caught:
+    def assert_refused(self, raw):
+        """The model refused the text: a 422 blocked_by_model the browser must not retry, never a service failure (503)."""
+        try:
             core.parse_model_response(raw)
-        self.assertEqual((caught.exception.kind, caught.exception.retryable), ("blocked", False))
+        except core.RequestError as e:
+            self.assertEqual((e.status, e.code, e.retryable), (422, "blocked_by_model", False))
+            self.assertEqual(str(e), core.BLOCKED_MESSAGE)
+        except core.InferenceError as e:
+            self.fail(f"a refused prompt was reported as a service failure: {e.kind}")
+        else:
+            self.fail("a refused prompt was accepted")
+
+    def test_a_prompt_the_model_refuses_is_a_422_the_browser_must_not_retry(self):
+        for reason in ("SAFETY", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT"):
+            with self.subTest(reason=reason):
+                self.assert_refused(json.dumps({"promptFeedback": {"blockReason": reason}}).encode())
+
+    def test_a_candidate_stopped_for_safety_is_the_same_refusal(self):
+        self.assertEqual(core.BLOCKED_FINISH_REASONS, ("SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"))
+        for finish in core.BLOCKED_FINISH_REASONS:
+            with self.subTest(finish=finish):
+                self.assert_refused(candidate_text("{}", finish=finish))
+                self.assert_refused(json.dumps({"candidates": [{"finishReason": finish}]}).encode())
+
+    def test_the_refusal_message_is_user_facing_and_carries_no_model_text(self):
+        raw = json.dumps({"promptFeedback": {"blockReason": "SAFETY", "blockReasonMessage": "SECRET-MODEL-TEXT"}}).encode()
+        with self.assertRaises(core.RequestError) as caught:
+            core.parse_model_response(raw)
+        for leaked in ("SAFETY", "SECRET-MODEL-TEXT", "blockReason"):
+            self.assertNotIn(leaked, str(caught.exception))
+        self.assertIn("different words", str(caught.exception))
+
+    def test_other_stops_are_still_service_failures(self):
+        self.assertEqual(core.RETRY_STATUS, (429, 500, 502, 503, 504))
+        for finish, kind in (("MAX_TOKENS", "truncated"), ("OTHER", "bad_output"), ("RECITATION", "bad_output"), (None, "bad_output")):
+            with self.subTest(finish=finish):
+                with self.assertRaises(core.InferenceError) as caught:
+                    core.parse_model_response(candidate_text("{}", finish=finish))
+                self.assertEqual((caught.exception.kind, caught.exception.retryable), (kind, True))
 
     def test_a_truncated_answer_is_an_error_not_a_partial_result(self):
         with self.assertRaises(core.InferenceError) as caught:
@@ -116,7 +150,7 @@ class ModelAnswerTests(unittest.TestCase):
     def test_other_malformed_answers_are_errors(self):
         for raw in (b"", b"<html>", b"[]", b'"x"', b"{}", json.dumps({"candidates": []}).encode(),
                     json.dumps({"candidates": ["x"]}).encode(), json.dumps({"candidates": [{"finishReason": "STOP"}]}).encode(),
-                    json.dumps({"candidates": [{"finishReason": "SAFETY", "content": {"parts": [{"text": "{}"}]}}]}).encode(),
+                    json.dumps({"candidates": [{"finishReason": "OTHER", "content": {"parts": [{"text": "{}"}]}}]}).encode(),
                     candidate_text("not json"), candidate_text("[1, 2]"), candidate_text('"text"'), candidate_text("")):
             with self.subTest(raw=raw[:60]):
                 with self.assertRaises(core.InferenceError) as caught:
@@ -266,6 +300,15 @@ class RunInferenceTests(unittest.TestCase):
                 self.assertEqual(len(http.calls), 1)
                 self.assertEqual((error.kind, error.retryable), (kind, False))
                 self.assertEqual(error.retry_after_s, core.RETRY_AFTER_OTHER_S)
+
+    def test_a_refused_prompt_is_a_422_after_one_call_and_never_retried(self):
+        refusal = json.dumps({"promptFeedback": {"blockReason": "SAFETY"}}).encode()
+        for answer in (refusal, candidate_text("{}", finish="PROHIBITED_CONTENT")):
+            http = ScriptedHttp([(200, answer), (200, model_answer())])
+            with self.assertRaises(core.RequestError) as caught:
+                core.run_inference(CORUSCANT, "x", api_key=KEY, model=MODEL, http=http, sleep=http.sleep)
+            self.assertEqual((caught.exception.status, caught.exception.code, caught.exception.retryable), (422, "blocked_by_model", False))
+            self.assertEqual((len(http.calls), http.sleeps), (1, []))
 
     def test_a_malformed_answer_is_not_retried(self):
         error, http = fails(self, [(200, candidate_text("not json")), (200, model_answer())])
