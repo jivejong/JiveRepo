@@ -96,3 +96,57 @@ class FakeOpener:
     def __call__(self, request, timeout=None):
         self.requests.append(request)
         return FakeResponse(self.status, self.payload)
+
+
+# ---- the intake server (Round 3) ------------------------------------------------------------------------------
+import threading  # noqa: E402
+
+
+def report_ids(n):
+    """The n-th distinct valid report id (a ULID)."""
+    return core.new_ulid(1_788_000_000_000 + n, n)
+
+
+def report_body(n=1, reporter="a3f2", **overrides):
+    """A valid POST body for report number n from `reporter`; keyword arguments override fields (None removes one)."""
+    fields = {"report_id": report_ids(n), "reporter_id": reporter}
+    fields.update(overrides)
+    return body(**fields)
+
+
+class CountingModel:
+    """Stands in for files_api.http_request towards the model. Counts calls; `respond(call_number)` -> (status, body);
+    `gate`, when set, makes every call wait for it first (so a test can hold requests in flight)."""
+
+    def __init__(self, respond=None, gate=None):
+        self.respond = respond or (lambda n: (200, model_answer()))
+        self.gate, self.calls, self._lock = gate, 0, threading.Lock()
+
+    def __call__(self, method, url, *, headers=None, data=None, timeout=60, opener=None):
+        with self._lock:
+            self.calls += 1
+            number = self.calls
+        if self.gate is not None:
+            self.gate.wait(10)
+        return self.respond(number)
+
+
+class FakePublisher:
+    """Stands in for intake_mqtt.MqttPublisher. `error` makes publish() raise it; every attempt is recorded."""
+
+    def __init__(self, ready=True, error=None):
+        self.is_ready, self.error = ready, error
+        self.attempts, self.lock = [], threading.Lock()
+
+    def ready(self):
+        return self.is_ready
+
+    def publish(self, topic, payload, timeout=10.0):
+        with self.lock:
+            self.attempts.append({"topic": topic, "payload": payload, "timeout": timeout})
+        if self.error is not None:
+            raise self.error
+
+    @property
+    def published(self):
+        return [a for a in self.attempts if self.error is None]
