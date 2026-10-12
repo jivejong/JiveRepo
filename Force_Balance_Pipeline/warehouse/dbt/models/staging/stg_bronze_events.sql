@@ -31,6 +31,8 @@
   - Materialization: view.
   - Unique key: none -- not deduplicated (bronze isn't either); event_id can repeat.
   - Added columns: the three science channels, battery_pct, sensor_temp_c and kind, all via extract_payload();
+    for report events (Phase 5) also description (verbatim), relevance_score, inference_model and inference_rationale
+    -- null on every probe row, and used only by silver_report_rejects / silver_force_report;
     arrival_ts and ingest_lag_seconds, doc 03's own definitions (silver.probe_reading), computed once here
     because silver_rejects needs the same lag for its timestamp-bounds check, not just silver_probe_reading.
 */
@@ -62,5 +64,9 @@ select
     {{ extract_payload('payload', 'kyber_resonance', 'double') }} as kyber_resonance,
     {{ extract_payload('payload', 'dark_side_activity', 'double') }} as dark_side_activity,
     {{ extract_payload('payload', 'sensor_temp_c', 'double') }} as sensor_temp_c,
-    {{ extract_payload('payload', 'battery_pct', 'int') }} as battery_pct
+    {{ extract_payload('payload', 'battery_pct', 'int') }} as battery_pct,
+    {{ extract_payload('payload', 'description', 'string') }} as description,
+    {{ extract_payload('payload', 'relevance_score', 'double') }} as relevance_score,
+    {{ extract_payload('payload', 'inference_model', 'string') }} as inference_model,
+    {{ extract_payload('payload', 'inference_rationale', 'string') }} as inference_rationale
 from {{ source('bronze', 'events') }}

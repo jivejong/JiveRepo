@@ -76,6 +76,12 @@ def thresholds():
     return float(m.group(1)), float(m.group(2))
 
 
+def report_relevance_threshold():
+    """N from 'relevance_score >= N' in the report-sourced firing rules."""
+    m = re.search(r"`relevance_score\s*>=\s*(\d+(?:\.\d+)?)`", text())
+    return float(m.group(1))
+
+
 def firing_thresholds():
     """Every `imbalance_score > X` in the firing rules (probe-sourced and report-sourced)."""
     return [float(x) for x in re.findall(r"imbalance_score\s*>\s*(\d+(?:\.\d+)?)", text())]

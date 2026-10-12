@@ -14,6 +14,9 @@ import _doc03  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 DBT = ROOT / "warehouse" / "dbt"
+sys.path.insert(0, str(ROOT / "intake"))
+
+import intake_core  # noqa: E402  (the process whose report window silver_report_rejects mirrors)
 
 
 def dbt_vars():
@@ -121,6 +124,20 @@ class VarParityTests(unittest.TestCase):
 
     def test_lag_tolerance_seconds(self):
         self.assertEqual(self.v["lag_tolerance_seconds"], _doc03.lag_tolerance_seconds())
+
+    def test_report_relevance_threshold(self):
+        self.assertEqual(self.v["report_relevance_threshold"], _doc03.report_relevance_threshold())
+        self.assertEqual(self.v["report_relevance_threshold"], 0.7)
+
+    def test_report_event_time_window_is_the_intakes(self):
+        """silver_report_rejects rejects a report whose event_time is further from arrival than the intake process itself would accept a
+        browser's observed_at (intake_core.OBSERVED_*): doc 03 gives only the probe bounds, so these two are pinned to the intake instead."""
+        self.assertEqual(self.v["report_max_age_days"] * 86400, intake_core.OBSERVED_MAX_AGE.total_seconds())
+        self.assertEqual(self.v["report_future_tolerance_minutes"] * 60, intake_core.OBSERVED_FUTURE_TOLERANCE.total_seconds())
+
+    def test_report_vars_are_not_the_probe_ones(self):
+        self.assertNotEqual(self.v["report_max_age_days"], self.v["max_age_days"])
+        self.assertIsInstance(self.v["report_relevance_threshold"], float)
 
 
 class ClassifySignatureMacroParityTests(unittest.TestCase):

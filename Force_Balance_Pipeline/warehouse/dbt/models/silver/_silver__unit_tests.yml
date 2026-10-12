@@ -157,3 +157,405 @@ unit_tests:
           is_replayed: false
         - event_id: "01UNIT0000000000000000032"
           is_replayed: true
+
+  # ---- Phase 5: report validation (silver_report_rejects, silver_force_report) and probe/report separation ----
+  - name: unit_test_report_valid_row_is_not_rejected
+    description: >
+      A fully valid report is not a reject.
+    model: silver_report_rejects
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006000", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", is_unknown: false}
+          - {sector_id: "naboo", is_unknown: false}
+          - {sector_id: "uncharted", is_unknown: true}
+    expect:
+      rows: []
+
+  - name: unit_test_report_unknown_schema_version
+    model: silver_report_rejects
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006010", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 2, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006011", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", is_unknown: false}
+          - {sector_id: "naboo", is_unknown: false}
+          - {sector_id: "uncharted", is_unknown: true}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006010", reject_reason: "unknown_schema_version"}
+
+  - name: unit_test_report_impossible_timestamp_bounds
+    description: >
+      report_future_tolerance_minutes=10 and report_max_age_days=7 (dbt_project.yml; parity-tested against
+      intake_core.OBSERVED_*). The bounds are inclusive, like the intake's: 600 s ahead and exactly 7 days behind are valid.
+    model: silver_report_rejects
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006020", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: -600, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006021", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: -601, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006022", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 604800, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006023", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 604801, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006024", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 7862400, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", is_unknown: false}
+          - {sector_id: "naboo", is_unknown: false}
+          - {sector_id: "uncharted", is_unknown: true}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006021", reject_reason: "impossible_timestamp"}
+        - {event_id: "01UNIT0000000000000006023", reject_reason: "impossible_timestamp"}
+        - {event_id: "01UNIT0000000000000006024", reject_reason: "impossible_timestamp"}
+
+  - name: unit_test_report_unknown_sector
+    description: >
+      Not in dim_sector, the 'uncharted' placeholder (is_unknown), and a missing sector_id are all unknown; a real planet is not.
+    model: silver_report_rejects
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006030", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "nowhere", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006031", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "uncharted", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006032", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: null, schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006033", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "naboo", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", is_unknown: false}
+          - {sector_id: "naboo", is_unknown: false}
+          - {sector_id: "uncharted", is_unknown: true}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006030", reject_reason: "unknown_sector"}
+        - {event_id: "01UNIT0000000000000006031", reject_reason: "unknown_sector"}
+        - {event_id: "01UNIT0000000000000006032", reject_reason: "unknown_sector"}
+
+  - name: unit_test_report_null_required_field
+    description: >
+      No channel is optional for a report (there is no STEALTH): any null channel, a null relevance, and a missing or
+      blank description (null, empty, or whitespace only) are rejected. A description with spaces around real text is valid.
+    model: silver_report_rejects
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006040", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: null, relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006041", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006042", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "   \n\t", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006043", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: null, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006044", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: null, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006045", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: null, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006046", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: null}
+          - {event_id: "01UNIT0000000000000006047", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: " x ", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", is_unknown: false}
+          - {sector_id: "naboo", is_unknown: false}
+          - {sector_id: "uncharted", is_unknown: true}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006040", reject_reason: "null_required_field"}
+        - {event_id: "01UNIT0000000000000006041", reject_reason: "null_required_field"}
+        - {event_id: "01UNIT0000000000000006042", reject_reason: "null_required_field"}
+        - {event_id: "01UNIT0000000000000006043", reject_reason: "null_required_field"}
+        - {event_id: "01UNIT0000000000000006044", reject_reason: "null_required_field"}
+        - {event_id: "01UNIT0000000000000006045", reject_reason: "null_required_field"}
+        - {event_id: "01UNIT0000000000000006046", reject_reason: "null_required_field"}
+
+  - name: unit_test_report_out_of_range
+    description: >
+      doc 02 ranges (0-30000 ppm, 0-100, 0-100) and relevance 0-1, inclusive at both ends (6058 and 6059 are valid).
+    model: silver_report_rejects
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006050", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 1.01, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006051", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: -0.01, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006052", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 30000.5, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006053", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: -0.1, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006054", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 100.1, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006055", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: -0.1, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006056", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 100.1}
+          - {event_id: "01UNIT0000000000000006057", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: -0.1}
+          - {event_id: "01UNIT0000000000000006058", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.0, midichlorian_ppm: 0.0, kyber_resonance: 0.0, dark_side_activity: 0.0}
+          - {event_id: "01UNIT0000000000000006059", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 1.0, midichlorian_ppm: 30000.0, kyber_resonance: 100.0, dark_side_activity: 100.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", is_unknown: false}
+          - {sector_id: "naboo", is_unknown: false}
+          - {sector_id: "uncharted", is_unknown: true}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006050", reject_reason: "out_of_range"}
+        - {event_id: "01UNIT0000000000000006051", reject_reason: "out_of_range"}
+        - {event_id: "01UNIT0000000000000006052", reject_reason: "out_of_range"}
+        - {event_id: "01UNIT0000000000000006053", reject_reason: "out_of_range"}
+        - {event_id: "01UNIT0000000000000006054", reject_reason: "out_of_range"}
+        - {event_id: "01UNIT0000000000000006055", reject_reason: "out_of_range"}
+        - {event_id: "01UNIT0000000000000006056", reject_reason: "out_of_range"}
+        - {event_id: "01UNIT0000000000000006057", reject_reason: "out_of_range"}
+
+  - name: unit_test_report_reject_precedence_first_match_wins
+    description: >
+      Order: schema version, timestamp, sector, null field, range.
+    model: silver_report_rejects
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006060", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "nowhere", schema_version: 2, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: null, relevance_score: 7.0, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006061", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "nowhere", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: -9999, description: "Saw a figure in black robes.", relevance_score: 7.0, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006062", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "nowhere", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: null, relevance_score: 7.0, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006063", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: null, relevance_score: 7.0, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", is_unknown: false}
+          - {sector_id: "naboo", is_unknown: false}
+          - {sector_id: "uncharted", is_unknown: true}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006060", reject_reason: "unknown_schema_version"}
+        - {event_id: "01UNIT0000000000000006061", reject_reason: "impossible_timestamp"}
+        - {event_id: "01UNIT0000000000000006062", reject_reason: "unknown_sector"}
+        - {event_id: "01UNIT0000000000000006063", reject_reason: "null_required_field"}
+
+  - name: unit_test_report_rejects_ignore_probe_rows_and_housekeeping
+    description: >
+      Only report rows without a payload.kind are judged here. A probe row (6070) and a housekeeping row (6071) with the same fault are not.
+    model: silver_report_rejects
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006070", source_type: "probe", kind: null, source_id: "web-a3f2", sector_id: "nowhere", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006071", source_type: "report", kind: "buffer_overflow", source_id: "web-a3f2", sector_id: "nowhere", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006072", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "nowhere", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", is_unknown: false}
+          - {sector_id: "naboo", is_unknown: false}
+          - {sector_id: "uncharted", is_unknown: true}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006072", reject_reason: "unknown_sector"}
+
+  - name: unit_test_report_duplicate_event_id_is_judged_once_on_the_earliest_copy
+    description: >
+      6080: the earliest copy is bad, a later copy is fine -- one reject row, from the earliest. 6081: the earliest copy is
+      fine and a later copy is bad -- no reject row (the earliest copy is the only one judged).
+    model: silver_report_rejects
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006080", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "nowhere", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006080", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "naboo", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:05Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006081", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "naboo", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006081", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "nowhere", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:05Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", is_unknown: false}
+          - {sector_id: "naboo", is_unknown: false}
+          - {sector_id: "uncharted", is_unknown: true}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006080", reject_reason: "unknown_sector", arrival_ts: "2026-10-14T15:00:00Z"}
+
+  - name: unit_test_report_rejects_incremental_skips_an_event_already_rejected
+    description: >
+      A republish of an event_id already in this table adds nothing.
+    model: silver_report_rejects
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006090", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "nowhere", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006091", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "nowhere", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", is_unknown: false}
+          - {sector_id: "naboo", is_unknown: false}
+          - {sector_id: "uncharted", is_unknown: true}
+      - input: this
+        rows:
+          - {event_id: "01UNIT0000000000000006090", reject_reason: "unknown_sector"}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006091", reject_reason: "unknown_sector"}
+
+  - name: unit_test_force_report_valid_report_lands_with_every_column
+    model: silver_force_report
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006100", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0, inference_model: "gemini-3.1-flash-lite", inference_rationale: "A named figure."}
+      - input: ref('silver_report_rejects')
+        rows: []
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006100", source_id: "web-a3f2", sector_id: "tatooine", event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0, inference_model: "gemini-3.1-flash-lite", inference_rationale: "A named figure."}
+
+  - name: unit_test_force_report_description_is_verbatim
+    description: >
+      Whitespace, newlines, tabs, unicode, markup, quotes and template-looking text come through byte for byte: no trim, no
+      case change, no escaping.
+    model: silver_force_report
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006110", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "  leading and trailing spaces  ", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006111", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "line one\nline two\n\ttabbed", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006112", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "caf\u00e9 \u2014 \u65e5\u672c\u8a9e", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006113", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "<img src=x onerror=alert(1)> & \"quotes\" 'single'", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006114", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "50% off $5 #hash", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006115", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "UPPER lower MiXeD", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('silver_report_rejects')
+        rows: []
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006110", description: "  leading and trailing spaces  "}
+        - {event_id: "01UNIT0000000000000006111", description: "line one\nline two\n\ttabbed"}
+        - {event_id: "01UNIT0000000000000006112", description: "caf\u00e9 \u2014 \u65e5\u672c\u8a9e"}
+        - {event_id: "01UNIT0000000000000006113", description: "<img src=x onerror=alert(1)> & \"quotes\" 'single'"}
+        - {event_id: "01UNIT0000000000000006114", description: "50% off $5 #hash"}
+        - {event_id: "01UNIT0000000000000006115", description: "UPPER lower MiXeD"}
+
+  - name: unit_test_force_report_excludes_rejected_probe_and_housekeeping_rows
+    description: >
+      6121 is in silver_report_rejects, 6122 is a probe row, 6123 is a housekeeping event: only 6120 lands.
+    model: silver_force_report
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006120", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006121", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "nowhere", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006122", source_type: "probe", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006123", source_type: "report", kind: "buffer_overflow", source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('silver_report_rejects')
+        rows:
+          - {event_id: "01UNIT0000000000000006121", reject_reason: "unknown_sector"}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006120"}
+
+  - name: unit_test_force_report_duplicate_event_id_earliest_arrival_wins
+    description: >
+      6130: two copies in one batch -- one row, the earliest arrival. 6131: the earliest copy was rejected, so a later copy
+      never lands as a second chance.
+    model: silver_force_report
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006130", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:05Z", ingest_lag_seconds: 60, description: "the later copy", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006130", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "the earlier copy", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006131", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "rejected earliest copy", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006131", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:09Z", ingest_lag_seconds: 60, description: "valid later copy", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('silver_report_rejects')
+        rows:
+          - {event_id: "01UNIT0000000000000006131", reject_reason: "unknown_sector"}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006130", description: "the earlier copy", arrival_ts: "2026-10-14T15:00:00Z"}
+
+  - name: unit_test_force_report_incremental_never_adds_a_row_for_a_known_event
+    description: >
+      6140 is already in the table (a QoS 1 duplicate or a crash-retry republish arriving in a later batch): not selected, so
+      the merge never reaches its WHEN MATCHED branch and the first copy stands.
+    model: silver_force_report
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006140", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "a republish", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006141", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 60, description: "new", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('silver_report_rejects')
+        rows: []
+      - input: this
+        rows:
+          - {event_id: "01UNIT0000000000000006140", description: "the first copy"}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006141", description: "new"}
+
+  - name: unit_test_silver_probe_reading_never_takes_a_report_row
+    description: >
+      A valid-looking report row in the staging input never reaches silver_probe_reading (so never the baseline built from it).
+    model: silver_probe_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006200", source_type: "probe", kind: null, sector_id: "tatooine", mode: "CONNECTED", schema_version: 1, ingest_lag_seconds: 60, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006201", source_type: "report", kind: null, sector_id: "tatooine", mode: "CONNECTED", schema_version: 1, ingest_lag_seconds: 60, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0, description: "a report"}
+      - input: ref('silver_rejects')
+        rows: []
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006200"}
+
+  - name: unit_test_silver_rejects_never_takes_a_report_row
+    description: >
+      A report with a fault a probe would be rejected for is not a row of silver_rejects (it belongs to silver_report_rejects).
+    model: silver_rejects
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006210", source_type: "probe", kind: null, sector_id: "nowhere", mode: "CONNECTED", schema_version: 1, ingest_lag_seconds: 60, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006211", source_type: "report", kind: null, sector_id: "nowhere", mode: "CONNECTED", schema_version: 1, ingest_lag_seconds: 60, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0, description: "a report"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine"}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000006210", reject_reason: "unknown_sector"}

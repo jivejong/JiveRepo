@@ -159,3 +159,43 @@ unit_tests:
           kind: "buffer_overflow"
         - event_id: "01UNIT0000000000000000005"
           kind: null
+
+  # Phase 5: the report fields stg_bronze_events extracts. A report payload (doc 02) carries description verbatim, relevance_score,
+  # the three channels, inference_model and inference_rationale.
+  - name: unit_test_extract_payload_report_fields
+    description: "description comes out verbatim (spaces, newline, tab, unicode, markup); relevance_score and the channels as doubles; the model fields as strings. A probe payload gives NULL for all four report fields."
+    model: stg_bronze_events
+    given:
+      - input: source('bronze', 'events')
+        format: sql
+        rows: |
+          select
+            cast('01UNIT0000000000000000006' as string) as event_id,
+            cast('web-a3f2' as string) as source_id,
+            cast('report' as string) as source_type,
+            cast(null as string) as mode,
+            cast(null as string) as scan_id,
+            cast('tatooine' as string) as sector_id,
+            cast(1 as int) as schema_version,
+            cast(null as timestamp) as event_time,
+            cast(false as boolean) as is_synthetic,
+            cast(null as timestamp) as synthetic_ingest_ts,
+            parse_json('{"description": "  Saw a figure.\\nCold \\u00e9 <b>x</b>\\t", "relevance_score": 0.93, "midichlorian_ppm": 26400.0, "kyber_resonance": 30.0, "dark_side_activity": 85.0, "inference_model": "gemini-3.1-flash-lite", "inference_rationale": "A named figure."}') as payload,
+            cast(null as date) as dt,
+            cast(null as int) as hh,
+            cast(null as string) as _source_file,
+            cast(null as timestamp) as _ingest_ts,
+            cast(null as timestamp) as _file_modified_ts,
+            cast(null as string) as _rescued_data
+          union all
+          select
+            cast('01UNIT0000000000000000007' as string), cast('probe-01' as string), cast('probe' as string), cast('CONNECTED' as string),
+            cast('01UNIT0000000000000000008' as string), cast('tatooine' as string), cast(1 as int), cast(null as timestamp), cast(false as boolean),
+            cast(null as timestamp),
+            parse_json('{"midichlorian_ppm": 15000.0, "kyber_resonance": 50.0, "dark_side_activity": 20.0}'),
+            cast(null as date), cast(null as int), cast(null as string), cast(null as timestamp), cast(null as timestamp),
+            cast(null as string)
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000000006", description: "  Saw a figure.\nCold \u00e9 <b>x</b>\t", relevance_score: 0.93, midichlorian_ppm: 26400.0, kyber_resonance: 30.0, dark_side_activity: 85.0, inference_model: "gemini-3.1-flash-lite", inference_rationale: "A named figure."}
+        - {event_id: "01UNIT0000000000000000007", description: null, relevance_score: null, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0, inference_model: null, inference_rationale: null}

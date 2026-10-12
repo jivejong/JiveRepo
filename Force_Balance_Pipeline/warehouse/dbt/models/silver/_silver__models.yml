@@ -14,10 +14,74 @@ models:
                 values: ["buffer_overflow"]
 
   - name: silver_force_report
-    description: Stub until Phase 5 (doc 07).
+    description: >
+      Valid report events (doc 03, "silver.force_report"): the complement of silver_report_rejects. description is verbatim;
+      relevance_score is 0-1; the three inferred channels are in their doc 02 ranges; event_time is within the intake's
+      window of arrival. Deduplicated on event_id, earliest arrival wins.
     columns:
       - name: event_id
         data_tests: [not_null, unique]
+      - name: sector_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_sector')
+                field: sector_id
+      - name: event_time
+        data_tests: [not_null]
+      - name: arrival_ts
+        data_tests: [not_null]
+      - name: description
+        description: "Verbatim from the payload: never trimmed or changed. Never blank."
+        data_tests:
+          - not_null
+          - expression_is_true:
+              arguments:
+                expression: "!= ''"
+      - name: relevance_score
+        data_tests:
+          - not_null
+          - expression_is_true:
+              arguments:
+                expression: "between 0 and 1"
+      - name: midichlorian_ppm
+        data_tests:
+          - not_null
+          - expression_is_true:
+              arguments:
+                expression: "between 0 and 30000"
+      - name: kyber_resonance
+        data_tests:
+          - not_null
+          - expression_is_true:
+              arguments:
+                expression: "between 0 and 100"
+      - name: dark_side_activity
+        data_tests:
+          - not_null
+          - expression_is_true:
+              arguments:
+                expression: "between 0 and 100"
+
+  - name: silver_report_rejects
+    description: >
+      Validation failures of report events, with a reason (the vocabulary of silver_rejects). Parallel to silver_rejects
+      rather than part of it, so the probe fault-injection reconciliation (doc 04) stays 1:1.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+      - name: reject_reason
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - unknown_schema_version
+                  - impossible_timestamp
+                  - unknown_sector
+                  - null_required_field
+                  - out_of_range
 
   - name: silver_rejects
     description: Validation failures with a reason (doc 03).
