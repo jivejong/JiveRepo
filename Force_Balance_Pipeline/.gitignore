@@ -3,6 +3,7 @@
 .env.local
 .env.bridge
 .env.mqtt
+.env.intake
 
 # Python
 __pycache__/

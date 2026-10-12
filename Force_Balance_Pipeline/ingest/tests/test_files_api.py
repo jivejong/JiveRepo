@@ -105,10 +105,10 @@ class UserAgentTests(unittest.TestCase):
         self.assertEqual(opener.requests[0].get_header("User-agent"), files_api.UA)
         self.assertEqual(opener.requests[0].get_header("X-thing"), "1")
 
-    def test_no_other_outbound_http_path_exists_in_the_bridge_or_probe(self):
+    def test_no_other_outbound_http_path_exists_in_the_bridge_probe_or_intake(self):
         """Only files_api.http_request may open a connection, so it is the only place UA has to be right."""
         offenders = []
-        for base in (ROOT / "ingest", ROOT / "edge"):
+        for base in (ROOT / "ingest", ROOT / "edge", ROOT / "intake"):
             for path in base.rglob("*.py"):
                 if "tests" in path.parts or path.name == "files_api.py" or ".venv" in path.parts:
                     continue
