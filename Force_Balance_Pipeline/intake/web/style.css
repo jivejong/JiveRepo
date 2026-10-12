@@ -1,0 +1,76 @@
+:root {
+  --bg: #0f1220;
+  --panel: #181c30;
+  --text: #e8eaf6;
+  --muted: #9aa3c7;
+  --accent: #7aa2ff;
+  --warn: #ffb86b;
+  --bad: #ff7a7a;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4f5fb;
+    --panel: #ffffff;
+    --text: #1b1f33;
+    --muted: #55608a;
+    --accent: #2f55d4;
+    --warn: #a35a00;
+    --bad: #b3261e;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+main { max-width: 42rem; margin: 0 auto; padding: 1rem 1rem 3rem; }
+h1 { font-size: 1.5rem; margin: 1rem 0 0.25rem; }
+h2 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+.lede, .counter, .meta { color: var(--muted); }
+.counter { margin: 0.25rem 0 0.75rem; text-align: right; font-size: 0.85rem; }
+
+label { display: block; margin: 1rem 0 0.25rem; font-weight: 600; }
+select, textarea {
+  width: 100%;
+  padding: 0.6rem;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--muted);
+  border-radius: 6px;
+  font: inherit;
+}
+textarea { resize: vertical; min-height: 8rem; }
+
+button {
+  padding: 0.6rem 1.2rem;
+  background: var(--accent);
+  color: var(--bg);
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: progress; }
+li button { margin-top: 0.25rem; padding: 0.25rem 0.75rem; font-size: 0.85rem; }
+
+#message { min-height: 1.5rem; margin: 1rem 0 0; color: var(--warn); }
+section { background: var(--panel); border-radius: 8px; padding: 0.75rem 1rem; margin-top: 1rem; }
+section[hidden] { display: none; }
+section h2:first-child { margin-top: 0.25rem; }
+ul { list-style: none; margin: 0; padding: 0; }
+li { padding: 0.5rem 0; border-top: 1px solid rgba(128, 128, 160, 0.3); }
+li:first-child { border-top: 0; }
+li p { margin: 0; }
+.description { white-space: pre-wrap; overflow-wrap: anywhere; }
+.queue-failed .state, .queue-dropped .state { color: var(--bad); }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0.5rem 0; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+.rationale { overflow-wrap: anywhere; }

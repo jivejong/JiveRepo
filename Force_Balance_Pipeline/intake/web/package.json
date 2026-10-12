@@ -1,0 +1,6 @@
+{
+  "name": "force-intake-web",
+  "private": true,
+  "type": "module",
+  "description": "The intake page's modules. No dependencies and no build step: the browser loads these files as they are, and `node --test intake/web/tests/*.test.js` runs their tests."
+}

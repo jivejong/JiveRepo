@@ -15,11 +15,14 @@ test:
 test-agent:
 	@echo "make test-agent: not implemented (Phase 6: agent fixture suite)"; exit 1
 
-# Offline: the intake core, the fixture files and the fixture runner's assertion engine, against stub models. No network, no key.
-# The live fixture run is manual (it calls the real model): intake/fixtures/README.md.
+# Offline: the intake core, the server, the fixture files and the fixture runner's assertion engine, against stub models, and the page's
+# JavaScript under node --test with fake stores, fetch and DOM (no npm install, no browser). No network, no key.
+# The live fixture run is manual (it calls the real model): intake/fixtures/README.md. The browser check is manual too: intake/MANUAL-CHECKLIST.md.
 PYTHON ?= edge/.venv/Scripts/python.exe
+NODE ?= node
 test-intake:
 	$(PYTHON) -m unittest discover -s intake/tests
+	$(NODE) --test intake/web/tests/*.test.js
 
 # Usage: make inject SIGNATURE=sith_presence PLANET=coruscant
 inject:
