@@ -15,8 +15,11 @@ test:
 test-agent:
 	@echo "make test-agent: not implemented (Phase 6: agent fixture suite)"; exit 1
 
+# Offline: the intake core, the fixture files and the fixture runner's assertion engine, against stub models. No network, no key.
+# The live fixture run is manual (it calls the real model): intake/fixtures/README.md.
+PYTHON ?= edge/.venv/Scripts/python.exe
 test-intake:
-	@echo "make test-intake: not implemented (Phase 5: intake fixture suite)"; exit 1
+	$(PYTHON) -m unittest discover -s intake/tests
 
 # Usage: make inject SIGNATURE=sith_presence PLANET=coruscant
 inject:

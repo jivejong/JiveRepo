@@ -1,0 +1,11 @@
+{
+  "name": "unicode_text",
+  "source": "added, Phase 5 Round 2",
+  "sector_id": "naboo",
+  "description": "Il a plu aujourd’hui sur Naboo — 今日は雨でした 🌧️ — مطر اليوم. Café, naïve, Ærø.",
+  "expect": {
+    "outcome": "scored",
+    "relevance": {"lt": 0.15},
+    "max_abs_sigma": 2.0
+  }
+}

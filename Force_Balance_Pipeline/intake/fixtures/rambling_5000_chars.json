@@ -1,0 +1,12 @@
+{
+  "name": "rambling_5000_chars",
+  "source": "doc 04, fixture table, row 7",
+  "sector_id": "alderaan",
+  "description_repeat": {
+    "unit": "Well, so I was at the market this morning and I bought some bread, and then the queue was long, and my neighbour started telling me about his cousin's cousin and a speeder he never repaired, anyway the weather turned a bit, you know how it goes around here. ",
+    "chars": 5000
+  },
+  "expect": {
+    "outcome": "scored"
+  }
+}

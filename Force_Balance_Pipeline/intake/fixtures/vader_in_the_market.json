@@ -1,0 +1,12 @@
+{
+  "name": "vader_in_the_market",
+  "source": "doc 04, fixture table, row 2",
+  "sector_id": "coruscant",
+  "description": "Saw Darth Vader walking through the market",
+  "must_cross_gold": true,
+  "expect": {
+    "outcome": "scored",
+    "relevance": {"gt": 0.85},
+    "min_sigma": {"dark_side_activity": 4.0}
+  }
+}

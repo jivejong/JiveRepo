@@ -1,0 +1,10 @@
+{
+  "name": "cold_feeling_near_the_temple",
+  "source": "doc 04, fixture table, row 4",
+  "sector_id": "coruscant",
+  "description": "A cold feeling near the old temple, lights flickered",
+  "expect": {
+    "outcome": "scored",
+    "relevance": {"gt": 0.3, "lt": 0.7}
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "empty_description",
+  "source": "doc 04, fixture table, row 6",
+  "sector_id": "coruscant",
+  "description": "",
+  "expect": {
+    "outcome": "rejected",
+    "code": "empty_description",
+    "inference_calls": 0
+  }
+}

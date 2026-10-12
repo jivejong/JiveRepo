@@ -1,0 +1,10 @@
+{
+  "name": "laser_swords",
+  "source": "doc 04, fixture table, row 5",
+  "sector_id": "naboo",
+  "description": "Two people fighting with laser swords",
+  "expect": {
+    "outcome": "scored",
+    "relevance": {"gt": 0.8}
+  }
+}

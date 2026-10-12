@@ -1,0 +1,11 @@
+{
+  "name": "speeder_broke_down",
+  "source": "doc 04, fixture table, row 3",
+  "sector_id": "tatooine",
+  "description": "My speeder broke down",
+  "expect": {
+    "outcome": "scored",
+    "relevance": {"lt": 0.15},
+    "max_abs_sigma": 2.0
+  }
+}
