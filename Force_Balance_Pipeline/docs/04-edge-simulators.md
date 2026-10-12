@@ -415,7 +415,8 @@ Runs on the GCP e2-micro.
 **Phase 3 staging.** The Phase 3 broker runs in Docker on the developer's desktop, bound to the desktop's LAN address and
 `127.0.0.1` (never `0.0.0.0`), with `allow_anonymous false`, a password file kept outside the repository, and per-user topic
 permissions (`infra/mosquitto/acl`): `probe-01` writes `force/telemetry/probe-01` and reads `force/control/probe-01`;
-`force-bridge` reads `force/telemetry/#`; `operator` writes `force/control/probe-01`. A Windows Firewall rule admits TCP 1883 from
+`force-bridge` reads `force/telemetry/#`; `operator` writes `force/control/probe-01`; `web-intake` (the report intake process, Phase 5)
+writes `force/telemetry/web-intake` and reads nothing. A Windows Firewall rule admits TCP 1883 from
 the Pi's address only. There is no TLS, so the passwords cross the LAN in clear text: accepted for staging.
 
 **OPEN:** TLS, and the e2-micro (broker and bridge, doc 01), move together to a later phase. The local-only config

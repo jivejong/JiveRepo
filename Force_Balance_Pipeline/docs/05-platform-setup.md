@@ -753,13 +753,15 @@ e2-micro come together in a later phase. Nothing below is committed with a real 
    a password manager. Each credential has one home: `probe-01` goes in the Pi's `/etc/force-probe/probe.env`
    (`PROBE_MQTT_PASSWORD`); `force-bridge` goes in the desktop's `.env.mqtt` (`BRIDGE_MQTT_PASSWORD`); `operator` is never stored:
    `edge/probe_ctl.py` asks for it at a prompt (`getpass`), or reads `OPERATOR_MQTT_PASSWORD` from the environment if that is set,
-   and never reads it from `.env.mqtt`.
+   and never reads it from `.env.mqtt`. `web-intake` (the report intake process, Phase 5) goes in the desktop's `.env.intake.mqtt`
+   (`INTAKE_MQTT_PASSWORD`, gitignored; template `.env.intake.mqtt.example`).
 
    ```powershell
    New-Item -ItemType Directory -Force "$env:USERPROFILE\.force_balance_pipeline\mosquitto"
    docker run --rm -it -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/work" eclipse-mosquitto:2 mosquitto_passwd -c /work/passwd probe-01
    docker run --rm -it -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/work" eclipse-mosquitto:2 mosquitto_passwd /work/passwd force-bridge
    docker run --rm -it -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/work" eclipse-mosquitto:2 mosquitto_passwd /work/passwd operator
+   docker run --rm -it -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/work" eclipse-mosquitto:2 mosquitto_passwd /work/passwd web-intake
    ```
 
 2. **The broker**, bound to the desktop's LAN address and to `127.0.0.1`, never to `0.0.0.0`. The config is
@@ -792,6 +794,15 @@ e2-micro come together in a later phase. Nothing below is committed with a real 
    `/mosquitto/config/acl` its committed source lives at — the source of truth stays in the repo; only the deployed path
    changes, same split as the password file. Re-run the copy command above whenever `infra/mosquitto/acl` changes, the
    same discipline the password file already needed.
+
+   **Adding `web-intake` to a running broker (Phase 5).** The ACL line (`user web-intake`, `topic write force/telemetry/web-intake`) is
+   committed in `infra/mosquitto/acl`, but nothing reads it until the volume copy above is re-run and the broker restarts (the bind
+   mount is not what Mosquitto reads). Steps: set the password (the `web-intake` command in step 1, no `-c`, so the other users are
+   kept); re-run the volume copy command; `docker restart force-mosquitto`, a graceful restart, so the broker saves its state
+   (`persistence true`); outside the minutes :58 to :05 of each quarter hour, because a scan arrives at :00 of each 15 minutes and the
+   probe, the bridge and the intake process all reconnect. Then check: `docker logs` shows no ACL or password warning; the bridge
+   logs `connected (session present: True)`; the next scan lands 60 of 60. MQTT 5 is what makes a wrong ACL visible: Mosquitto
+   answers a denied QoS 1 publish with a PUBACK carrying "Not authorized", which the intake publisher reports as a refused publish.
 
 3. **The firewall**, elevated PowerShell. The rule admits TCP 1883 from the Pi only:
 

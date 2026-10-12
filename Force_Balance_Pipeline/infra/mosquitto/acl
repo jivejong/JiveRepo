@@ -2,8 +2,12 @@
 # in a file outside the repository. A user that is not listed here can neither read nor write anything.
 #
 # The probe publishes its telemetry and listens for control messages; the bridge only reads telemetry; only the operator writes the
-# control topic. Note that Mosquitto acknowledges a QoS 1 publish that the ACL then drops, so a denial is visible only as a message that
-# never arrives (edge/mqtt_check.py tests it that way).
+# control topic; the web intake process (Phase 5) may write ONE topic, force/telemetry/web-intake, which the bridge's
+# force/telemetry/# subscription already covers, and reads nothing.
+#
+# Note that under MQTT 3.1.1 Mosquitto acknowledges a QoS 1 publish that the ACL then drops, so a denial is visible only as a message
+# that never arrives (edge/mqtt_check.py tests it that way). Under MQTT 5 the PUBACK carries the reason code "Not authorized", which
+# is why the intake client speaks MQTT 5 (intake/e2e_report.py shows both against Mosquitto 2.1.2).
 
 user probe-01
 topic write force/telemetry/probe-01
@@ -11,6 +15,9 @@ topic read force/control/probe-01
 
 user force-bridge
 topic read force/telemetry/#
+
+user web-intake
+topic write force/telemetry/web-intake
 
 user operator
 topic write force/control/probe-01

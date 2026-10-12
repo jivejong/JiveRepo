@@ -84,10 +84,11 @@ class AclTests(unittest.TestCase):
                 acl[user].append((words[1], words[2]))
         return acl
 
-    def test_exactly_the_three_users_with_least_privilege(self):
+    def test_exactly_the_four_users_with_least_privilege(self):
         self.assertEqual(self.parsed(), {
             "probe-01": [("write", "force/telemetry/probe-01"), ("read", "force/control/probe-01")],
             "force-bridge": [("read", "force/telemetry/#")],
+            "web-intake": [("write", "force/telemetry/web-intake")],
             "operator": [("write", "force/control/probe-01"), ("read", "force/#")]})
 
     def test_no_global_or_pattern_rules_grant_everyone_access(self):
@@ -98,16 +99,19 @@ class AclTests(unittest.TestCase):
         writers = [u for u, rules in self.parsed().items() if ("write", "force/control/probe-01") in rules]
         self.assertEqual(writers, ["operator"])
 
-    def test_only_the_probe_can_write_telemetry_and_the_bridge_cannot_write_at_all(self):
+    def test_only_the_probe_and_the_intake_process_can_write_telemetry_each_to_its_own_topic_and_the_bridge_not_at_all(self):
         acl = self.parsed()
-        writers = [u for u, rules in acl.items() if any(k == "write" and t.startswith("force/telemetry") for k, t in rules)]
-        self.assertEqual(writers, ["probe-01"])
+        writers = {u: [t for k, t in rules if k == "write" and t.startswith("force/telemetry")] for u, rules in acl.items()}
+        self.assertEqual({u: t for u, t in writers.items() if t},
+                         {"probe-01": ["force/telemetry/probe-01"], "web-intake": ["force/telemetry/web-intake"]})
         self.assertFalse([r for r in acl["force-bridge"] if r[0] == "write"])
+        self.assertFalse([r for r in acl["web-intake"] if r[0] == "read"])
 
     def test_the_acl_and_doc_04_state_the_same_permissions(self):
         doc = re.sub(r"\s+", " ", text("docs", "04-edge-simulators.md"))
         for phrase in ("`probe-01` writes `force/telemetry/probe-01` and reads `force/control/probe-01`",
-                       "`force-bridge` reads `force/telemetry/#`", "`operator` writes `force/control/probe-01`"):
+                       "`force-bridge` reads `force/telemetry/#`", "`operator` writes `force/control/probe-01`",
+                       "`web-intake` (the report intake process, Phase 5) writes `force/telemetry/web-intake` and reads nothing"):
             self.assertIn(phrase, doc)
 
 
