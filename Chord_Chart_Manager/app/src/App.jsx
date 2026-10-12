@@ -6,6 +6,7 @@ import SetlistListView from './views/SetlistListView';
 import SetlistView  from './views/SetlistView';
 import EditView     from './views/EditView';
 import SettingsView from './views/SettingsView';
+import TagDefinitionManager from './components/TagDefinitionManager';
 import { useOnline, useSync } from './hooks';
 import { applyTheme, getSystemPrefersDark, readThemePreference, resolveTheme,
   subscribeToSystemTheme, writeThemePreference } from './lib/theme';
@@ -89,11 +90,31 @@ export default function App() {
     setView(null);
   };
 
+  const openTagDefinitions = category => {
+    const session = advanceNavigationSession();
+    setView({ type: 'tag-definitions', category, session });
+  };
+
   // ── Render active view ──────────────────────────────────────────────────────
 
   let activeView;
 
-  if (view?.type === 'chart') {
+  if (view?.type === 'tag-definitions') {
+    activeView = (
+      <TagDefinitionManager
+        key={view.category}
+        category={view.category}
+        online={online}
+        onSync={syncNow}
+        onBack={() => {
+          if (navigationSession.current !== view.session) return;
+          advanceNavigationSession();
+          setTab('settings');
+          setView(null);
+        }}
+      />
+    );
+  } else if (view?.type === 'chart') {
     activeView = (
       <ChartView
         key={view.setlistEntry
@@ -181,6 +202,7 @@ export default function App() {
         onSync={syncNow}
         themePreference={themePreference}
         onThemeChange={chooseTheme}
+        onManageDefinitions={openTagDefinitions}
       />
     );
   } else {

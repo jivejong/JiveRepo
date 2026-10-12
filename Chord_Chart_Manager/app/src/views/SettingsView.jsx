@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { SyncIcon } from '../components/Icons';
+import { ChevronRight, SyncIcon } from '../components/Icons';
 import * as api from '../lib/api';
-import TagDefinitionManager from '../components/TagDefinitionManager';
 
 export default function SettingsView({
   online, syncing, lastSync, dirty, conflicts, syncError, onSync,
-  themePreference = 'system', onThemeChange = () => {},
+  themePreference = 'system', onThemeChange = () => {}, onManageDefinitions = () => {},
 }) {
   const [stats,    setStats]    = useState(null);
   const [checking, setChecking] = useState(false);
@@ -54,7 +53,15 @@ export default function SettingsView({
           <p className="theme-help">System follows this device’s appearance setting.</p>
         </fieldset>
 
-        <TagDefinitionManager online={online} onSync={onSync} />
+        <section className="settings-definition-links" aria-labelledby="settings-definitions-title">
+          <div id="settings-definitions-title" className="form-label">Shared definitions</div>
+          <button className="definition-nav-link" onClick={() => onManageDefinitions('Genre')}>
+            <span>Manage Genres</span><ChevronRight size={20} aria-hidden="true" />
+          </button>
+          <button className="definition-nav-link" onClick={() => onManageDefinitions('Vibe')}>
+            <span>Manage Vibes</span><ChevronRight size={20} aria-hidden="true" />
+          </button>
+        </section>
 
         {/* Sync status */}
         <div style={{ marginBottom: 24 }}>

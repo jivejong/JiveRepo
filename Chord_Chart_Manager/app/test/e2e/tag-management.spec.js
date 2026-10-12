@@ -1,6 +1,50 @@
 import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 
+test('late category load cannot update a different management view', async ({ page, context }) => {
+  const leakedName = `T19 stale Genre ${randomUUID()}`;
+  let releaseHeld;
+  let markHeld;
+  const held = new Promise(resolve => { releaseHeld = resolve; });
+  const requestHeld = new Promise(resolve => { markHeld = resolve; });
+  let holdFirst = true;
+  const routeHandler = async route => {
+    if (holdFirst && route.request().method() === 'GET') {
+      holdFirst = false;
+      markHeld();
+      await held;
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({ response, json: {
+        ...body,
+        genres: [...body.genres, { id: -1, name: leakedName, song_count: 0 }],
+      } });
+      return;
+    }
+    await route.continue();
+  };
+  await context.route('**/api/tag-definitions', routeHandler);
+  try {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.getByRole('button', { name: 'Manage Genres' }).click();
+    await requestHeld;
+
+    await page.getByRole('button', { name: 'Back to Settings' }).click();
+    await page.getByRole('button', { name: 'Manage Vibes' }).click();
+    await expect(page.locator('.topbar-title')).toHaveText('Manage Vibes');
+
+    releaseHeld();
+    await expect(page.locator('.topbar-title')).toHaveText('Manage Vibes');
+    await expect(page.getByText(leakedName, { exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Back to Settings' }).click();
+    await expect(page.getByRole('region', { name: 'Shared definitions' })).toBeVisible();
+  } finally {
+    releaseHeld();
+    await context.unroute('**/api/tag-definitions', routeHandler);
+  }
+});
+
 test('Settings manages Genre and Vibe definitions with explicit assignment decisions', async ({ page, request, context }) => {
   const suffix = randomUUID();
   const sourceName = `T19 source ${suffix}`;
@@ -9,6 +53,7 @@ test('Settings manages Genre and Vibe definitions with explicit assignment decis
   const vibeName = `T19 shared ${suffix}`;
   const unusedName = `T19 unused ${suffix}`;
   const renamedName = `T19 renamed ${suffix}`;
+  const longVibeName = `T19 long Vibe ${suffix} ${'extended-definition-name-'.repeat(1)}`;
   const fixtureTitle = `T19 management fixture ${suffix}`;
   const fixtureArtist = `T19 artist ${suffix}`;
   const ownedDefinitions = [];
@@ -25,9 +70,10 @@ test('Settings manages Genre and Vibe definitions with explicit assignment decis
     return value;
   };
   try {
-    const [source, target, stable, vibe, unused] = await Promise.all([
+    const [source, target, stable, vibe, unused, longVibe] = await Promise.all([
       makeDefinition('Genre', sourceName), makeDefinition('Genre', targetName),
       makeDefinition('Genre', stableName), makeDefinition('Vibe', vibeName), makeDefinition('Genre', unusedName),
+      makeDefinition('Vibe', longVibeName),
     ]);
     const created = await call('POST', '/api/songs', {
       title: fixtureTitle, artist: fixtureArtist,
@@ -40,10 +86,17 @@ test('Settings manages Genre and Vibe definitions with explicit assignment decis
 
     await page.goto('/');
     await page.getByRole('button', { name: 'Settings' }).click();
-    await expect(page.getByRole('heading', { name: 'Genre and Vibe definitions' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Shared definitions' })).toBeVisible();
+    await expect(page.locator('.definition-row')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Manage Genres' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Manage Vibes' })).toBeVisible();
     await expect(page.getByText('Era', { exact: true })).toHaveCount(0);
+    await page.getByRole('radio', { name: 'Dark' }).check();
+    await page.getByRole('button', { name: 'Manage Genres' }).click();
+    await expect(page.locator('.topbar-title')).toHaveText('Manage Genres');
+    await expect(page.getByRole('heading', { name: 'Vibe', exact: true })).toHaveCount(0);
 
-    const genreSection = page.locator('.definition-category').filter({ has: page.getByRole('heading', { name: 'Genre', exact: true }) });
+    const genreSection = page.locator('.definition-category');
     const sourceRow = genreSection.locator('.definition-row').filter({ hasText: sourceName });
     await expect(sourceRow).toContainText('1 song');
     await sourceRow.getByRole('button', { name: 'Delete' }).click();
@@ -74,9 +127,30 @@ test('Settings manages Genre and Vibe definitions with explicit assignment decis
     await page.getByRole('dialog').getByRole('button', { name: 'Confirm deletion' }).click();
     await expect(page.getByText(renamedName, { exact: true })).toHaveCount(0);
 
-    const vibeSection = page.locator('.definition-category').filter({ has: page.getByRole('heading', { name: 'Vibe', exact: true }) });
+    await page.getByRole('button', { name: 'Back to Settings' }).click();
+    await expect(page.getByRole('region', { name: 'Shared definitions' })).toBeVisible();
+    await expect(page.locator('.definition-row')).toHaveCount(0);
+    await page.getByRole('radio', { name: 'Light' }).check();
+    await page.getByRole('button', { name: 'Manage Vibes' }).click();
+    await expect(page.locator('.topbar-title')).toHaveText('Manage Vibes');
+    await expect(page.getByRole('heading', { name: 'Genre', exact: true })).toHaveCount(0);
+
+    const vibeSection = page.locator('.definition-category');
     const vibeRow = vibeSection.locator('.definition-row').filter({ hasText: vibeName });
     await expect(vibeRow).toContainText('1 song');
+    const longVibeRow = vibeSection.locator('.definition-row').filter({ hasText: longVibeName });
+    await expect(longVibeRow).toContainText('0 songs');
+    for (const viewport of [{ width: 390, height: 844 }, { width: 768, height: 1024 }, { width: 1024, height: 768 }]) {
+      await page.setViewportSize(viewport);
+      await expect(page.locator('.topbar-title')).toHaveText('Manage Vibes');
+      await expect(longVibeRow.getByRole('button', { name: 'Rename' })).toBeVisible();
+      const nameBox = await longVibeRow.locator('.definition-name').boundingBox();
+      expect(nameBox, JSON.stringify(viewport)).not.toBeNull();
+      expect(nameBox.x).toBeGreaterThanOrEqual(0);
+      expect(nameBox.x + nameBox.width).toBeLessThanOrEqual(viewport.width);
+      expect(await longVibeRow.locator('.definition-name').evaluate(element => element.scrollWidth <= element.clientWidth + 1),
+        `long Vibe name should wrap within ${viewport.width}px`).toBe(true);
+    }
     await vibeRow.getByRole('button', { name: 'Delete' }).click();
     await page.getByRole('dialog').getByLabel('Remove these assignments').check();
     const removeVibeResponsePromise = page.waitForResponse(response => response.url().endsWith(`/api/tag-definitions/Vibe/${vibe.id}`)
@@ -93,6 +167,8 @@ test('Settings manages Genre and Vibe definitions with explicit assignment decis
     await expect(page.getByText('Definition changes require a connection.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Add' }).first()).toBeDisabled();
     await context.setOffline(false);
+    await page.getByRole('button', { name: 'Back to Settings' }).click();
+    await expect(page.getByRole('button', { name: 'Manage Genres' })).toBeVisible();
   } catch (error) {
     primaryError = error;
   } finally {
