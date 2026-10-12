@@ -2,8 +2,38 @@
 
 {% raw %}
 /*
-  gold_disturbance (doc 03, "gold.disturbance"; doc 07 Phase 4 step 6). Probe-sourced firing rules only this
-  phase -- report-sourced rules are Phase 5.
+  gold_disturbance (doc 03, "gold.disturbance"; doc 07 Phase 4 step 6, Phase 5 for the report rules).
+
+  REPORT RULES (Phase 5; doc 03 "Firing rules -- report-sourced", with the decisions made for the parts it leaves
+  open). A "qualifying report" is a gold_sector_reading row with source_type = 'report' whose imbalance_score is
+  over var('emergency_threshold') and whose silver_force_report relevance_score is at least
+  var('report_relevance_threshold'). There is no sustained requirement. Everything below is unchanged for probes:
+    - The probe chain (flagged ... final) reads PROBE rows only (source_type filter in `flagged`). A report row never
+      joins a run, breaks one, or enters a cooldown walk, and a probe incident is never suppressed by a report.
+    - A qualifying report that falls INSIDE an accepted probe incident's window -- event_time from the incident's
+      onset up to detected_at + var('cooldown_hours') -- ESCALATES that incident instead of creating one:
+        severity            = GREATEST(the probe severity, the severity of each escalating report computed with the
+                              same population weighting as the probe's) -- i.e. the highest of them all
+        report_description, report_relevance
+                            = those of the highest-relevance escalating report (ties: earliest event_time, then
+                              lowest event_id)
+        is_report_sourced   stays false (the evidence is still probe-led); cooldown_conflict is untouched.
+      The description attaches even when the report's own severity is the lower one: corroboration is the point.
+    - A qualifying report NOT inside any probe incident's window becomes its own incident, if it is the first in its
+      cooldown: the same last-ACCEPTED walk as the probe cooldown (`report_walk`), over report incidents only. A
+      later qualifying report inside that cooldown is absorbed: no row, no change to the incident. detected_at is
+      the report's event_time, sustained_scans is 1, scan_id is null, is_report_sourced is true. Its id is a
+      deterministic_id over the report's event_time and ('report:' + event_id), so it cannot collide with a probe
+      incident's.
+    - A report before a probe onset (outside the window above) leaves both rows: the report incident and, later,
+      the probe incident -- the probe is never suppressed. assert_cooldown_respected exempts exactly these
+      report-versus-probe pairs. KNOWN EDGE: if a report incident was recorded first and a late-replayed probe run
+      later makes that report fall inside the probe incident's window, the report now escalates the probe incident
+      but its earlier row stays (a merge never deletes); both rows exist, as for the replayed-onset case above.
+    - Reads silver_force_report directly (relevance and description are not columns of gold_sector_reading, and no
+      column was added there); doc 03's note that this table never reads silver is no longer true.
+    - report_walk is recursive like `walked`: its depth is the number of qualifying, un-escalating reports for one
+      sector over all history (the engine's default recursion limit is 100) -- a handful at the intake's daily caps.
 
   DBT CONCEPTS USED HERE:
   - merge_exclude_columns='agent_processed' (a dbt-databricks incremental config, not core dbt): tells the
@@ -64,7 +94,8 @@
   is the case doc 03's "Late-replayed onset inside an existing cooldown" actually describes.
 
   Contract:
-  - Inputs: ref('gold_sector_reading'), ref('dim_sector') (population, for severity).
+  - Inputs: ref('gold_sector_reading'), ref('silver_force_report') (report relevance and description),
+    ref('dim_sector') (population, for severity).
   - Grain: one row per accepted incident.
   - Materialization: incremental, merge on disturbance_id (macros.deterministic_id -- an onset-time + sector
     hash, not a random ULID, so recomputing the same run twice produces the same id and merges as an update,
@@ -92,6 +123,9 @@ with recursive flagged as (
         *,
         imbalance_score > {{ var('emergency_threshold') }} as is_above
     from {{ ref('gold_sector_reading') }}
+    -- probe rows only: a report never joins or breaks a run (see the header). source_type is never null in the real
+    -- table; the COALESCE only lets fixtures written before Phase 5, which omit the column, keep meaning "a probe scan".
+    where coalesce(source_type, 'probe') = 'probe'
 
 ),
 
@@ -215,22 +249,184 @@ final as (
     left join {{ ref('dim_sector') }} d on a.sector_id = d.sector_id
     where a.accepted
 
+),
+
+report_source as (
+
+    -- silver_force_report, one row per event_id (earliest arrival): a guard, silver already guarantees it
+    select event_id, relevance_score, description
+    from (
+        select
+            event_id, relevance_score, description,
+            row_number() over (partition by event_id order by arrival_ts asc) as rn
+        from {{ ref('silver_force_report') }}
+    )
+    where rn = 1
+
+),
+
+qualifying_reports as (
+
+    -- every report that meets the firing rule, weighted like a probe incident (doc 03 severity formula)
+    select
+        r.event_id,
+        r.sector_id,
+        r.event_time,
+        r.imbalance_score,
+        r.z_midi,
+        r.z_kyber,
+        r.z_dark,
+        r.signature,
+        f.relevance_score,
+        f.description,
+        r.imbalance_score * (1 + log10(greatest(d.population, 10)) / 10) as report_severity
+    from {{ ref('gold_sector_reading') }} r
+    join report_source f on f.event_id = r.event_id
+    left join {{ ref('dim_sector') }} d on r.sector_id = d.sector_id
+    where r.source_type = 'report'
+      and r.imbalance_score > {{ var('emergency_threshold') }}
+      and f.relevance_score >= {{ var('report_relevance_threshold') }}
+
+),
+
+escalating as (
+
+    -- qualifying reports that fall inside an accepted probe incident's window [onset, detected_at + cooldown).
+    -- Probe incidents are at least cooldown_hours apart, so their windows do not overlap: a report is in at most one.
+    select
+        p.sector_id as incident_sector_id,
+        p.onset_event_time as incident_onset_event_time,
+        q.event_id,
+        q.report_severity,
+        q.relevance_score,
+        q.description,
+        row_number() over (
+            partition by p.sector_id, p.onset_event_time
+            order by q.relevance_score desc, q.event_time asc, q.event_id asc
+        ) as relevance_rank
+    from final p
+    join qualifying_reports q
+      on q.sector_id = p.sector_id
+     and q.event_time >= p.onset_event_time
+     and q.event_time < dateadd(hour, {{ var('cooldown_hours') }}, p.detected_at)
+
+),
+
+escalation as (
+
+    select
+        incident_sector_id,
+        incident_onset_event_time,
+        max(report_severity) as max_report_severity,
+        max(case when relevance_rank = 1 then description end) as top_description,
+        max(case when relevance_rank = 1 then relevance_score end) as top_relevance
+    from escalating
+    group by incident_sector_id, incident_onset_event_time
+
+),
+
+standalone_reports as (
+
+    select
+        q.*,
+        row_number() over (partition by q.sector_id order by q.event_time asc, q.event_id asc) as report_seq
+    from qualifying_reports q
+    where q.event_id not in (select event_id from escalating)
+
+),
+
+report_walk as (
+
+    -- the same last-ACCEPTED walk as `walked`, over report incidents only: a report is absorbed if it falls inside the
+    -- cooldown of the last report incident that was actually accepted; a suppressed report does not extend anything.
+    select
+        sector_id, report_seq, event_id, event_time, imbalance_score, z_midi, z_kyber, z_dark, signature,
+        relevance_score, description, report_severity,
+        event_time as last_accepted_event_time,
+        true as accepted
+    from standalone_reports
+    where report_seq = 1
+
+    union all
+
+    select
+        sector_id, report_seq, event_id, event_time, imbalance_score, z_midi, z_kyber, z_dark, signature,
+        relevance_score, description, report_severity,
+        case when suppressed then basis_event_time else event_time end as last_accepted_event_time,
+        not suppressed as accepted
+    from (
+        select
+            r.sector_id, r.report_seq, r.event_id, r.event_time, r.imbalance_score, r.z_midi, r.z_kyber, r.z_dark,
+            r.signature, r.relevance_score, r.description, r.report_severity,
+            w.last_accepted_event_time as basis_event_time,
+            r.event_time < dateadd(hour, {{ var('cooldown_hours') }}, w.last_accepted_event_time) as suppressed
+        from report_walk w
+        join standalone_reports r on r.sector_id = w.sector_id and r.report_seq = w.report_seq + 1
+    )
+
+),
+
+incidents as (
+
+    select
+        {{ deterministic_id('f.onset_event_time', 'f.sector_id') }} as disturbance_id,
+        f.sector_id,
+        f.detected_at,
+        f.onset_scan_id as scan_id,
+        f.imbalance_score,
+        f.z_midi,
+        f.z_kyber,
+        f.z_dark,
+        f.signature,
+        -- GREATEST skips a NULL argument: with no escalating report this is the probe severity unchanged.
+        greatest(f.imbalance_score * (1 + log10(greatest(f.population, 10)) / 10), e.max_report_severity) as severity,
+        cast(false as boolean) as is_report_sourced,
+        e.top_description as report_description,
+        e.top_relevance as report_relevance,
+        f.sustained_scans,
+        f.cooldown_conflict
+    from final f
+    left join escalation e
+      on e.incident_sector_id = f.sector_id
+     and e.incident_onset_event_time = f.onset_event_time
+
+    union all
+
+    select
+        {{ deterministic_id('w.event_time', "concat('report:', w.event_id)") }} as disturbance_id,
+        w.sector_id,
+        w.event_time as detected_at,
+        cast(null as string) as scan_id,
+        w.imbalance_score,
+        w.z_midi,
+        w.z_kyber,
+        w.z_dark,
+        w.signature,
+        w.report_severity as severity,
+        cast(true as boolean) as is_report_sourced,
+        w.description as report_description,
+        w.relevance_score as report_relevance,
+        cast(1 as bigint) as sustained_scans,
+        cast(false as boolean) as cooldown_conflict
+    from report_walk w
+    where w.accepted
+
 )
 
 select
-    {{ deterministic_id('onset_event_time', 'sector_id') }} as disturbance_id,
+    disturbance_id,
     sector_id,
     detected_at,
-    onset_scan_id as scan_id,
+    scan_id,
     imbalance_score,
     z_midi,
     z_kyber,
     z_dark,
     signature,
-    imbalance_score * (1 + log10(greatest(population, 10)) / 10) as severity,
-    cast(false as boolean) as is_report_sourced,
-    cast(null as string) as report_description,
-    cast(null as double) as report_relevance,
+    severity,
+    is_report_sourced,
+    report_description,
+    report_relevance,
     sustained_scans,
     cooldown_conflict,
     {% if is_incremental() %}
@@ -239,10 +435,10 @@ select
                                                  -- scalar subquery to be aggregated; disturbance_id is unique,
                                                  -- so MAX() over at most one matching row changes nothing.
          from {{ this }} existing
-         where existing.disturbance_id = {{ deterministic_id('final.onset_event_time', 'final.sector_id') }}),
+         where existing.disturbance_id = incidents.disturbance_id),
         false
     ) as agent_processed
     {% else %}
     cast(false as boolean) as agent_processed  -- first build: nothing in `this` yet to carry forward
     {% endif %}
-from final
+from incidents

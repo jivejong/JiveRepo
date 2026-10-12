@@ -16,6 +16,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000100", sector_id: "tatooine", scan_id: "01UNIT0000000000000000101", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 0.0, kyber_resonance: -2.0, dark_side_activity: 3.0, channels_present: 3}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -37,6 +39,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000102", sector_id: "tatooine", scan_id: "01UNIT0000000000000000103", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 2.0, kyber_resonance: 0.0, dark_side_activity: 2.2, channels_present: 3}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -58,6 +62,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000104", sector_id: "tatooine", scan_id: "01UNIT0000000000000000105", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 3.0, kyber_resonance: 3.0, dark_side_activity: 0.5, channels_present: 3}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -79,6 +85,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000106", sector_id: "tatooine", scan_id: "01UNIT0000000000000000107", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: -3.0, kyber_resonance: -3.0, dark_side_activity: 0.0, channels_present: 3}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -100,6 +108,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000108", sector_id: "tatooine", scan_id: "01UNIT0000000000000000109", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 0.0, kyber_resonance: 3.0, dark_side_activity: 0.0, channels_present: 3}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -122,6 +132,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000110", sector_id: "coruscant", scan_id: "01UNIT0000000000000000111", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 0.0, kyber_resonance: 0.0, dark_side_activity: 2.0, channels_present: 3}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "coruscant", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -143,6 +155,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000112", sector_id: "tatooine", scan_id: "01UNIT0000000000000000113", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 0.0, kyber_resonance: 0.0, dark_side_activity: 0.0, channels_present: 3}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -168,6 +182,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000114", sector_id: "naboo", scan_id: "01UNIT0000000000000000115", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: null, kyber_resonance: null, dark_side_activity: 2.5, channels_present: 1}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "naboo", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -190,6 +206,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000116", sector_id: "naboo", scan_id: "01UNIT0000000000000000117", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 1.2, kyber_resonance: null, dark_side_activity: 2.5, channels_present: 2}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "naboo", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -216,6 +234,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000118", sector_id: "naboo", scan_id: "01UNIT0000000000000000119", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 0.5, kyber_resonance: 0.0, dark_side_activity: 2.5, channels_present: 3}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "naboo", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -241,6 +261,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000120", sector_id: "tatooine", scan_id: "01UNIT0000000000000000121", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 1.0, kyber_resonance: 1.0, dark_side_activity: 1.0, channels_present: 3}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -263,6 +285,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000122", sector_id: "naboo", scan_id: "01UNIT0000000000000000123", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: null, kyber_resonance: null, dark_side_activity: 2.0, channels_present: 1}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "naboo", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -285,6 +309,8 @@ unit_tests:
       - input: ref('silver_probe_reading')
         rows:
           - {event_id: "01UNIT0000000000000000124", sector_id: "naboo", scan_id: "01UNIT0000000000000000125", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: null, kyber_resonance: null, dark_side_activity: 0.5, channels_present: 1}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('gold_sector_baseline')
         rows:
           - {sector_id: "naboo", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
@@ -312,6 +338,8 @@ unit_tests:
         rows:
           - {event_id: "01UNIT0000000000000000200", sector_id: "tatooine", scan_id: "01UNIT0000000000000000201", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
           - {event_id: "01UNIT0000000000000000202", sector_id: "tatooine", scan_id: "01UNIT0000000000000000203", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.2, z_midi: 0.0, z_kyber: -2.1, z_dark: 3.1, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
@@ -329,6 +357,8 @@ unit_tests:
       - input: ref('gold_sector_reading')
         rows:
           - {event_id: "01UNIT0000000000000000204", sector_id: "tatooine", scan_id: "01UNIT0000000000000000205", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
@@ -356,6 +386,8 @@ unit_tests:
           - {event_id: "01UNIT0000000000000000210", sector_id: "tatooine", scan_id: "01UNIT0000000000000000211", event_time: "2026-09-30T12:30:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
           - {event_id: "01UNIT0000000000000000212", sector_id: "tatooine", scan_id: "01UNIT0000000000000000213", event_time: "2026-09-30T12:45:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
           - {event_id: "01UNIT0000000000000000214", sector_id: "tatooine", scan_id: "01UNIT0000000000000000215", event_time: "2026-09-30T13:00:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
@@ -399,6 +431,8 @@ unit_tests:
           - {event_id: "01UNIT0000000000000000322", sector_id: "tatooine", scan_id: "01UNIT0000000000000000323", event_time: "2026-09-30T02:45:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
           - {event_id: "01UNIT0000000000000000324", sector_id: "tatooine", scan_id: "01UNIT0000000000000000325", event_time: "2026-09-30T03:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
           - {event_id: "01UNIT0000000000000000326", sector_id: "tatooine", scan_id: "01UNIT0000000000000000327", event_time: "2026-09-30T03:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
@@ -427,6 +461,8 @@ unit_tests:
           - {event_id: "01UNIT0000000000000000404", sector_id: "tatooine", scan_id: "01UNIT0000000000000000405", event_time: "2026-09-30T12:30:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
           - {event_id: "01UNIT0000000000000000406", sector_id: "tatooine", scan_id: "01UNIT0000000000000000407", event_time: "2026-09-30T12:45:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: true}
           - {event_id: "01UNIT0000000000000000408", sector_id: "tatooine", scan_id: "01UNIT0000000000000000409", event_time: "2026-09-30T13:00:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: true}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
@@ -449,6 +485,8 @@ unit_tests:
         rows:
           - {event_id: "01UNIT0000000000000000420", sector_id: "tatooine", scan_id: "01UNIT0000000000000000421", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: true}
           - {event_id: "01UNIT0000000000000000422", sector_id: "tatooine", scan_id: "01UNIT0000000000000000423", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: true}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
@@ -479,6 +517,8 @@ unit_tests:
           - {event_id: "01UNIT0000000000000000448", sector_id: "tatooine", scan_id: "01UNIT0000000000000000449", event_time: "2026-09-30T01:00:00Z", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
           - {event_id: "01UNIT0000000000000000450", sector_id: "tatooine", scan_id: "01UNIT0000000000000000451", event_time: "2026-09-30T01:15:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
           - {event_id: "01UNIT0000000000000000452", sector_id: "tatooine", scan_id: "01UNIT0000000000000000453", event_time: "2026-09-30T01:30:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
@@ -502,9 +542,864 @@ unit_tests:
           - {event_id: "01UNIT0000000000000000500", sector_id: "tatooine", scan_id: "01UNIT0000000000000000501", event_time: "2026-09-30T12:00:00Z", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
           - {event_id: "01UNIT0000000000000000502", sector_id: "tatooine", scan_id: "01UNIT0000000000000000503", event_time: "2026-09-30T12:15:00Z", imbalance_score: 6.1, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
           - {event_id: "01UNIT0000000000000000504", sector_id: "tatooine", scan_id: "01UNIT0000000000000000505", event_time: "2026-09-30T12:30:00Z", imbalance_score: 6.2, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows: []
       - input: ref('dim_sector')
         rows:
           - {sector_id: "tatooine", population: 200000}
     expect:
       rows:
         - {sector_id: "tatooine", scan_id: "01UNIT0000000000000000501", detected_at: "2026-09-30T12:30:00Z", sustained_scans: 3, cooldown_conflict: false}
+
+  # ---- Phase 5: report rows in gold_sector_reading ----
+  - name: unit_test_report_is_scored_like_a_probe_row_and_marked_as_a_report
+    description: >
+      The same readings give the same score whether probe or report (z = (1, 1, 1) -> 2.0). The report row has source_type
+      'report', no scan_id, three channels and is never marked replayed; the probe row keeps its own scan and flag.
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007000", sector_id: "tatooine", scan_id: "01UNIT0000000000000007001", event_time: "2026-09-30T12:00:00Z", midichlorian_ppm: 1.0, kyber_resonance: 1.0, dark_side_activity: 1.0, channels_present: 3, is_replayed: true}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007002", sector_id: "tatooine", event_time: "2026-09-30T12:00:00Z", arrival_ts: "2026-09-30T12:01:00Z", midichlorian_ppm: 1.0, kyber_resonance: 1.0, dark_side_activity: 1.0}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000007000", source_type: "probe", scan_id: "01UNIT0000000000000007001", channels_present: 3, is_replayed: true, imbalance_score: 2.0, z_midi: 1.0, z_kyber: 1.0, z_dark: 1.0, signature: "unclassified"}
+        - {event_id: "01UNIT0000000000000007002", source_type: "report", scan_id: null, channels_present: 3, is_replayed: false, imbalance_score: 2.0, z_midi: 1.0, z_kyber: 1.0, z_dark: 1.0, signature: "unclassified"}
+
+  - name: unit_test_report_is_scored_against_the_baseline_it_is_given
+    description: >
+      z = (14-10)/2 = 2, (7-12)/2 = -2.5, (5-2)/1 = 3: the same expressions as a probe row, each channel against its own baseline (different means,
+      so a channel scored against another's baseline gives a different number).
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows: []
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007010", sector_id: "tatooine", event_time: "2026-09-30T12:00:00Z", arrival_ts: "2026-09-30T12:01:00Z", midichlorian_ppm: 14.0, kyber_resonance: 7.0, dark_side_activity: 5.0}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 10.0, stddev_90d: 2.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 12.0, stddev_90d: 2.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 2.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000007010", z_midi: 2.0, z_kyber: -2.5, z_dark: 3.0, signature: "sith_presence"}
+
+  - name: unit_test_duplicate_report_event_id_gives_one_row
+    description: >
+      Two silver rows with one event_id would make the merge ambiguous; one row comes out.
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('silver_probe_reading')
+        rows: []
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007020", sector_id: "tatooine", event_time: "2026-09-30T12:00:00Z", arrival_ts: "2026-09-30T12:01:00Z", midichlorian_ppm: 0.0, kyber_resonance: -2.0, dark_side_activity: 3.0}
+          - {event_id: "01UNIT0000000000000007020", sector_id: "tatooine", event_time: "2026-09-30T12:00:00Z", arrival_ts: "2026-09-30T12:02:00Z", midichlorian_ppm: 0.0, kyber_resonance: -2.0, dark_side_activity: 3.0}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000007020", source_type: "report"}
+
+  - name: unit_test_incremental_duplicate_report_event_id_gives_one_row
+    description: >
+      The same guard on the incremental path: two silver rows with one event_id, not yet scored, give one row.
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('silver_probe_reading')
+        rows: []
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007050", sector_id: "tatooine", event_time: "2026-09-30T12:00:00Z", arrival_ts: "2026-09-30T12:01:00Z", midichlorian_ppm: 0.0, kyber_resonance: -2.0, dark_side_activity: 3.0}
+          - {event_id: "01UNIT0000000000000007050", sector_id: "tatooine", event_time: "2026-09-30T12:00:00Z", arrival_ts: "2026-09-30T12:02:00Z", midichlorian_ppm: 0.0, kyber_resonance: -2.0, dark_side_activity: 3.0}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+      - input: this
+        rows:
+          - {event_id: "01UNIT0000000000000007051", source_type: "probe", _gold_built_at: "2026-09-30T12:05:00Z"}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000007050", source_type: "report"}
+
+  - name: unit_test_incremental_scores_a_late_report_by_arrival_not_by_event_time
+    description: >
+      7030 has an event_time months outside the 48 h recompute window (a very late report) and is not in this table yet: it is
+      scored. 7031 is already there: not scored again.
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('silver_probe_reading')
+        rows: []
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007030", sector_id: "tatooine", event_time: "2026-01-05T00:00:00Z", arrival_ts: "2026-10-12T04:00:00Z", midichlorian_ppm: 0.0, kyber_resonance: -2.0, dark_side_activity: 3.0}
+          - {event_id: "01UNIT0000000000000007031", sector_id: "tatooine", event_time: "2026-09-30T12:00:00Z", arrival_ts: "2026-09-30T12:01:00Z", midichlorian_ppm: 0.0, kyber_resonance: -2.0, dark_side_activity: 3.0}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+      - input: this
+        rows:
+          - {event_id: "01UNIT0000000000000007031", source_type: "report", _gold_built_at: "2026-09-30T12:05:00Z"}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000007030", source_type: "report"}
+
+  - name: unit_test_incremental_scores_a_report_that_landed_before_the_last_build_started
+    description: >
+      arrival_ts (12:00:30) is BEFORE the table's last build (12:05), as when Auto Loader lands a file after a build that
+      started just before it was written. Selection is by 'not yet scored', so the report is still picked up.
+    model: gold_sector_reading
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('silver_probe_reading')
+        rows: []
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007040", sector_id: "tatooine", event_time: "2026-09-30T12:00:00Z", arrival_ts: "2026-09-30T12:00:30Z", midichlorian_ppm: 0.0, kyber_resonance: -2.0, dark_side_activity: 3.0}
+      - input: ref('gold_sector_baseline')
+        rows:
+          - {sector_id: "tatooine", channel: "midichlorian", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "kyber", mean_90d: 0.0, stddev_90d: 1.0}
+          - {sector_id: "tatooine", channel: "dark_side", mean_90d: 0.0, stddev_90d: 1.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 200000}
+      - input: this
+        rows:
+          - {event_id: "01UNIT0000000000000007041", source_type: "probe", _gold_built_at: "2026-09-30T12:05:00Z"}
+    expect:
+      rows:
+        - {event_id: "01UNIT0000000000000007040", source_type: "report"}
+
+  # ---- Phase 5: report-sourced and escalating incidents (gold_disturbance). Population 100000 -> severity weight exactly 1.5. ----
+  - name: unit_test_disturbance_report_below_the_relevance_threshold_does_not_fire
+    description: >
+      A report with a strong imbalance_score (8.0) but relevance 0.69 (< 0.7) creates no incident.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007200", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:00:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007200", relevance_score: 0.69, description: "a report", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows: []
+
+  - name: unit_test_disturbance_report_thresholds_are_relevance_at_least_and_score_over
+    description: >
+      tatooine: relevance 0.6999 -> no. naboo: score exactly 5.75 (the rule is 'over') -> no. alderaan: score 5.76 and relevance exactly
+      0.7 (the rule is 'at least') -> yes. hoth: relevance exactly 0.7 -> yes.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007210", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:00:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007211", sector_id: "naboo", scan_id: null, event_time: "2026-09-30T12:00:00Z", source_type: "report", imbalance_score: 5.75, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007212", sector_id: "alderaan", scan_id: null, event_time: "2026-09-30T12:00:00Z", source_type: "report", imbalance_score: 5.76, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007213", sector_id: "hoth", scan_id: null, event_time: "2026-09-30T12:00:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007210", relevance_score: 0.6999, description: "x", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007211", relevance_score: 0.95, description: "x", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007212", relevance_score: 0.7, description: "x", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007213", relevance_score: 0.7, description: "x", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "alderaan", detected_at: "2026-09-30T12:00:00Z", scan_id: null, severity: 8.64, is_report_sourced: true, report_description: "x", report_relevance: 0.7, sustained_scans: 1, cooldown_conflict: false}
+        - {sector_id: "hoth", detected_at: "2026-09-30T12:00:00Z", scan_id: null, severity: 12.0, is_report_sourced: true, report_description: "x", report_relevance: 0.7, sustained_scans: 1, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_report_fires_alone
+    description: >
+      (A quiet naboo scan sits beside it: with a one-row fixture the engine's optimizer drops the window ordering and the query fails, an artefact of a literal single-row input.)
+      One credible sighting is enough: one row, report-sourced, no scan, sustained_scans 1, severity 8.0 * 1.5 = 12.0, the report's
+      verbatim description and relevance, detected_at its event_time.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007220", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:00:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007500", sector_id: "naboo", scan_id: "01UNIT0000000000000007501", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007220", relevance_score: 0.9, description: "Darth Vader is walking the streets.", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:00:00Z", scan_id: null, imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", severity: 12.0, is_report_sourced: true, report_description: "Darth Vader is walking the streets.", report_relevance: 0.9, sustained_scans: 1, cooldown_conflict: false, agent_processed: false}
+
+  - name: unit_test_disturbance_report_escalates_a_probe_incident_when_its_severity_is_higher
+    description: >
+      One row (the report creates no incident of its own). severity = GREATEST(probe 6.5 * 1.5 = 9.75, report 8.0 * 1.5 = 12.0) = 12.0.
+      is_report_sourced stays false; the report's description and relevance are attached.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007230", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:30:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007230", relevance_score: 0.8, description: "Vader at the market", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 12.0, is_report_sourced: false, report_description: "Vader at the market", report_relevance: 0.8, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_report_escalates_a_probe_incident_when_its_severity_is_lower
+    description: >
+      The report's severity (6.0 * 1.5 = 9.0) is below the probe's 9.75: severity does not drop, but the corroborating description is
+      still attached.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007240", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:30:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007240", relevance_score: 0.8, description: "A rumour of a dark figure", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: "A rumour of a dark figure", report_relevance: 0.8, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_several_reports_escalate_one_incident_highest_relevance_describes_it
+    description: >
+      Three qualifying reports in one incident's window, one incident row. Description and relevance come from the highest relevance
+      (0.95); two reports tie on it, the earlier event_time wins. severity is the highest of all: 7.0 * 1.5 = 10.5 (a different report).
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007250", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:20:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007251", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:30:00Z", source_type: "report", imbalance_score: 7.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007252", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:25:00Z", source_type: "report", imbalance_score: 6.4, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007250", relevance_score: 0.8, description: "lowest relevance", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007251", relevance_score: 0.95, description: "tie, later", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007252", relevance_score: 0.95, description: "tie, earlier: wins", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 10.5, is_report_sourced: false, report_description: "tie, earlier: wins", report_relevance: 0.95, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_relevance_tie_on_time_goes_to_the_lowest_event_id
+    description: >
+      Same relevance and same event_time: the lowest event_id decides.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007261", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:30:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007260", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:30:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007261", relevance_score: 0.9, description: "higher id", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007260", relevance_score: 0.9, description: "lower id: wins", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: "lower id: wins", report_relevance: 0.9, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_report_window_starts_at_the_onset_and_ends_at_the_cooldown
+    description: >
+      The window is [onset 12:00, detected_at 12:15 + 2 h = 14:15). 7270 (11:59) is before it: its own incident. 7271 sits exactly at the
+      onset but is below the relevance threshold: it does nothing. 7272 (12:07, between the two scans) is inside: it escalates. 7273 (14:14) is
+      inside but below the relevance threshold, so it does not escalate either.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007270", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T11:59:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007271", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:00:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007272", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:07:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007273", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T14:14:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007270", relevance_score: 0.9, description: "a minute before the onset", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007271", relevance_score: 0.5, description: "below relevance", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007272", relevance_score: 0.7, description: "during the run", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007273", relevance_score: 0.6, description: "below relevance", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T11:59:00Z", scan_id: null, severity: 12.0, is_report_sourced: true, report_description: "a minute before the onset", report_relevance: 0.9, sustained_scans: 1, cooldown_conflict: false}
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: "during the run", report_relevance: 0.7, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_report_exactly_at_the_onset_escalates
+    description: >
+      The escalation window is closed at the onset: a qualifying report at exactly 12:00 escalates the probe incident (8.0 * 1.5 = 12.0), and is not an incident of its own.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007275", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:00:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007275", relevance_score: 0.9, description: "at the onset", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 12.0, is_report_sourced: false, report_description: "at the onset", report_relevance: 0.9, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_report_inside_the_probe_cooldown_to_the_last_minute_escalates
+    description: >
+      14:14 is one minute before the probe incident's cooldown (detected_at 12:15 + 2 h = 14:15) ends: it escalates, no second row.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007280", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T14:14:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007280", relevance_score: 0.9, description: "late in the cooldown", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: "late in the cooldown", report_relevance: 0.9, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_report_after_the_cooldown_is_a_new_incident
+    description: >
+      Exactly detected_at + 2 h: the cooldown has ended. Two rows: the probe incident, unchanged, and a report incident of its own.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007290", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T14:15:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007290", relevance_score: 0.9, description: "after the cooldown", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: null, report_relevance: null, sustained_scans: 2, cooldown_conflict: false}
+        - {sector_id: "tatooine", detected_at: "2026-09-30T14:15:00Z", scan_id: null, severity: 9.0, is_report_sourced: true, report_description: "after the cooldown", report_relevance: 0.9, sustained_scans: 1, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_two_reports_in_one_cooldown_are_one_incident
+    description: >
+      The second report (13:00) is inside the first's cooldown (until 14:00) and is absorbed: no row, and the first incident does not change
+      (its description stays 'first' although the absorbed report has the higher relevance). The third (14:00, exactly 2 h after the FIRST, the last
+      accepted) is a new incident -- the same last-accepted walk as the probe cooldown, not a chain from the absorbed one (13:00 + 2 h = 15:00).
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007300", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:00:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007301", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T13:00:00Z", source_type: "report", imbalance_score: 9.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007302", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T14:00:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007300", relevance_score: 0.8, description: "first", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007301", relevance_score: 0.99, description: "second, absorbed", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007302", relevance_score: 0.7, description: "third, after the first's cooldown", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:00:00Z", scan_id: null, severity: 12.0, is_report_sourced: true, report_description: "first", report_relevance: 0.8, sustained_scans: 1, cooldown_conflict: false}
+        - {sector_id: "tatooine", detected_at: "2026-09-30T14:00:00Z", scan_id: null, severity: 9.0, is_report_sourced: true, report_description: "third, after the first's cooldown", report_relevance: 0.7, sustained_scans: 1, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_late_report_before_a_probe_onset_leaves_both_rows
+    description: >
+      The report's event_time (11:30) is before the probe onset (12:00), though inside 2 h of it. A probe incident is never suppressed by a report,
+      and the report is not inside the probe incident's window: both rows exist. (assert_cooldown_respected exempts exactly this pair.)
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007310", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T11:30:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007310", relevance_score: 0.9, description: "arrived late, happened first", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T11:30:00Z", scan_id: null, severity: 12.0, is_report_sourced: true, report_description: "arrived late, happened first", report_relevance: 0.9, sustained_scans: 1, cooldown_conflict: false}
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: null, report_relevance: null, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_duplicate_report_event_id_makes_one_incident
+    description: >
+      Two silver rows with one event_id (a duplicate that somehow reached silver) must not double the incident.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007320", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:00:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007502", sector_id: "naboo", scan_id: "01UNIT0000000000000007503", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007320", relevance_score: 0.9, description: "same report", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007320", relevance_score: 0.9, description: "same report", arrival_ts: "2026-09-30T13:00:05Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:00:00Z", scan_id: null, severity: 12.0, is_report_sourced: true, report_description: "same report", report_relevance: 0.9, sustained_scans: 1, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_duplicate_report_event_id_earliest_copy_decides
+    description: >
+      Two silver rows with one event_id that differ (a case silver itself prevents): the earliest arrival is the report, so the incident is described by it, not by the later copy with the higher relevance.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007330", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:30:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007330", relevance_score: 0.9, description: "first copy", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007330", relevance_score: 0.95, description: "later copy", arrival_ts: "2026-09-30T13:00:05Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: "first copy", report_relevance: 0.9, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_without_any_report_is_the_probe_incident_unchanged
+    description: >
+      No report rows anywhere: the Phase 4 result, with the report columns null and is_report_sourced false.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows: []
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: null, report_relevance: null, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_report_in_another_sector_does_not_escalate
+    description: >
+      The tatooine incident is not touched by a naboo report, which is a report incident of its own.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007330", sector_id: "naboo", scan_id: null, event_time: "2026-09-30T12:30:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007330", relevance_score: 0.9, description: "elsewhere", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: null, report_relevance: null, sustained_scans: 2, cooldown_conflict: false}
+        - {sector_id: "naboo", detected_at: "2026-09-30T12:30:00Z", scan_id: null, severity: 12.0, is_report_sourced: true, report_description: "elsewhere", report_relevance: 0.9, sustained_scans: 1, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_report_rows_never_break_or_join_a_probe_run
+    description: >
+      A report row between two qualifying probe scans (event_time order) is not a below-threshold probe reading: the two scans are
+      still 2 consecutive scans.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007340", sector_id: "tatooine", scan_id: "01UNIT0000000000000007341", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007342", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:07:00Z", source_type: "report", imbalance_score: 1.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007343", sector_id: "tatooine", scan_id: "01UNIT0000000000000007344", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007342", relevance_score: 0.9, description: "a quiet sighting", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007341", severity: 9.75, is_report_sourced: false, report_description: null, report_relevance: null, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_a_report_row_never_counts_as_a_probe_scan
+    description: >
+      One qualifying probe scan, a qualifying report, then a quiet scan: if the report counted as a scan the first two would form a sustained
+      probe run. There is no probe incident -- only the report's own (sustained_scans 1).
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007350", sector_id: "tatooine", scan_id: "01UNIT0000000000000007351", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007352", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:07:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007353", sector_id: "tatooine", scan_id: "01UNIT0000000000000007354", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007352", relevance_score: 0.9, description: "one sighting", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:07:00Z", scan_id: null, severity: 12.0, is_report_sourced: true, report_description: "one sighting", report_relevance: 0.9, sustained_scans: 1, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_an_escalating_report_does_not_start_a_report_cooldown
+    description: >
+      The 13:00 report escalated the probe incident; it is not a report incident, so the 14:30 report (after the probe cooldown ends at
+      14:15, but inside 13:00 + 2 h) is not absorbed by it.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007360", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T13:00:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007361", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T14:30:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007360", relevance_score: 0.9, description: "escalates", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007361", relevance_score: 0.9, description: "after the probe cooldown", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: "escalates", report_relevance: 0.9, sustained_scans: 2, cooldown_conflict: false}
+        - {sector_id: "tatooine", detected_at: "2026-09-30T14:30:00Z", scan_id: null, severity: 9.0, is_report_sourced: true, report_description: "after the probe cooldown", report_relevance: 0.9, sustained_scans: 1, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_a_non_qualifying_report_does_not_escalate
+    description: >
+      Escalation needs the full firing rule: relevance >= 0.7 AND imbalance_score > 5.75. Neither report does.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007370", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:30:00Z", source_type: "report", imbalance_score: 5.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007371", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T12:40:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007370", relevance_score: 0.95, description: "strong relevance, weak imbalance", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007371", relevance_score: 0.4, description: "strong imbalance, weak relevance", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: null, report_relevance: null, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_a_probe_incident_after_a_report_incident_is_not_suppressed
+    description: >
+      The probe onset (12:00) is 15 minutes after a report incident: the probe cooldown walk ignores report incidents, so it is accepted.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007380", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T11:45:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007380", relevance_score: 0.9, description: "before", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T11:45:00Z", scan_id: null, severity: 12.0, is_report_sourced: true, report_description: "before", report_relevance: 0.9, sustained_scans: 1, cooldown_conflict: false}
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: null, report_relevance: null, sustained_scans: 2, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_a_report_inside_the_window_of_a_suppressed_probe_run_is_its_own_incident
+    description: >
+      A quiet scan at 12:30 separates the first probe run from the second (consecutive ROWS form a run; a time gap alone does not split one). The second
+      probe run (13:00-14:30) is suppressed by the first incident's cooldown (until 14:15) and gets no row, so the report at 15:00 is
+      not inside any ACCEPTED probe incident's window: it is its own incident.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007405", sector_id: "tatooine", scan_id: "01UNIT0000000000000007406", event_time: "2026-09-30T12:30:00Z", source_type: "probe", imbalance_score: 1.0, z_midi: 0.0, z_kyber: 0.0, z_dark: 0.5, signature: "unclassified", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007390", sector_id: "tatooine", scan_id: "01UNIT0000000000000007391", event_time: "2026-09-30T13:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007392", sector_id: "tatooine", scan_id: "01UNIT0000000000000007393", event_time: "2026-09-30T13:15:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007394", sector_id: "tatooine", scan_id: "01UNIT0000000000000007395", event_time: "2026-09-30T13:30:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007396", sector_id: "tatooine", scan_id: "01UNIT0000000000000007397", event_time: "2026-09-30T13:45:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007398", sector_id: "tatooine", scan_id: "01UNIT0000000000000007399", event_time: "2026-09-30T14:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007400", sector_id: "tatooine", scan_id: "01UNIT0000000000000007401", event_time: "2026-09-30T14:15:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007402", sector_id: "tatooine", scan_id: "01UNIT0000000000000007403", event_time: "2026-09-30T14:30:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007404", sector_id: "tatooine", scan_id: null, event_time: "2026-09-30T15:00:00Z", source_type: "report", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007404", relevance_score: 0.9, description: "after the accepted incident's cooldown", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-09-30T12:15:00Z", scan_id: "01UNIT0000000000000007101", severity: 9.75, is_report_sourced: false, report_description: null, report_relevance: null, sustained_scans: 2, cooldown_conflict: false}
+        - {sector_id: "tatooine", detected_at: "2026-09-30T15:00:00Z", scan_id: null, severity: 9.0, is_report_sourced: true, report_description: "after the accepted incident's cooldown", report_relevance: 0.9, sustained_scans: 1, cooldown_conflict: false}
+
+  - name: unit_test_disturbance_incremental_keeps_agent_processed_for_probe_and_report_incidents
+    description: >
+      An incident the agent already processed keeps agent_processed = true when it is recomputed -- the probe incident and the report-sourced one
+      alike (its id is a deterministic_id over the report's event_time and 'report:' + event_id). A new report incident starts false.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('gold_sector_reading')
+        rows:
+          - {event_id: "01UNIT0000000000000007100", sector_id: "tatooine", scan_id: "01UNIT0000000000000007101", event_time: "2026-09-30T12:00:00Z", source_type: "probe", imbalance_score: 6.0, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007102", sector_id: "tatooine", scan_id: "01UNIT0000000000000007103", event_time: "2026-09-30T12:15:00Z", source_type: "probe", imbalance_score: 6.5, z_midi: 0.0, z_kyber: -2.0, z_dark: 3.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007600", sector_id: "naboo", scan_id: null, event_time: "2026-09-30T12:07:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+          - {event_id: "01UNIT0000000000000007601", sector_id: "alderaan", scan_id: null, event_time: "2026-09-30T12:07:00Z", source_type: "report", imbalance_score: 8.0, z_midi: 0.0, z_kyber: -1.0, z_dark: 2.0, signature: "sith_presence", channels_present: 3, is_replayed: false}
+      - input: ref('silver_force_report')
+        rows:
+          - {event_id: "01UNIT0000000000000007600", relevance_score: 0.9, description: "already acted on", arrival_ts: "2026-09-30T13:00:00Z"}
+          - {event_id: "01UNIT0000000000000007601", relevance_score: 0.9, description: "new", arrival_ts: "2026-09-30T13:00:00Z"}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+          - {sector_id: "naboo", population: 100000}
+          - {sector_id: "alderaan", population: 100000}
+          - {sector_id: "hoth", population: 100000}
+      - input: this
+        rows:
+          - {disturbance_id: "01K3P2V5G0AFLS966BRIVTF", agent_processed: true}
+          - {disturbance_id: "01K3P3BVL00FKOFA7VJNJ92", agent_processed: true}
+    expect:
+      rows:
+        - {sector_id: "tatooine", agent_processed: true}
+        - {sector_id: "naboo", agent_processed: true}
+        - {sector_id: "alderaan", agent_processed: false}

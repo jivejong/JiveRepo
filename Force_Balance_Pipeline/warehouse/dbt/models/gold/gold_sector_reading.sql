@@ -28,10 +28,23 @@
     incremental model with on_schema_change: fail (dbt_project.yml) -- requires a --full-refresh of
     gold_sector_reading after this lands on main, not just a plain incremental run.
 
+  Phase 5 -- report rows. A report (silver_force_report) is scored here too, as a row with source_type = 'report',
+  scan_id null, channels_present 3 (a report always carries all three inferred channels) and is_replayed false, using
+  the same z-score expressions and the same imbalance_score / classify_signature macros against the SAME probe-only
+  gold_sector_baseline. The baseline never sees a report: it is built from silver_probe_reading alone, and nothing
+  here feeds it. Report candidates are chosen by ARRIVAL, not by an event_time window: on a build, every
+  silver_force_report row that is not yet in this table is scored (so a report that arrives hours late, with an old
+  event_time, is scored on the next build and not lost to the 48 h window). "Not yet in this table" rather than
+  "arrived after the last build's timestamp" because Auto Loader can land a file after a build that started just
+  before it was written -- a timestamp comparison could skip that report forever, an anti-join cannot. A report is
+  scored once, against the baseline of the day it arrives, and is not recomputed afterwards (a probe row is, inside
+  its window). silver_force_report is deduplicated by event_id here as well, as a guard: a duplicate would make the
+  merge ambiguous.
+
   Contract:
-  - Inputs: ref('silver_probe_reading'), ref('gold_sector_baseline'), ref('dim_sector') (population, for
-    civil_unrest).
-  - Grain: one row per planet per scan (doc 03: the scan is the grain). event_id is the merge key in practice
+  - Inputs: ref('silver_probe_reading'), ref('silver_force_report'), ref('gold_sector_baseline'), ref('dim_sector')
+    (population, for civil_unrest).
+  - Grain: one row per planet per scan (doc 03: the scan is the grain), plus one row per report. event_id is the merge key in practice
     (1:1 with (sector_id, scan_id) once silver has deduplicated) -- doc 03's own column list for this table
     doesn't list event_id; noted as a pending doc addition, not assumed silently.
   - Materialization: incremental, merge, update on match.
@@ -46,7 +59,7 @@
   - imbalance_score (macros.imbalance_score) and signature (macros.classify_signature) -- both macros, not
     inline SQL, so edge/tests/test_dbt_doc_parity.py can check them against doc 03 independently of this model.
   - Tests required: imbalance_score >= 0, channels_present between 1 and 3, accepted_values(signature, the doc
-    03 signature list), not_null(sector_id, scan_id, event_time).
+    03 signature list), not_null(sector_id, event_time), not_null(scan_id) for probe rows (null by design for reports).
 */
 {% endraw %}
 
@@ -83,6 +96,20 @@ candidates as (
 
 ),
 
+report_candidates as (
+
+    -- by arrival, not by event_time: every report not yet scored (see the header)
+    select f.*
+    from (
+        select *, row_number() over (partition by event_id order by arrival_ts asc) as rn
+        from {{ ref('silver_force_report') }}
+    ) f
+    left join {{ this }} scored on scored.event_id = f.event_id
+    where f.rn = 1
+      and scored.event_id is null
+
+),
+
 {% else %}
 
 with candidates as (
@@ -92,7 +119,41 @@ with candidates as (
 
 ),
 
+report_candidates as (
+
+    select f.*
+    from (
+        select *, row_number() over (partition by event_id order by arrival_ts asc) as rn
+        from {{ ref('silver_force_report') }}
+    ) f
+    where f.rn = 1
+
+),
+
 {% endif %}
+
+inputs as (
+
+    select
+        event_id, sector_id, scan_id, event_time,
+        cast('probe' as string) as source_type,
+        midichlorian_ppm, kyber_resonance, dark_side_activity,
+        channels_present, is_replayed
+    from candidates
+
+    union all
+
+    select
+        event_id, sector_id,
+        cast(null as string) as scan_id,
+        event_time,
+        cast('report' as string) as source_type,
+        midichlorian_ppm, kyber_resonance, dark_side_activity,
+        cast(3 as int) as channels_present,      -- a valid report always carries all three channels
+        cast(false as boolean) as is_replayed    -- only a probe scan can arrive via buffer replay
+    from report_candidates
+
+),
 
 baseline_wide as (
 
@@ -116,7 +177,7 @@ zscored as (
         c.sector_id,
         c.scan_id,
         c.event_time,
-        cast('probe' as string) as source_type,  -- always true while gold_sector_reading has only this one input; Phase 5 adds report-sourced rows
+        c.source_type,
         c.midichlorian_ppm,
         c.kyber_resonance,
         c.dark_side_activity,
@@ -127,7 +188,7 @@ zscored as (
         (c.kyber_resonance - b.mean_90d_kyber) / nullif(b.stddev_90d_kyber, 0) as z_kyber,
         (c.dark_side_activity - b.mean_90d_dark) / nullif(b.stddev_90d_dark, 0) as z_dark,
         d.population
-    from candidates c
+    from inputs c
     left join baseline_wide b on c.sector_id = b.sector_id
     left join {{ ref('dim_sector') }} d on c.sector_id = d.sector_id
 

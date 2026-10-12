@@ -20,15 +20,25 @@ models:
         data_tests: [not_null]
 
   - name: gold_sector_reading
-    description: One row per planet per scan (doc 03). No windowing.
+    description: One row per planet per scan (doc 03), and one row per scored report (source_type = 'report', scan_id null). No windowing.
     columns:
       - name: event_id
         description: "The merge key in practice (doc 03's own column list doesn't name it -- pending addition)."
         data_tests: [not_null, unique]
       - name: sector_id
         data_tests: [not_null]
+      - name: source_type
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [probe, report]
       - name: scan_id
-        data_tests: [not_null]
+        description: "Null for a report row, by design."
+        data_tests:
+          - not_null:
+              config:
+                where: "source_type = 'probe'"
       - name: imbalance_score
         data_tests:
           - expression_is_true:
@@ -55,7 +65,7 @@ models:
                   - unclassified
 
   - name: gold_disturbance
-    description: One row per incident (doc 03). Probe-sourced firing rules only this phase.
+    description: "One row per incident (doc 03): probe-sourced, or report-sourced (a qualifying report outside any probe incident's window)."
     columns:
       - name: disturbance_id
         data_tests: [not_null, unique]
@@ -64,10 +74,27 @@ models:
       - name: signature
         data_tests: [not_null]
       - name: sustained_scans
+        description: "Probe incident: consecutive qualifying scans. Report incident: 1 (a single credible sighting is enough)."
         data_tests:
           - expression_is_true:
               arguments:
                 expression: ">= {{ var('sustained_scans') }}"
+              config:
+                where: "not is_report_sourced"
+          - expression_is_true:
+              arguments:
+                expression: "= 1"
+              config:
+                where: "is_report_sourced"
+      - name: is_report_sourced
+        data_tests:
+          - not_null
+      - name: scan_id
+        description: "The onset scan of a probe incident; null for a report-sourced one."
+        data_tests:
+          - not_null:
+              config:
+                where: "not is_report_sourced"
       - name: agent_processed
         data_tests:
           - accepted_values:
