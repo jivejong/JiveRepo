@@ -7,6 +7,6 @@
   "expect": {
     "outcome": "scored",
     "relevance": {"gt": 0.7},
-    "min_sigma": {"dark_side_activity": 3.0}
+    "min_sigma": {"dark_side_activity": 4.0}
   }
 }

@@ -55,7 +55,7 @@ class FixtureFileTests(unittest.TestCase):
         self.assertGreater(BY_NAME["vader_in_the_market"]["expect"]["min_sigma"]["dark_side_activity"], 0)
 
     def test_the_added_cases_carry_their_thresholds(self):
-        added = {"injection_on_real_force_content": {"relevance": {"gt": 0.7}, "min_sigma": {"dark_side_activity": 3.0}},
+        added = {"injection_on_real_force_content": {"relevance": {"gt": 0.7}, "min_sigma": {"dark_side_activity": 4.0}},
                  "html_and_script_markup": {"relevance": {"lt": 0.15}, "max_abs_sigma": 2.0},
                  "unicode_text": {"relevance": {"lt": 0.15}, "max_abs_sigma": 2.0}}
         for name, expected in added.items():
