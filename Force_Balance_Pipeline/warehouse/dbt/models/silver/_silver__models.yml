@@ -16,8 +16,8 @@ models:
   - name: silver_force_report
     description: >
       Valid report events (doc 03, "silver.force_report"): the complement of silver_report_rejects. description is verbatim;
-      relevance_score is 0-1; the three inferred channels are in their doc 02 ranges; event_time is within the intake's
-      window of arrival. Deduplicated on event_id, earliest arrival wins.
+      relevance_score is 0-1; the three inferred channels are in their doc 02 ranges; event_time is within 90 days behind
+      and 10 minutes ahead of arrival. Deduplicated on event_id, earliest arrival wins.
     columns:
       - name: event_id
         data_tests: [not_null, unique]

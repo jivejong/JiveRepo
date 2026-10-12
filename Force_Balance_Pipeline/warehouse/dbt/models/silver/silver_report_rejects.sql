@@ -21,8 +21,14 @@
   - Reason precedence, first match wins (doc 03 "silver.rejects" order and vocabulary, applied to reports):
       1. unknown_schema_version -- schema_version <> 1
       2. impossible_timestamp   -- event_time more than var('report_future_tolerance_minutes') ahead of arrival_ts, or
-                                    more than var('report_max_age_days') behind it (the intake process's own window,
-                                    intake_core.OBSERVED_*; parity-tested -- doc 03 gives only the probe bounds)
+                                    more than var('report_max_age_days') behind it. These are sanity bounds, NOT the
+                                    intake's own 7-day window: the intake already enforces that against its own clock
+                                    (intake_core.OBSERVED_MAX_AGE), and arrival_ts here is bronze arrival, which trails
+                                    the intake by the bridge's flush plus Job 1's cadence, and by days when the bridge
+                                    or Databricks is down while the broker holds the message. A report the intake
+                                    accepted must never be rejected here for age, so the age bound is the probe's 90
+                                    days (doc 03 gives only the probe bounds) and the future bound is the intake's 10
+                                    minutes. test_dbt_doc_parity.py asserts both are at least as wide as the intake's.
       3. unknown_sector         -- sector_id null, not in dim_sector, or the 'uncharted' placeholder (is_unknown)
       4. null_required_field    -- description null or blank (whitespace only), or relevance_score or any of the three
                                     inferred channels null. Unlike a probe, no channel is optional: a report always

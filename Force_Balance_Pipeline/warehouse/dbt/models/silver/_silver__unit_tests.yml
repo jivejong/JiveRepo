@@ -199,8 +199,9 @@ unit_tests:
 
   - name: unit_test_report_impossible_timestamp_bounds
     description: >
-      report_future_tolerance_minutes=10 and report_max_age_days=7 (dbt_project.yml; parity-tested against
-      intake_core.OBSERVED_*). The bounds are inclusive, like the intake's: 600 s ahead and exactly 7 days behind are valid.
+      report_future_tolerance_minutes=10 and report_max_age_days=90 (dbt_project.yml; the future side equals the intake's and the age side is
+      the probe bound, both parity-tested to be at least as wide as intake_core.OBSERVED_*). The bounds are inclusive: 600 s ahead and exactly
+      90 days behind arrival are valid.
     model: silver_report_rejects
     overrides:
       macros:
@@ -210,8 +211,8 @@ unit_tests:
         rows:
           - {event_id: "01UNIT0000000000000006020", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: -600, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
           - {event_id: "01UNIT0000000000000006021", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: -601, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
-          - {event_id: "01UNIT0000000000000006022", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 604800, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
-          - {event_id: "01UNIT0000000000000006023", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 604801, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006022", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 7776000, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+          - {event_id: "01UNIT0000000000000006023", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 7776001, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
           - {event_id: "01UNIT0000000000000006024", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-14T14:59:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 7862400, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
       - input: ref('dim_sector')
         rows:
@@ -223,6 +224,27 @@ unit_tests:
         - {event_id: "01UNIT0000000000000006021", reject_reason: "impossible_timestamp"}
         - {event_id: "01UNIT0000000000000006023", reject_reason: "impossible_timestamp"}
         - {event_id: "01UNIT0000000000000006024", reject_reason: "impossible_timestamp"}
+
+  - name: unit_test_report_eight_days_before_arrival_is_valid
+    description: >
+      The intake accepts a browser's observed_at up to 7 days old against its own clock, and a report can reach bronze days later
+      when the bridge or Databricks is down while the broker holds it. Silver does not re-apply the 7 day bound against arrival: a report
+      whose event_time is 8 days before its arrival is valid.
+    model: silver_report_rejects
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_bronze_events')
+        rows:
+          - {event_id: "01UNIT0000000000000006025", source_type: "report", kind: null, source_id: "web-a3f2", sector_id: "tatooine", schema_version: 1, event_time: "2026-10-06T15:00:00Z", arrival_ts: "2026-10-14T15:00:00Z", ingest_lag_seconds: 691200, description: "Saw a figure in black robes.", relevance_score: 0.9, midichlorian_ppm: 15000.0, kyber_resonance: 50.0, dark_side_activity: 20.0}
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", is_unknown: false}
+          - {sector_id: "naboo", is_unknown: false}
+          - {sector_id: "uncharted", is_unknown: true}
+    expect:
+      rows: []
 
   - name: unit_test_report_unknown_sector
     description: >

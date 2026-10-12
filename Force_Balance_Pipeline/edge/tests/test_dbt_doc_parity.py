@@ -129,14 +129,18 @@ class VarParityTests(unittest.TestCase):
         self.assertEqual(self.v["report_relevance_threshold"], _doc03.report_relevance_threshold())
         self.assertEqual(self.v["report_relevance_threshold"], 0.7)
 
-    def test_report_event_time_window_is_the_intakes(self):
-        """silver_report_rejects rejects a report whose event_time is further from arrival than the intake process itself would accept a
-        browser's observed_at (intake_core.OBSERVED_*): doc 03 gives only the probe bounds, so these two are pinned to the intake instead."""
-        self.assertEqual(self.v["report_max_age_days"] * 86400, intake_core.OBSERVED_MAX_AGE.total_seconds())
-        self.assertEqual(self.v["report_future_tolerance_minutes"] * 60, intake_core.OBSERVED_FUTURE_TOLERANCE.total_seconds())
+    def test_report_event_time_window_is_at_least_the_intakes(self):
+        """The intake enforces its own window on a browser's observed_at against its own clock (intake_core.OBSERVED_*). silver_report_rejects
+        measures event_time against bronze arrival, which trails that clock (flush, Job 1's cadence, days of outage with the broker holding the
+        message), so its window must be at least as wide as the intake's on BOTH sides, or a report the intake accepted could be rejected."""
+        self.assertGreaterEqual(self.v["report_max_age_days"] * 86400, intake_core.OBSERVED_MAX_AGE.total_seconds())
+        self.assertGreaterEqual(self.v["report_future_tolerance_minutes"] * 60, intake_core.OBSERVED_FUTURE_TOLERANCE.total_seconds())
 
-    def test_report_vars_are_not_the_probe_ones(self):
-        self.assertNotEqual(self.v["report_max_age_days"], self.v["max_age_days"])
+    def test_report_age_bound_is_the_probe_bound(self):
+        """Doc 03 gives only the probe bounds; the report age bound is the probe's (90 days), not a number of its own."""
+        self.assertEqual(self.v["report_max_age_days"], self.v["max_age_days"])
+
+    def test_report_relevance_threshold_is_a_float(self):
         self.assertIsInstance(self.v["report_relevance_threshold"], float)
 
 

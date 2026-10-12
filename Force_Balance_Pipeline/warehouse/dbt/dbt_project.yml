@@ -31,12 +31,16 @@ vars:
   lag_tolerance_seconds: -2          # doc 03:117, "Tolerance: ingest_lag_seconds >= -2"
   # Phase 5 (reports). report_relevance_threshold is doc 03's "relevance_score >= 0.7" (Firing rules -- report-sourced),
   # checked against the doc by test_dbt_doc_parity.py like the vars above. The two bounds below are NOT in doc 03 (which
-  # gives only the probe bounds above); they are the intake process's own (intake_core.OBSERVED_MAX_AGE and
-  # OBSERVED_FUTURE_TOLERANCE, the window its server accepts a browser's observed_at in), pinned to intake_core by
-  # test_dbt_doc_parity.py so silver rejects exactly what the intake would have replaced with its own clock.
+  # gives only the probe bounds above). The intake process already enforces its own window on a browser's observed_at
+  # against ITS clock (intake_core.OBSERVED_MAX_AGE, 7 days back, and OBSERVED_FUTURE_TOLERANCE, 10 minutes ahead), so
+  # silver must not narrow it: silver measures event_time against BRONZE ARRIVAL, which trails the intake's clock by the
+  # bridge's flush plus Job 1's cadence, and by days when the bridge or Databricks is down while the broker holds the
+  # message. A report the intake accepted must therefore never be rejected here for age. Silver's bounds are the wider
+  # sanity bounds: the probe's 90 days back, and 10 minutes ahead. test_dbt_doc_parity.py asserts each is at least as wide
+  # as the intake's on both sides (and that the age bound is the probe's), not that it is equal.
   report_relevance_threshold: 0.7    # doc 03, "relevance_score >= 0.7"
-  report_future_tolerance_minutes: 10  # intake_core.OBSERVED_FUTURE_TOLERANCE
-  report_max_age_days: 7             # intake_core.OBSERVED_MAX_AGE
+  report_future_tolerance_minutes: 10  # at least intake_core.OBSERVED_FUTURE_TOLERANCE (10 minutes)
+  report_max_age_days: 90            # the probe bound (max_age_days); at least intake_core.OBSERVED_MAX_AGE (7 days)
 
 models:
   force_balance:
