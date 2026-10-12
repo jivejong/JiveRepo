@@ -33,7 +33,25 @@
     - Reads silver_force_report directly (relevance and description are not columns of gold_sector_reading, and no
       column was added there); doc 03's note that this table never reads silver is no longer true.
     - report_walk is recursive like `walked`: its depth is the number of qualifying, un-escalating reports for one
-      sector over all history (the engine's default recursion limit is 100) -- a handful at the intake's daily caps.
+      sector over all history. Both walks take their recursion limit from var('walk_recursion_limit') and are guarded
+      by assert_walk_depth_below_limit -- see "RECURSION DEPTH" below.
+
+  RECURSION DEPTH (added Phase 5, with measurements). Both walks (`walked` over probe runs, `report_walk` over report
+  incidents) are recursive CTEs, and a recursive CTE stops with RECURSION_LEVEL_LIMIT_EXCEEDED once its chain is
+  longer than the limit. The chain is not shortened by the cooldown: an absorbed run or report is still a link in it.
+    - The real bound: the number of sustained probe runs (or standalone qualifying reports) one sector has had over
+      ALL history -- `flagged` has no time filter, so nothing caps it at 90 days. It grows without end, at a rate that
+      today is a few runs per sector per month (the deepest probe chain in dev was 4 or 5 runs after about 3 weeks).
+    - The limit: before Phase 5 neither walk set one, so both ran at the engine's default of 100 and the probe walk
+      would have failed Job 1 outright once a sector passed it. Both now say MAX RECURSION LEVEL
+      var('walk_recursion_limit') (500). Measured on the serverless warehouse: about 0.95 s per level (depth 150 in
+      195 s, depth 400 in 433 s, about 52 s fixed), linear; Job 1's transform task times out at 2400 s. This is an
+      interim measure, not a bound: at the intake's 200-reports-a-day cap one sector could in principle add 200 levels a
+      day, so 500 is days of worst-case traffic, though years at the probe's present rate.
+    - The guard: assert_walk_depth_below_limit FAILS (severity error) when any sector's chain in either walk reaches
+      80% of the limit (400). An error fails Job 1, which stops its success ping, so the alert fires with headroom
+      before the hard limit. When it fires, the fix is a bounded recompute (see the Engineering Log's open item), not
+      a bigger number: raising the limit past about 1000 would exceed the task timeout.
 
   DBT CONCEPTS USED HERE:
   - merge_exclude_columns='agent_processed' (a dbt-databricks incremental config, not core dbt): tells the
@@ -113,7 +131,7 @@
   - agent_processed: defaults false for a row never seen before; carried forward unchanged for a row already
     in the table (both the SELECT's own LEFT JOIN against `this` and merge_exclude_columns enforce this).
   - Tests required: unique(disturbance_id), not_null(sector_id, detected_at, signature),
-    assert_cooldown_respected (singular test, already written).
+    assert_cooldown_respected (singular test, already written), assert_walk_depth_below_limit (severity error).
 */
 {% endraw %}
 
@@ -172,9 +190,11 @@ runs as (
 
 runs_seq as (
 
-    -- a per-sector sequence number over the (already sustained_scans-filtered) candidate runs -- small,
-    -- bounded by how many qualifying runs one sector can have in 90 days (single digits in practice), which
-    -- is what keeps the recursive walk below cheap and well under any recursion-depth limit.
+    -- a per-sector sequence number over the (already sustained_scans-filtered) candidate runs. Its maximum is the
+    -- depth of the recursive walk below. NOT bounded by 90 days or anything else: `flagged` reads all of
+    -- gold_sector_reading, so it is the number of sustained runs the sector has ever had (4 or 5 at the deepest in
+    -- dev after about 3 weeks). The walk's limit is var('walk_recursion_limit') (500) and
+    -- assert_walk_depth_below_limit errors at 80% of it -- see "RECURSION DEPTH" in the header.
     select
         *,
         row_number() over (partition by sector_id order by onset_event_time) as run_seq
@@ -182,7 +202,7 @@ runs_seq as (
 
 ),
 
-walked as (
+walked MAX RECURSION LEVEL {{ var('walk_recursion_limit') }} as (
 
     -- base case: each sector's first candidate run has nothing before it, so it's always accepted.
     select
@@ -335,7 +355,7 @@ standalone_reports as (
 
 ),
 
-report_walk as (
+report_walk MAX RECURSION LEVEL {{ var('walk_recursion_limit') }} as (
 
     -- the same last-ACCEPTED walk as `walked`, over report incidents only: a report is absorbed if it falls inside the
     -- cooldown of the last report incident that was actually accepted; a suppressed report does not extend anything.

@@ -109,5 +109,53 @@ class BaselineIsProbeOnlyTests(unittest.TestCase):
         self.assertEqual(refs(strip_comments("-- ref('x')\n/* ref('y') */ {# ref('z') #} {{ ref('w') }}")), {"w"})
 
 
+class RecursionLimitTests(unittest.TestCase):
+    """gold_disturbance walks each sector with two recursive CTEs. The engine stops the whole build when a chain is longer than a CTE's limit (default
+    100), and each level costs about 0.95 s (measured: depth 150 in 195 s, depth 400 in 433 s) against Job 1's 2400 s task timeout. So both walks take
+    their limit from ONE var, and a data test errors at 80% of it. A refactor that drops the clause from a walk, hard-codes a number, or moves the
+    limit outside the measured range fails here by name, before any build."""
+
+    def setUp(self):
+        self.gold = flat(model_sql()["gold_disturbance"])
+        self.alarm_raw = (DBT / "tests" / "assert_walk_depth_below_limit.sql").read_text(encoding="utf-8")
+        self.alarm = flat(strip_comments(self.alarm_raw))
+        self.limit = int(re.search(r"^\s*walk_recursion_limit:\s*(\d+)\s*(?:#.*)?$", (DBT / "dbt_project.yml").read_text(encoding="utf-8"), re.M).group(1))
+
+    def test_both_recursive_walks_take_their_limit_from_the_var(self):
+        for name in ("walked", "report_walk"):
+            self.assertIn(f"{name} MAX RECURSION LEVEL {{{{ var('walk_recursion_limit') }}}} as (", self.gold, name)
+            body = self.gold[self.gold.index(f"{name} MAX RECURSION LEVEL"):]
+            self.assertIn(f"from {name} ", body, f"{name} is no longer recursive: update this test")
+
+    def test_there_are_exactly_two_limits(self):
+        """A third recursive CTE added without a limit would run at the engine's default of 100."""
+        self.assertEqual(self.gold.count("MAX RECURSION LEVEL"), 2)
+        self.assertEqual(self.gold.count("with recursive"), 1)
+
+    def test_the_limit_is_above_the_depth_tests_and_inside_the_task_timeout(self):
+        """Above 150, the depth the unit tests prove completes (the engine's default of 100 would fail them); at most 1000: two full walks at
+        0.95 s a level are 1900 s, which with the rest of Job 1's build (about 450 s) is already past the 2400 s task timeout."""
+        self.assertGreater(self.limit, 150)
+        self.assertLessEqual(self.limit, 1000)
+
+    def test_the_depth_alarm_reads_the_same_var_at_80_percent_and_is_an_error(self):
+        self.assertIn("{% set alarm_depth = (var('walk_recursion_limit') * 8) // 10 %}", self.alarm)
+        self.assertIn("{{ config(severity='error') }}", self.alarm)
+        self.assertEqual(self.alarm.count("{{ alarm_depth }}"), 4)         # the label column and the having clause of each walk
+
+    def test_the_depth_alarm_checks_both_walks_from_the_same_inputs(self):
+        for label in ("'probe walk' as walk", "'report walk' as walk"):
+            self.assertIn(label, self.alarm)
+        for model in ("gold_sector_reading", "silver_force_report", "gold_disturbance"):
+            self.assertIn(f"ref('{model}')", self.alarm, model)
+
+    def test_the_depth_unit_tests_are_there_and_deeper_than_the_default_limit(self):
+        text = (MODELS / "gold" / "_gold__unit_tests.yml").read_text(encoding="utf-8")
+        for walk in ("report", "probe"):
+            found = re.findall(rf"name: unit_test_disturbance_{walk}_walk_completes_at_depth_(\d+)", text)
+            self.assertEqual(len(found), 1, walk)
+            self.assertGreater(int(found[0]), 100, walk)
+
+
 if __name__ == "__main__":
     unittest.main()

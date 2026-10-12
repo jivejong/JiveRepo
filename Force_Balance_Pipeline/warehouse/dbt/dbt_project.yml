@@ -41,6 +41,11 @@ vars:
   report_relevance_threshold: 0.7    # doc 03, "relevance_score >= 0.7"
   report_future_tolerance_minutes: 10  # at least intake_core.OBSERVED_FUTURE_TOLERANCE (10 minutes)
   report_max_age_days: 90            # the probe bound (max_age_days); at least intake_core.OBSERVED_MAX_AGE (7 days)
+  # The recursion limit of gold_disturbance's two recursive walks (`walked`, `report_walk`): the longest chain one sector may
+  # have. The engine's default is 100 and fails the build past it. Measured: about 0.95 s per level (linear), against Job 1's
+  # 2400 s task timeout, so about 1000 is the most any limit could be; 500 leaves room. assert_walk_depth_below_limit errors
+  # at 80% of this number, before the hard limit. An interim measure -- see the header of gold_disturbance.sql.
+  walk_recursion_limit: 500
 
 models:
   force_balance:

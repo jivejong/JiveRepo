@@ -1403,3 +1403,191 @@ unit_tests:
         - {sector_id: "tatooine", agent_processed: true}
         - {sector_id: "naboo", agent_processed: true}
         - {sector_id: "alderaan", agent_processed: false}
+
+
+  # ---- Phase 5: the recursive walks at depth (gold_disturbance) ----
+
+  - name: unit_test_disturbance_report_walk_completes_at_depth_150
+    description: >
+      150 qualifying reports in one sector, an hour apart, are 150 links of report_walk's chain: more than the engine's default limit of 100,
+      so this fails with a build error if the walk loses its MAX RECURSION LEVEL var('walk_recursion_limit'). The last-accepted walk still holds at
+      depth: each report is absorbed by the cooldown of the one before it except every second one, so 75 incidents come out. Slow (about 5 to 6 minutes when the
+      two run together in dev); unit tests do not run in Job 1.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        format: sql
+        rows: |
+          select concat('01UNIT', lpad(cast(id as string), 19, '0')) as event_id, 'tatooine' as sector_id, cast(null as string) as scan_id,
+                 cast(timestamp'2026-01-01 00:00:00' + make_interval(0, 0, 0, 0, cast(id as int), 0, 0) as timestamp) as event_time, 'report' as source_type, cast(8.0 as double) as imbalance_score,
+                 cast(0.0 as double) as z_midi, cast(-1.0 as double) as z_kyber, cast(2.0 as double) as z_dark, 'sith_presence' as signature,
+                 cast(3 as int) as channels_present, cast(false as boolean) as is_replayed
+          from range(150) as t(id)
+      - input: ref('silver_force_report')
+        format: sql
+        rows: |
+          select concat('01UNIT', lpad(cast(id as string), 19, '0')) as event_id, cast(0.9 as double) as relevance_score, 'a report' as description,
+                 cast(timestamp'2026-06-01 00:00:00' as timestamp) as arrival_ts
+          from range(150) as t(id)
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-01-01T00:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T02:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T04:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T06:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T08:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T10:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T12:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T14:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T16:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T18:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T20:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T22:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T00:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T02:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T04:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T06:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T08:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T10:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T12:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T14:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T16:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T18:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T20:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T22:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T00:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T02:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T04:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T06:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T08:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T10:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T12:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T14:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T16:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T18:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T20:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T22:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T00:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T02:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T04:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T06:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T08:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T10:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T12:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T14:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T16:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T18:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T20:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T22:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T00:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T02:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T04:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T06:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T08:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T10:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T12:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T14:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T16:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T18:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T20:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T22:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T00:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T02:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T04:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T06:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T08:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T10:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T12:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T14:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T16:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T18:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T20:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T22:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-07T00:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-07T02:00:00Z", is_report_sourced: true}
+        - {sector_id: "tatooine", detected_at: "2026-01-07T04:00:00Z", is_report_sourced: true}
+
+  - name: unit_test_disturbance_probe_walk_completes_at_depth_150
+    description: >
+      150 sustained probe runs in one sector, an hour apart (two scans over the threshold, then one under), are 150 links of walked's chain:
+      more than the engine's default limit of 100, so this fails with a build error if the walk loses its MAX RECURSION LEVEL
+      var('walk_recursion_limit'). Each run's cooldown (2 h from its last scan) swallows the next two, so 50 incidents come out.
+      Slow (about 5 to 6 minutes when the two run together in dev); unit tests do not run in Job 1.
+    model: gold_disturbance
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('gold_sector_reading')
+        format: sql
+        rows: |
+          select concat('01UNIT', lpad(cast(id * 3 + m.k as string), 19, '0')) as event_id, 'tatooine' as sector_id,
+                 concat('01SCAN', lpad(cast(id * 3 + m.k as string), 19, '0')) as scan_id,
+                 cast(timestamp'2026-01-01 00:00:00' + make_interval(0, 0, 0, 0, cast(id as int), cast(m.k * 15 as int), 0) as timestamp) as event_time,
+                 'probe' as source_type, cast(case when m.k < 2 then 6.0 else 1.0 end as double) as imbalance_score,
+                 cast(0.0 as double) as z_midi, cast(-1.0 as double) as z_kyber, cast(2.0 as double) as z_dark, 'sith_presence' as signature,
+                 cast(3 as int) as channels_present, cast(false as boolean) as is_replayed
+          from range(150) as t(id) cross join (select explode(array(0, 1, 2)) as k) m
+      - input: ref('silver_force_report')
+        rows: []
+      - input: ref('dim_sector')
+        rows:
+          - {sector_id: "tatooine", population: 100000}
+    expect:
+      rows:
+        - {sector_id: "tatooine", detected_at: "2026-01-01T00:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T03:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T06:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T09:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T12:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T15:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T18:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-01T21:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T00:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T03:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T06:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T09:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T12:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T15:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T18:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-02T21:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T00:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T03:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T06:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T09:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T12:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T15:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T18:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-03T21:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T00:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T03:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T06:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T09:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T12:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T15:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T18:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-04T21:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T00:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T03:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T06:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T09:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T12:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T15:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T18:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-05T21:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T00:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T03:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T06:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T09:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T12:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T15:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T18:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-06T21:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-07T00:15:00Z", is_report_sourced: false}
+        - {sector_id: "tatooine", detected_at: "2026-01-07T03:15:00Z", is_report_sourced: false}
