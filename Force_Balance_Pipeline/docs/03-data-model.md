@@ -134,8 +134,42 @@ scored.
 
 ### `silver.force_report`
 
-`source_type = 'report'`. Preserves `description` verbatim alongside inferred values,
-`relevance_score`, `inference_model`, and `inference_rationale`.
+`source_type = 'report'` (and no `payload.kind`). One row per valid report `event_id`. Preserves `description` verbatim — never
+trimmed, case-folded or normalised — alongside the inferred values `midichlorian_ppm`, `kyber_resonance`, `dark_side_activity`,
+`relevance_score`, and `inference_model`, `inference_rationale` and `reporter_id`. **`sector_id` is a column** (Phase 5): the Phase 4
+stub did not have it and gold needs it. It is the last column, added to the already-built, empty table with
+`on_schema_change = 'append_new_columns'` on this model only (the project default is `fail`), because a silver full-refresh is
+not allowed and the table had no rows to lose.
+
+A report is valid when it is not in `silver.report_rejects` (below). Deduplicated like the probe tables: the earliest-arrival copy
+of an `event_id` within a batch is the only one judged, and across batches an `event_id` already in the table is never touched,
+so a QoS 1 duplicate or a crash-retry republish (doc 04, "Web intake") never adds a row or overwrites the first.
+
+### `silver.report_rejects`
+
+Validation failures of report events, with a reason, in the vocabulary and order of `silver.rejects` (above). **A parallel table,
+decided Phase 5, not an extension of `silver.rejects`:** that table is the other half of the fault-injection reconciliation ("the
+count of rejects must equal the count in the fault log"), which has to stay a 1:1 comparison over probe readings; a second
+population in it would break the count, and it has no `source_type` column (adding one is a schema change on a live incremental
+table). Same shape as `silver.rejects`: insert-only on `event_id`, earliest arrival wins, and the earliest copy is the only one judged.
+
+| `reject_reason` | Trigger, for a report |
+|---|---|
+| `unknown_schema_version` | `schema_version` not `1` |
+| `impossible_timestamp` | `event_time` more than 10 minutes ahead of arrival, or more than 90 days behind it (arrival as in `silver.rejects`) |
+| `unknown_sector` | `sector_id` null, not in `dim_sector`, or the `uncharted` placeholder |
+| `null_required_field` | `description` null or blank (only whitespace), or `relevance_score` or any of the three inferred channels null. No channel is optional: a report always carries all three (there is no `STEALTH` for reports) |
+| `out_of_range` | `relevance_score` outside 0–1, or a channel outside its doc 02 range (0–30000 ppm, 0–100, 0–100) |
+
+First match wins, in that order.
+
+**The report window is 90 days back and 10 minutes ahead, and why.** This doc gave only the probe bounds. A report's `event_time` is
+the browser's `observed_at`, which the intake accepts within 7 days back and 10 minutes ahead of **its own clock** (doc 04, "Web
+intake"). Silver measures it against bronze **arrival**, which trails the intake's clock by the bridge's flush (up to 90 seconds) plus
+Job 1's hourly cadence, and by days when the bridge or Databricks is down while the broker holds the message (the broker holds a
+disconnected bridge's messages for up to about 8.7 days, doc 04 and doc 05). A 7-day silver bound would therefore reject reports the intake had already accepted. Silver's bounds are
+sanity bounds instead: the probe's 90 days back, and the intake's 10 minutes ahead. `edge/tests/test_dbt_doc_parity.py` asserts that
+each is at least as wide as the intake's on both sides, and that the age bound is the probe's.
 
 ### `silver.rejects`
 
@@ -218,14 +252,22 @@ scan *is* the grain.
 | Column | Notes |
 |---|---|
 | `event_id` | Not originally listed here — added Phase 4. The merge key in practice: 1:1 with (`sector_id`, `scan_id`) once silver has deduplicated |
-| `sector_id`, `scan_id`, `event_time`, `source_type` | |
+| `sector_id`, `scan_id`, `event_time`, `source_type` | `source_type` is `probe` or `report` (Phase 5). `scan_id` is NULL on a report row |
 | `midichlorian_ppm`, `kyber_resonance`, `dark_side_activity` | |
 | `z_midi`, `z_kyber`, `z_dark` | **Signed.** Direction matters |
 | `imbalance_score` | Composite magnitude |
 | `signature` | Classified pattern |
 | `channels_present` | |
-| `is_replayed` | Not originally listed here — added Phase 4. Carried straight through from `silver.probe_reading` (above), unchanged. Needed so `gold.disturbance` can tell whether a run's onset scan arrived via replay (`cooldown_conflict`, "definition B") -- this table is the only place that information can reach `gold.disturbance` from, since it never reads silver directly |
+| `is_replayed` | Not originally listed here — added Phase 4. Carried straight through from `silver.probe_reading` (above), unchanged. Needed so `gold.disturbance` can tell whether a run's onset scan arrived via replay (`cooldown_conflict`, "definition B") -- this table is the only place that information can reach `gold.disturbance` from; `gold.disturbance` reads silver only for a report's relevance and description (below) |
 | `_gold_built_at` | Not originally listed here — added Phase 4. Bookkeeping only, not part of the doc's original contract: this build's `current_timestamp()`, stamped on every row, the same way bronze stamps `_ingest_ts`. The recompute-window formula below needs "which silver rows arrived since the last time this model ran," which nothing else in the warehouse tracks |
+
+**Report rows (Phase 5).** Each valid report in `silver.force_report` is also scored here, as a row with `source_type = 'report'`,
+`scan_id` NULL, `channels_present` 3 and `is_replayed` false, using the same z-score expressions and the same `imbalance_score` and
+`classify_signature` macros, against the same probe-only `gold.sector_baseline`. The baseline never sees a report: it is built from
+`silver.probe_reading` alone. A report is picked up when it is not yet in this table (an anti-join on `event_id`), not by an
+`event_time` window and not by an arrival timestamp: a report that arrives hours late with an old `event_time` is scored on the next
+build, and a file Auto Loader lands just after a build began cannot be skipped. A report is scored once, against the baseline of
+the day it first appears, and is not recomputed afterwards (a probe row is, inside its recompute window).
 
 **Composite deviation score:**
 
@@ -299,14 +341,14 @@ this table is affected. `veiled_presence` stays unproducible by the control-topi
 | `disturbance_id` | **Deterministic**, not a random ULID — see below |
 | `sector_id` | |
 | `detected_at` | `event_time` of the incident's most recent qualifying scan **at build time** -- not a fixed moment. Because this model rescans all history every build, an incident that is still ongoing (more qualifying scans keep landing) has `detected_at` advance on every rebuild, right along with `sustained_scans`. The 2-hour cooldown (below) is measured from `detected_at` -- a quiet period after the run's last qualifying scan so far, not from its onset |
-| `scan_id` | the run's **onset** scan (`min(scan_id)`) -- by design, a different scan from the one `detected_at` reflects (above). A fixed `confirmed_at` (stamped once, at the run's second qualifying scan, never moved again) was considered Stage 4a and is **deferred to Phase 6**: it is a new column on an already-incremental model with `on_schema_change: fail`, and nothing in the current checkpoints requires it |
+| `scan_id` | the run's **onset** scan (`min(scan_id)`) -- by design, a different scan from the one `detected_at` reflects (above). A fixed `confirmed_at` (stamped once, at the run's second qualifying scan, never moved again) was considered Stage 4a and is **deferred to Phase 6**: it is a new column on an already-incremental model with `on_schema_change: fail`, and nothing in the current checkpoints requires it. **NULL for a report-sourced incident**, which has no scan |
 | `imbalance_score`, `z_midi`, `z_kyber`, `z_dark` | |
 | `signature` | |
 | `severity` | see below |
-| `is_report_sourced` | BOOLEAN |
-| `report_description` | Verbatim text, null for probe-sourced |
-| `report_relevance` | null for probe-sourced |
-| `sustained_scans` | consecutive scans above threshold — see "Consecutive," below, for what that means across sectors with different cadences |
+| `is_report_sourced` | BOOLEAN. True only for an incident a report created. A probe incident that a report escalates (below) stays false |
+| `report_description` | Verbatim text. Null for a probe-sourced incident unless a report escalated it (below) |
+| `report_relevance` | Null for a probe-sourced incident unless a report escalated it (below) |
+| `sustained_scans` | consecutive scans above threshold — see "Consecutive," below, for what that means across sectors with different cadences. **1 for a report-sourced incident** (a single credible sighting) |
 | `agent_processed` | BOOLEAN, default false |
 | `cooldown_conflict` | BOOLEAN, default false. Set on an **existing** incident's row only when a later onset for the same sector both (a) would have fired inside that incident's 2-hour cooldown AND (b) arrived via **replay** — an ordinary, in-order onset suppressed by an active cooldown is the cooldown working as designed, not a conflict. The late onset itself never gets its own row either way — see "Firing rules" below |
 
@@ -324,6 +366,9 @@ on a 20-hex-char (80-bit) input fails every time. The id is now 48 (timestamp) +
 real ULID carries, which also shortens its encoded length (the hash segment is 13 base-32 characters, not 16). 64 bits of
 hash entropy is still far beyond any collision risk this project will ever produce (a few hundred incidents, total, ever)
 — accepted as a permanent design point, not a placeholder to revisit.
+
+**A report-sourced incident's id** is built the same way over the **report's** `event_time` and the key `'report:' || event_id` in
+place of `sector_id`, so it cannot collide with a probe incident's and the same report always merges onto the same row.
 
 **"Consecutive," decided Phase 4 — doc did not say:** consecutive *rows* for a sector in `gold.sector_reading`, ordered by
 `event_time`, not consecutive 15-minute clock slots. This is what lets "2 consecutive scans" mean the same thing for a
@@ -386,9 +431,10 @@ run's second qualifying scan and never moved again, would pin a single moment in
 
 **Firing rules — report-sourced:**
 
-- `relevance_score >= 0.7` **and** inferred `imbalance_score > 5.75`
+- `relevance_score >= 0.7` **and** inferred `imbalance_score > 5.75` (the report's own row in `gold.sector_reading`). Together these
+  make a **qualifying report**. The 0.7 is `var('report_relevance_threshold')`, checked against this line by `test_dbt_doc_parity.py`
 - No sustained requirement — a single credible sighting is enough
-- Same 2-hour cooldown per sector
+- Same 2-hour cooldown per sector, applied among report incidents only (below)
 - `is_report_sourced = true`
 
 This is the permissive model. "Darth Vader is walking the streets" creates an emergency on its
@@ -398,6 +444,43 @@ see what kind of evidence they are acting on.
 A report arriving within the cooldown of an existing probe-sourced incident should **escalate**
 it — raise severity, append the description — rather than being suppressed. Corroboration is the
 most valuable case in the system and it should not be silently dropped.
+
+**As built, Phase 5 — what the paragraph above left open.**
+
+- **The escalation window** runs from the probe incident's onset (the `event_time` of its onset scan) up to `detected_at` plus the 2-hour
+  cooldown, so it covers the run and the cooldown after it. Probe incidents are at least a cooldown apart, so their windows do not
+  overlap and a report is in at most one.
+- **The escalated incident** stays `is_report_sourced = false` (the evidence is still probe-led) and its `cooldown_conflict` is
+  untouched. Its `severity` becomes the highest of the probe's own and each escalating report's own (the same population-weighted
+  formula, applied to the report's `imbalance_score`). Its `report_description` and `report_relevance` become those of the escalating
+  report with the **highest relevance**; ties go to the earliest `event_time`, then the lowest `event_id`. "Append the description" is
+  realised as *attach one description*, **a decision of the project owner (Phase 5)**: the column holds a single verbatim text, so
+  the best-supported report's is kept and nothing is appended. It attaches even when that report's own severity is the lower one — corroboration is the point.
+- **A qualifying report outside every probe window is its own incident**, if it is the first in its cooldown: the same last-**accepted**
+  walk as the probe cooldown, over report incidents only. A later qualifying report inside that cooldown is absorbed: no row, no
+  change to the incident. Its `detected_at` is the report's `event_time`, `scan_id` NULL, `sustained_scans` 1, `is_report_sourced` true.
+- **A probe incident is never suppressed by a report**, and a report that falls before a probe onset leaves both rows.
+  `assert_cooldown_respected` therefore exempts report-versus-probe pairs and no other pair: two probe incidents, or two report
+  incidents, are still checked.
+- **Known edges.** If a report incident was recorded first and a late-replayed probe run later makes that report fall inside the probe
+  incident's window, the report now escalates the probe incident but its earlier row stays (a merge never deletes): both rows exist.
+  A re-escalation after the agent has processed an incident is not re-queued (`agent_processed` is carried forward unchanged): a
+  Phase 6 item. A report whose `event_time` is older than 90 days before its arrival is rejected at silver (above).
+- **`gold.disturbance` reads `silver.force_report` directly**, for a report's relevance and description: they are not columns of
+  `gold.sector_reading`, and no column was added there. The earlier statement that gold never reads silver is no longer true for
+  this one input.
+
+**Recursion depth and its limit (Phase 5).** Both cooldown walks — `walked` over probe runs and `report_walk` over report incidents —
+are recursive CTEs, and a chain is every candidate a sector has ever had: the cooldown absorbs a link, it does not remove it, and
+`gold.disturbance` rescans all history on every build, so the depth grows without end. The engine stops the whole build past a CTE's
+limit (`RECURSION_LEVEL_LIMIT_EXCEEDED`; the default is 100, and until Phase 5 neither walk set one). Both walks now take
+`MAX RECURSION LEVEL` from `var('walk_recursion_limit')`, **500**. Measured on the serverless warehouse, a level costs about 0.95 s
+(linear: depth 150 in 195 s, depth 400 in 433 s), against Job 1's 2,400 s task timeout, so about 1,000 is the most any limit could be.
+The busiest sector today has 4 probe runs in 106 days of history. `assert_walk_depth_below_limit` (severity **error**) fails when any
+sector's chain in either walk reaches 80% of the limit (400): an error fails Job 1, so its success ping (S2) stops and the alert fires
+with headroom before the hard limit. This is an **interim measure, not a bound**: at the intake's cap of 200 reports a day, one sector
+could in principle add 200 levels a day. The bounded alternative (a non-recursive walk, merged with the bounded-recompute item) is
+open in the Engineering Log.
 
 ### `gold.deployment`
 
@@ -431,9 +514,21 @@ Minimum set. Part of the deliverable.
 - `relationships` from `silver.probe_reading.sector_id` → `dim_sector.sector_id`
 - `accepted_values` on `mode`, `source_type`, `signature`, `decision`, `decided_by`,
   `reject_reason`, `region`
-- **`gold.sector_baseline` contains no report-sourced data** — the most important test in the project
+- **`gold.sector_baseline` contains no report-sourced data** — the most important test in the project. `assert_baseline_probe_only`
+  compares each baseline row's `sample_count` with the live `silver.probe_reading` count for its window, so on a table that has
+  since gained late scans it flags every row for that reason alone (checked on prod 2026-10-12: 180 of 180, each short by the two
+  scans that landed after the 03:42 rebuild). It is also run by no scheduled job: Job 1 excludes it by name and Job 2 runs
+  `dbt run`, which runs no tests. Re-run it right after a baseline rebuild with nothing landing in between (dev), or use the
+  as-of form in `ingest/phase5_checkpoint.sql` (`silver.probe_reading TIMESTAMP AS OF` the baseline's `computed_at`, as the
+  Phase 4 checkpoint did)
 - `imbalance_score >= 0`
-- Cooldown assertion: no two `gold.disturbance` rows for the same sector within 2 hours
+- Cooldown assertion: no two `gold.disturbance` rows for the same sector within 2 hours — among probe-sourced rows, and among
+  report-sourced rows. A report-sourced and a probe-sourced incident may sit inside each other's cooldown (a report never
+  suppresses a probe incident)
+- Report data tests (Phase 5): `assert_report_incident_rules` (every report-sourced incident met the firing rule and carries its
+  verbatim description; a probe incident carries report fields only when a qualifying report escalated it),
+  `assert_gold_report_rows_match_silver`, `assert_reports_stay_in_their_own_tables` (a report event is in `silver.force_report` or
+  `silver.report_rejects` and in no probe table), `assert_stg_report_fields_are_typed`, and `assert_walk_depth_below_limit` (above)
 - Every `gold.deployment` references a `gold.disturbance` with `agent_processed = true`
 - Every `signature` value has at least one matching Jedi specialty available in `dim_jedi`
 - Freshness is **not** a dbt test: it is monitored outside dbt by three dead-man's-switch signals (S1 bridge alive, S2 Job 1

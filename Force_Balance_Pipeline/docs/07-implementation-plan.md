@@ -222,7 +222,7 @@ human to notice and act. Before the next build step:
 1. **Done 2026-10-11 (Phase 5 Round 2).** The bridge task should wait/retry for the broker rather than exit when it's
    unreachable, and the task (or its wrapper) should restart automatically on failure — it exited `0xC000013A`
    (`CONTROL_C_EXIT`) and simply stayed down.
-2. **Done 2026-10-11 (Phase 5 Round 4); S3's negative test is pending.** A landing-freshness alert, as three signals
+2. **Done 2026-10-11 (Phase 5 Round 4); S3's negative test passed 2026-10-12.** A landing-freshness alert, as three signals
    reported to an external dead-man's-switch so that alerting shares no failure domain with the desktop or with Databricks
    quota: S1 bridge liveness, S2 Job 1 liveness, S3 data freshness (doc 05, "Monitoring"). It replaces doc 03's 45-minute bronze freshness test, which would trip between hourly runs and in every
    scheduled DISCONNECTED window, and it covers the same class of silent failure (a healthy-looking pipeline not receiving
@@ -233,19 +233,45 @@ human to notice and act. Before the next build step:
 
 Details, evidence and the open follow-ups for all three are in `docs/ENGINEERING-LOG.md`, "Phase 5".
 
-1. `POST /api/report` endpoint in the bridge. Inference call with the planet's baseline passed in.
-2. **Clamp all returned values to valid ranges in code**, regardless of model output.
-3. Browser page: planet picker, description box, confirmation showing inferred values.
-4. IndexedDB buffering on network failure.
-5. `silver.force_report` model.
-6. Report-sourced firing rules in `gold.disturbance`, including the escalation case where a report
-   arrives during an existing probe-sourced incident's cooldown.
-7. `intake/fixtures/` suite from doc 04, including the prompt-injection case.
+1. **Done 2026-10-11, with a deviation.** `POST /api/report` endpoint in the bridge. Inference call with the planet's baseline passed in.
+   *Deviation:* built as a separate intake process that publishes to the broker, not inside the bridge (doc 04, "Inference backend").
+2. **Done 2026-10-11.** **Clamp all returned values to valid ranges in code**, regardless of model output.
+3. **Done 2026-10-12.** Browser page: planet picker, description box, confirmation showing inferred values. The manual browser checklist
+   (`intake/MANUAL-CHECKLIST.md`) passed on 2026-10-12: all 19 steps, in Chrome. Step 14 (the private window) worked with IndexedDB. In
+   step 18 the line count (10) could not be reconciled with the tally after the identity resets and the extra reports; that no
+   `event_id` landed twice is covered by the end-to-end test.
+4. **Done 2026-10-12.** IndexedDB buffering on network failure.
+5. **Done 2026-10-12.** `silver.force_report` model, and a parallel `silver.report_rejects` (doc 03).
+6. **Done 2026-10-12.** Report-sourced firing rules in `gold.disturbance`, including the escalation case where a report
+   arrives during an existing probe-sourced incident's cooldown (doc 03, "Firing rules — report-sourced", as built).
+7. **Done 2026-10-11; live run passed 2026-10-12.** `intake/fixtures/` suite from doc 04, including the prompt-injection case
+   (33 iterations, 30 model calls, all passed, none blocked or errored).
 
 **Checkpoint:** "It rained today" scores below 0.15 and creates no incident. "Saw Darth Vader in
 the market" scores above 0.85 and creates an incident with `is_report_sourced = true` and the
 description preserved verbatim. The injection-attempt fixture produces bounded values. Baselines
 remain probe-only — re-run that test.
+
+**Checkpoint status: passed (2026-10-12, T0 2026-10-12 18:23:00Z).** Three reports were filed by hand through the real page
+(127.0.0.1:8080, the live broker); `ingest/phase5_checkpoint.sql` is the evidence.
+
+- **Rain** (`01M4RNP229XQMX3QRQ9GT4N629`, naboo): relevance 0.05, imbalance 0.24, no incident.
+- **Vader** (`01M4RNPRA3HBZR1X3F0BDWEF93`, coruscant): relevance 0.95, imbalance 13.32, severity 29.31, exactly one incident with
+  `is_report_sourced = true`, `report_description` verbatim, `scan_id` NULL, `sustained_scans` 1 and `cooldown_conflict` false. Ingested
+  by Job 1 run 73062993825137 (2026-10-12 19:03Z): 83 of 83 pass, including `assert_walk_depth_below_limit` on its first live run.
+- **Injection** (`01M4RRXZP4ACEW2J2Z9GYRX6YH`, naboo, the fixture's mundane text), filed 2026-10-12 19:20:17Z and ingested by run
+  1080331897006202 (2026-10-13 03:03Z, the first after the quota reset): relevance 0.05, dark 10.2, imbalance 0.46, no incident. A first
+  injection report (`01M4RNRCMSQENMW522CRTTAG5C`) was filed by mistake with the whole fixture JSON as its description, which leaked
+  the expected relevance into the input. It is not evidence; it stays in bronze, silver and `gold_sector_reading` and created no incident.
+- **Verbatim.** Silver's description equals the bronze payload's for all four reports (V2 `vs_bronze`). The clean injection text is 205
+  bytes against the fixture file's 202: the text typed had three extra bytes, likely from copying it out of the chat window (a trailing
+  newline or an invisible character; not queried), so that row does not byte-match the fixture, and V2 says so rather than showing a blank.
+- **Baselines remain probe-only.** The as-of check (V6) returned 0 rows against the 2026-10-14 03:42:35Z rebuild, and V6b shows no report
+  event in any probe table (180 baseline rows). The latest Job 1 run, 515608939085149 (2026-10-14 16:03Z), passed 83 of 83.
+
+"Re-run that test" needed care: `assert_baseline_probe_only` is run by no scheduled job (Job 1 excludes it by name, Job 2 runs
+`dbt run`), and run against a live prod table it flags every row, because it compares with today's silver count instead of the count
+as of the baseline's `computed_at` (doc 03, "dbt tests"). The checkpoint file runs the as-of form.
 
 ---
 

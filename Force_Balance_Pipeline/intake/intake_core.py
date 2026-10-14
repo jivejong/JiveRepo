@@ -51,7 +51,9 @@ RANGES = {
 }
 CHANNELS = ("midichlorian_ppm", "kyber_resonance", "dark_side_activity")
 
-# Request limits (decision 10) and the observed_at window (decision 11). Silver's report rule must use the same bounds.
+# Request limits (decision 10) and the observed_at window (decision 11). Silver measures a report's event_time against bronze
+# ARRIVAL, which trails this process's clock, so its window is deliberately wider (90 days back, 10 minutes ahead:
+# warehouse/dbt/dbt_project.yml); edge/tests/test_dbt_doc_parity.py asserts it is at least as wide as these bounds on both sides.
 MAX_DESCRIPTION_CHARS = 8000
 MAX_BODY_BYTES = 128 * 1024           # 8,000 emoji written as escaped surrogate pairs (12 bytes each) is about 96 KB, plus the other fields
 MAX_RATIONALE_CHARS = 1000

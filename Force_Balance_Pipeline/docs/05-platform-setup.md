@@ -764,6 +764,21 @@ e2-micro come together in a later phase. Nothing below is committed with a real 
    docker run --rm -it -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/work" eclipse-mosquitto:2 mosquitto_passwd /work/passwd web-intake
    ```
 
+   **If the interactive prompt does not work** (it failed twice in Phase 5 with a hash mismatch, cause unknown, which is why this form is
+   recommended), read the password from the credentials file instead. Mount `.env.intake.mqtt` read-only and let the container take
+   the password out of it, for a user that is **added to or changed in the existing file** (no `-c`: `-c` creates a new file and
+   would erase every other user):
+
+   ```powershell
+   docker run --rm -v "<REPO>\Force_Balance_Pipeline\.env.intake.mqtt:/in/env:ro" -v "$env:USERPROFILE\.force_balance_pipeline\mosquitto:/work" eclipse-mosquitto:2 sh -c 'mosquitto_passwd -b /work/passwd web-intake "$(sed -n "s/^INTAKE_MQTT_PASSWORD=//p" /in/env)"'
+   ```
+
+   The password is read inside the container, so it is on no host command line and in no extra file. The file must hold the value
+   unquoted and with LF line endings (the intake's own reader also accepts quotes; this `sed` does not strip them). It was run live on
+   `force-mosquitto` on 2026-10-11, at about 22:40 to 22:43 EDT: it printed `Updating password for user web-intake`, and
+   `intake/acl_check.py` then passed. Re-run the volume copy above afterwards, as for any password change.
+
+
 2. **The broker**, bound to the desktop's LAN address and to `127.0.0.1`, never to `0.0.0.0`. The config is
    `infra/mosquitto/mosquitto.lan.conf` (`allow_anonymous false`, the password file and `infra/mosquitto/acl` read from the mounted
    directories, persistence and the queue limits of doc 04).
@@ -803,6 +818,15 @@ e2-micro come together in a later phase. Nothing below is committed with a real 
    probe, the bridge and the intake process all reconnect. Then check: `docker logs` shows no ACL or password warning; the bridge
    logs `connected (session present: True)`; the next scan lands 60 of 60. MQTT 5 is what makes a wrong ACL visible: Mosquitto
    answers a denied QoS 1 publish with a PUBACK carrying "Not authorized", which the intake publisher reports as a refused publish.
+
+   **Reloading without a restart (done live 2026-10-11; checked again 2026-10-12 on a throwaway broker).** After the volume copy above,
+   `docker kill -s HUP force-mosquitto` makes Mosquitto re-read the password file and the ACL (its log prints `Reloading config`)
+   **without dropping connected clients**. On the live broker, on 2026-10-11 at about 22:40 to 22:43 EDT, it logged `Reloading config`
+   and no client disconnected. On a disposable container built like this one (the repo's `mosquitto.lan.conf`, authenticated), a
+   client that stayed connected throughout saw no disconnect, a new user was refused before the HUP and accepted after it, and a new
+   ACL line took effect (a write to a topic the ACL forbids was answered "Not authorized" under MQTT 5). So a password or ACL change
+   does not need the graceful restart above, nor the :58 to :05 window. The checks covered the password file and the ACL only: a
+   changed `mosquitto.lan.conf` still needs the restart.
 
 3. **The firewall**, elevated PowerShell. The rule admits TCP 1883 from the Pi only:
 
@@ -1098,6 +1122,14 @@ absorbs it: it logged `cannot reach the MQTT broker at …:1883 … retrying, at
 exiting, and connected 3 s after the broker (18:04:40Z, `session present: True`); the Pi reconnected at 18:05:00Z, and the 18:00Z
 scan it had buffered landed at 18:05:02Z. A Windows shutdown also stops the broker ungracefully (above).
 
+**Check the autostart after every Windows update or reboot (it was found off on 2026-10-14).** The desktop rebooted at 02:36:32 EDT (06:36:32Z) with
+Docker Desktop's "start when you sign in" setting off, although it had autostarted in the 2026-10-11 test; when or why it changed is unknown. Nothing
+started the broker. The bridge task started at sign-in, about 09:13 EDT, and retried as designed, once a minute, until Docker was started by hand at
+about 13:25 EDT (17:25Z); the setting is now on. Scans stopped landing for about eleven hours, and none was lost: the Pi buffered them and replayed them
+in BURST from 17:27Z, whole 60-line scans about 0.5 s apart. After any update or restart, check both that Docker Desktop setting and Windows'
+own list, *Settings > Apps > Startup*, where "Docker Desktop" should be On; and confirm that the next scan lands. Alerts for that outage were
+raised by S1 and S3 but not delivered, because the email integration had failed (Engineering Log, Phase 5 findings): confirm delivery too.
+
 ```powershell
 # from Force_Balance_Pipeline\infra\desktop, in an ordinary (NON-elevated) PowerShell
 .\register-bridge-task.ps1 -MqttHost <DESKTOP_IP_or_broker_host>              # registers only
@@ -1157,7 +1189,7 @@ alive to report a failure, and the alerting shares no failure domain with the de
 45-minute `bronze.events` freshness test that used to be in doc 03 and `sources.yml`, which would have tripped between hourly Job 1
 runs and in every scheduled DISCONNECTED window.
 
-**Status (2026-10-11): all three signals are deployed and proven; one test is pending.**
+**Status (2026-10-12): all three signals are deployed and proven; S3's negative test passed on 2026-10-12.**
 - **S1 and S3** are implemented in `ingest/bridge/monitor.py`, wired into `bridge.py`, and deployed: the new bridge started at
   19:39:44Z, logged `monitoring pings enabled for S1, S3` and connected with `session present: True`. S1 has pinged every 5 minutes
   since 15:39 EDT (19:39Z), each request carrying the project User-Agent. S3 has pinged roughly every 15 minutes since about 19:45Z,
@@ -1165,8 +1197,8 @@ runs and in every scheduled DISCONNECTED window.
 - **S2** is deployed (the bundle variable `s2_ping_email`, below) and its first ping arrived after Job 1's 21:03Z run succeeded.
 - **Proven:** S1 went down on a real outage, at exactly period plus grace, and came back up on its first ping; the notification
   email was proven on `fbp-test` (below).
-- **Pending:** S3's negative test, that it stays up through a scheduled DISCONNECTED window of at most 3 hours. It happens
-  naturally in the 00:00–12:00Z half-day of 2026-10-12, if a window falls there (one is scheduled per half-day).
+- **Passed (2026-10-12):** S3's negative test. `fbp-s3-data-landed` stayed up through the 2026-10-12 00:00 to 12:00Z DISCONNECTED window
+  (checked at about 10:30 EDT). It can: period plus grace (15 minutes + 3 hours 45 minutes) exceeds the 3-hour maximum window.
 
 | Signal | What it says | Sent by | Ping | Check | Period | Grace | Alert after |
 |---|---|---|---|---|---|---|---|
@@ -1324,8 +1356,9 @@ no notification. It was fixed and enabled on all four checks, and delivery was t
    `Start-ScheduledTask ForceBridge`; S1 returns to up on its first ping. A stop is safe at any moment, because messages are
    acknowledged only after landing.
 3. *S3, cadence:* in the check's log, pings arrive roughly every 15 minutes since about 19:45Z, one per landed scan, including at
-   21:04Z after the S1-proof restart (the at-most-one-per-5-minutes throttle is unit-tested). *S3, silence:* **pending**: across one
-   scheduled DISCONNECTED window (at most 3 hours; from `mode_transitions` or `bridge.log`) `fbp-s3-data-landed` must never go down. It happens naturally in the 00:00–12:00Z half-day of 2026-10-12, if a window falls there.
+   21:04Z after the S1-proof restart (the at-most-one-per-5-minutes throttle is unit-tested). *S3, silence:* **passed 2026-10-12**: across the
+   00:00 to 12:00Z DISCONNECTED window (checked at about 10:30 EDT) `fbp-s3-data-landed` never went down; period plus grace (4 hours)
+   exceeds the 3-hour maximum window.
 4. *S2:* the throwaway job's email reached `fbp-test` (2026-10-11), and after the real deploy `fbp-s2-job1-success` showed its first ping
    after the 21:03Z run. A quota-exhaustion alert itself has not been observed; it follows from the
    design (no run is created, so no success email, so the check goes down after 2 hours) and from the delivery proof above.
