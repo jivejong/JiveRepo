@@ -7,6 +7,7 @@ import * as api from './lib/api';
 import * as cache from './lib/cache';
 import { loadChartSong } from './lib/songLoading';
 import { buildCachedTagOptions, filterSongList, mergePendingSongProjections } from './tagMutations';
+import { createLatestRequestGate } from './lib/latestRequestGate';
 
 // ── Online/offline detection ──────────────────────────────────────────────────
 export function useOnline() {
@@ -60,36 +61,61 @@ export function useSongs(filters, online) {
   useEffect(() => {
     let cancelled = false;
     let serverSongs = null;
+    const cacheReads = createLatestRequestGate();
     setLoading(true);
+
+    const publishCachedFallback = async () => {
+      if (cancelled || serverSongs) return;
+      const ticket = cacheReads.begin();
+      const result = await cache.searchCached(filters);
+      if (!cancelled && !serverSongs && cacheReads.isCurrent(ticket)) {
+        // Keep the shell responsive while the authoritative online list is
+        // still loading. An empty cache does not end loading or mask a remote
+        // library that has not arrived yet.
+        setSongs(result);
+        setLoading(result.length === 0);
+      }
+    };
 
     const publishOnline = async () => {
       if (cancelled || !serverSongs) return;
+      const ticket = cacheReads.begin();
+      const snapshot = serverSongs;
       const cached = await cache.getCachedSongs();
-      if (!cancelled) setSongs(filterSongList(mergePendingSongProjections(serverSongs, cached), filters));
+      if (!cancelled && cacheReads.isCurrent(ticket) && serverSongs === snapshot) {
+        setSongs(filterSongList(mergePendingSongProjections(snapshot, cached), filters));
+      }
     };
     const load = async () => {
       try {
         if (online) {
+          // Render any cached library immediately, then reconcile it with the
+          // unfiltered server snapshot and pending mutation projections.
+          void publishCachedFallback().catch(() => {});
           // Fetch an unfiltered lightweight list. A pending edit may have
           // moved a song into a filter even though its server version would
           // not be present in a filtered response.
           const result = await api.songs.search({});
           serverSongs = result.songs;
+          cacheReads.invalidate();
           await publishOnline();
         } else {
           const result = await cache.searchCached(filters);
           if (!cancelled) setSongs(result);
         }
-        setError(null);
+        if (!cancelled) setError(null);
       } catch (err) {
         if (!cancelled) {
           // Fall back to cache on network error
+          const ticket = cacheReads.begin();
           try {
             const result = await cache.searchCached(filters);
-            setSongs(result);
-            setError('Using cached data');
+            cacheReads.publishIfCurrent(ticket, cancelled, () => {
+              setSongs(result);
+              setError('Using cached data');
+            });
           } catch {
-            setError(err.message);
+            cacheReads.publishIfCurrent(ticket, cancelled, () => setError(err.message));
           }
         }
       } finally {
@@ -98,9 +124,12 @@ export function useSongs(filters, online) {
     };
 
     load();
-    const unsubscribe = online ? cache.onCacheChange(() => { void publishOnline().catch(err => {
-      if (!cancelled) setError(`Could not refresh pending songs: ${err.message}`);
-    }); }) : () => {};
+    const unsubscribe = online ? cache.onCacheChange(() => {
+      const publish = serverSongs ? publishOnline : publishCachedFallback;
+      void publish().catch(err => {
+        if (!cancelled) setError(`Could not refresh pending songs: ${err.message}`);
+      });
+    }) : () => {};
     return () => { cancelled = true; unsubscribe(); };
   }, [JSON.stringify(filters), online]);
 

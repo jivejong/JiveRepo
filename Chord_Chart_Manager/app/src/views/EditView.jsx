@@ -10,6 +10,33 @@ import { eraForYear, normalizeSongTags } from '../tagMutations';
 import { offlineSongCreatedAt, primaryGenreFromAssignments } from '../lib/offlineSongFields';
 import ArtistAutocomplete from '../components/ArtistAutocomplete';
 
+const EDITABLE_FIELDS = [
+  'title', 'artist', 'chart_written_key', 'original_key', 'default_capo', 'bpm',
+  'release_year', 'beatbuddy_structure', 'chart_source', 'genres', 'vibes',
+];
+
+function sameEditValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index]
+      && sameEditValue(left[key], right[key]));
+}
+
+function normalizedEditValues(form, tagSets) {
+  return {
+    ...form,
+    default_capo: Number(form.default_capo) || 0,
+    bpm: form.bpm ? Number(form.bpm) : null,
+    release_year: form.release_year === '' ? null : Number(form.release_year),
+    genres: tagSets.genres,
+    vibes: tagSets.vibes,
+  };
+}
+
 /**
  * EditView — edit a song's chart content and key metadata fields.
  * Saves to server when online; marks dirty and saves to cache when offline.
@@ -31,6 +58,8 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
   const originalChartSource = useRef(form.chart_source);
   const originalChartContent = useRef(song?.chart_content);
   const [tagSets, setTagSets] = useState(() => normalizeSongTags(song?.genres || [], song?.vibes || []));
+  const originalEditableValues = useRef(null);
+  if (!originalEditableValues.current) originalEditableValues.current = normalizedEditValues(form, tagSets);
   const [newGenre, setNewGenre] = useState('');
   const [newVibe, setNewVibe] = useState('');
   const { tags: availableTags } = useTags(online);
@@ -82,6 +111,14 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
         genres: tagSets.genres,
         vibes: tagSets.vibes,
       };
+      const currentEditableValues = { ...payload, chart_source: form.chart_source };
+      const changedFields = EDITABLE_FIELDS.filter(field =>
+        !sameEditValue(currentEditableValues[field], originalEditableValues.current[field]));
+      if (payload.chart_source === originalChartSource.current) delete payload.chart_source;
+      const preserveStructured = !Object.hasOwn(payload, 'chart_source')
+        || isGeneratedSourceUnchanged(
+          originalChartSource.current, originalChartContent.current, payload.chart_source,
+        );
       const primaryGenre = primaryGenreFromAssignments(payload.genres);
       if (payload.release_year !== null
           && (!Number.isInteger(payload.release_year) || payload.release_year < 1 || payload.release_year > 32767)) {
@@ -95,9 +132,6 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
       if (online) {
         const isOfflineCreate = song?._sync?.operation === 'create';
         if (isOfflineCreate) {
-          const preserveStructured = isGeneratedSourceUnchanged(
-            originalChartSource.current, originalChartContent.current, payload.chart_source,
-          );
           const patched = {
             ...song,
             ...payload,
@@ -119,9 +153,6 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
           return;
         }
         if (song?.id && !isOfflineCreate) {
-          const preserveStructured = isGeneratedSourceUnchanged(
-            originalChartSource.current, originalChartContent.current, payload.chart_source,
-          );
           const patched = {
             ...song,
             ...payload,
@@ -133,6 +164,8 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
             _sync: {
               operation: 'update',
               base_updated_at: song?._sync?.base_updated_at ?? song?.updated_at ?? null,
+              chart_source_unchanged: !Object.hasOwn(payload, 'chart_source')
+                && song?._sync?.chart_source_unchanged !== false,
             },
           };
           await cache.savePendingSong(patched);
@@ -153,9 +186,6 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
         const operation = song?._sync?.operation === 'create'
           ? 'create'
           : (song?.id ? 'update' : 'create');
-        const preserveStructured = isGeneratedSourceUnchanged(
-          originalChartSource.current, originalChartContent.current, payload.chart_source,
-        );
         const parsedContent = preserveStructured ? null : parseChartBody(payload.chart_source);
         const createdAt = offlineSongCreatedAt(song, operation);
         const patched = {
@@ -178,10 +208,22 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
             base_updated_at: operation === 'create'
               ? null
               : (song?._sync?.base_updated_at ?? song?.updated_at ?? null),
+            ...(operation === 'update'
+              ? { chart_source_unchanged: !Object.hasOwn(payload, 'chart_source')
+                && song?._sync?.chart_source_unchanged !== false }
+              : {}),
           },
         };
-        await cache.savePendingSong(patched, patched._sync.operation_id);
-        onSaved(patched);
+        const editMerge = operation === 'update' ? {
+          baseline: {
+            ...originalEditableValues.current,
+            chart_content: originalChartContent.current,
+            updated_at: song?.updated_at ?? null,
+          },
+          changedFields,
+        } : null;
+        const savedLocal = await cache.savePendingSong(patched, patched._sync.operation_id, editMerge);
+        onSaved(savedLocal);
       }
     } catch (err) {
       setError(err.message);

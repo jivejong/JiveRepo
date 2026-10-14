@@ -5,6 +5,7 @@ const { requireIsolatedTarget, verifyHarnessIdentity } = require('../t11-guards.
 requireIsolatedTarget({ isolated: process.env.CCM_T11_ISOLATED,
   baseUrl: process.env.E2E_BASE_URL, runId: process.env.CCM_T11_RUN_ID });
 const { pool } = require('../../server/db.js');
+const { chartToText } = require('../../server/chartParser.js');
 
 const base = process.env.E2E_BASE_URL;
 assert.ok(base, 'T11 harness must provide the isolated E2E_BASE_URL');
@@ -26,6 +27,37 @@ const json = async (method, path, body) => {
   try { value = await response.json(); } catch { /* keep status for assertion */ }
   return { response, value };
 };
+
+test('T13 imported-like NULL-source fixture stays NULL through no-op and metadata saves', async () => {
+  await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
+  const fixture = await pool.query(`SELECT id, chart_content FROM public.songs
+    WHERE title='Already Gone' AND chart_source IS NULL ORDER BY id`);
+  assert.equal(fixture.rowCount, 1, 'T13 requires the task-owned NULL-source synthetic chart');
+  const id = fixture.rows[0].id;
+  const before = await json('GET', `/api/songs/${id}`);
+  assert.equal(before.response.status, 200);
+  assert.deepEqual(before.value.chart_content, fixture.rows[0].chart_content);
+  assert.equal(before.value.chart_source, chartToText(fixture.rows[0].chart_content));
+
+  const unchanged = await json('PUT', `/api/songs/${id}`, {
+    chart_source: before.value.chart_source, base_updated_at: before.value.updated_at,
+    operation_id: randomUUID(),
+  });
+  assert.equal(unchanged.response.status, 200, JSON.stringify(unchanged.value));
+  assert.deepEqual(unchanged.value.chart_content, before.value.chart_content);
+  assert.equal((await pool.query('SELECT chart_source FROM public.songs WHERE id=$1', [id])
+    ).rows[0].chart_source, null);
+
+  const metadata = await json('PUT', `/api/songs/${id}`, {
+    chart_source: before.value.chart_source, bpm: 109,
+    base_updated_at: unchanged.value.updated_at, operation_id: randomUUID(),
+  });
+  assert.equal(metadata.response.status, 200, JSON.stringify(metadata.value));
+  assert.deepEqual(metadata.value.chart_content, before.value.chart_content);
+  assert.equal(metadata.value.chart_source, before.value.chart_source);
+  assert.equal((await pool.query('SELECT chart_source FROM public.songs WHERE id=$1', [id])
+    ).rows[0].chart_source, null);
+});
 
 test('song, tag, setlist, and entry API contract on migrated ccm_test', async () => {
   await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });

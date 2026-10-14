@@ -55,6 +55,12 @@ def song_stats(song) -> dict:
         "repeat": tc.get("repeat", 0),
         "raw": tc.get("raw", 0),
         "low_confidence": low,
+        "unresolved_word_tab_placement": sum(
+            1 for warning in song.warnings
+            if warning.get("code") == "word_tab_placement_unresolved"),
+        "unresolved_plain_text_body": sum(
+            1 for warning in song.warnings
+            if warning.get("code") == "plain_text_body_unresolved"),
     }
 
 
@@ -128,9 +134,17 @@ def run(input_dir: str, output_dir: str, per_doc: bool, strict: bool) -> int:
             for k, v in st.items():
                 agg[k] += v
             miss = missing_fields(s)
-            if miss:
+            tab_warnings = [dict(w, doc=name, title=s.title or "(untitled)")
+                            for w in s.warnings
+                            if w.get("code") == "word_tab_placement_unresolved"]
+            body_warnings = [dict(w, doc=name, title=s.title or "(untitled)")
+                             for w in s.warnings
+                             if w.get("code") == "plain_text_body_unresolved"]
+            if miss or tab_warnings or body_warnings:
                 flagged.append({"doc": name, "title": s.title or "(untitled)",
-                                "missing": miss})
+                                "missing": miss,
+                                "unresolved_placements": tab_warnings,
+                                "unresolved_plain_text_body": body_warnings})
         # fold this doc's totals into the corpus counter
         corpus.update(agg)
         corpus["songs"] += len(songs)
@@ -149,7 +163,8 @@ def run(input_dir: str, output_dir: str, per_doc: bool, strict: bool) -> int:
         "total_songs": corpus["songs"],
         "corpus_totals": {k: corpus[k] for k in
                           ("lyric", "progression", "repeat", "raw",
-                           "low_confidence")},
+                           "low_confidence", "unresolved_word_tab_placement",
+                           "unresolved_plain_text_body")},
         "docs": doc_reports,
         "flagged_songs": flagged,
         "failures": failures,
@@ -178,6 +193,10 @@ def _print_summary(report: dict) -> None:
           f"{ct['repeat']} repeat, {ct['raw']} raw")
     print(f"  Low-confidence : {ct['low_confidence']} space-aligned lines "
           f"(review target)")
+    print(f"  Unresolved Word tab placements: "
+          f"{ct['unresolved_word_tab_placement']} (load blocked)")
+    print(f"  Unresolved plain-text bodies: "
+          f"{ct['unresolved_plain_text_body']} (load blocked)")
     print("-" * 64)
     print("  Per doc:")
     for d in report["docs"]:
@@ -190,8 +209,18 @@ def _print_summary(report: dict) -> None:
         print("-" * 64)
         print(f"  ⚠ {len(report['flagged_songs'])} songs flagged for review:")
         for f in report["flagged_songs"][:40]:
-            print(f"      [{f['doc'][:20]:20}] {f['title'][:34]:34} "
-                  f"missing: {', '.join(f['missing'])}")
+            all_warnings = (f.get("unresolved_placements", [])
+                            + f.get("unresolved_plain_text_body", []))
+            codes = sorted({w["code"] for w in all_warnings})
+            detail = (f"missing: {', '.join(f['missing'])}"
+                      if f["missing"] else "")
+            if codes:
+                refs = ", ".join(
+                    f"s{w['section']}/l{w['line']}:{w['reason']}"
+                    for w in all_warnings)
+                detail += ("; " if detail else "") + \
+                    f"unresolved: {', '.join(codes)} ({refs})"
+            print(f"      [{f['doc'][:20]:20}] {f['title'][:34]:34} {detail}")
         if len(report["flagged_songs"]) > 40:
             print(f"      … and {len(report['flagged_songs']) - 40} more "
                   f"(see report.json)")

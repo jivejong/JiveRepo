@@ -88,10 +88,24 @@ current structured content on online and offline saves.
 An explicit empty chart paragraph is stored as a spacer line and rendered in
 normal layout flow, so it contributes to scrolling and element-based height
 measurements. Ordinary human-authored chart text also preserves internal blank
-line runs as one spacer; leading/trailing padding is trimmed, and chord/lyric
-pairing does not cross a blank line. A blank paragraph before a new section uses the automatic section
+line runs as one spacer; leading/trailing empty lines are dropped, while
+trailing spaces on nonblank lyric/raw lines are preserved. Chord/lyric pairing
+does not cross a blank line. A blank paragraph before a new section uses the automatic section
 gap; a spacer after a section heading remains explicit and suppresses that
 automatic gap so the two spaces do not stack.
+
+Pipe-separated chord rows that mix chord tokens with separators, annotations,
+or repeat text are kept as literal raw-line text so their order and spacing
+remain visible. The renderer transposes only clearly recognized chord tokens
+outside parenthesized/bracketed annotations; ambiguous tokens, prose, tablature,
+and ordinary progression lines remain unchanged. When an older human-source
+record still has the old progression structure, it continues to render that
+stored structure until the user intentionally changes its chart text in Edit
+and saves. A chart-source field unchanged from its loaded baseline is omitted
+from the save, and the server preserves `chart_content` when submitted source
+matches its stored value. To refresh a previously affected chart, make an
+intentional text edit and save; the corrected parser then derives its new
+representation. Opening a chart does not rewrite its record.
 
 ## Run with Docker Compose
 
@@ -234,8 +248,14 @@ cd server && npm audit --omit=dev
 - Edit Genres and Vibes online or offline; new values stay within those existing
   categories and sync with the song update. Era is read-only and derived from
   `release_year` by decade. Release years must be whole numbers from 1 to 32767.
-- Edit `chart_source`; the parsed chart is available immediately after an
-  offline save.
+- Chart bodies use the existing textarea and ordinary chart-text parser for
+  editing and rendering. Existing CCM v1/v2 chart sources remain supported and
+  are not converted as part of ingestion or UI changes. Newly ingested DOCX
+  charts store a readable plain-text body; title and other metadata continue to
+  use the existing metadata fields and parser.
+- Chart edits use the existing versioned online save and offline sync flow. An
+  unchanged chart or metadata-only save preserves its existing source and
+  structured chart data.
 - Transpose charts and adjust capo. Saving stores `preferred_key` and
   `default_capo`; it does not rewrite the chart into a different key.
 - Swipe left for the next song and right for the previous song in the current
@@ -268,6 +288,14 @@ cd server && npm audit --omit=dev
 The service worker caches the application shell and IndexedDB stores songs,
 setlists, and sync metadata.
 
+The Songs screen shows matching cached rows as soon as an online list request
+starts, then replaces the clean server projection when it arrives. Pending
+local create/edit/delete projections remain applied during that reconciliation.
+When the browser is offline, the list is read directly from IndexedDB. The
+service worker provides the app shell and a bonus NetworkFirst API cache with
+a four-second network timeout. The Songs screen does not wait for that
+response before showing nonempty IndexedDB results.
+
 When the app first opens online, when a connection returns, or when **Sync
 now** is selected in Settings, it:
 
@@ -292,6 +320,11 @@ follow-up update, and acknowledging the create rewrites dependent cached
 setlist entries to the server song ID. A pull keeps local projections that
 still have queued work. Deleting a local song with an uncertain dispatched
 setlist-entry request is blocked until sync resolves it.
+When two offline editors save the same existing song, a later save merges only
+fields changed from that editor's loaded baseline onto the latest cached row.
+Non-overlapping edits are retained in one queued update. If both editors changed
+the same field, the stale save is rejected with a reload-and-retry message and
+does not alter the cached song or pending mutation.
 Song version tokens use UTC with six fractional digits and are compared as
 exact strings. Older queued three-digit tokens are ambiguous and receive 409;
 the queued request is sent first, then server-wins recovery refreshes the

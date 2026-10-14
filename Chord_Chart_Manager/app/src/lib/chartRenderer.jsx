@@ -18,6 +18,7 @@
  */
 
 import React, { useLayoutEffect, useRef, useState } from "react";
+import { isDecoratedChordLine } from "./chartParser";
 
 function orderedChords(chords) {
   return (chords || []).map((chord, index) => ({
@@ -275,7 +276,8 @@ function renderLine(line, i) {
         </div>
       );
     case "raw":
-      return <div key={i} className="tab-line">{line.text}</div>;
+      return <div key={i} className={isDecoratedChordLine(line.text)
+        ? "chord-only-line" : "tab-line"}>{line.text}</div>;
     case "spacer":
       return <div key={i} className="chart-spacer" aria-hidden="true" />;
     default:

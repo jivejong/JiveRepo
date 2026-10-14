@@ -8,6 +8,7 @@ const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { Pool } = require('../server/node_modules/pg');
+const { isGeneratedChartSource } = require('../server/chartParser.js');
 const { bounded, runCleanupStages, startServerBounded, runWithCleanup } = require('./t11-lifecycle.cjs');
 const { verifyHarnessIdentity } = require('./t11-guards.cjs');
 const { readMainCounts, assertMainCountsUnchanged } = require('./t11-main-checks.cjs');
@@ -84,12 +85,13 @@ async function importedSnapshot(pool) {
       COALESCE((SELECT jsonb_agg(to_jsonb(ss) ORDER BY ss.setlist_id,ss.position)
         FROM public.setlist_songs ss WHERE ss.song_id=s.id),'[]'::jsonb) AS entries
     FROM public.songs s JOIN public.artists a ON a.id=s.artist_id
-    WHERE s.id BETWEEN 29 AND 36 ORDER BY s.id`);
-  assert.deepEqual(rows.map(row => row.id), [29,30,31,32,33,34,35,36],
-    'T11 requires the eight imported sample records to exist before testing');
+    WHERE s.source_document='Sample.docx' ORDER BY s.id`);
+  assert.ok(rows.length > 0, 'T11 requires the current Sample.docx rows to exist before testing');
   for (const row of rows) {
     assert.equal(row.source_document, 'Sample.docx');
-    assert.equal(row.chart_source, null);
+    assert.equal(typeof row.chart_source, 'string', `Sample row ${row.id} must retain readable source text`);
+    assert.equal(isGeneratedChartSource(row.chart_source), false,
+      `Sample row ${row.id} must not persist generated CCM source markers`);
   }
   return fingerprintRows(rows);
 }
@@ -140,6 +142,7 @@ async function main() {
   let testServer;
   let acceptingRequests = false;
   let runId;
+  let scratchOwner;
   let importedBefore;
   let mainCountsBefore;
   await runWithCleanup(async () => {
@@ -154,8 +157,17 @@ async function main() {
     assert.equal(initialStats.status, 200, 'Main app /api/stats must be available before T11 starts');
     mainCountsBefore = readMainCounts(await initialStats.json());
     importedBefore = await importedSnapshot(main);
+    runId = randomUUID();
+    scratchOwner = (await admin.query('SELECT current_user AS owner')).rows[0].owner;
     await admin.query(`CREATE DATABASE ${scratchName}`);
     ownsScratch = true;
+    await admin.query(`COMMENT ON DATABASE ${scratchName} IS 'CCM T11 owned scratch run ${runId}'`);
+    const createdScratch = await admin.query(`SELECT r.rolname AS owner,
+      shobj_description(d.oid, 'pg_database') AS comment
+      FROM pg_database d JOIN pg_roles r ON r.oid=d.datdba WHERE d.datname=$1`, [scratchName]);
+    assert.equal(createdScratch.rows[0]?.owner, scratchOwner, 'T11 scratch database owner mismatch after creation');
+    assert.equal(createdScratch.rows[0]?.comment, `CCM T11 owned scratch run ${runId}`,
+      'T11 scratch ownership marker mismatch after creation');
 
     process.env.DATABASE_URL = databaseUrl(local, scratchName);
     const { runMigrations } = require('../server/migrate.js');
@@ -164,7 +176,6 @@ async function main() {
     testPool = require('../server/db.js').pool;
     await seedSyntheticChartFixtures(testPool);
     const app = require('../server/server.js');
-    runId = randomUUID();
     testServer = http.createServer(async (req, res) => {
       if (req.url === '/__t11_identity' && req.method === 'GET') {
         try {
@@ -218,6 +229,13 @@ async function main() {
     }]);
     if (testPool) stages.push(['test pool shutdown', () => bounded(() => testPool.end(), 'test pool shutdown', 5_000)]);
     if (ownsScratch) stages.push(['owned scratch cleanup', async () => {
+        const ownership = await admin.query(`SELECT r.rolname AS owner,
+          shobj_description(d.oid, 'pg_database') AS comment
+          FROM pg_database d JOIN pg_roles r ON r.oid=d.datdba WHERE d.datname=$1`, [scratchName]);
+        assert.equal(ownership.rows[0]?.owner, scratchOwner,
+          'Refusing to drop ccm_test because its owner changed from this run.');
+        assert.equal(ownership.rows[0]?.comment, `CCM T11 owned scratch run ${runId}`,
+          'Refusing to drop ccm_test because its ownership marker changed.');
         await admin.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
           WHERE datname=$1 AND pid<>pg_backend_pid()`, [scratchName]);
         const connected = await admin.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=$1', [scratchName]);
@@ -232,7 +250,7 @@ async function main() {
         const after = await importedSnapshot(main);
         assert.deepEqual(after, importedBefore,
           'T11 must preserve every imported song row, exact version, and association');
-        console.log('[T11] Imported rows 29–36, exact versions, and associations match.');
+        console.log(`[T11] Current Sample.docx rows (${importedBefore.length}), exact versions, sources, and associations match.`);
       }]);
       stages.push(['main health and baseline check', async () => {
       const health = await fetch('http://localhost:3000/healthz', { signal: AbortSignal.timeout(5_000) });

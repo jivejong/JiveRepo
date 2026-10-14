@@ -4,6 +4,24 @@ import { expect, test } from '@playwright/test';
 const require = createRequire(import.meta.url);
 const { chartToText } = require('../../server/chartParser.js');
 
+async function deleteExactSyntheticSong(request, songId) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const currentResponse = await request.get(`/api/songs/${songId}`);
+    if (currentResponse.status() === 404) return;
+    expect(currentResponse.ok()).toBeTruthy();
+    const current = await currentResponse.json();
+    const deleted = await request.delete(`/api/songs/${songId}`, {
+      data: { base_updated_at: current.updated_at },
+    });
+    if (deleted.ok()) {
+      expect((await request.get(`/api/songs/${songId}`)).status()).toBe(404);
+      return;
+    }
+    expect(deleted.status()).toBe(409);
+  }
+  throw new Error(`Could not delete task-owned synthetic song ${songId} after version refreshes.`);
+}
+
 async function inspectLabels(row) {
   return row.evaluate(node => {
     const chordLine = node.querySelector('.chord-line');
@@ -233,7 +251,6 @@ test('Bye Bye Love pipe groups occupy a dedicated row above lyrics', async ({ pa
   });
   await expectChordRowsAboveLyrics(page, revisions);
 });
-
 test('generated charts round-trip and keep anchors and colliding labels visible', async ({ page, request, context }) => {
   const suffix = crypto.randomUUID();
   const title = `T13a invented alignment ${suffix}`;
@@ -717,23 +734,14 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     const reopened = await (await request.get(`/api/songs/${songId}`)).json();
     expect(reopened.chart_content).toEqual(offlineExpected);
   } finally {
-    if (songId) {
-      const currentResponse = await request.get(`/api/songs/${songId}`);
-      expect(currentResponse.ok()).toBeTruthy();
-      const current = await currentResponse.json();
-      const deleted = await request.delete(`/api/songs/${songId}`, {
-        data: { base_updated_at: current.updated_at },
-      });
-      expect(deleted.ok()).toBeTruthy();
-      expect((await request.get(`/api/songs/${songId}`)).status()).toBe(404);
-    }
+    if (songId) await deleteExactSyntheticSong(request, songId);
     await context.setOffline(false);
   }
 });
 
 test('ordinary chart blanks survive online and offline save, sync, and reopen', async ({ page, request, context }) => {
   const title = `T13a invented ordinary spacing ${crypto.randomUUID()}`;
-  const source = '[Verse]\nInvented first line.\n\n\nInvented second line.\n\n[Chorus]\n\nInvented refrain line.\n\n';
+  const source = '[Verse]\nC   G\nInvented first line.\n\n\nInvented second line.\n\n[Chorus]\n\nInvented refrain line.\n\n';
   let songId;
   try {
     const created = await request.post('/api/songs', {
@@ -742,13 +750,18 @@ test('ordinary chart blanks survive online and offline save, sync, and reopen', 
     expect(created.ok()).toBeTruthy();
     songId = (await created.json()).id;
     const initial = await (await request.get(`/api/songs/${songId}`)).json();
+    expect(initial.chart_source).toBe(source);
     expect(initial.chart_content.sections.map(section => section.lines.map(line => line.type))).toEqual([
       ['lyric', 'spacer', 'lyric'], ['spacer', 'lyric'],
     ]);
+    expect(initial.chart_content.sections[0].lines[0].chords.map(chord => chord.pos)).toEqual([0, 4]);
 
     await page.goto('/');
     await page.getByPlaceholder('Search songs, artists…').fill(title);
     await page.getByText(title, { exact: true }).click();
+    await expect(page.locator('.chord-anchor-symbol').first()).toHaveText('C');
+    await page.getByRole('button', { name: 'Up half step' }).click();
+    await expect(page.locator('.chord-anchor-symbol').first()).toHaveText('Db');
     await page.getByRole('button', { name: 'Edit' }).click();
     await page.locator('.form-group').filter({ hasText: 'BPM' }).locator('input').fill('97');
     const onlineSave = page.waitForResponse(response => response.url().endsWith(`/api/songs/${songId}`)
@@ -757,12 +770,14 @@ test('ordinary chart blanks survive online and offline save, sync, and reopen', 
     expect((await onlineSave).ok()).toBeTruthy();
     const online = await (await request.get(`/api/songs/${songId}`)).json();
     expect(online.chart_content).toEqual(initial.chart_content);
+    expect(online.chart_source).toBe(source);
 
     await page.getByRole('button', { name: 'Edit' }).click();
     await context.setOffline(true);
     await expect(page.getByText(/changes saved locally/i)).toBeVisible();
     const editor = page.locator('.form-textarea');
-    await editor.fill(source.replace('Invented second line.', 'Invented revised line.'));
+    const editedHumanSource = source.replace('Invented second line.', 'Invented revised line.');
+    await editor.fill(editedHumanSource);
     await page.getByRole('button', { name: 'Save changes' }).click();
     const cached = await page.evaluate(async id => {
       const opened = await new Promise((resolve, reject) => {
@@ -782,6 +797,7 @@ test('ordinary chart blanks survive online and offline save, sync, and reopen', 
       ['lyric', 'spacer', 'lyric'], ['spacer', 'lyric'],
     ]);
     expect(cached.chart_content.sections[0].lines[2].text).toBe('Invented revised line.');
+    expect(cached.chart_source).toBe(editedHumanSource);
     expect(cached._sync).toBeTruthy();
 
     await context.setOffline(false);
@@ -789,6 +805,7 @@ test('ordinary chart blanks survive online and offline save, sync, and reopen', 
       .chart_content.sections[0].lines[2].text).toBe('Invented revised line.');
     const synced = await (await request.get(`/api/songs/${songId}`)).json();
     expect(synced.chart_content).toEqual(cached.chart_content);
+    expect(synced.chart_source).toBe(editedHumanSource);
     await page.getByRole('button', { name: 'Back' }).click();
     await page.getByPlaceholder('Search songs, artists…').fill(title);
     await page.getByText(title, { exact: true }).click();
@@ -797,13 +814,6 @@ test('ordinary chart blanks survive online and offline save, sync, and reopen', 
       .toEqual(cached.chart_content);
   } finally {
     await context.setOffline(false);
-    if (songId) {
-      const current = await (await request.get(`/api/songs/${songId}`)).json();
-      const deleted = await request.delete(`/api/songs/${songId}`, {
-        data: { base_updated_at: current.updated_at },
-      });
-      expect(deleted.ok()).toBeTruthy();
-      expect((await request.get(`/api/songs/${songId}`)).status()).toBe(404);
-    }
+    if (songId) await deleteExactSyntheticSong(request, songId);
   }
 });

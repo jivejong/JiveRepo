@@ -41,6 +41,12 @@ off that section gap to prevent doubled spacing. Synthetic tests cover these
 cases and the shared serialization contract. Ordinary chart text edited in the
 app follows the same internal blank-line normalization; a chord-only line is
 flushed as a progression instead of being paired across a blank separator.
+Pipe-decorated chord-only rows are retained as literal raw lines when the
+existing chord grammar identifies a chord-oriented row. This preserves typed
+separators, annotations, and spacing in ordinary `chart_source`; the app
+transposes recognized chord tokens in place for display. Ambiguous rows remain
+literal and are not guessed during transposition. Tab rows, ordinary prose,
+and non-decorated progression rows keep their existing classification.
 
 For an optional host-Python workflow:
 
@@ -126,6 +132,65 @@ Important outputs:
 Review every failure and flagged song against the source documents before
 continuing. Use `--strict` when the command should fail if any document fails.
 
+The report distinguishes low-confidence space-aligned lines from
+`word_tab_placement_unresolved`. The latter records document, song, one-based
+section/line, and a reason code without chart text. It means an inserted DOCX
+tab uses layout outside the bounded normalization rule; the parser's
+provisional columns are retained for diagnosis but the loader rejects the
+batch before connecting. Resolve the flagged source lines before parsing and
+loading again. Tab-stop definitions alone are not text and do not trigger this
+diagnostic.
+
+The loader requires every song object to include
+`parser_diagnostics_version: 1`, which batch parsing adds after checking each
+chord/lyric pair. Every version-1 song object must also include `warnings` as
+a list; an empty list is valid. The DOCX parser reads inserted tabs from inline
+run content and ignores paragraph tab-stop definitions. For supported tabbed
+chart paragraphs it advances from the current position to the next effective
+explicit left or default stop, then maps that physical distance to a character
+column. The rule uses the Courier New cell width 1229/2048 em scaled to the
+effective run size in half-points: `size * 10 * 1229/2048` twips per cell (8 pt
+is 96.015625 twips). It uses nearest-column rounding with exact half values
+rounded up. For paired rows it maps the chord row's physical position into the
+lyric row's UTF-16 columns using that row's effective width. It accounts for
+left paragraph indentation, explicit left stops, and the 720-twip default
+grid. Other fonts, mixed sizes within one tabbed paragraph, non-ASCII runs in a tabbed paragraph,
+non-left/cleared stops, unsupported indentation, character spacing/scaling, or
+missing effective stops are reported as unresolved. Font and size can inherit
+through paragraph and character-style chains. When a paragraph omits `w:pStyle`,
+the document's default paragraph style is used. Missing, wrong-type, or cyclic
+style references on a tabbed row, and on a lyric row paired with a tabbed chord
+row, are reported as unresolved. Inherited non-default character spacing or
+width scaling is reported as unresolved. Unrelated tab-free rows are not blocked
+by unresolved physical placement metadata. The chord token's physical
+start is retained through row pairing and rounded once into lyric columns. This
+is a bounded rule, not a general Word layout engine; review any new layout
+family before using it.
+Tab-free paragraphs retain the existing extraction and pairing behavior.
+
+New DOCX `chart_source` values contain readable ordinary chart text without
+CCM markers. Python derives that source from the parsed structure and checks
+whether ordinary chart syntax can express each line; unsupported structures
+produce `plain_text_body_unresolved` and are rejected before loading. The
+loader reparses each ordinary `chart_source` at batch preflight and requires
+strictly typed exact Python chart-object equality with supplied `chart_content` before any
+database connection or write. Equality includes section/line types, text,
+chord symbols and order, UTF-16 positions, repeat/progression fields, spacers,
+raw content, and confidence fields; no fields are dropped or normalized to
+make a mismatch pass. Null sources and explicit CCM v1/v2 generated sources
+remain supported legacy paths and are not subjected to the ordinary-text
+comparison. The existing shared JavaScript parser derives `chart_content`
+from ordinary source on app load/save. Title, artist, key, BPM, genre, and
+other metadata extraction remain unchanged. Existing stored CCM v1/v2 sources
+are not converted by this change.
+The loader rejects a batch containing an unresolved Word-tab or plain-text
+body warning before opening the database or creating artists, genres, or
+vibes. This also applies to `--dry-run`. Parsed artifacts made before this guard (including
+older enriched JSON) lack the marker and are intentionally rejected; rerun
+`batch_parse.py` from the source DOCX, then redo any separately authorized
+enrichment while preserving the added fields. Ordinary low-confidence lines
+remain review warnings and do not by themselves block loading.
+
 ## 3. Enrich metadata (optional; current implementation only)
 
 The current `enrich_songs.py` code uses MusicBrainz and GetSongBPM. Its existing
@@ -196,19 +261,23 @@ pipeline image after changing a pipeline script or `requirements.txt`.
 
 The pipeline image installs the small test-only dependency set from
 `requirements-test.txt` (currently pytest); these tools are not app
-dependencies. Create an empty `ccm_pipelinetest` database only after checking
-that it does not exist, then initialize it with the T06 app migration runner:
+dependencies. For each run, choose a unique database name matching
+`ccm_tabguard_t13_<suffix>`, verify that exact name is absent, create it under
+the active Compose database role, and record a task-specific database comment
+before proceeding. Initialize only that database with the T06 app migration
+runner:
 
 ```bash
-docker compose exec app npm --prefix /app/server run migrate -- --database ccm_pipelinetest
-docker compose run --rm -e PIPELINE_TEST_DATABASE=ccm_pipelinetest pipeline pytest -q
+docker compose exec app npm --prefix /app/server run migrate -- --database "$PIPELINE_TEST_DATABASE"
+docker compose run --rm --no-deps -e PIPELINE_TEST_DATABASE="$PIPELINE_TEST_DATABASE" pipeline pytest -q
 ```
 
 The parser test builds a synthetic `.docx` in a temporary directory using
-invented text. The loader dry-run test checks all eight application tables'
-contents before and after rollback and refuses any database name other than
-`ccm_pipelinetest`. Drop only this task-owned scratch database after testing;
-never point the test at `chords`.
+invented text. The loader test checks all eight application tables around a
+dry-run rollback and unresolved-batch rejection, then exercises an accepted
+version-1 synthetic load with an ordinary low-confidence warning. It refuses
+any database name outside the task prefix. Drop only the database created for
+this run, verify its absence afterward, and never point the test at `chords`.
 
 ## Current validation status
 

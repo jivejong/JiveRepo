@@ -7,6 +7,128 @@ import { sortSongs } from '../../src/lib/songSort.js';
 const version = '2026-10-10T12:00:00.000001Z';
 
 describe('offline cache and push-then-pull sync', () => {
+  it('omits unchanged chart source from queued updates and includes edited text', () => {
+    const source = '[Verse]\nG D | C';
+    expect(cache.editablePayload({ chart_source: source,
+      _sync: { chart_source_unchanged: true } })).not.toHaveProperty('chart_source');
+    expect(cache.editablePayload({ chart_source: `${source} `,
+      _sync: { chart_source_unchanged: false } }).chart_source).toBe(`${source} `);
+  });
+
+  it('merges a stale offline metadata save onto the latest chart and rejects same-field conflicts atomically', async () => {
+    const id = 987640;
+    const source = 'Invented original chart';
+    const original = { id, title: 'Invented stale editor song', artist: 'Synthetic', bpm: 100,
+      chart_source: source, chart_content: { sections: [{ lines: [{ type: 'raw', text: source }] }] },
+      genres: [], vibes: [], updated_at: version };
+    const baseline = { title: original.title, artist: original.artist, bpm: original.bpm,
+      chart_source: source, chart_content: original.chart_content, updated_at: version };
+    const chartSource = 'Invented chart changed in tab A';
+    const chartContent = { sections: [{ lines: [{ type: 'raw', text: chartSource }] }] };
+    try {
+      await cache.cacheSongs([original]);
+      await cache.savePendingSong({ ...original, chart_source: chartSource, chart_content: chartContent,
+        _sync: { operation: 'update', base_updated_at: version, chart_source_unchanged: false } }, null,
+      { baseline, changedFields: ['chart_source'] });
+
+      const staleMetadata = await cache.savePendingSong({ ...original, bpm: 128,
+        _sync: { operation: 'update', base_updated_at: version, chart_source_unchanged: true } }, null,
+      { baseline, changedFields: ['bpm'] });
+      expect(staleMetadata).toMatchObject({ bpm: 128, chart_source: chartSource, chart_content: chartContent,
+        _sync: { operation: 'update', base_updated_at: version, chart_source_unchanged: false } });
+      const queued = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      expect(queued).toMatchObject({ entity: 'song', local_revision: 2 });
+      expect(queued.sent).toBeUndefined();
+
+      const beforeConflict = await cache.getCachedSong(id);
+      const queueBeforeConflict = await cache.getPendingMutations();
+      await expect(cache.savePendingSong({ ...original, chart_source: 'Invented stale competing chart',
+        chart_content: { sections: [] }, _sync: { operation: 'update', base_updated_at: version } }, null,
+      { baseline, changedFields: ['chart_source'] })).rejects.toThrow(/changed in another tab.*reload.*retry/i);
+      expect(await cache.getCachedSong(id)).toEqual(beforeConflict);
+      expect(await cache.getPendingMutations()).toEqual(queueBeforeConflict);
+    } finally {
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
+  it('rebases edits made while an earlier offline revision awaits acknowledgement', async () => {
+    const id = 987641;
+    const source = 'Invented original in-flight chart';
+    const chartSource = 'Invented first chart revision';
+    const changedChart = 'Invented second chart revision';
+    const original = { id, title: 'Invented in-flight stale editor', artist: 'Synthetic', bpm: 90,
+      chart_source: source, chart_content: { sections: [{ lines: [{ type: 'raw', text: source }] }] },
+      genres: [], vibes: [], updated_at: version };
+    const baseline = { title: original.title, artist: original.artist, bpm: original.bpm,
+      chart_source: source, chart_content: original.chart_content, updated_at: version };
+    const ackVersion = '2026-10-10T12:00:00.000002Z';
+    const finalVersion = '2026-10-10T12:00:00.000003Z';
+    let releaseUpdate;
+    let updateStarted;
+    const started = new Promise(resolve => { updateStarted = resolve; });
+    const heldUpdate = new Promise(resolve => { releaseUpdate = resolve; });
+    const firstSaved = { ...original, chart_source: chartSource,
+      chart_content: { sections: [{ lines: [{ type: 'raw', text: chartSource }] }] }, updated_at: ackVersion };
+    try {
+      await cache.cacheSongs([original]);
+      await cache.savePendingSong({ ...original, chart_source: chartSource, chart_content: firstSaved.chart_content,
+        _sync: { operation: 'update', base_updated_at: version, chart_source_unchanged: false } }, null,
+      { baseline, changedFields: ['chart_source'] });
+      const firstSync = cache.syncWithServer({
+        library: async () => ({ songs: [firstSaved] }),
+        songs: { update: async (_songId, payload) => {
+          expect(payload.base_updated_at).toBe(version);
+          expect(payload.chart_source).toBe(chartSource);
+          updateStarted();
+          return heldUpdate;
+        } },
+        setlists: { all: async () => [] },
+      });
+      await started;
+
+      await cache.savePendingSong({ ...firstSaved, chart_source: changedChart,
+        chart_content: { sections: [{ lines: [{ type: 'raw', text: changedChart }] }] }, bpm: 120,
+        _sync: { operation: 'update', base_updated_at: version, chart_source_unchanged: false } }, null,
+      { baseline: { ...baseline, chart_source: chartSource, chart_content: firstSaved.chart_content },
+        changedFields: ['chart_source', 'bpm'] });
+      const duringRequest = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      expect(duringRequest).toMatchObject({ local_revision: 2, sent: true, sent_revision: 1,
+        sent_payload: expect.objectContaining({ chart_source: chartSource, base_updated_at: version }) });
+
+      releaseUpdate(firstSaved);
+      expect((await firstSync).ok).toBe(true);
+      const rebased = await cache.getCachedSong(id);
+      expect(rebased).toMatchObject({ chart_source: changedChart, bpm: 120,
+        updated_at: ackVersion, _sync: { operation: 'update', base_updated_at: ackVersion,
+          chart_source_unchanged: false } });
+      const rebasedQueue = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      expect(rebasedQueue).toMatchObject({ local_revision: 2, sent: false });
+      expect(rebasedQueue.sent_payload).toBeUndefined();
+
+      const finalServer = { ...rebased, updated_at: finalVersion };
+      const secondSync = await cache.syncWithServer({
+        library: async () => ({ songs: [finalServer] }),
+        songs: { update: async (_songId, payload) => {
+          expect(payload.chart_source).toBe(changedChart);
+          expect(payload.bpm).toBe(120);
+          expect(payload.base_updated_at).toBe(ackVersion);
+          return finalServer;
+        } },
+        setlists: { all: async () => [] },
+      });
+      expect(secondSync.ok).toBe(true);
+      expect(await cache.getCachedSong(id)).toMatchObject({ chart_source: changedChart, bpm: 120,
+        updated_at: finalVersion });
+      expect((await cache.getPendingMutations()).some(item => String(item.id) === String(id))).toBe(false);
+    } finally {
+      releaseUpdate?.(firstSaved);
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
   it('keeps a real offline creation timestamp through cache edits and replaces it with the server timestamp on acknowledgement', async () => {
     const id = cache.makeLocalSongId();
     const localCreatedAt = '2026-10-11T12:00:00.000Z';

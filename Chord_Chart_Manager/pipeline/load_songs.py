@@ -34,6 +34,7 @@ import argparse
 
 import psycopg
 from psycopg.types.json import Jsonb
+import chart_parser
 
 
 # ----------------------------------------------------------------------
@@ -84,8 +85,85 @@ class LookupCache:
 SONG_COLS = (
     "title", "artist_id", "original_key", "performance_key", "alt_key",
     "capo_fret", "bpm", "release_year", "bb_structure", "chart_content",
-    "source_document",
+    "chart_source", "source_document",
 )
+
+DIAGNOSTICS_VERSION = 1
+
+
+def _strict_json_equal(left, right) -> bool:
+    """Compare JSON values recursively without Python bool/int coercion."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return (left.keys() == right.keys()
+                and all(_strict_json_equal(left[key], right[key]) for key in left))
+    if isinstance(left, list):
+        return (len(left) == len(right)
+                and all(_strict_json_equal(a, b) for a, b in zip(left, right)))
+    return left == right
+
+
+def validate_parser_diagnostics(songs: list[dict]) -> None:
+    """Fail closed before opening a transaction or creating lookup rows."""
+    problems = []
+    for index, song in enumerate(songs):
+        version = song.get("parser_diagnostics_version")
+        if type(version) is not int or version != DIAGNOSTICS_VERSION:
+            problems.append(
+                f"[{index}] {song.get('title') or '(untitled)'}: "
+                "missing, malformed, or unsupported parser_diagnostics_version; "
+                "re-run batch_parse.py")
+            continue
+        warnings = song.get("warnings")
+        if not isinstance(warnings, list) or any(
+                not isinstance(warning, dict) for warning in warnings):
+            problems.append(
+                f"[{index}] {song.get('title') or '(untitled)'}: "
+                "malformed parser warnings; re-run batch_parse.py")
+            continue
+        for warning in warnings:
+            if warning.get("code") == "word_tab_placement_unresolved":
+                problems.append(
+                    f"[{index}] {song.get('source_document') or '(unknown document)'} / "
+                    f"{song.get('title') or '(untitled)'} section "
+                    f"{warning.get('section', '?')} line {warning.get('line', '?')}: "
+                    f"word_tab_placement_unresolved "
+                    f"({warning.get('reason', 'unspecified_reason')})")
+            elif warning.get("code") == "plain_text_body_unresolved":
+                problems.append(
+                    f"[{index}] {song.get('source_document') or '(unknown document)'} / "
+                    f"{song.get('title') or '(untitled)'} section "
+                    f"{warning.get('section', '?')} line {warning.get('line', '?')}: "
+                    f"plain_text_body_unresolved "
+                    f"({warning.get('reason', 'unspecified_reason')})")
+        source = song.get("chart_source")
+        if source is None or (isinstance(source, str)
+                              and chart_parser.is_generated_chart_body(source)):
+            # NULL source and CCM v1/v2 artifacts are supported legacy paths.
+            continue
+        if not isinstance(source, str):
+            problems.append(
+                f"[{index}] {song.get('title') or '(untitled)'}: "
+                "chart_source_content_mismatch (ordinary_source_not_text)")
+            continue
+        try:
+            derived_content = chart_parser.parse_ordinary_chart_source(source)
+        except Exception:
+            problems.append(
+                f"[{index}] {song.get('title') or '(untitled)'}: "
+                "chart_source_content_mismatch (ordinary_source_parse_failed)")
+            continue
+        if not _strict_json_equal(derived_content, song.get("chart_content")):
+            problems.append(
+                f"[{index}] {song.get('title') or '(untitled)'}: "
+                "chart_source_content_mismatch "
+                "(ordinary_source_parse_back_mismatch; confidence included)")
+    if problems:
+        raise ValueError(
+            "Input batch rejected before database writes. "
+            "Unresolved DOCX layout/body serialization or stale parser diagnostics:\n  "
+            + "\n  ".join(problems))
 
 
 def find_song_id(cur, title, artist_id, source_document):
@@ -113,6 +191,7 @@ def upsert_song(cur, song: dict, artist_id: int | None) -> tuple[int, bool]:
         "release_year": song.get("release_year"),        # present only post-AI-fill
         "bb_structure": song.get("bb_structure"),
         "chart_content": Jsonb(song.get("chart_content") or {"sections": []}),
+        "chart_source": song.get("chart_source"),
         "source_document": song.get("source_document"),
     }
 
@@ -183,6 +262,7 @@ def set_vibes(cur, song_id: int, vibe_ids: list[int]):
 # ----------------------------------------------------------------------
 
 def load(conn, songs: list[dict], truncate: bool, dry_run: bool = False) -> dict:
+    validate_parser_diagnostics(songs)
     artists = LookupCache(conn, "artists")
     genres = LookupCache(conn, "genres")
     vibes = LookupCache(conn, "vibes")
@@ -253,6 +333,15 @@ def main() -> int:
 
     with open(args.songs_json, encoding="utf-8") as f:
         songs = json.load(f)
+
+    try:
+        validate_parser_diagnostics(songs)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        if args.dry_run:
+            print("[dry-run] rejected during preflight; database was not opened",
+                  file=sys.stderr)
+        return 1
 
     conn = psycopg.connect(args.database_url, autocommit=False)
     try:

@@ -287,7 +287,7 @@ async function updateSongFull(id, patch, operationId) {
       throw conflictError();
     }
     const currentSource = locked.rows[0].chart_source;
-    const preserveGeneratedContent = isGeneratedSourceUnchanged(
+    const preserveChartContent = isGeneratedSourceUnchanged(
       currentSource,
       locked.rows[0].chart_content,
       patch.chart_source,
@@ -310,7 +310,7 @@ async function updateSongFull(id, patch, operationId) {
     for (const [key, col] of Object.entries(EDITABLE)) {
       if (col === "__artist" || col === "title") continue;
       if (key in patch) {
-        if (key === "chart_source" && preserveGeneratedContent) continue;
+        if (key === "chart_source" && preserveChartContent) continue;
         vals.push(col === "capo_fret" ? Number(patch[key]) || 0
                 : col === "bpm"
                     ? (patch[key] ? Number(patch[key]) : null)
@@ -323,7 +323,7 @@ async function updateSongFull(id, patch, operationId) {
     if ("title" in patch) { vals.push(patch.title); sets.push(`title = $${vals.length}`); }
 
     // If the editable text changed, re-derive structured content.
-    if ("chart_source" in patch && !preserveGeneratedContent) {
+    if ("chart_source" in patch && !preserveChartContent) {
       const content = parseChartBody(patch.chart_source || "");
       vals.push(JSON.stringify(content));
       sets.push(`chart_content = $${vals.length}`);

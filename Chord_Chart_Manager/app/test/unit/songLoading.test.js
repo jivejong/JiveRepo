@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import 'fake-indexeddb/auto';
 import * as cache from '../../src/lib/cache.js';
 import { loadChartSong } from '../../src/lib/songLoading.js';
+import { createLatestRequestGate } from '../../src/lib/latestRequestGate.js';
 
 function deferred() {
   let resolve;
@@ -20,6 +21,107 @@ function makeStorage() {
 }
 
 describe('cached chart opening', () => {
+  it('reports an initial cache read exception instead of calling it a conditional refusal', async () => {
+    const diagnostics = [];
+    let reads = 0;
+    const result = await loadChartSong(959999, {
+      online: true,
+      invalidationStorage: makeStorage(),
+      readCached: async () => {
+        reads += 1;
+        if (reads === 1) throw new Error('Synthetic initial read failure');
+        return null;
+      },
+      resolveId: async id => id,
+      fetchRemote: async () => ({ id: 959999, title: 'Synthetic remote chart', updated_at: 'v1' }),
+      writeCachedIfUnchanged: async (_id, expected) => {
+        expect(expected).toBeUndefined();
+        return false;
+      },
+      onDiagnostic: message => diagnostics.push(message),
+    });
+
+    expect(result.title).toBe('Synthetic remote chart');
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatch(/initial IndexedDB cache read failed: Synthetic initial read failure/i);
+    expect(diagnostics[0]).toMatch(/persistence was withheld/i);
+    expect(diagnostics[0]).not.toMatch(/conditional write was declined/i);
+  });
+
+  it('ignores stale asynchronous list projections after a newer request starts', async () => {
+    const gate = createLatestRequestGate();
+    let resolveOld;
+    const oldRead = new Promise(resolve => { resolveOld = resolve; });
+    const state = { songs: ['newer search'], loading: false, error: null };
+    const olderTicket = gate.begin();
+    const olderPublish = oldRead.then(result => {
+      gate.publishIfCurrent(olderTicket, false, () => {
+        state.songs = result;
+        state.loading = true;
+        state.error = 'Using cached data';
+      });
+    });
+    gate.begin();
+    resolveOld(['stale prior-query row']);
+    await olderPublish;
+    expect(state).toEqual({ songs: ['newer search'], loading: false, error: null });
+  });
+
+  it('normalizes a successful IndexedDB miss and caches the first online chart for offline reopen', async () => {
+    const id = 960000 + Math.floor(Math.random() * 10000);
+    const remote = { id, title: 'Synthetic first-open chart', updated_at: 'v1' };
+    const diagnostics = [];
+    try {
+      expect(await cache.getCachedSong(id)).toBeUndefined();
+      const loaded = await loadChartSong(id, {
+        online: true,
+        invalidationStorage: makeStorage(),
+        readCached: cache.getCachedSong,
+        resolveId: async value => value,
+        fetchRemote: async () => remote,
+        writeCachedIfUnchanged: cache.writeCachedSongIfUnchanged,
+        onDiagnostic: message => diagnostics.push(message),
+      });
+      expect(loaded).toEqual(remote);
+      expect(await cache.getCachedSong(id)).toEqual(remote);
+      expect(diagnostics).toEqual([]);
+
+      const reopened = await loadChartSong(id, {
+        online: false, readCached: cache.getCachedSong, invalidationStorage: makeStorage(),
+      });
+      expect(reopened).toEqual(remote);
+    } finally {
+      await cache.deleteCachedSong(id);
+    }
+  });
+
+  it('does not overwrite a song inserted by another tab between the miss read and conditional write', async () => {
+    const id = 961000 + Math.floor(Math.random() * 10000);
+    const remote = { id, title: 'Synthetic stale response', updated_at: 'v1' };
+    const intervening = { id, title: 'Synthetic other-tab edit', updated_at: 'v2',
+      _sync: { operation: 'update', base_updated_at: 'v1' } };
+    try {
+      expect(await cache.getCachedSong(id)).toBeUndefined();
+      const loaded = await loadChartSong(id, {
+        online: true,
+        readCached: cache.getCachedSong,
+        resolveId: async value => value,
+        fetchRemote: async () => remote,
+        writeCachedIfUnchanged: async (...args) => {
+          // Model the other tab's commit after loadChartSong's last read and
+          // before the real atomic conditional transaction.
+          await cache.savePendingSong(intervening);
+          return cache.writeCachedSongIfUnchanged(...args);
+        },
+      });
+      expect(loaded).toEqual(intervening);
+      expect(await cache.getCachedSong(id)).toEqual(intervening);
+    } finally {
+      await cache.deleteCachedSong(id);
+      await cache.clearDirty(id);
+    }
+  });
+
   it('applies a successful background refresh when the request-start snapshot is unchanged', async () => {
     const remote = deferred();
     const started = deferred();

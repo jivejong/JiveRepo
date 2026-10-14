@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 import json
 import zipfile
+import xml.etree.ElementTree as ET
 from urllib.parse import quote, unquote_to_bytes
 from dataclasses import dataclass, field, asdict
 from typing import Optional
@@ -41,15 +42,12 @@ from typing import Optional
 # We keep tabs as a private sentinel char first, then expand to spaces for
 # column math — but only AFTER we've used tab structure to split title fields.
 
-_TAB = "\x01"       # private sentinel standing in for <w:tab/>
+_TAB = "\x01"       # private sentinel standing in for an inserted <w:tab/>
 _NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
-# Matches a whole paragraph block
-_P_RE = re.compile(r"<w:p\b.*?</w:p>", re.DOTALL)
-_PSTYLE_RE = re.compile(r'<w:pStyle w:val="([^"]+)"')
-# Ordered stream of the run-level things we care about inside a paragraph:
-_RUNBIT_RE = re.compile(r"<w:tab\b|<w:br\b[^>]*/>|<w:cr\b[^>]*/>|<w:t[ >].*?</w:t>", re.DOTALL)
-_BOLD_RE = re.compile(r"<w:b/>|<w:b ")
+_W = "{" + _NS["w"] + "}"
+_COURIER_NEW_CELL_EM = 1229 / 2048
+_DEFAULT_TAB_TWIPS = 720
 
 
 @dataclass
@@ -57,20 +55,19 @@ class Paragraph:
     text: str                 # tabs as _TAB sentinel, runs joined
     style: Optional[str]
     is_bold: bool
+    normalized_text: Optional[str] = None
+    tab_layout_error: Optional[str] = None
+    cell_twips: Optional[float] = None
+    physical_positions: Optional[dict[int, float]] = None
 
     @property
     def text_spaces(self) -> str:
-        """Text with tabs expanded to a single space (for column math)."""
-        return self.text.replace(_TAB, " ")
+        """Visible text with inserted tabs expanded under the bounded DOCX rule."""
+        return self.normalized_text if self.normalized_text is not None else self.text.replace(_TAB, " ")
 
     @property
     def stripped(self) -> str:
         return self.text_spaces.strip()
-
-
-def _unescape(s: str) -> str:
-    return (s.replace("&amp;", "&").replace("&lt;", "<")
-             .replace("&gt;", ">").replace("&quot;", '"').replace("&apos;", "'"))
 
 
 def _column_length(text: str) -> int:
@@ -78,30 +75,285 @@ def _column_length(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
 
 
+def _validated_style_chain(style_id: Optional[str], styles: dict[str, ET.Element],
+                           expected_type: str) -> tuple[list[ET.Element], Optional[str]]:
+    """Resolve a relevant style chain, reporting broken references and cycles."""
+    chain = []
+    seen = set()
+    current = style_id
+    while current:
+        if current in seen:
+            return list(reversed(chain)), "cyclic"
+        seen.add(current)
+        style = styles.get(current)
+        if style is None or style.attrib.get(_W + "type") != expected_type:
+            return list(reversed(chain)), "missing_or_wrong_type"
+        chain.append(style)
+        based_on = style.find(_W + "basedOn")
+        if based_on is not None:
+            current = based_on.attrib.get(_W + "val")
+            if not current:
+                return list(reversed(chain)), "missing_or_wrong_type"
+        else:
+            current = None
+    return list(reversed(chain)), None
+
+
+def _paragraph_style_chain(paragraph: ET.Element,
+                           styles: dict[str, ET.Element]
+                           ) -> tuple[list[ET.Element], Optional[str]]:
+    p_style = paragraph.find(_W + "pPr/" + _W + "pStyle")
+    if p_style is not None:
+        style_id = p_style.attrib.get(_W + "val")
+        if not style_id:
+            return [], "missing_or_wrong_type"
+    else:
+        defaults = [
+            style for style in styles.values()
+            if style.attrib.get(_W + "type") == "paragraph"
+            and style.attrib.get(_W + "default", "0").lower() in ("1", "true", "on")
+        ]
+        if len(defaults) > 1:
+            return [], "missing_or_wrong_type"
+        if not defaults:
+            return [], None
+        style_id = defaults[0].attrib.get(_W + "styleId")
+    return _validated_style_chain(style_id, styles, "paragraph")
+
+
+def _tab_properties(paragraph: ET.Element, style_chain: list[ET.Element]
+                    ) -> tuple[int, list[int], Optional[str]]:
+    ppr_chain = [style.find(_W + "pPr") for style in style_chain]
+    direct = paragraph.find(_W + "pPr")
+    ppr_chain.append(direct)
+    indent = 0
+    stops: dict[int, str] = {}
+    error = None
+    for ppr in ppr_chain:
+        if ppr is None:
+            continue
+        ind = ppr.find(_W + "ind")
+        if ind is not None:
+            raw_left = ind.attrib.get(_W + "left", ind.attrib.get(_W + "start"))
+            if raw_left is not None:
+                indent = int(raw_left)
+            for attr in ("right", "hanging", "firstLine", "end"):
+                if int(ind.attrib.get(_W + attr, "0")) != 0:
+                    error = "unsupported_paragraph_indentation"
+        tabs = ppr.find(_W + "tabs")
+        if tabs is not None:
+            for tab in tabs.findall(_W + "tab"):
+                pos = int(tab.attrib.get(_W + "pos", "0"))
+                val = tab.attrib.get(_W + "val", "left")
+                if val == "clear":
+                    error = "unsupported_cleared_tab_stop"
+                    stops.pop(pos, None)
+                else:
+                    stops[pos] = val
+    for val in stops.values():
+        if val != "left":
+            error = "unsupported_non_left_tab_stop"
+    if indent < 0:
+        error = "unsupported_negative_indentation"
+    return indent, sorted(pos for pos, val in stops.items() if val == "left"), error
+
+
+def _effective_run_sources(run: ET.Element, style_chain: list[ET.Element],
+                           doc_default: ET.Element | None,
+                           styles: dict[str, ET.Element]) -> tuple[list[ET.Element | None], bool]:
+    run_style = run.find(_W + "rPr/" + _W + "rStyle")
+    char_style_id = run_style.attrib.get(_W + "val") if run_style is not None else None
+    char_chain, char_chain_error = _validated_style_chain(
+        char_style_id, styles, "character")
+    invalid_character_style = bool(run_style is not None and (
+        not char_style_id or char_chain_error or not char_chain
+        or char_chain[-1].attrib.get(_W + "type") != "character"))
+    sources = [doc_default]
+    sources.extend(style.find(_W + "rPr") for style in style_chain)
+    if not invalid_character_style:
+        sources.extend(style.find(_W + "rPr") for style in char_chain)
+    sources.append(run.find(_W + "rPr"))
+    return sources, invalid_character_style
+
+
+def _effective_font_size(sources: list[ET.Element | None]
+                         ) -> tuple[Optional[str], Optional[int]]:
+    font = None
+    size = None
+    for rpr in sources:
+        if rpr is None:
+            continue
+        fonts = rpr.find(_W + "rFonts")
+        if fonts is not None:
+            font = fonts.attrib.get(_W + "ascii", font)
+            font = fonts.attrib.get(_W + "hAnsi", font)
+        sz = rpr.find(_W + "sz")
+        if sz is not None and _W + "val" in sz.attrib:
+            size = int(sz.attrib[_W + "val"])
+    return font, size
+
+
+def _paragraph_cell_width(paragraph: ET.Element, style_chain: list[ET.Element],
+                          doc_default_rpr: ET.Element | None,
+                          styles: dict[str, ET.Element]
+                          ) -> tuple[Optional[float], Optional[str]]:
+    metrics = set()
+    error = None
+    for run in paragraph.iter(_W + "r"):
+        run_text = "".join(node.text or "" for node in run.iter(_W + "t"))
+        has_tab = any(node.tag == _W + "tab" for node in run.iter())
+        if not run_text and not has_tab:
+            continue
+        sources, invalid_character_style = _effective_run_sources(
+            run, style_chain, doc_default_rpr, styles)
+        font, size = _effective_font_size(sources)
+        if invalid_character_style:
+            error = "unsupported_tabbed_paragraph_character_style"
+        if font != "Courier New" or not isinstance(size, int) or size <= 0:
+            error = "unsupported_tabbed_paragraph_font_or_size"
+        else:
+            metrics.add(size)
+        spacing = width = None
+        for rpr in sources:
+            if rpr is None:
+                continue
+            candidate = rpr.find(_W + "spacing")
+            if candidate is not None:
+                spacing = candidate
+            candidate = rpr.find(_W + "w")
+            if candidate is not None:
+                width = candidate
+        if spacing is not None and int(spacing.attrib.get(_W + "val", "0")) != 0:
+            error = "unsupported_tabbed_paragraph_spacing"
+        if width is not None and int(width.attrib.get(_W + "val", "100")) != 100:
+            error = "unsupported_tabbed_paragraph_scaling"
+        if any(ord(char) > 127 for char in run_text):
+            error = "unsupported_non_ascii_tabbed_paragraph"
+    if len(metrics) > 1:
+        error = "mixed_font_sizes_in_tabbed_paragraph"
+    if error or not metrics:
+        return None, error
+    # w:sz is in half-points. 1 pt = 20 twips.
+    return (next(iter(metrics)) * 10 * _COURIER_NEW_CELL_EM), None
+
+
+def _expand_docx_tabs(text: str, paragraph: ET.Element, styles: dict[str, ET.Element],
+                      default_tab: int, doc_default_rpr: ET.Element | None
+                      ) -> tuple[str, Optional[str], Optional[float], Optional[dict[int, float]]]:
+    if _TAB not in text:
+        return text, None, None, None
+    chain, style_error = _paragraph_style_chain(paragraph, styles)
+    indent, explicit_stops, error = _tab_properties(paragraph, chain)
+    if style_error:
+        error = error or "unsupported_tabbed_paragraph_style"
+    cell_twips, metrics_error = _paragraph_cell_width(
+        paragraph, chain, doc_default_rpr, styles)
+    error = error or metrics_error
+    if error:
+        return text.replace(_TAB, " "), error, None, None
+
+    # Courier New cell width is 1229/2048 em. Convert the effective run size
+    # to twips, then advance each tab to the next explicit
+    # left stop or 720-twip default stop. Convert a physical stop to the nearest
+    # text column using round-half-up; this makes half-cell cases deterministic.
+    out: list[str] = []
+    physical_positions: dict[int, float] = {}
+    x = float(indent)
+    column = 0
+    global_column = 0
+    for piece_index, piece in enumerate(text.split(_TAB)):
+        out.append(piece)
+        for char in piece:
+            physical_positions[global_column] = x - indent
+            if char == "\n":
+                x = float(indent)
+                column = 0
+                global_column += 1
+            else:
+                x += cell_twips
+                width = _column_length(char)
+                column += width
+                global_column += width
+        if piece_index == text.count(_TAB):
+            continue
+        default_next = (int(x // default_tab) + 1) * default_tab if default_tab > 0 else None
+        candidates = [stop for stop in explicit_stops if stop > x]
+        if default_next is not None:
+            candidates.append(default_next)
+        if not candidates:
+            return text.replace(_TAB, " "), "no_effective_tab_stop", None, None
+        next_x = min(candidates)
+        column_at_stop = int(((next_x - indent) / cell_twips) + 0.5)
+        spaces = max(1, column_at_stop - column)
+        out.append(" " * spaces)
+        column += spaces
+        global_column += spaces
+        x = float(next_x)
+    return "".join(out), None, cell_twips, physical_positions
+
+
 def load_paragraphs(docx_path: str) -> list[Paragraph]:
     with zipfile.ZipFile(docx_path) as z:
-        xml = z.read("word/document.xml").decode("utf-8")
+        root = ET.fromstring(z.read("word/document.xml"))
+        styles_root = ET.fromstring(z.read("word/styles.xml")) if "word/styles.xml" in z.namelist() else None
+        settings_root = ET.fromstring(z.read("word/settings.xml")) if "word/settings.xml" in z.namelist() else None
+    styles = {}
+    if styles_root is not None:
+        styles = {style.attrib.get(_W + "styleId"): style
+                  for style in styles_root.findall(_W + "style")
+                  if style.attrib.get(_W + "styleId")}
+    default_tab = _DEFAULT_TAB_TWIPS
+    if settings_root is not None:
+        default = settings_root.find(".//" + _W + "defaultTabStop")
+        if default is not None:
+            default_tab = int(default.attrib.get(_W + "val", default_tab))
+    doc_default_rpr = None
+    if styles_root is not None:
+        doc_default_rpr = styles_root.find(_W + "docDefaults/" + _W + "rPrDefault/" + _W + "rPr")
     out: list[Paragraph] = []
-    for pblock in _P_RE.findall(xml):
-        style_m = _PSTYLE_RE.search(pblock)
-        style = style_m.group(1) if style_m else None
-        is_bold = bool(_BOLD_RE.search(pblock))
+    for paragraph in root.iter(_W + "p"):
+        p_style = paragraph.find(_W + "pPr/" + _W + "pStyle")
+        style = p_style.attrib.get(_W + "val") if p_style is not None else None
+        is_bold = any(node.tag == _W + "b" for node in paragraph.iter())
         parts: list[str] = []
-        for bit in _RUNBIT_RE.findall(pblock):
-            if bit.startswith("<w:tab"):
+
+        def append_inline(node: ET.Element, in_run: bool = False) -> None:
+            # Walk nested run containers (hyperlink, insertion, smartTag, etc.)
+            # in document order, but never interpret pPr/rPr layout metadata.
+            if node.tag == _W + "r":
+                in_run = True
+            if in_run and node.tag == _W + "rPr":
+                return
+            if in_run and node.tag == _W + "t":
+                parts.append(node.text or "")
+                return
+            if in_run and node.tag == _W + "tab":
                 parts.append(_TAB)
-            elif bit.startswith("<w:br"):
-                # Only text-wrapping breaks belong to chart text. Page and
-                # column breaks are document layout controls, not blank rows.
-                kind = re.search(r"\bw:type=[\"']([^\"']+)[\"']", bit)
-                if not kind or kind.group(1) == "textWrapping":
+                return
+            if in_run and node.tag == _W + "br":
+                kind = node.attrib.get(_W + "type")
+                if kind in (None, "textWrapping"):
                     parts.append("\n")
-            elif bit.startswith("<w:cr"):
+                return
+            if in_run and node.tag == _W + "cr":
                 parts.append("\n")
-            else:
-                inner = re.sub(r"<[^>]+>", "", bit)
-                parts.append(_unescape(inner))
-        out.append(Paragraph("".join(parts), style, is_bold))
+                return
+            for child in node:
+                append_inline(child, in_run)
+
+        append_inline(paragraph)
+        text = "".join(parts)
+        style_chain, style_error = _paragraph_style_chain(paragraph, styles)
+        cell_twips, _ = _paragraph_cell_width(
+            paragraph, style_chain, doc_default_rpr, styles)
+        normalized, layout_error, tab_cell_twips, physical_positions = _expand_docx_tabs(
+            text, paragraph, styles, default_tab, doc_default_rpr)
+        if _TAB not in text and style_error:
+            # Pairing metadata only: an unrelated tab-free paragraph stays usable.
+            layout_error = "unsupported_tabbed_paragraph_style"
+        out.append(Paragraph(text, style, is_bold, normalized, layout_error,
+                             tab_cell_twips if tab_cell_twips is not None else cell_twips,
+                             physical_positions))
     return out
 
 
@@ -233,6 +485,7 @@ _BARE_SECTION_RE = re.compile(
     re.IGNORECASE,
 )
 _REPEAT_PARENS_RE = re.compile(r"^\(([^)]+)\)\s*(x\s*\d+)?\s*$", re.IGNORECASE)
+_PROGRESSION_REPEAT_RE = re.compile(r"\(?\s*(\d+)\s*[xX]\)?|\b[xX]\s*(\d+)\b")
 # Bare section label followed by a colon and trailing content on the SAME line,
 # e.g. "Intro: D  D, E7, G, A" — label defines a section, tail is a progression.
 _BARE_SECTION_COLON_RE = re.compile(
@@ -272,6 +525,41 @@ def is_chord_only_line(text: str) -> bool:
     if not toks:
         return False
     return all(is_chord_token(t) for t in toks)
+
+
+def is_decorated_chord_line(text: str) -> bool:
+    """Identify pipe-separated chord rows while leaving prose/tab rows alone.
+
+    Parenthesized and bracketed annotations are literal spans, not chord
+    tokens. The existing chord grammar and chord-dominance threshold decide
+    whether a row is chart-oriented.
+    """
+    if "|" not in text or is_tab_line(text):
+        return False
+    tokens: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char in "([":
+            close = ")" if char == "(" else "]"
+            depth = 1
+            index += 1
+            while index < len(text) and depth:
+                if text[index] == char:
+                    depth += 1
+                elif text[index] == close:
+                    depth -= 1
+                index += 1
+            continue
+        if char.isspace() or char in "|,;:{}()]":
+            index += 1
+            continue
+        start = index
+        while index < len(text) and not (text[index].isspace() or text[index] in "|,;:{}()[]"):
+            index += 1
+        tokens.append(text[start:index])
+    chord_count = sum(is_chord_token(token) for token in tokens)
+    return chord_count >= 2 and chord_count >= len(tokens) // 2
 
 
 # Tablature: lines like  e--5-2-0-3-...  or rows of dashes/pipes/digits.
@@ -474,7 +762,9 @@ def serialize_generated_chart(chart: dict) -> str:
 
 
 def is_generated_chart_body(text: str) -> bool:
-    return text.startswith(_GENERATED_HEADER + "\n") or text.startswith(_LEGACY_GENERATED_HEADER + "\n")
+    return any(text.startswith(header + newline)
+               for header in (_GENERATED_HEADER, _LEGACY_GENERATED_HEADER)
+               for newline in ("\n", "\r\n"))
 
 
 def parse_inline_brace_line(text: str) -> dict:
@@ -516,8 +806,151 @@ def pair_space_aligned(chord_line: str, lyric_line: str) -> dict:
         col = _column_length(chord_line[:m.start()])
         pos = col
         chords.append({"sym": clean_text(sym), "pos": pos})
-    return {"type": "lyric", "text": clean_text(lyric_line.rstrip()),
+    return {"type": "lyric", "text": clean_text(lyric_line),
             "chords": chords, "confidence": "low"}
+
+
+def _retarget_chord_columns(chord_line: str, physical_positions: dict[int, float],
+                            lyric_cell_twips: float) -> tuple[Optional[str], Optional[str]]:
+    """Map physical chord-row columns into the lyric row's UTF-16 text columns."""
+    out = []
+    cursor = 0
+    for match in re.finditer(r"\S+", chord_line):
+        symbol = match.group(0)
+        if not is_chord_token(symbol):
+            continue
+        physical_twips = physical_positions.get(match.start())
+        if physical_twips is None:
+            return None, "tabbed_chord_physical_position_unavailable"
+        lyric_column = int(physical_twips / lyric_cell_twips + 0.5)
+        if lyric_column < cursor:
+            return None, "tabbed_chords_overlap_after_lyric_column_mapping"
+        out.append(" " * (lyric_column - cursor) + symbol)
+        cursor = lyric_column + _column_length(symbol)
+    return "".join(out), None
+
+
+def plain_text_chart_body(chart: dict) -> tuple[Optional[str], Optional[str]]:
+    """Serialize supported chart structures through the ordinary text contract."""
+    out: list[str] = []
+    for section in chart.get("sections", []):
+        label = section.get("label")
+        if label:
+            if "]" in label or "\n" in label:
+                return None, "section_label_not_representable_in_ordinary_text"
+            out.append(f"[{label}]")
+        for line in section.get("lines", []):
+            kind = line.get("type")
+            if kind == "spacer":
+                out.append("")
+            elif kind == "raw":
+                raw = line.get("text", "")
+                if not (is_tab_line(raw) or is_decorated_chord_line(raw)):
+                    return None, "raw_line_not_recognized_by_ordinary_text_parser"
+                out.append(raw)
+            elif kind == "repeat":
+                marker = f"({line.get('ref', '')})"
+                if line.get("times") is not None:
+                    marker += f" x{line['times']}"
+                out.append(marker)
+            elif kind == "progression":
+                text = " ".join(line.get("chords", []))
+                if line.get("repeat") is not None:
+                    text += f" {line['repeat']}x" if text else f"{line['repeat']}x"
+                if line.get("note"):
+                    text += f" {line['note']}" if text else line["note"]
+                out.append(text)
+            elif kind == "lyric":
+                text = line.get("text", "")
+                chords = line.get("chords", [])
+                if not chords:
+                    if "{" in text or "}" in text:
+                        return None, "literal_braces_not_representable_in_ordinary_text"
+                    out.append(text)
+                    continue
+                ordered = list(chords)
+                positions = [int(chord["pos"]) for chord in ordered]
+                if positions != sorted(positions):
+                    return None, "chord_order_not_representable_in_ordinary_text"
+                cursor = 0
+                chord_row: list[str] = []
+                can_use_row = True
+                for chord in ordered:
+                    pos = int(chord["pos"])
+                    token = chord["sym"]
+                    if pos < cursor:
+                        can_use_row = False
+                        break
+                    chord_row.append(" " * (pos - cursor) + token)
+                    cursor = pos + _column_length(token)
+                if can_use_row:
+                    if "{" in text or "}" in text:
+                        return None, "literal_braces_not_representable_in_ordinary_text"
+                    out.extend(["".join(chord_row), text])
+                    # The ordinary source represents alignment with spaces,
+                    # so the shared parser correctly classifies these anchors
+                    # as low-confidence space-aligned positions.
+                    line["confidence"] = "low"
+                else:
+                    if "{" in text or "}" in text:
+                        return None, "colliding_chords_with_literal_braces"
+                    markers: dict[int, list[str]] = {}
+                    for chord in ordered:
+                        pos = int(chord["pos"])
+                        if pos > _column_length(text):
+                            return None, "colliding_beyond_end_chords_not_representable"
+                        markers.setdefault(pos, []).append(chord["sym"])
+                    pieces = []
+                    previous = 0
+                    for pos, symbols in sorted(markers.items()):
+                        py_pos = _python_index_for_utf16(text, pos)
+                        if py_pos is None:
+                            return None, "chord_anchor_inside_utf16_surrogate"
+                        previous_py = _python_index_for_utf16(text, previous)
+                        if previous_py is None:
+                            return None, "chord_anchor_inside_utf16_surrogate"
+                        pieces.append(text[previous_py:py_pos])
+                        pieces.extend("{" + symbol + "}" for symbol in symbols)
+                        previous = pos
+                    final_py = _python_index_for_utf16(text, previous)
+                    if final_py is None:
+                        return None, "chord_anchor_inside_utf16_surrogate"
+                    pieces.append(text[final_py:])
+                    out.append("".join(pieces))
+                    line["confidence"] = "high"
+            else:
+                return None, "unsupported_chart_line_type"
+    return "\n".join(out) + "\n", None
+
+
+def _python_index_for_utf16(text: str, column: int) -> Optional[int]:
+    units = 0
+    for index, char in enumerate(text):
+        if units == column:
+            return index
+        units += _column_length(char)
+        if units > column:
+            return None
+    return len(text) if units == column else None
+
+
+def _first_chart_difference(expected: dict, actual: dict) -> tuple[str, str]:
+    expected_sections = expected.get("sections", [])
+    actual_sections = actual.get("sections", [])
+    for section_index in range(max(len(expected_sections), len(actual_sections))):
+        if section_index >= len(expected_sections) or section_index >= len(actual_sections):
+            return str(section_index + 1), "1"
+        expected_section = expected_sections[section_index]
+        actual_section = actual_sections[section_index]
+        if expected_section.get("label") != actual_section.get("label"):
+            return str(section_index + 1), "1"
+        expected_lines = expected_section.get("lines", [])
+        actual_lines = actual_section.get("lines", [])
+        for line_index in range(max(len(expected_lines), len(actual_lines))):
+            if (line_index >= len(expected_lines) or line_index >= len(actual_lines)
+                    or expected_lines[line_index] != actual_lines[line_index]):
+                return str(section_index + 1), str(line_index + 1)
+    return "?", "?"
 
 
 def parse_progression(section: Optional[str], chord_part: str) -> dict:
@@ -573,7 +1006,11 @@ class Song:
     primary_genre: Optional[str]
     source_document: Optional[str]
     chart_content: dict = field(default_factory=lambda: {"sections": []})
-    warnings: list[str] = field(default_factory=list)
+    chart_source: Optional[str] = None
+    warnings: list[dict] = field(default_factory=list)
+    # Additive provenance marker: loaders reject older artifacts that cannot
+    # prove they were checked for unresolved Word tab placement.
+    parser_diagnostics_version: int = 1
 
 
 def _new_section(label: Optional[str]) -> dict:
@@ -582,7 +1019,8 @@ def _new_section(label: Optional[str]) -> dict:
 
 def parse_songs(paragraphs: list[Paragraph],
                 source_document: Optional[str] = None,
-                cover_genre: Optional[str] = None) -> list[Song]:
+                cover_genre: Optional[str] = None,
+                _derive_plain_body: bool = True) -> list[Song]:
     """
     Walk the paragraph stream, splitting into songs at each title line and
     classifying every body line into the normalized chart_content model.
@@ -590,7 +1028,7 @@ def parse_songs(paragraphs: list[Paragraph],
     songs: list[Song] = []
     cur: Optional[Song] = None
     cur_section: Optional[dict] = None
-    pending_chord_line: Optional[str] = None   # a chord-only line awaiting its lyric
+    pending_chord_line: Optional[Paragraph] = None  # retain OOXML tabs until pairing
     generated_mode = False
     generated_header = _GENERATED_HEADER
     generated_lines: list[str] = []
@@ -602,7 +1040,7 @@ def parse_songs(paragraphs: list[Paragraph],
         if pending_chord_line is not None and cur is not None:
             ensure_section()
             cur_section["lines"].append(
-                parse_progression(None, pending_chord_line))
+                parse_progression(None, pending_chord_line.text_spaces))
             pending_chord_line = None
             chart_started = True
 
@@ -637,10 +1075,25 @@ def parse_songs(paragraphs: list[Paragraph],
     expanded_paragraphs = []
     for p in paragraphs:
         parts = p.text.split("\n")
-        expanded_paragraphs.extend(Paragraph(part, p.style, p.is_bold) for part in parts)
+        normalized_parts = p.text_spaces.split("\n")
+        source_offset = 0
+        for index, part in enumerate(parts):
+            normalized = normalized_parts[index]
+            part_length = _column_length(normalized)
+            positions = None
+            if p.physical_positions is not None:
+                positions = {
+                    key - source_offset: value
+                    for key, value in p.physical_positions.items()
+                    if source_offset <= key < source_offset + part_length
+                }
+            expanded_paragraphs.append(Paragraph(
+                part, p.style, p.is_bold, normalized,
+                p.tab_layout_error, p.cell_twips, positions))
+            source_offset += part_length + (1 if index < len(parts) - 1 else 0)
     for p in expanded_paragraphs:
         raw_text = p.text_spaces
-        txt = raw_text if generated_mode else raw_text.rstrip()
+        txt = raw_text
         stripped = txt.strip()
 
         # ---- title line: starts a new song ----
@@ -679,6 +1132,14 @@ def parse_songs(paragraphs: list[Paragraph],
         if generated_mode:
             generated_lines.append(_DOCX_SPACER_MARKER if not raw_text.strip() else raw_text)
             continue
+
+        if _TAB in p.text and p.tab_layout_error:
+            cur.warnings.append({
+                "code": "word_tab_placement_unresolved",
+                "section": max(1, len(cur.chart_content["sections"])),
+                "line": (len(cur_section["lines"]) + 1) if cur_section else 1,
+                "reason": p.tab_layout_error,
+            })
 
         # ---- blank line ----
         if not stripped:
@@ -788,17 +1249,68 @@ def parse_songs(paragraphs: list[Paragraph],
             chart_started = True
             continue
 
+        # Match the shared JavaScript parser's ordinary-text progression
+        # rule for a mostly-chord line carrying a repeat or short annotation.
+        tokens = stripped.split()
+        chord_count = sum(is_chord_token(token) for token in tokens)
+        if is_decorated_chord_line(txt):
+            flush_pending_as_progression()
+            ensure_section()
+            cur_section["lines"].append({"type": "raw", "text": txt})
+            chart_started = True
+            continue
+        has_repeat = _PROGRESSION_REPEAT_RE.search(stripped) is not None
+        if (tokens and not is_chord_only_line(stripped) and chord_count > 0
+                and ((has_repeat and chord_count >= 1)
+                     or (chord_count >= 2
+                         and chord_count >= len(tokens) // 2))):
+            flush_pending_as_progression()
+            ensure_section()
+            cur_section["lines"].append(parse_progression(None, txt))
+            chart_started = True
+            continue
+
         # ---- chord-only line: hold it; it pairs with the next lyric ----
         if is_chord_only_line(stripped):
             flush_pending_as_progression()   # two chord lines in a row -> first is a progression
-            pending_chord_line = txt
+            pending_chord_line = p
             continue
 
         # ---- lyric line ----
         ensure_section()
         if pending_chord_line is not None:
+            chord_text = pending_chord_line.text_spaces
+            if _TAB in pending_chord_line.text:
+                if pending_chord_line.tab_layout_error:
+                    # The chord row already emitted its reason-coded diagnostic.
+                    pass
+                elif p.tab_layout_error and _TAB not in p.text:
+                    cur.warnings.append({
+                        "code": "word_tab_placement_unresolved",
+                        "section": len(cur.chart_content["sections"]),
+                        "line": len(cur_section["lines"]) + 1,
+                        "reason": p.tab_layout_error,
+                    })
+                elif pending_chord_line.physical_positions is None or p.cell_twips is None:
+                    cur.warnings.append({
+                        "code": "word_tab_placement_unresolved",
+                        "section": len(cur.chart_content["sections"]),
+                        "line": len(cur_section["lines"]) + 1,
+                        "reason": "unsupported_paired_lyric_font_metrics",
+                    })
+                else:
+                    chord_text, mapping_error = _retarget_chord_columns(
+                        chord_text, pending_chord_line.physical_positions, p.cell_twips)
+                    if mapping_error:
+                        cur.warnings.append({
+                            "code": "word_tab_placement_unresolved",
+                            "section": len(cur.chart_content["sections"]),
+                            "line": len(cur_section["lines"]) + 1,
+                            "reason": mapping_error,
+                        })
+                        chord_text = pending_chord_line.text_spaces
             cur_section["lines"].append(
-                pair_space_aligned(pending_chord_line, txt))
+                pair_space_aligned(chord_text, txt))
             chart_started = True
             pending_chord_line = None
         else:
@@ -814,10 +1326,40 @@ def parse_songs(paragraphs: list[Paragraph],
         if cur_section is None:
             cur_section = _new_section(None)
             cur.chart_content["sections"].append(cur_section)
-        cur_section["lines"].append(parse_progression(None, pending_chord_line))
+        cur_section["lines"].append(parse_progression(None, pending_chord_line.text_spaces))
     if cur_section and cur_section["lines"] and cur_section["lines"][-1].get("type") == "spacer":
         cur_section["lines"].pop()
 
+    for song in songs:
+        body, error = plain_text_chart_body(song.chart_content)
+        song.chart_source = body
+        if error:
+            song.warnings.append({
+                "code": "plain_text_body_unresolved",
+                "section": "?",
+                "line": "?",
+                "reason": error,
+            })
+        elif _derive_plain_body and body is not None:
+            ordinary_paragraphs = [
+                Paragraph("Plain Body Round Trip – C\x01Synthetic", None, False),
+                *(Paragraph(line, None, False) for line in body.splitlines()),
+            ]
+            reparsed = parse_songs(
+                ordinary_paragraphs, source_document=None, cover_genre=None,
+                _derive_plain_body=False)
+            if len(reparsed) != 1 or reparsed[0].chart_content != song.chart_content:
+                section, line = _first_chart_difference(
+                    song.chart_content,
+                    reparsed[0].chart_content if len(reparsed) == 1 else {"sections": []})
+                song.warnings.append({
+                    "code": "plain_text_body_unresolved",
+                    "section": section,
+                    "line": line,
+                    "reason": "ordinary_text_roundtrip_mismatch",
+                })
+            else:
+                song.chart_content = reparsed[0].chart_content
     return songs
 
 
@@ -826,6 +1368,20 @@ def parse_docx(docx_path: str, cover_genre: Optional[str] = None) -> list[Song]:
     paras = load_paragraphs(docx_path)
     return parse_songs(paras, source_document=os.path.basename(docx_path),
                        cover_genre=cover_genre)
+
+
+def parse_ordinary_chart_source(source: str) -> dict:
+    """Return the canonical chart structure represented by ordinary text.
+
+    Confidence is part of the returned structure: callers comparing this value
+    with persisted chart_content must retain and compare confidence fields.
+    """
+    paragraphs = [Paragraph("Plain Source Check – C\x01Synthetic", None, False)]
+    paragraphs.extend(Paragraph(line, None, False) for line in source.splitlines())
+    songs = parse_songs(paragraphs, _derive_plain_body=False)
+    if len(songs) != 1:
+        raise ValueError("ordinary_source_song_boundaries")
+    return songs[0].chart_content
 
 
 def song_to_dict(s: Song) -> dict:

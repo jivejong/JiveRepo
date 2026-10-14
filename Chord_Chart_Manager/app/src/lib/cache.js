@@ -190,9 +190,66 @@ export async function updateCachedSong(song) {
 // Commit the local projection and its queue revision together. This closes the
 // window where an in-flight create acknowledgement could otherwise clear a
 // just-saved edit before markDirty recorded it.
-export async function savePendingSong(song, operationId = null) {
+function sameEditValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index]
+      && sameEditValue(left[key], right[key]));
+}
+
+function mergeExistingOfflineEdit(latest, submitted, pendingMutation, baseline, changedFields) {
+  if (!latest || latest._sync?.operation === 'delete') {
+    throw new Error('This song was removed or changed in another tab. Reload it and retry your save.');
+  }
+  const conflictingFields = changedFields.filter(field => !sameEditValue(latest[field], baseline[field]));
+  if (changedFields.includes('chart_source')
+      && !sameEditValue(latest.chart_content, baseline.chart_content)) {
+    conflictingFields.push('chart_source');
+  }
+  if (conflictingFields.length) {
+    throw new Error('This song changed in another tab. Reload it and retry your save.');
+  }
+
+  const merged = { ...latest };
+  for (const field of changedFields) {
+    if (field === 'chart_source') {
+      merged.chart_source = submitted.chart_source;
+      merged.chart_content = submitted.chart_content;
+    } else {
+      merged[field] = submitted[field];
+    }
+  }
+  if (changedFields.includes('genres')) {
+    merged.genre = submitted.genre;
+    merged.primary_genre = submitted.primary_genre;
+  }
+  if (changedFields.includes('vibes')) merged.feel = submitted.feel;
+  if (changedFields.includes('release_year')) merged.era = submitted.era;
+
+  const pendingUpdate = Boolean(pendingMutation)
+    && latest._sync?.operation !== 'create';
+  const chartChangePending = changedFields.includes('chart_source')
+    || latest._sync?.chart_source_unchanged === false
+    || (pendingUpdate && latest._sync?.chart_source_unchanged !== true);
+  merged._sync = {
+    ...latest._sync,
+    operation: 'update',
+    base_updated_at: latest._sync?.base_updated_at ?? latest.updated_at ?? baseline.updated_at ?? null,
+    chart_source_unchanged: !chartChangePending,
+  };
+  return merged;
+}
+
+// `editMerge` is used only by existing-song offline editor saves. The baseline
+// and changed field list let one readwrite transaction merge onto the latest
+// IndexedDB row and reject overlapping edits before touching either store.
+export async function savePendingSong(song, operationId = null, editMerge = null) {
   await openDb();
-  return transact(['songs', 'meta'], 'readwrite', transaction => {
+  return transact(['songs', 'meta'], 'readwrite', (transaction, setValue, fail) => {
     const songs = transaction.objectStore('songs');
     const meta = transaction.objectStore('meta');
     const allSongsRequest = songs.getAll();
@@ -205,18 +262,32 @@ export async function savePendingSong(song, operationId = null) {
       const allSongs = allSongsRequest.result;
       const redirects = redirectsRequest.result?.value || {};
       const redirectedId = redirects[song.id];
-      const current = redirectedId
-        ? allSongs.find(item => String(item.id) === String(redirectedId))
-        : null;
       const targetId = redirectedId ?? song.id;
-      const patch = current
-        ? { ...current, ...song, id: targetId,
-          _sync: { ...song._sync, operation: 'update', base_updated_at: current.updated_at } }
-        : song;
-      songs.put(patch);
       const queue = queueRequest.result?.value || [];
       let operation = queue.find(item => item.entity === 'song'
         && (String(item.id) === String(song.id) || String(item.id) === String(targetId)));
+      const latest = allSongs.find(item => String(item.id) === String(targetId));
+      let patch;
+      if (editMerge) {
+        if (redirectedId || !latest || latest._sync?.operation === 'create') {
+          return fail(new Error('This song changed in another tab. Reload it and retry your save.'));
+        }
+        const { baseline, changedFields } = editMerge;
+        try {
+          patch = mergeExistingOfflineEdit(latest, song, operation, baseline, changedFields);
+        } catch (error) {
+          return fail(error);
+        }
+      } else {
+        const current = redirectedId
+          ? allSongs.find(item => String(item.id) === String(redirectedId))
+          : null;
+        patch = current
+          ? { ...current, ...song, id: targetId,
+            _sync: { ...song._sync, operation: 'update', base_updated_at: current.updated_at } }
+          : song;
+      }
+      songs.put(patch);
       if (!operation) {
         operation = { entity: 'song', id: targetId, op_id: operationId || mutationId(), local_revision: 0 };
         queue.push(operation);
@@ -233,9 +304,10 @@ export async function savePendingSong(song, operationId = null) {
       }
       operation.local_revision = (operation.local_revision || 0) + 1;
       meta.put({ key: 'pending_mutations', value: queue, updatedAt: Date.now() });
+      setValue(patch);
     };
     for (const request of [allSongsRequest, queueRequest, redirectsRequest]) request.onsuccess = ready;
-  }).then(() => { notifyCacheChange(); });
+  }).then(patch => { notifyCacheChange(); return patch; });
 }
 
 export async function deleteCachedSong(id) {
@@ -571,7 +643,9 @@ export function editablePayload(song) {
     'default_capo', 'bpm', 'release_year', 'beatbuddy_structure', 'chart_source',
     'genres', 'vibes',
   ];
-  return Object.fromEntries(fields.map(field => [field, song[field]]));
+  const payload = Object.fromEntries(fields.map(field => [field, song[field]]));
+  if (song._sync?.chart_source_unchanged) delete payload.chart_source;
+  return payload;
 }
 
 async function keepServerVersion(songId, songApi) {

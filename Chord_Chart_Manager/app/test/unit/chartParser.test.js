@@ -2,8 +2,10 @@ import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
+import { transposeChord } from '../../transpose.js';
 const {
   chartToText, isGeneratedChartSource, isGeneratedSourceUnchanged, parseChartBody,
+  isDecoratedChordLine, transposeDecoratedRawLines,
 } = require('../../server/chartParser.js');
 
 describe('shared chart parser', () => {
@@ -44,6 +46,16 @@ describe('shared chart parser', () => {
     expect(chordBeforeBlank.sections[0].lines.map(line => line.type)).toEqual(['progression', 'spacer', 'lyric']);
   });
 
+  it('preserves lyric and raw trailing spaces in ordinary chart text', () => {
+    expect(parseChartBody('[Verse]\nC    G\nInvented line  \ne|--0-2--  \n')).toEqual({
+      sections: [{ label: 'Verse', lines: [
+        { type: 'lyric', text: 'Invented line  ',
+          chords: [{ sym: 'C', pos: 0 }, { sym: 'G', pos: 5 }], confidence: 'low' },
+        { type: 'raw', text: 'e|--0-2--  ' },
+      ] }],
+    });
+  });
+
   it('parses inline braces and round-trips structured chart text', () => {
     const chart = parseChartBody('[Chorus]\n{C}Sing {G}loud\n');
 
@@ -55,6 +67,64 @@ describe('shared chart parser', () => {
     });
     expect(chartToText(chart)).toContain('[[CCM-CHART:2]]');
     expect(parseChartBody(chartToText(chart))).toEqual(chart);
+  });
+
+  it('parses the ordinary plain-text body shape emitted by DOCX ingestion', () => {
+    const source = '[Verse]\nC G 4x ending cue\n(Chorus) x2\ne|--0-2--\n'
+      + '{C}{G}🎸echo  \n        Am\ntail\n';
+    expect(parseChartBody(source)).toEqual({ sections: [{ label: 'Verse', lines: [
+      { type: 'progression', chords: ['C', 'G'], repeat: 4, note: 'ending cue' },
+      { type: 'repeat', ref: 'Chorus', times: 2 },
+      { type: 'raw', text: 'e|--0-2--' },
+      { type: 'lyric', text: '🎸echo  ', chords: [
+        { sym: 'C', pos: 0 }, { sym: 'G', pos: 0 },
+      ], confidence: 'high' },
+      { type: 'lyric', text: 'tail', chords: [{ sym: 'Am', pos: 8 }], confidence: 'low' },
+    ] }] });
+    expect(parseChartBody('[Verse]\nC G you and I are walking\n').sections[0].lines[0].type)
+      .toBe('lyric');
+  });
+
+  it('keeps decorated chord-only rows literal and transposes only clear chord tokens in place', () => {
+    const source = 'G  D | C G | Em F | G';
+    const parsed = parseChartBody(source);
+    expect(parsed.sections[0].lines).toEqual([{ type: 'raw', text: source }]);
+    expect(isDecoratedChordLine(source)).toBe(true);
+    expect(parseChartBody(chartToText(parsed))).toEqual(parsed);
+
+    const moved = transposeDecoratedRawLines(parsed, symbol => ({
+      G: 'A', D: 'E', C: 'D', Em: 'F#m', F: 'G',
+    })[symbol] || symbol);
+    expect(moved.sections[0].lines[0].text).toBe('A  E | D A | F#m G | A');
+    expect(transposeDecoratedRawLines(parsed, symbol => transposeChord(symbol, 2, 'A'))
+      .sections[0].lines[0].text).toBe('A  E | D A | F#m G | A');
+
+    const slash = parseChartBody('A/C# | D G');
+    expect(transposeDecoratedRawLines(slash, symbol => ({
+      'A/C#': 'B/D#', D: 'E', G: 'A',
+    })[symbol] || symbol).sections[0].lines[0].text).toBe('B/D# | E A');
+
+    const annotated = 'G D (hold Am) | Em F x2 | C';
+    const annotatedChart = parseChartBody(annotated);
+    expect(annotatedChart.sections[0].lines[0]).toEqual({ type: 'raw', text: annotated });
+    expect(transposeDecoratedRawLines(annotatedChart, symbol => ({
+      G: 'A', D: 'E', Em: 'F#m', F: 'G', C: 'D',
+    })[symbol] || symbol).sections[0].lines[0].text)
+      .toBe('A E (hold Am) | F#m G x2 | D');
+
+    const ambiguous = 'G and D | C';
+    const ambiguousChart = parseChartBody(ambiguous);
+    expect(ambiguousChart.sections[0].lines[0]).toEqual({ type: 'raw', text: ambiguous });
+    expect(transposeDecoratedRawLines(ambiguousChart, symbol => `X${symbol}`))
+      .toEqual(ambiguousChart);
+  });
+
+  it('does not transpose prose, section labels, tablature, or raw lines without a clear pipe chart pattern', () => {
+    const prose = 'G is the first letter; D is another';
+    const chart = parseChartBody(`[Chorus]\n${prose}\ne|--0-2-3--|\n`);
+    expect(chart.sections[0].label).toBe('Chorus');
+    expect(chart.sections[0].lines.map(line => line.type)).toEqual(['lyric', 'raw']);
+    expect(transposeDecoratedRawLines(chart, symbol => `X${symbol}`)).toEqual(chart);
   });
 
   it('round-trips every structured generated line, escaped text and boundary/colliding anchors', () => {
@@ -74,6 +144,18 @@ describe('shared chart parser', () => {
     expect(source.startsWith('[[CCM-CHART:2]]\n')).toBe(true);
     expect(parseChartBody(source)).toEqual(structured);
     expect(chartToText(parseChartBody(source))).toBe(source);
+  });
+
+  it('preserves structured chord order when manual positions cross', () => {
+    const chart = { sections: [{ label: 'Verse', lines: [{ type: 'lyric',
+      text: 'invented lyric', confidence: 'high', chords: [
+        { sym: 'C', pos: 9 }, { sym: 'G', pos: 2 }, { sym: 'D', pos: 2 },
+      ],
+    }] }] };
+    const source = chartToText(chart);
+    expect(parseChartBody(source)).toEqual(chart);
+    expect(source.indexOf('[[C:9:C]]')).toBeLessThan(source.indexOf('[[C:2:G]]'));
+    expect(source.indexOf('[[C:2:G]]')).toBeLessThan(source.indexOf('[[C:2:D]]'));
   });
 
   it('keeps an unrelated progression intact when a generated lyric is deliberately edited', () => {

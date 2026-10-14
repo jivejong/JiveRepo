@@ -52,6 +52,76 @@
     const toks = text.trim().split(/\s+/).filter(Boolean);
     return toks.length > 0 && toks.every(isChord);
   }
+
+  // A vertical bar is a strong chart-row cue. Keep the entire row literal
+  // when it carries several chord tokens; progression.chords/note cannot
+  // represent the original interleaving or spacing.
+  function decoratedChordAnalysis(text) {
+    if (typeof text !== "string" || !text.includes("|") || isTab(text.trim())) {
+      return { spans: [], ambiguous: true };
+    }
+    const spans = [];
+    let visibleTokens = 0;
+    let ambiguous = false;
+    let index = 0;
+    while (index < text.length) {
+      const char = text[index];
+      if (char === "(" || char === "[") {
+        const close = char === "(" ? ")" : "]";
+        let depth = 1;
+        index += 1;
+        while (index < text.length && depth > 0) {
+          if (text[index] === char) depth += 1;
+          else if (text[index] === close) depth -= 1;
+          index += 1;
+        }
+        continue;
+      }
+      if (/\s|[|,;:{}()\[\]]/.test(char)) { index += 1; continue; }
+      const start = index;
+      while (index < text.length && !/\s|[|,;:{}()\[\]]/.test(text[index])) index += 1;
+      const token = text.slice(start, index);
+      visibleTokens += 1;
+      if (isChord(token)) spans.push({ start, end: index, sym: token });
+      else if (!/^(?:\d+[xX]|[xX]\d+)$/.test(token)) ambiguous = true;
+    }
+    const eligible = spans.length >= 2 && spans.length >= Math.floor(visibleTokens / 2);
+    return { spans: eligible ? spans : [], ambiguous };
+  }
+
+  function decoratedChordTokenSpans(text) {
+    return decoratedChordAnalysis(text).spans;
+  }
+
+  function isDecoratedChordLine(text) {
+    return decoratedChordTokenSpans(text).length > 0;
+  }
+
+  function transposeDecoratedRawLines(chart, transposeChord) {
+    if (!chart || !Array.isArray(chart.sections) || typeof transposeChord !== "function") return chart;
+    let changed = false;
+    const sections = chart.sections.map(section => {
+      let sectionChanged = false;
+      const lines = (section.lines || []).map(line => {
+        if (line.type !== "raw") return line;
+        const analysis = decoratedChordAnalysis(line.text || "");
+        const spans = analysis.spans;
+        if (!spans.length || analysis.ambiguous) return line;
+        let text = line.text;
+        for (let i = spans.length - 1; i >= 0; i -= 1) {
+          const span = spans[i];
+          const replacement = transposeChord(span.sym);
+          text = text.slice(0, span.start) + replacement + text.slice(span.end);
+        }
+        if (text === line.text) return line;
+        changed = true;
+        sectionChanged = true;
+        return { ...line, text };
+      });
+      return sectionChanged ? { ...section, lines } : section;
+    });
+    return changed ? { ...chart, sections } : chart;
+  }
   function isTab(text) {
     const t = text.trim();
     if (TAB_LINE_RE.test(t)) return true;
@@ -86,7 +156,7 @@
       if (!isChord(m[0])) continue;
       chords.push({ sym: clean(m[0]), pos: m.index });
     }
-    return { type: "lyric", text: clean(lyricLine.replace(/\s+$/, "")),
+    return { type: "lyric", text: clean(lyricLine),
              chords, confidence: "low" };
   }
 
@@ -133,7 +203,9 @@
     };
 
     for (const rawLine of lines) {
-      const line = rawLine.replace(/\s+$/, "");
+      // Keep source whitespace on lyric and raw lines. It is part of the
+      // editable body; classification uses a trimmed view separately.
+      const line = rawLine;
       const s = line.trim();
 
       if (!s) {
@@ -193,13 +265,18 @@
 
       if (isChordOnly(s)) { flushPending(); pendingChord = line; continue; }
 
+      if (isDecoratedChordLine(line)) {
+        flushPending(); ensure(); cur.lines.push({ type: "raw", text: line }); continue;
+      }
+
       // A bare line that's mostly chords plus a repeat/annotation (e.g.
       // "G D C  4x") is a progression, not a lyric.
       const toks = s.split(/\s+/).filter(Boolean);
       const chordCount = toks.filter(isChord).length;
       const hasRepeat = REPEAT_RE.test(s);
       if (toks.length > 0 && chordCount > 0 &&
-          chordCount >= toks.length - 1 && (hasRepeat || chordCount === toks.length)) {
+          ((hasRepeat && chordCount >= 1) ||
+           (chordCount >= 2 && chordCount >= Math.floor(toks.length / 2)))) {
         flushPending();
         ensure();
         cur.lines.push(parseProgression(line));
@@ -348,17 +425,15 @@
 
   function generatedChordText(line) {
     const text = line.text || "";
-    const byPosition = new Map();
-    for (const chord of line.chords || []) {
+    // Preserve the structured chord order, including when an editor manually
+    // moves one chord across another. Positions are explicit in every marker.
+    const anchors = (line.chords || []).map(chord => {
       const pos = chord.pos;
       if (!Number.isSafeInteger(pos) || pos < 0) {
         throw new Error("Chord column must be a non-negative safe integer UTF-16 column");
       }
-      if (!byPosition.has(pos)) byPosition.set(pos, []);
-      byPosition.get(pos).push(chord.sym);
-    }
-    const anchors = [...byPosition.entries()].sort((a, b) => a[0] - b[0])
-      .flatMap(([pos, symbols]) => symbols.map(sym => `[[C:${pos}:${encodeURIComponent(sym)}]]`)).join("");
+      return `[[C:${pos}:${encodeURIComponent(chord.sym)}]]`;
+    }).join("");
     return `${escapeGeneratedText(text)}[[CCM-CHORDS]]${anchors}`;
   }
 
@@ -396,6 +471,7 @@
 
   return {
     parseChartBody, chartToText, isGeneratedSourceUnchanged, isGeneratedChartSource,
+    isDecoratedChordLine, decoratedChordTokenSpans, transposeDecoratedRawLines,
     _isChord: isChord,
   };
 });

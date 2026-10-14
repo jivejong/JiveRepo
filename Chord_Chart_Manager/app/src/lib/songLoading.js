@@ -18,8 +18,18 @@ export async function loadChartSong(id, {
   onDiagnostic,
   invalidationStorage,
 }) {
-  let cached = null;
-  try { cached = await readCached(id); } catch { /* an online fetch may still work */ }
+  let cached;
+  let initialCacheReadError = null;
+  try {
+    // IndexedDB resolves a successful miss to undefined, while the
+    // conditional writer represents absence as null. Keep read failures
+    // distinct so they cannot be mistaken for a verified empty snapshot.
+    cached = (await readCached(id)) ?? null;
+  } catch (error) {
+    // Keep absence distinct from a failed snapshot read. The server result may
+    // still be shown, but it cannot be conditionally persisted against unknown state.
+    initialCacheReadError = error;
+  }
   if (cached?._sync?.operation === 'delete') {
     onCached?.(null);
     return null;
@@ -93,7 +103,9 @@ export async function loadChartSong(id, {
     // this live view, but an offline reopen will not mistake the old copy for
     // the refreshed snapshot.
     const marker = cached ? persistInvalidationMarker(id, cached, invalidationStorage) : null;
-    safelyDiagnose(onDiagnostic, cacheWriteDiagnostic(persistError, marker));
+    safelyDiagnose(onDiagnostic, initialCacheReadError
+      ? cacheReadFailureDiagnostic(initialCacheReadError, persistError, marker)
+      : cacheWriteDiagnostic(persistError, marker));
     onRemote?.(remote);
     return remote;
   } catch (error) {
@@ -247,11 +259,24 @@ function markerStorageDiagnostic(failure, action) {
 }
 
 function cacheWriteDiagnostic(error, marker) {
-  const reason = error?.message || 'conditional cache persistence did not complete';
+  const reason = error
+    ? `IndexedDB transaction failed: ${error.message || 'unknown storage error'}`
+    : 'the conditional write was declined because the cache changed or the expected snapshot did not match';
   const persistence = marker
     ? markerSuppressionStatus(marker)
     : 'No prior cached snapshot was available; this refreshed response is shown only in the current view.';
   return `The refreshed chart could not be saved to local storage (${reason}). ${persistence}`;
+}
+
+function cacheReadFailureDiagnostic(error, persistError, marker) {
+  const detail = error?.message || 'unknown storage error';
+  const persistenceFailure = persistError
+    ? `conditional persistence also failed: ${persistError.message || 'unknown storage error'}`
+    : 'conditional persistence was withheld because the request-start snapshot could not be established';
+  const persistence = marker
+    ? markerSuppressionStatus(marker)
+    : 'No prior cached snapshot was available; this refreshed response is shown only in the current view.';
+  return `The refreshed chart could not be saved to local storage (the initial IndexedDB cache read failed: ${detail}; ${persistenceFailure}). ${persistence}`;
 }
 
 function markerSuppressionStatus(marker) {

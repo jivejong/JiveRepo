@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ArrowLeft, EditIcon, ChevronLeft, ChevronRight } from '../components/Icons';
 import { renderChart } from '../lib/chartRenderer';
+import { transposeDecoratedRawLines } from '../lib/chartParser';
 import { transposeChart, transposeChord, soundingKey, keyDelta, keyAfter } from '../../transpose';
 import { useSong, useSwipe } from '../hooks';
 import * as api from '../lib/api';
@@ -175,9 +176,13 @@ export default function ChartView({
 
   // Apply transposition to the STRUCTURED chart content, spelling every chord
   // toward the current key so accidentals match the key you're in.
+  const displayContent = song.chart_content;
   const transposedContent = semiOffset !== 0
-    ? transposeChart(song.chart_content, semiOffset, currentWrittenKey)
-    : song.chart_content;
+    ? transposeDecoratedRawLines(
+      transposeChart(displayContent, semiOffset, currentWrittenKey),
+      symbol => transposeChord(symbol, semiOffset, currentWrittenKey),
+    )
+    : displayContent;
 
   // Sounding key (what the audience hears)
   const currentSoundingKey = soundingKey(currentWrittenKey, capo);

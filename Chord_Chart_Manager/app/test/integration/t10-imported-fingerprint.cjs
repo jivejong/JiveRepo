@@ -20,12 +20,11 @@ async function capture() {
       COALESCE((SELECT jsonb_agg(to_jsonb(ss) ORDER BY ss.setlist_id,ss.position)
         FROM public.setlist_songs ss WHERE ss.song_id=s.id),'[]'::jsonb) AS setlist_entries
     FROM public.songs s JOIN public.artists a ON a.id=s.artist_id
-    WHERE s.id BETWEEN 29 AND 36 ORDER BY s.id`);
-  assert.deepEqual(result.rows.map(row => row.id), [29, 30, 31, 32, 33, 34, 35, 36],
-    'Expected all eight approved sample IDs to exist');
+    WHERE s.source_document='Sample.docx' ORDER BY s.id`);
+  assert.ok(result.rows.length > 0, 'Expected the current Sample.docx rows to exist');
   for (const row of result.rows) {
     assert.equal(row.source_document, 'Sample.docx', `Unexpected source document for ID ${row.id}`);
-    assert.equal(row.chart_source, null, `Expected NULL chart_source for ID ${row.id}`);
+    assert.equal(typeof row.chart_source, 'string', `Expected readable chart_source for ID ${row.id}`);
   }
   return result.rows.map(row => {
     const fingerprintData = {
@@ -44,12 +43,12 @@ async function main() {
   const current = await capture();
   if (mode === 'before') {
     fs.writeFileSync(file, JSON.stringify(current, null, 2), { flag: 'wx' });
-    console.log(`Captured 8 imported-row fingerprints and exact versions: ${path.basename(file)}`);
+    console.log(`Captured ${current.length} Sample.docx row fingerprints and exact versions: ${path.basename(file)}`);
   } else {
     const prior = JSON.parse(fs.readFileSync(path.resolve(priorName), 'utf8'));
     assert.deepEqual(current, prior, 'Imported rows, exact versions, or associations changed');
     fs.writeFileSync(file, JSON.stringify(current, null, 2), { flag: 'wx' });
-    console.log(`All 8 imported-row fingerprints, exact versions, and associations match: ${path.basename(file)}`);
+    console.log(`All ${current.length} Sample.docx row fingerprints, exact versions, sources, and associations match: ${path.basename(file)}`);
   }
 }
 
