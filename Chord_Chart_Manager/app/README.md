@@ -245,8 +245,11 @@ cd server && npm audit --omit=dev
   Date added sorting. Existing records without a timestamp remain undated; after
   sync, a new song uses the server's creation timestamp.
 - Create, edit, and delete songs online or offline.
-- Edit Genres and Vibes online or offline; new values stay within those existing
-  categories and sync with the song update. Era is read-only and derived from
+- Edit assigned Genres and Vibes online or offline using separate
+  category-specific autocomplete fields backed by managed definitions. Only
+  selecting an existing suggestion changes the draft; query text alone never
+  adds an assignment. With no definition list available, assigned chips remain
+  removable while additions are disabled. Era is read-only and derived from
   `release_year` by decade. Release years must be whole numbers from 1 to 32767.
 - Chart bodies use the existing textarea and ordinary chart-text parser for
   editing and rendering. Existing CCM v1/v2 chart sources remain supported and
@@ -325,6 +328,14 @@ fields changed from that editor's loaded baseline onto the latest cached row.
 Non-overlapping edits are retained in one queued update. If both editors changed
 the same field, the stale save is rejected with a reload-and-retry message and
 does not alter the cached song or pending mutation.
+Genre and Vibe arrays are separate conflict fields. A metadata-only save omits
+untouched categories from a new update payload, while an earlier queued change
+to either category remains in that payload. A definitive unknown/ambiguous
+definition response (422) keeps the queued operation for correction; a true
+stale song version (409) keeps the server version. A rejected offline-created
+song can be corrected in EditView and retried under a new operation ID while
+retaining its local ID, chart, and unrelated metadata. An uncertain network
+attempt keeps its frozen payload and is never unfrozen by this correction path.
 Song version tokens use UTC with six fractional digits and are compared as
 exact strings. Older queued three-digit tokens are ambiguous and receive 409;
 the queued request is sent first, then server-wins recovery refreshes the
@@ -358,6 +369,50 @@ release year and is not managed as a definition. A shared change advances the
 versions of affected songs, so stale queued edits follow the normal 409/server-
 wins behavior. Settings reports when the server change succeeded but the cache
 refresh still needs Sync now.
+
+Song assignment writes only resolve an existing definition in the selected
+category. Direct song create/update and direct tag-add return `400
+INVALID_TAG_INPUT` for malformed input, `422 UNKNOWN_TAG_DEFINITION` for a
+missing definition, or `422 AMBIGUOUS_TAG_DEFINITION` if normalized lookup
+matches multiple rows. Updates with an actually stale version return `409
+SONG_VERSION_CONFLICT`; a 422 is validation recovery and does not invoke the
+server-wins conflict policy. Definition rows are shared-locked in the song
+write transaction until assignment joins commit, so a concurrent management
+deletion cannot slip between validation and assignment.
+
+Genre assignments are read in primary-first order, followed by definition-name
+order. Removing the primary in EditView promotes the first remaining draft
+assignment in that order; removing all Genres clears the primary. Adding a
+secondary preserves the selected primary, and re-adding a former primary after
+promotion leaves it secondary. Full-song reads and offline export use the same
+`is_primary DESC, name` order, so sync and reopen retain the same promotion.
+
+`scripts/populate-tag-definitions.cjs` defaults to a preview for the supplied
+45 Genre and 40 Vibe names. It reports existing, missing, spelling-collision,
+and ambiguous normalized matches separately by category; ambiguity stops the
+operation. Applying is restricted to the owner-marked `ccm_test` scratch
+database and requires the reviewed preview fingerprint. No live vocabulary
+population is part of this Stage A implementation.
+
+To inspect the current proposed delta from `app/`, run:
+
+```powershell
+node scripts/populate-tag-definitions.cjs --genres ../docs/genres.txt --vibes ../docs/vibes.txt
+```
+
+Stage A's prior full guarded run on 2026-10-14 passed the production build,
+157 unit tests, 3 API integration tests, and 51 serial system-Chrome E2E tests.
+A later focused guarded run for the combobox and offline-export regressions
+also passed the build, 157 unit tests, 3 API integration tests, and the 2
+selected serial E2E tests. The harness removed its owned scratch database and
+verified its absence after both runs. The focused run matched the exact rows,
+versions, sources, and documented associations for the eight protected
+Sample.docx songs; this evidence does not fingerprint every main-database
+record. Main health stayed healthy and aggregate counts remained 11 songs, 5
+tags, and 0 setlists. The vocabulary rehearsal ran only in scratch; the utility
+restricts application to owner-marked scratch storage. No live definitions or
+songs were changed. The Sol Medium review is clear; T24 remains in Review
+pending user acceptance. Physical tablet acceptance remains pending.
 The Artist field in song create/edit offers a short case-insensitive prefix
 list drawn from songs in the local cache, including pending and locally created
 songs. Suggestions also work offline. Typing remains ordinary free text; the

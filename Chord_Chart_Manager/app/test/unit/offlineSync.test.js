@@ -53,6 +53,350 @@ describe('offline cache and push-then-pull sync', () => {
     }
   });
 
+  it('retains queued Genre intent across stale metadata saves and omits only unchanged Vibes', async () => {
+    const id = 987639;
+    const genre = { name: 'Invented queued Genre', is_primary: true };
+    const original = { id, title: 'Invented queued Genre song', artist: 'Synthetic', bpm: 100,
+      chart_source: 'Invented chart', chart_content: { sections: [] },
+      genres: [{ name: 'Invented old Genre', is_primary: true }], vibes: ['Invented old Vibe'], updated_at: version };
+    const baseline = { ...original };
+    try {
+      await cache.cacheSongs([original]);
+      await cache.savePendingSong({ ...original, genres: [genre], primary_genre: genre.name,
+        genre: genre.name, _sync: { operation: 'update', base_updated_at: version } }, null,
+      { baseline, changedFields: ['genres'] });
+      const staleMetadata = await cache.savePendingSong({ ...original, bpm: 127 }, null,
+        { baseline, changedFields: ['bpm'] });
+      expect(staleMetadata).toMatchObject({ bpm: 127, genres: [genre], vibes: ['Invented old Vibe'],
+        _sync: { operation: 'update', base_updated_at: version,
+          genres_unchanged: false, vibes_unchanged: true } });
+      const mutation = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      expect(mutation.local_revision).toBe(2);
+      expect(mutation.sent).toBeUndefined();
+
+      let sent;
+      const synced = await cache.syncWithServer({
+        library: async () => ({ songs: [{ ...staleMetadata, updated_at: '2026-10-10T12:00:00.000002Z', _sync: undefined }] }),
+        songs: { update: async (_songId, payload) => {
+          sent = payload;
+          return { ...staleMetadata, updated_at: '2026-10-10T12:00:00.000002Z', _sync: undefined };
+        } },
+        setlists: { all: async () => [] },
+      });
+      expect(synced.ok).toBe(true);
+      expect(sent).toMatchObject({ genres: [genre], bpm: 127, base_updated_at: version });
+      expect(sent).not.toHaveProperty('vibes');
+    } finally {
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
+  it('rejects a same-category stale assignment and merges disjoint category edits atomically', async () => {
+    const id = 987638;
+    const original = { id, title: 'Invented stale tag editors', artist: 'Synthetic',
+      genres: [{ name: 'Invented Genre A', is_primary: true }], vibes: ['Invented Vibe A'], updated_at: version };
+    const baseline = { ...original };
+    try {
+      await cache.cacheSongs([original]);
+      const genreEdit = { ...original, genres: [{ name: 'Invented Genre B', is_primary: true }] };
+      await cache.savePendingSong(genreEdit, null, { baseline, changedFields: ['genres'] });
+      const beforeConflict = await cache.getCachedSong(id);
+      const queueBeforeConflict = await cache.getPendingMutations();
+      await expect(cache.savePendingSong({ ...original, genres: [{ name: 'Invented Genre C', is_primary: true }] }, null,
+        { baseline, changedFields: ['genres'] })).rejects.toThrow(/changed in another tab/i);
+      expect(await cache.getCachedSong(id)).toEqual(beforeConflict);
+      expect(await cache.getPendingMutations()).toEqual(queueBeforeConflict);
+
+      const vibeEdit = await cache.savePendingSong({ ...original, vibes: ['Invented Vibe B'] }, null,
+        { baseline, changedFields: ['vibes'] });
+      expect(vibeEdit.genres).toEqual(genreEdit.genres);
+      expect(vibeEdit.vibes).toEqual(['Invented Vibe B']);
+      expect(vibeEdit._sync).toMatchObject({ base_updated_at: version,
+        genres_unchanged: false, vibes_unchanged: false });
+    } finally {
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
+  it('keeps frozen category payload and base token during an in-flight update, then rebases its newer revision', async () => {
+    const id = 987637;
+    const original = { id, title: 'Invented in-flight tag revision', artist: 'Synthetic', bpm: 100,
+      genres: [{ name: 'Invented in-flight Genre', is_primary: true }], vibes: ['Invented old Vibe'],
+      chart_source: 'Invented chart bytes', chart_content: { sections: [{ lines: [{ text: 'Invented chart bytes' }] }] },
+      updated_at: version };
+    const baseline = { ...original };
+    const firstServer = { ...original, vibes: ['Invented sent Vibe'], updated_at: '2026-10-10T12:00:00.000004Z' };
+    const finalServer = { ...firstServer, bpm: 123, updated_at: '2026-10-10T12:00:00.000005Z' };
+    let release;
+    let started;
+    const startedPromise = new Promise(resolve => { started = resolve; });
+    try {
+      await cache.cacheSongs([original]);
+      await cache.savePendingSong({ ...original, vibes: ['Invented sent Vibe'] }, null,
+        { baseline, changedFields: ['vibes'] });
+      const firstSync = cache.syncWithServer({
+        library: async () => ({ songs: [firstServer] }),
+        songs: { update: async (_songId, payload) => {
+          expect(payload).toMatchObject({ vibes: ['Invented sent Vibe'], base_updated_at: version });
+          expect(payload).not.toHaveProperty('genres');
+          started();
+          return new Promise(resolve => { release = resolve; });
+        } },
+        setlists: { all: async () => [] },
+      });
+      await startedPromise;
+      const inFlight = await cache.getPendingMutations();
+      const frozen = inFlight.find(item => String(item.id) === String(id));
+      await cache.savePendingSong({ ...original, vibes: ['Invented sent Vibe', 'Invented later Vibe'], bpm: 123,
+        _sync: { operation: 'update', base_updated_at: version } }, null,
+      { baseline: { ...baseline, vibes: ['Invented sent Vibe'] }, changedFields: ['vibes', 'bpm'] });
+      const during = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      expect(during).toMatchObject({ op_id: frozen.op_id, sent: true, sent_revision: frozen.sent_revision,
+        sent_payload: frozen.sent_payload, local_revision: 2 });
+      expect((await cache.getCachedSong(id))._sync).toMatchObject({ base_updated_at: version });
+
+      release(firstServer);
+      expect((await firstSync).ok).toBe(true);
+      const rebased = await cache.getCachedSong(id);
+      expect(rebased).toMatchObject({ vibes: ['Invented sent Vibe', 'Invented later Vibe'], bpm: 123,
+        chart_source: original.chart_source, chart_content: original.chart_content,
+        updated_at: firstServer.updated_at, _sync: { base_updated_at: firstServer.updated_at,
+          genres_unchanged: true, vibes_unchanged: false } });
+      const pending = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      expect(pending).toMatchObject({ sent: false, local_revision: 2 });
+      expect(pending.op_id).not.toBe(frozen.op_id);
+      expect(pending.sent_payload).toBeUndefined();
+      const second = await cache.syncWithServer({ library: async () => ({ songs: [finalServer] }),
+        songs: { update: async (_songId, payload) => {
+          expect(payload).toMatchObject({ vibes: ['Invented sent Vibe', 'Invented later Vibe'], bpm: 123,
+            base_updated_at: firstServer.updated_at });
+          expect(payload).not.toHaveProperty('genres');
+          return finalServer;
+        } }, setlists: { all: async () => [] } });
+      expect(second.ok).toBe(true);
+      expect(await cache.getCachedSong(id)).toMatchObject({ updated_at: finalServer.updated_at, bpm: 123 });
+      expect((await cache.getPendingMutations()).some(item => String(item.id) === String(id))).toBe(false);
+    } finally {
+      release?.(firstServer);
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
+  it('corrects a definitively rejected local create and retries once with its local ID and unrelated fields intact', async () => {
+    const localId = cache.makeLocalSongId();
+    const initialOperationId = cache.makeMutationId();
+    const local = { id: localId, title: 'Invented rejected create', artist: 'Invented retained artist', bpm: 111,
+      chart_source: 'Invented retained chart bytes', chart_content: { sections: [{ lines: [{ text: 'Invented retained chart bytes' }] }] },
+      genres: [{ name: 'Invented stale Genre', is_primary: true }], vibes: ['Invented retained Vibe'],
+      _sync: { operation: 'create', operation_id: initialOperationId } };
+    let createCalls = 0;
+    let rejectedPayload;
+    let persistedSong = null;
+    const api = {
+      library: async () => ({ songs: persistedSong ? [persistedSong] : [] }), setlists: { all: async () => [] },
+      songs: { create: async payload => {
+        createCalls += 1;
+        if (createCalls === 1) {
+          rejectedPayload = payload;
+          const error = new Error('Genre definition is no longer available.');
+          error.status = 422; error.code = 'UNKNOWN_TAG_DEFINITION'; error.category = 'Genre';
+          throw error;
+        }
+        persistedSong = { ...payload, id: 987636, created_at: '2026-10-10T12:00:00.000Z',
+          updated_at: version, _sync: undefined };
+        return persistedSong;
+      } },
+    };
+    try {
+      await cache.savePendingSong(local, initialOperationId);
+      const rejected = await cache.syncWithServer(api);
+      expect(rejected.ok).toBe(false);
+      expect(rejected.error).toMatch(/Genre definition is no longer available/i);
+      const pendingAtReject = (await cache.getPendingMutations()).find(item => item.id === localId);
+      expect(pendingAtReject).toMatchObject({ op_id: initialOperationId, rejected_code: 'UNKNOWN_TAG_DEFINITION',
+        rejected_category: 'Genre', sent_payload: expect.objectContaining({ title: local.title }) });
+      expect(rejectedPayload).toMatchObject({ title: local.title, artist: local.artist, bpm: 111,
+        chart_source: local.chart_source, vibes: local.vibes });
+      expect(await cache.getCachedSong(localId)).toMatchObject({ id: localId, title: local.title,
+        chart_source: local.chart_source, vibes: local.vibes });
+
+      const beforeCorrection = await cache.getCachedSong(localId);
+      await cache.savePendingSong({ ...beforeCorrection, title: 'Invented corrected create',
+        genres: [{ name: 'Invented available Genre', is_primary: true }] }, initialOperationId);
+      const correctedQueue = (await cache.getPendingMutations()).find(item => item.id === localId);
+      expect(correctedQueue.op_id).not.toBe(initialOperationId);
+      expect(correctedQueue.sent).toBe(false);
+      expect(correctedQueue.sent_payload).toBeUndefined();
+      expect(correctedQueue.rejected_code).toBeUndefined();
+      expect(await cache.getCachedSong(localId)).toMatchObject({ id: localId,
+        title: 'Invented corrected create', artist: local.artist, bpm: 111,
+        chart_source: local.chart_source, vibes: local.vibes });
+
+      const retried = await cache.syncWithServer(api);
+      expect(retried.ok).toBe(true);
+      expect(createCalls).toBe(2);
+      expect(await cache.getRedirectedSongId(localId)).toBe(987636);
+      expect(await cache.getCachedSong(localId)).toBeUndefined();
+      expect(await cache.getCachedSong(987636)).toMatchObject({ id: 987636,
+        title: 'Invented corrected create', artist: local.artist, bpm: 111,
+        chart_source: local.chart_source, vibes: local.vibes,
+        genres: [{ name: 'Invented available Genre', is_primary: true }] });
+      expect(await cache.getPendingMutations()).toEqual([]);
+    } finally {
+      await cache.clearDirty(localId);
+      await cache.deleteCachedSong(localId);
+      await cache.clearDirty(987636);
+      await cache.deleteCachedSong(987636);
+    }
+  });
+
+  it('corrects a definitively rejected existing update without changing its original server base token', async () => {
+    const id = 987635;
+    const oldGenre = { name: 'Invented pre-rejection Genre', is_primary: true };
+    const rejectedGenre = { name: 'Invented missing Genre', is_primary: true };
+    const correctedGenre = { name: 'Invented corrected Genre', is_primary: true };
+    const original = { id, title: 'Invented existing validation song', artist: 'Invented retained artist',
+      bpm: 96, genres: [oldGenre], vibes: ['Invented retained Vibe'], chart_source: 'Invented preserved chart',
+      chart_content: { sections: [{ lines: [{ text: 'Invented preserved chart' }] }] }, updated_at: version };
+    const initialBaseline = { ...original };
+    const rejectedDraft = { ...original, title: 'Invented corrected existing title', genres: [rejectedGenre] };
+    const correctionBaseline = { ...original, ...rejectedDraft, updated_at: version };
+    let updateCalls = 0;
+    let finalServer;
+    try {
+      await cache.cacheSongs([original]);
+      await cache.savePendingSong(rejectedDraft, null, {
+        baseline: initialBaseline, changedFields: ['title', 'genres'],
+      });
+      const api = {
+        library: async () => ({ songs: [finalServer || original] }),
+        setlists: { all: async () => [] },
+        songs: { update: async (_songId, payload) => {
+          updateCalls += 1;
+          expect(payload.base_updated_at).toBe(version);
+          if (updateCalls === 1) {
+            expect(payload).toMatchObject({ title: rejectedDraft.title, genres: [rejectedGenre] });
+            const error = new Error('The Genre definition is no longer available.');
+            error.status = 422; error.code = 'UNKNOWN_TAG_DEFINITION'; error.category = 'Genre';
+            throw error;
+          }
+          expect(payload).toMatchObject({ title: rejectedDraft.title, genres: [correctedGenre],
+            bpm: original.bpm });
+          expect(payload).not.toHaveProperty('chart_source');
+          finalServer = { ...rejectedDraft, genres: [correctedGenre], updated_at: '2026-10-10T12:00:00.000006Z' };
+          return finalServer;
+        } },
+      };
+      const first = await cache.syncWithServer(api);
+      expect(first).toMatchObject({ ok: false, status: 422, code: 'UNKNOWN_TAG_DEFINITION', category: 'Genre' });
+      const rejectedQueue = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      expect(rejectedQueue).toMatchObject({ rejected_code: 'UNKNOWN_TAG_DEFINITION', rejected_category: 'Genre',
+        sent_payload: expect.objectContaining({ base_updated_at: version }) });
+
+      const latest = await cache.getCachedSong(id);
+      await cache.savePendingSong({ ...latest, genres: [correctedGenre] }, null, {
+        baseline: correctionBaseline, changedFields: ['genres'],
+      });
+      const correctedQueue = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      expect(correctedQueue.op_id).not.toBe(rejectedQueue.op_id);
+      expect(correctedQueue.rejected_code).toBeUndefined();
+      expect(correctedQueue.sent_payload).toBeUndefined();
+      expect((await cache.getCachedSong(id))).toMatchObject({ id, title: rejectedDraft.title,
+        artist: original.artist, bpm: original.bpm, chart_source: original.chart_source,
+        genres: [correctedGenre], vibes: original.vibes,
+        _sync: { base_updated_at: version, genres_unchanged: false } });
+
+      const retried = await cache.syncWithServer(api);
+      expect(retried.ok).toBe(true);
+      expect(updateCalls).toBe(2);
+      expect(await cache.getCachedSong(id)).toMatchObject({ id, title: rejectedDraft.title,
+        genres: [correctedGenre], vibes: original.vibes, chart_source: original.chart_source,
+        updated_at: finalServer.updated_at });
+      expect((await cache.getPendingMutations()).some(item => String(item.id) === String(id))).toBe(false);
+    } finally {
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
+  it.each(['create', 'update'])('rotates a %s only after its matching in-flight 422 when corrected', async operationType => {
+    const id = operationType === 'create' ? cache.makeLocalSongId() : 987634;
+    const base = { id, title: `Invented in-flight ${operationType} correction`, artist: 'Synthetic retained artist',
+      bpm: 96, chart_source: 'Invented retained chart bytes', chart_content: { sections: [] },
+      genres: [{ name: 'Invented rejected Genre', is_primary: true }], vibes: ['Invented retained Vibe'],
+      updated_at: version, _sync: { operation: operationType } };
+    const baseline = { ...base, _sync: undefined };
+    const correction = [{ name: 'Invented corrected Genre', is_primary: true }];
+    let dispatchStarted;
+    const started = new Promise(resolve => { dispatchStarted = resolve; });
+    let rejectResponse;
+    const response = new Promise((_resolve, reject) => { rejectResponse = reject; });
+    try {
+      if (operationType === 'update') await cache.cacheSongs([baseline]);
+      await cache.savePendingSong(base);
+      const api = { library: async () => ({ songs: [] }), setlists: { all: async () => [] }, songs: {
+        [operationType]: async () => { dispatchStarted(); return response; },
+      } };
+      const syncing = cache.syncWithServer(api);
+      await started;
+      const dispatched = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      const frozen = structuredClone(dispatched.sent_payload);
+      const current = await cache.getCachedSong(id);
+      const corrected = await cache.savePendingSong({ ...current, genres: correction, bpm: 123 }, null,
+        operationType === 'update' ? { baseline: current, changedFields: ['genres', 'bpm'] } : null);
+      expect(corrected).toMatchObject({ id, artist: base.artist, chart_source: base.chart_source,
+        chart_content: base.chart_content, vibes: base.vibes, bpm: 123 });
+      expect((await cache.getPendingMutations()).find(item => String(item.id) === String(id)).sent_payload).toEqual(frozen);
+      expect((await cache.getPendingMutations()).find(item => String(item.id) === String(id)).op_id).toBe(dispatched.op_id);
+
+      const error = new Error('The selected Genre is no longer available.');
+      Object.assign(error, { status: 422, code: 'UNKNOWN_TAG_DEFINITION', category: 'Genre' });
+      rejectResponse(error);
+      expect(await syncing).toMatchObject({ ok: false, status: 422, code: 'UNKNOWN_TAG_DEFINITION' });
+      const after = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      expect(after.op_id).not.toBe(dispatched.op_id);
+      expect(after.sent).toBe(false);
+      expect(after.sent_payload).toBeUndefined();
+      expect(after.rejected_code).toBeUndefined();
+      expect(await cache.markSongValidationRejected(id, dispatched.op_id, dispatched.sent_revision,
+        'UNKNOWN_TAG_DEFINITION', 'Genre')).toBe(false);
+      expect((await cache.getCachedSong(id))).toMatchObject({ id, bpm: 123, genres: correction,
+        artist: base.artist, chart_source: base.chart_source, vibes: base.vibes });
+    } finally {
+      rejectResponse?.(new Error('cleanup release'));
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
+  it('keeps a frozen dispatched payload after an uncertain network result and a local correction', async () => {
+    const id = 987633;
+    const original = { id, title: 'Invented uncertain correction', artist: 'Synthetic', bpm: 90,
+      genres: [{ name: 'Invented uncertain Genre', is_primary: true }], vibes: ['Invented retained Vibe'],
+      chart_source: 'Invented uncertain chart', chart_content: { sections: [] }, updated_at: version };
+    try {
+      await cache.cacheSongs([original]);
+      await cache.savePendingSong({ ...original, _sync: { operation: 'update', base_updated_at: version } });
+      const failed = await cache.syncWithServer({ library: async () => ({ songs: [] }),
+        setlists: { all: async () => [] }, songs: { update: async () => { throw new TypeError('network unavailable'); } } });
+      expect(failed.ok).toBe(false);
+      const before = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      const current = await cache.getCachedSong(id);
+      await cache.savePendingSong({ ...current, genres: [{ name: 'Invented later correction', is_primary: true }] }, null,
+        { baseline: current, changedFields: ['genres'] });
+      const after = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
+      expect(after).toMatchObject({ op_id: before.op_id, sent: true,
+        sent_revision: before.sent_revision, sent_payload: before.sent_payload });
+      expect(after.rejected_code).toBeUndefined();
+    } finally {
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
   it('rebases edits made while an earlier offline revision awaits acknowledgement', async () => {
     const id = 987641;
     const source = 'Invented original in-flight chart';

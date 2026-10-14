@@ -1,11 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
+const { execFileSync, spawnSync } = require('node:child_process');
+const path = require('node:path');
 const { requireIsolatedTarget, verifyHarnessIdentity } = require('../t11-guards.cjs');
 requireIsolatedTarget({ isolated: process.env.CCM_T11_ISOLATED,
   baseUrl: process.env.E2E_BASE_URL, runId: process.env.CCM_T11_RUN_ID });
 const { pool } = require('../../server/db.js');
 const { chartToText } = require('../../server/chartParser.js');
+const dbExt = require('../../server/db_ext.js');
 
 const base = process.env.E2E_BASE_URL;
 assert.ok(base, 'T11 harness must provide the isolated E2E_BASE_URL');
@@ -15,7 +18,39 @@ const createdGenres = [];
 const createdGenreNames = new Map();
 const createdVibes = [];
 const createdVibeNames = new Map();
-test.after(async () => pool.end());
+let initialArtistIds = new Set();
+let initialReceiptIds = new Set();
+test.before(async () => {
+  await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
+  initialArtistIds = new Set((await pool.query('SELECT id FROM public.artists')).rows.map(row => row.id));
+  initialReceiptIds = new Set((await pool.query('SELECT operation_id FROM public.mutation_receipts')).rows.map(row => row.operation_id));
+});
+test.after(async () => {
+  try {
+    const receiptRows = (await pool.query('SELECT operation_id FROM public.mutation_receipts ORDER BY operation_id')).rows;
+    const newReceiptIds = receiptRows.map(row => row.operation_id).filter(id => !initialReceiptIds.has(id));
+    if (newReceiptIds.length) {
+      const removed = await pool.query('DELETE FROM public.mutation_receipts WHERE operation_id=ANY($1::uuid[]) RETURNING operation_id', [newReceiptIds]);
+      assert.deepEqual(new Set(removed.rows.map(row => row.operation_id)), new Set(newReceiptIds),
+        'all API-test-created mutation receipts are removed by exact operation ID');
+    }
+    const artists = (await pool.query('SELECT id,name FROM public.artists ORDER BY id')).rows
+      .filter(row => !initialArtistIds.has(row.id) && /^T1[19] /.test(row.name));
+    for (const artist of artists) {
+      assert.equal((await pool.query('SELECT 1 FROM public.songs WHERE artist_id=$1', [artist.id])).rowCount, 0,
+        `test-created artist ${artist.id} must have no song references before cleanup`);
+      const removed = await pool.query(`DELETE FROM public.artists WHERE id=$1 AND name=$2 AND NOT EXISTS
+        (SELECT 1 FROM public.songs WHERE artist_id=$1) RETURNING id`, [artist.id, artist.name]);
+      assert.equal(removed.rowCount, 1, `test-created artist ${artist.id} is removed by exact ID/name`);
+    }
+    const remainingReceipts = (await pool.query('SELECT operation_id FROM public.mutation_receipts')).rows
+      .map(row => row.operation_id).filter(id => !initialReceiptIds.has(id));
+    assert.deepEqual(remainingReceipts, [], 'API test leaves no task-created mutation receipts');
+    const remainingArtists = (await pool.query('SELECT id FROM public.artists')).rows
+      .filter(row => !initialArtistIds.has(row.id));
+    assert.deepEqual(remainingArtists, [], 'API test leaves no task-created artists');
+  } finally { await pool.end(); }
+});
 const json = async (method, path, body) => {
   const response = await fetch(new URL(path, base), {
     method,
@@ -27,6 +62,21 @@ const json = async (method, path, body) => {
   try { value = await response.json(); } catch { /* keep status for assertion */ }
   return { response, value };
 };
+
+async function waitForObservedLockWait(queryFragment, label, timeoutMs = 8_000) {
+  const deadline = Date.now() + timeoutMs;
+  let observed;
+  while (Date.now() < deadline) {
+    const result = await pool.query(`SELECT pid,query,pg_blocking_pids(pid) AS blockers
+      FROM pg_stat_activity
+      WHERE datname=current_database() AND state='active' AND wait_event_type='Lock'
+        AND query ILIKE $1 AND pid<>pg_backend_pid()`, [`%${queryFragment}%`]);
+    observed = result.rows.find(row => row.blockers.length > 0);
+    if (observed) return observed;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error(`${label}: no blocked lock wait observed within ${timeoutMs}ms. Last candidate: ${JSON.stringify(observed)}`);
+}
 
 test('T13 imported-like NULL-source fixture stays NULL through no-op and metadata saves', async () => {
   await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
@@ -68,6 +118,21 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
   let genreId;
   let setlistId;
   try {
+    for (const [category, name] of [
+      ['Genre', 'T11 API synthetic genre'], ['Genre', 'T11 API secondary'],
+      ['Genre', 'T11 API shared category name'], ['Vibe', 'T11 API shared category name'],
+      ['Vibe', 'T11 API calm'],
+    ]) {
+      const definition = await json('POST', '/api/tag-definitions', { category, name });
+      assert.equal(definition.response.status, 201, JSON.stringify(definition.value));
+      if (category === 'Genre') {
+        createdGenres.push(definition.value.id);
+        createdGenreNames.set(definition.value.id, name);
+      } else {
+        createdVibes.push(definition.value.id);
+        createdVibeNames.set(definition.value.id, name);
+      }
+    }
     for (const [title, chart] of [
       ['T11 API song A', 'Invented API verse\nInvented lyric A'],
       ['T11 API song B', 'Invented API verse\nInvented lyric B'],
@@ -347,6 +412,321 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
         AND NOT EXISTS (SELECT 1 FROM public.song_vibes sv WHERE sv.vibe_id=v.id)`, [id, createdVibeNames.get(id)]);
       assert.equal((await pool.query('SELECT 1 FROM public.vibes WHERE id=$1', [id])).rowCount, 0,
         `owned T11 Vibe definition ${id} (${createdVibeNames.get(id)}) remains after cleanup`);
+    }
+  }
+});
+
+test('existing definitions reject unknown/ambiguous assignment atomically and lock assignment against deletion', async () => {
+  await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
+  assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'ccm_test');
+  const suffix = randomUUID();
+  const title = `T11 validation song ${suffix}`;
+  const artist = `T11 validation artist ${suffix}`;
+  const unknownGenre = `T11 unknown Genre ${suffix}`;
+  const ambiguousGenre = `T11 ambiguous Genre ${suffix}`;
+  const ambiguousStored = ambiguousGenre.replace('T11 ambiguous', 'T11  ambiguous');
+  const operation = randomUUID();
+  const fixtureReceiptIds = [operation];
+  const fixtureArtistNames = new Set([artist]);
+  const beforeGenreIds = new Set((await pool.query('SELECT id FROM public.genres')).rows.map(row => row.id));
+  const beforeVibeIds = new Set((await pool.query('SELECT id FROM public.vibes')).rows.map(row => row.id));
+  let songId;
+  const raceSongIds = [];
+  const raceGenreIds = [];
+  const definitionNamesById = new Map();
+  let ambiguousIds = [];
+  const blockers = [];
+  const rowSnapshot = async id => {
+    const result = await pool.query(`SELECT to_jsonb(s) AS song, to_jsonb(a) AS artist,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('join',to_jsonb(sg),'definition',to_jsonb(g))
+        ORDER BY sg.genre_id) FROM public.song_genres sg JOIN public.genres g ON g.id=sg.genre_id WHERE sg.song_id=s.id),'[]'::jsonb) AS genres,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('join',to_jsonb(sv),'definition',to_jsonb(v))
+        ORDER BY sv.vibe_id) FROM public.song_vibes sv JOIN public.vibes v ON v.id=sv.vibe_id WHERE sv.song_id=s.id),'[]'::jsonb) AS vibes
+      FROM public.songs s JOIN public.artists a ON a.id=s.artist_id WHERE s.id=$1`, [id]);
+    return result.rows[0] || null;
+  };
+  try {
+    const created = await json('POST', '/api/songs', { title, artist, chart_written_key: 'C',
+      chart_source: 'Verse\nInvented validation fixture', operation_id: operation });
+    assert.equal(created.response.status, 201, JSON.stringify(created.value));
+    songId = created.value.id;
+    const before = await rowSnapshot(songId);
+
+    const unknownCreateOperation = randomUUID();
+    const unknownCreate = await json('POST', '/api/songs', { title: `${title} rejected create`,
+      artist: `${artist} rejected create`, genres: [{ name: unknownGenre, is_primary: true }],
+      chart_source: 'Invented rejected create', operation_id: unknownCreateOperation });
+    assert.equal(unknownCreate.response.status, 422);
+    assert.deepEqual(unknownCreate.value, { error: `Genre definition “${unknownGenre}” is no longer available. Choose an existing definition or remove the assignment.`,
+      code: 'UNKNOWN_TAG_DEFINITION', category: 'Genre' });
+    assert.equal((await pool.query('SELECT 1 FROM public.songs WHERE title=$1', [`${title} rejected create`])).rowCount, 0);
+    assert.equal((await pool.query('SELECT 1 FROM public.artists WHERE name=$1', [`${artist} rejected create`])).rowCount, 0);
+    assert.equal((await pool.query('SELECT 1 FROM public.mutation_receipts WHERE operation_id=$1', [unknownCreateOperation])).rowCount, 0);
+    assert.equal(JSON.stringify(await rowSnapshot(songId)), JSON.stringify(before));
+
+    const invalidName = await json('POST', `/api/songs/${songId}/tags`, {
+      name: '   ', category: 'Genre', base_updated_at: created.value.updated_at,
+    });
+    assert.equal(invalidName.response.status, 400);
+    assert.equal(invalidName.value.code, 'INVALID_TAG_INPUT');
+    assert.equal(invalidName.value.category, 'Genre');
+    const completeState = async () => {
+      const [songs, artists, genres, vibes, genreLinks, vibeLinks, receipts] = await Promise.all([
+        pool.query('SELECT to_jsonb(s) AS row FROM public.songs s ORDER BY id'),
+        pool.query('SELECT to_jsonb(a) AS row FROM public.artists a ORDER BY id'),
+        pool.query('SELECT to_jsonb(g) AS row FROM public.genres g ORDER BY id'),
+        pool.query('SELECT to_jsonb(v) AS row FROM public.vibes v ORDER BY id'),
+        pool.query('SELECT to_jsonb(sg) AS row FROM public.song_genres sg ORDER BY song_id,genre_id'),
+        pool.query('SELECT to_jsonb(sv) AS row FROM public.song_vibes sv ORDER BY song_id,vibe_id'),
+        pool.query('SELECT to_jsonb(r) AS row FROM public.mutation_receipts r ORDER BY operation_id'),
+      ]);
+      return JSON.stringify({ songs: songs.rows, artists: artists.rows, genres: genres.rows,
+        vibes: vibes.rows, genreLinks: genreLinks.rows, vibeLinks: vibeLinks.rows, receipts: receipts.rows });
+    };
+    const beforeMalformedInputs = await completeState();
+    for (const name of [null, 42, { malformed: true }]) {
+      const malformed = await json('POST', `/api/songs/${songId}/tags`, {
+        name, category: 'Genre', base_updated_at: created.value.updated_at,
+      });
+      assert.equal(malformed.response.status, 400, JSON.stringify({ name, value: malformed.value }));
+      assert.equal(malformed.value.code, 'INVALID_TAG_INPUT');
+      assert.equal(malformed.value.category, 'Genre');
+      assert.equal(await completeState(), beforeMalformedInputs,
+        `malformed direct-add value ${JSON.stringify(name)} rolls back every relevant row`);
+    }
+    const unknownDirect = await json('POST', `/api/songs/${songId}/tags`, {
+      name: unknownGenre, category: 'Genre', base_updated_at: created.value.updated_at,
+    });
+    assert.equal(unknownDirect.response.status, 422);
+    assert.equal(unknownDirect.value.code, 'UNKNOWN_TAG_DEFINITION');
+    assert.equal(unknownDirect.value.category, 'Genre');
+    assert.equal(JSON.stringify(await rowSnapshot(songId)), JSON.stringify(before));
+
+    const invalidUpdateOperation = randomUUID();
+    const invalidUpdate = await json('PUT', `/api/songs/${songId}`, {
+      title: `${title} must roll back`, artist: `${artist} invalid update artist`,
+      genres: [{ name: unknownGenre, is_primary: true }], chart_source: 'Invented changed chart',
+      base_updated_at: created.value.updated_at, operation_id: invalidUpdateOperation,
+    });
+    assert.equal(invalidUpdate.response.status, 422);
+    assert.equal(invalidUpdate.value.code, 'UNKNOWN_TAG_DEFINITION');
+    assert.equal(invalidUpdate.value.category, 'Genre');
+    assert.equal(JSON.stringify(await rowSnapshot(songId)), JSON.stringify(before));
+    assert.equal((await pool.query('SELECT 1 FROM public.artists WHERE name=$1', [`${artist} invalid update artist`])).rowCount, 0);
+    assert.equal((await pool.query('SELECT 1 FROM public.mutation_receipts WHERE operation_id=$1', [invalidUpdateOperation])).rowCount, 0);
+
+    const stale = await json('PUT', `/api/songs/${songId}`, {
+      title: `${title} stale`, genres: [{ name: unknownGenre, is_primary: true }],
+      base_updated_at: '2026-01-01T00:00:00.000001Z', operation_id: randomUUID(),
+    });
+    assert.equal(stale.response.status, 409);
+    assert.equal(stale.value.code, 'SONG_VERSION_CONFLICT');
+    assert.equal(JSON.stringify(await rowSnapshot(songId)), JSON.stringify(before));
+
+    const ambiguousA = await pool.query('INSERT INTO public.genres(name) VALUES($1) RETURNING id', [ambiguousGenre]);
+    const ambiguousB = await pool.query('INSERT INTO public.genres(name) VALUES($1) RETURNING id', [ambiguousStored]);
+    ambiguousIds = [ambiguousA.rows[0].id, ambiguousB.rows[0].id];
+    const ambiguous = await json('PUT', `/api/songs/${songId}`, {
+      genres: [{ name: ambiguousGenre, is_primary: true }], base_updated_at: created.value.updated_at,
+      operation_id: randomUUID(),
+    });
+    assert.equal(ambiguous.response.status, 422);
+    assert.equal(ambiguous.value.code, 'AMBIGUOUS_TAG_DEFINITION');
+    assert.equal(ambiguous.value.category, 'Genre');
+    assert.equal(JSON.stringify(await rowSnapshot(songId)), JSON.stringify(before));
+
+    const makeDefinition = async name => {
+      const result = await json('POST', '/api/tag-definitions', { category: 'Genre', name });
+      assert.equal(result.response.status, 201, JSON.stringify(result.value));
+      raceGenreIds.push(result.value.id);
+      definitionNamesById.set(result.value.id, name);
+      return result.value;
+    };
+    const makeRaceSong = async (songTitle, assigned, receiptId, songArtist = artist) => {
+      fixtureReceiptIds.push(receiptId);
+      fixtureArtistNames.add(songArtist);
+      const saved = await dbExt.createSong({ title: songTitle, artist: songArtist,
+        chart_source: 'Invented deterministic lock fixture', genres: assigned }, receiptId);
+      raceSongIds.push(saved.id);
+      return saved;
+    };
+
+    // Create locks name keys alphabetically (AAA then ZZZ). The old management
+    // path locked source ZZZ before replacement AAA, producing the reverse
+    // order. Hold the affected song so both application calls can be observed
+    // waiting on their real PostgreSQL lock before the barrier is released.
+    const targetA = await makeDefinition(`AAA lock target ${suffix}`);
+    const sourceB = await makeDefinition(`ZZZ lock source ${suffix}`);
+    const firstSong = await makeRaceSong(`${title} reassign race`,
+      [{ name: sourceB.name, is_primary: true }], randomUUID());
+    const firstBlocker = await pool.connect();
+    blockers.push(firstBlocker);
+    await firstBlocker.query('BEGIN');
+    await firstBlocker.query('SELECT id FROM public.songs WHERE id=$1 FOR UPDATE', [firstSong.id]);
+    const firstManagement = dbExt.mutateTagDefinition('Genre', sourceB.id, {
+      mode: 'reassign', replacement_id: targetA.id, expected_song_count: 1,
+    });
+    const managementWait = await waitForObservedLockWait('SELECT id FROM public.songs WHERE id=ANY($1::int[]) ORDER BY id FOR UPDATE',
+      'B→A management song lock');
+    const rejectedCreateOperation = randomUUID();
+    fixtureReceiptIds.push(rejectedCreateOperation);
+    fixtureArtistNames.add(`${artist} rejected overlapping create`);
+    const overlappingCreate = dbExt.createSong({ title: `${title} overlapping create`,
+      artist: `${artist} rejected overlapping create`, chart_source: 'Invented overlap chart',
+      genres: [{ name: targetA.name, is_primary: true }, { name: sourceB.name, is_primary: false }] }, rejectedCreateOperation);
+    const createWait = await waitForObservedLockWait('pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+      'overlapping A+B create name lock');
+    assert.notEqual(managementWait.pid, createWait.pid, 'the blocked application operations use separate PostgreSQL sessions');
+    await firstBlocker.query('COMMIT');
+    firstBlocker.release();
+    blockers.splice(blockers.indexOf(firstBlocker), 1);
+    const [managementResult, createResult] = await Promise.allSettled([firstManagement, overlappingCreate]);
+    assert.equal(managementResult.status, 'fulfilled', JSON.stringify(managementResult.reason));
+    assert.deepEqual(managementResult.value, { id: sourceB.id, name: sourceB.name, category: 'Genre',
+      mode: 'reassign', replacement_id: targetA.id, affected_songs: 1 });
+    assert.equal(createResult.status, 'rejected');
+    assert.equal(createResult.reason.status, 422);
+    assert.equal(createResult.reason.code, 'UNKNOWN_TAG_DEFINITION');
+    assert.equal(createResult.reason.category, 'Genre');
+    assert.equal((await pool.query('SELECT 1 FROM public.genres WHERE id=$1', [sourceB.id])).rowCount, 0);
+    assert.deepEqual((await pool.query('SELECT genre_id,is_primary FROM public.song_genres WHERE song_id=$1 ORDER BY genre_id',
+      [firstSong.id])).rows, [{ genre_id: targetA.id, is_primary: true }]);
+    assert.equal((await pool.query('SELECT 1 FROM public.songs WHERE title=$1', [`${title} overlapping create`])).rowCount, 0);
+    assert.equal((await pool.query('SELECT 1 FROM public.artists WHERE name=$1', [`${artist} rejected overlapping create`])).rowCount, 0);
+    assert.equal((await pool.query('SELECT 1 FROM public.mutation_receipts WHERE operation_id=$1', [rejectedCreateOperation])).rowCount, 0);
+    const versionAfterReassign = (await pool.query('SELECT updated_at FROM public.songs WHERE id=$1', [firstSong.id])).rows[0].updated_at;
+    assert.notEqual(versionAfterReassign.toISOString(), firstSong.updated_at);
+
+    // Deletion-first ordering uses the same barriers: management owns the
+    // definition key and row, the create is observed blocked there, and after
+    // deletion commits the waiting assignment rejects with a full rollback.
+    const deleteSource = await makeDefinition(`T11 deletion source ${suffix}`);
+    const remaining = await makeDefinition(`T11 deletion remaining ${suffix}`);
+    const secondSong = await makeRaceSong(`${title} deletion race`, [
+      { name: deleteSource.name, is_primary: true }, { name: remaining.name, is_primary: false },
+    ], randomUUID());
+    const secondBlocker = await pool.connect();
+    blockers.push(secondBlocker);
+    await secondBlocker.query('BEGIN');
+    await secondBlocker.query('SELECT id FROM public.songs WHERE id=$1 FOR UPDATE', [secondSong.id]);
+    const deletion = dbExt.mutateTagDefinition('Genre', deleteSource.id, {
+      mode: 'remove', expected_song_count: 1,
+    });
+    const deletionWait = await waitForObservedLockWait('SELECT id FROM public.songs WHERE id=ANY($1::int[]) ORDER BY id FOR UPDATE',
+      'definition deletion song lock');
+    const rejectedDeleteCreateOperation = randomUUID();
+    fixtureReceiptIds.push(rejectedDeleteCreateOperation);
+    fixtureArtistNames.add(`${artist} rejected deletion create`);
+    const deletionOrderedCreate = dbExt.createSong({ title: `${title} deletion-first create`,
+      artist: `${artist} rejected deletion create`, chart_source: 'Invented deletion chart',
+      genres: [{ name: deleteSource.name, is_primary: true }] }, rejectedDeleteCreateOperation);
+    const deletionCreateWait = await waitForObservedLockWait('pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+      'assignment blocked behind definition deletion');
+    assert.notEqual(deletionWait.pid, deletionCreateWait.pid);
+    await secondBlocker.query('COMMIT');
+    secondBlocker.release();
+    blockers.splice(blockers.indexOf(secondBlocker), 1);
+    const [deletionResult, deletionCreateResult] = await Promise.allSettled([deletion, deletionOrderedCreate]);
+    assert.equal(deletionResult.status, 'fulfilled', JSON.stringify(deletionResult.reason));
+    assert.equal(deletionResult.value.affected_songs, 1);
+    assert.equal(deletionCreateResult.status, 'rejected');
+    assert.equal(deletionCreateResult.reason.status, 422);
+    assert.equal(deletionCreateResult.reason.code, 'UNKNOWN_TAG_DEFINITION');
+    assert.equal((await pool.query('SELECT 1 FROM public.genres WHERE id=$1', [deleteSource.id])).rowCount, 0);
+    assert.deepEqual((await pool.query('SELECT genre_id,is_primary FROM public.song_genres WHERE song_id=$1 ORDER BY genre_id',
+      [secondSong.id])).rows, [{ genre_id: remaining.id, is_primary: true }]);
+    assert.equal((await pool.query('SELECT 1 FROM public.songs WHERE title=$1', [`${title} deletion-first create`])).rowCount, 0);
+    assert.equal((await pool.query('SELECT 1 FROM public.artists WHERE name=$1', [`${artist} rejected deletion create`])).rowCount, 0);
+    assert.equal((await pool.query('SELECT 1 FROM public.mutation_receipts WHERE operation_id=$1', [rejectedDeleteCreateOperation])).rowCount, 0);
+  } finally {
+    for (const blocker of blockers) {
+      await blocker.query('ROLLBACK').catch(() => {});
+      blocker.release();
+    }
+    for (const id of [songId, ...raceSongIds].filter(Number.isInteger)) {
+      await pool.query('DELETE FROM public.songs WHERE id=$1', [id]);
+      assert.equal((await pool.query('SELECT 1 FROM public.songs WHERE id=$1', [id])).rowCount, 0);
+    }
+    for (const [id, name] of definitionNamesById) {
+      const removed = await pool.query(`DELETE FROM public.genres WHERE id=$1 AND name=$2
+        AND NOT EXISTS (SELECT 1 FROM public.song_genres WHERE genre_id=$1) RETURNING id`, [id, name]);
+      assert.ok(removed.rowCount <= 1, `owned lock-test definition ${id} is removed at most once`);
+      assert.equal((await pool.query('SELECT 1 FROM public.genres WHERE id=$1', [id])).rowCount, 0,
+        `owned lock-test definition ${id} is absent after exact cleanup`);
+    }
+    for (const id of ambiguousIds) {
+      await pool.query('DELETE FROM public.genres WHERE id=$1', [id]);
+      assert.equal((await pool.query('SELECT 1 FROM public.genres WHERE id=$1', [id])).rowCount, 0);
+    }
+    for (const operationId of fixtureReceiptIds) {
+      const removed = await pool.query('DELETE FROM public.mutation_receipts WHERE operation_id=$1 RETURNING operation_id', [operationId]);
+      assert.ok(removed.rowCount <= 1, `task-created receipt ${operationId} is removed at most once`);
+      assert.equal((await pool.query('SELECT 1 FROM public.mutation_receipts WHERE operation_id=$1', [operationId])).rowCount, 0,
+        `task-created receipt ${operationId} is absent after exact cleanup`);
+    }
+    for (const artistName of fixtureArtistNames) {
+      const removed = await pool.query(`DELETE FROM public.artists a WHERE a.name=$1
+        AND NOT EXISTS (SELECT 1 FROM public.songs s WHERE s.artist_id=a.id) RETURNING id`, [artistName]);
+      assert.ok(removed.rowCount <= 1, `task-created artist ${artistName} is removed at most once`);
+      assert.equal((await pool.query('SELECT 1 FROM public.artists WHERE name=$1', [artistName])).rowCount, 0,
+        `task-created artist ${artistName} is absent after cleanup or rollback`);
+    }
+
+    const snapshot = async () => {
+      const [songs, artists, genreLinks, vibeLinks, entries, setlists, receipts] = await Promise.all([
+        pool.query('SELECT to_jsonb(s) AS row FROM public.songs s ORDER BY id'),
+        pool.query('SELECT to_jsonb(a) AS row FROM public.artists a ORDER BY id'),
+        pool.query('SELECT to_jsonb(sg) AS row FROM public.song_genres sg ORDER BY song_id,genre_id'),
+        pool.query('SELECT to_jsonb(sv) AS row FROM public.song_vibes sv ORDER BY song_id,vibe_id'),
+        pool.query('SELECT to_jsonb(ss) AS row FROM public.setlist_songs ss ORDER BY setlist_id,position'),
+        pool.query('SELECT to_jsonb(sl) AS row FROM public.setlists sl ORDER BY id'),
+        pool.query('SELECT operation_id,request_hash,entity_type,resource_id,response FROM public.mutation_receipts ORDER BY operation_id'),
+      ]);
+      return JSON.stringify({ songs: songs.rows, artists: artists.rows,
+        genreLinks: genreLinks.rows, vibeLinks: vibeLinks.rows, entries: entries.rows,
+        setlists: setlists.rows, receipts: receipts.rows });
+    };
+    const protectedBefore = await snapshot();
+    const root = path.resolve(__dirname, '../../..');
+    const script = path.join(root, 'app/scripts/populate-tag-definitions.cjs');
+    const args = ['--genres', path.join(root, 'docs/genres.txt'), '--vibes', path.join(root, 'docs/vibes.txt')];
+    const executePopulation = extra => JSON.parse(execFileSync(process.execPath, [script, ...args, ...extra], {
+      cwd: path.join(root, 'app'), encoding: 'utf8', env: { ...process.env },
+    }));
+    const beforeGenreIds = new Set((await pool.query('SELECT id FROM public.genres')).rows.map(row => row.id));
+    const beforeVibeIds = new Set((await pool.query('SELECT id FROM public.vibes')).rows.map(row => row.id));
+    const existingGenres = (await pool.query('SELECT id,name FROM public.genres ORDER BY id')).rows;
+    const existingVibes = (await pool.query('SELECT id,name FROM public.vibes ORDER BY id')).rows;
+    const preview = executePopulation([]);
+    assert.equal(preview.counts.ambiguous, 0);
+    const firstApply = executePopulation(['--apply', '--expected-fingerprint', preview.fingerprint]);
+    assert.equal(firstApply.applied, preview.counts.missing);
+    const repeatedPreview = executePopulation([]);
+    const secondApply = executePopulation(['--apply', '--expected-fingerprint', repeatedPreview.fingerprint]);
+    assert.equal(secondApply.applied, 0, 'the repeated scratch application must insert nothing');
+    assert.equal(await snapshot(), protectedBefore, 'vocabulary application must preserve every song, artist, association, and receipt');
+    assert.deepEqual((await pool.query('SELECT id,name FROM public.genres WHERE id=ANY($1::int[]) ORDER BY id',
+      [existingGenres.map(row => row.id)])).rows, existingGenres, 'pre-existing Genre IDs and spellings stay exact');
+    assert.deepEqual((await pool.query('SELECT id,name FROM public.vibes WHERE id=ANY($1::int[]) ORDER BY id',
+      [existingVibes.map(row => row.id)])).rows, existingVibes, 'pre-existing Vibe IDs and spellings stay exact');
+    const ambiguousDefinition = await pool.query('INSERT INTO public.genres(name) VALUES($1) RETURNING id', ['Classic  Rock']);
+    const ambiguousPreview = spawnSync(process.execPath, [script, ...args], {
+      cwd: path.join(root, 'app'), encoding: 'utf8', env: { ...process.env },
+    });
+    assert.equal(ambiguousPreview.status, 2);
+    assert.equal(JSON.parse(ambiguousPreview.stdout).counts.ambiguous, 1);
+    await pool.query('DELETE FROM public.genres WHERE id=$1 AND name=$2',
+      [ambiguousDefinition.rows[0].id, 'Classic  Rock']);
+    assert.equal((await pool.query('SELECT 1 FROM public.genres WHERE id=$1', [ambiguousDefinition.rows[0].id])).rowCount, 0);
+    const addedGenres = (await pool.query('SELECT id,name FROM public.genres ORDER BY id')).rows.filter(row => !beforeGenreIds.has(row.id));
+    const addedVibes = (await pool.query('SELECT id,name FROM public.vibes ORDER BY id')).rows.filter(row => !beforeVibeIds.has(row.id));
+    for (const row of addedGenres) {
+      await pool.query('DELETE FROM public.genres WHERE id=$1 AND name=$2', [row.id, row.name]);
+      assert.equal((await pool.query('SELECT 1 FROM public.genres WHERE id=$1', [row.id])).rowCount, 0);
+    }
+    for (const row of addedVibes) {
+      await pool.query('DELETE FROM public.vibes WHERE id=$1 AND name=$2', [row.id, row.name]);
+      assert.equal((await pool.query('SELECT 1 FROM public.vibes WHERE id=$1', [row.id])).rowCount, 0);
     }
   }
 });

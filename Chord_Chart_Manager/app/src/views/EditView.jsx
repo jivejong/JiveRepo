@@ -1,14 +1,15 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, CheckIcon, TrashIcon } from '../components/Icons';
 import * as api from '../lib/api';
 import * as cache from '../lib/cache';
 import {
   isGeneratedChartSource, isGeneratedSourceUnchanged, parseChartBody,
 } from '../lib/chartParser';
-import { useTags } from '../hooks';
 import { eraForYear, normalizeSongTags } from '../tagMutations';
 import { offlineSongCreatedAt, primaryGenreFromAssignments } from '../lib/offlineSongFields';
 import ArtistAutocomplete from '../components/ArtistAutocomplete';
+import { loadManagedTagDefinitions } from '../lib/managedTagDefinitions';
+import { definitionKey, matchingTagDefinitions, normalizeDefinitionName } from '../lib/tagDefinitionOptions';
 
 const EDITABLE_FIELDS = [
   'title', 'artist', 'chart_written_key', 'original_key', 'default_capo', 'bpm',
@@ -62,7 +63,23 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
   if (!originalEditableValues.current) originalEditableValues.current = normalizedEditValues(form, tagSets);
   const [newGenre, setNewGenre] = useState('');
   const [newVibe, setNewVibe] = useState('');
-  const { tags: availableTags } = useTags(online);
+  const [managedDefinitions, setManagedDefinitions] = useState({ loading: true, definitions: null, source: 'loading', cacheWarning: '', error: '' });
+  const [openTagCategory, setOpenTagCategory] = useState(null);
+  const [activeTagOption, setActiveTagOption] = useState({ category: null, index: -1 });
+  const [tagAnnouncement, setTagAnnouncement] = useState('');
+  const genreInputRef = useRef(null);
+  const vibeInputRef = useRef(null);
+  const tagLoadSequence = useRef(0);
+
+  useEffect(() => {
+    let live = true;
+    const sequence = ++tagLoadSequence.current;
+    setManagedDefinitions({ loading: true, definitions: null, source: 'loading', cacheWarning: '', error: '' });
+    loadManagedTagDefinitions(online).then(result => {
+      if (live && sequence === tagLoadSequence.current) setManagedDefinitions({ loading: false, ...result });
+    });
+    return () => { live = false; };
+  }, [online]);
 
   const [saving,   setSaving]   = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -74,9 +91,9 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
     const field = category === 'Genre' ? 'genres' : 'vibes';
     setTagSets(current => {
       const rows = current[field];
-      const exists = rows.some(tag => (tag.name || tag).toLocaleLowerCase() === name.toLocaleLowerCase());
+      const exists = rows.some(tag => definitionKey(tag.name || tag) === definitionKey(name));
       let next = exists
-        ? rows.filter(tag => (tag.name || tag).toLocaleLowerCase() !== name.toLocaleLowerCase())
+        ? rows.filter(tag => definitionKey(tag.name || tag) !== definitionKey(name))
         : [...rows, category === 'Genre'
           ? { name, is_primary: rows.length === 0 }
           : name];
@@ -87,15 +104,44 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
     });
   };
 
-  const addNewTag = (category) => {
-    const input = category === 'Genre' ? newGenre : newVibe;
-    const name = input.trim().replace(/\s+/g, ' ');
+  const chooseTagDefinition = (category, definition) => {
+    const name = normalizeDefinitionName(definition.name);
     if (!name) return;
-    const rows = category === 'Genre' ? tagSets.genres : tagSets.vibes;
-    if (!rows.some(tag => (tag.name || tag).toLocaleLowerCase() === name.toLocaleLowerCase())) {
-      toggleTag(category, name);
-    }
+    toggleTag(category, name);
     if (category === 'Genre') setNewGenre(''); else setNewVibe('');
+    setOpenTagCategory(null);
+    setActiveTagOption({ category: null, index: -1 });
+    setTagAnnouncement(`${name} added to ${category}.`);
+  };
+
+  const onTagKeyDown = (event, category, options) => {
+    const activeIndex = activeTagOption.category === category ? activeTagOption.index : -1;
+    if (event.key === 'ArrowDown' && options.length) {
+      event.preventDefault();
+      setOpenTagCategory(category);
+      setActiveTagOption({ category, index: (activeIndex + 1) % options.length });
+    } else if (event.key === 'ArrowUp' && options.length) {
+      event.preventDefault();
+      setOpenTagCategory(category);
+      setActiveTagOption({ category, index: activeIndex <= 0 ? options.length - 1 : activeIndex - 1 });
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (openTagCategory === category && activeIndex >= 0 && activeIndex < options.length && options[activeIndex]) {
+        chooseTagDefinition(category, options[activeIndex]);
+      }
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setOpenTagCategory(null);
+      setActiveTagOption({ category, index: -1 });
+    }
+  };
+
+  const removeAssignedTag = (category, name) => {
+    toggleTag(category, name);
+    setOpenTagCategory(category);
+    setActiveTagOption({ category, index: -1 });
+    setTagAnnouncement(`${name} removed from ${category}.`);
+    (category === 'Genre' ? genreInputRef : vibeInputRef).current?.focus();
   };
 
   const save = async () => {
@@ -168,11 +214,26 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
                 && song?._sync?.chart_source_unchanged !== false,
             },
           };
-          await cache.savePendingSong(patched);
+          const savedLocal = await cache.savePendingSong(patched, null, {
+            baseline: {
+              ...originalEditableValues.current,
+              chart_content: originalChartContent.current,
+              updated_at: song?.updated_at ?? null,
+            },
+            changedFields,
+          });
           const result = await cache.syncWithServer({
             library: api.library, setlists: api.setlists, songs: api.songs,
           });
-          if (!result.ok) throw new Error(result.error || 'The song update remains queued for sync.');
+          if (!result.ok) {
+            if (result.status === 422
+                && ['UNKNOWN_TAG_DEFINITION', 'AMBIGUOUS_TAG_DEFINITION'].includes(result.code)) {
+              originalEditableValues.current = Object.fromEntries(EDITABLE_FIELDS.map(field => [field, savedLocal[field]]));
+              originalChartSource.current = savedLocal.chart_source || '';
+              originalChartContent.current = savedLocal.chart_content;
+            }
+            throw new Error(result.error || 'The song update remains queued for sync.');
+          }
           if (result.conflicts?.some(conflict => String(conflict.id) === String(song.id))) {
             throw new Error('The server song changed; its version was kept.');
           }
@@ -335,37 +396,77 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
           </div>
         </div>
 
-        {['Genre', 'Feel'].map(category => {
-          const isGenre = category === 'Genre';
-          const field = isGenre ? 'genres' : 'vibes';
-          const categoryLabel = isGenre ? 'Genre' : 'Vibes';
-          const selected = tagSets[field].map(tag => tag.name || tag);
-          const options = availableTags.filter(tag => tag.category === (isGenre ? 'Genre' : 'Feel'))
-            .map(tag => tag.name).concat(selected)
-            .filter((name, index, list) => list.findIndex(value => value.toLocaleLowerCase() === name.toLocaleLowerCase()) === index)
-            .sort((a, b) => a.localeCompare(b));
-          const value = isGenre ? newGenre : newVibe;
-          const setValue = isGenre ? setNewGenre : setNewVibe;
+        {[
+          { category: 'Genre', field: 'genres', label: 'Genres', value: newGenre,
+            setValue: setNewGenre, inputRef: genreInputRef, definitions: managedDefinitions.definitions?.genres || [] },
+          { category: 'Vibe', field: 'vibes', label: 'Vibes', value: newVibe,
+            setValue: setNewVibe, inputRef: vibeInputRef, definitions: managedDefinitions.definitions?.vibes || [] },
+        ].map(({ category, field, label, value, setValue, inputRef, definitions }) => {
+          const selectedRows = tagSets[field];
+          const selected = selectedRows.map(tag => tag.name || tag);
+          const options = matchingTagDefinitions(definitions, value, selected);
+          const expanded = openTagCategory === category && options.length > 0;
+          const listId = `song-${category.toLocaleLowerCase()}-options`;
+          const inputId = `song-add-${category.toLocaleLowerCase()}`;
+          const activeIndex = activeTagOption.category === category
+            && activeTagOption.index >= 0 && activeTagOption.index < options.length
+            ? activeTagOption.index : -1;
           return (
-            <section className="form-group" key={category} aria-label={`${categoryLabel} tags`}>
-              <label className="form-label">{isGenre ? 'Genres' : 'Vibes'}</label>
-              <div className="tag-grid">
-                {options.map(name => (
-                  <button key={name} type="button"
-                    className={`tag-chip ${selected.some(item => item.toLocaleLowerCase() === name.toLocaleLowerCase()) ? 'active' : ''}`}
-                    aria-pressed={selected.some(item => item.toLocaleLowerCase() === name.toLocaleLowerCase())}
-                    onClick={() => toggleTag(category, name)}>{name}</button>
-                ))}
+            <section className="form-group assigned-tag-section" key={category} aria-label={`${category} tags`}>
+              <label className="form-label" htmlFor={inputId}>{label}</label>
+              <div className="tag-grid assigned-tag-grid" aria-label={`Assigned ${label}`}>
+                {selectedRows.map((tag, index) => {
+                  const name = tag.name || tag;
+                  return <button key={`${definitionKey(name)}-${index}`} type="button"
+                    className="tag-chip active assigned-tag-chip"
+                    aria-label={`Remove ${name} from ${category}`}
+                    onClick={() => removeAssignedTag(category, name)}>{name}<span aria-hidden="true"> ×</span></button>;
+                })}
+                {!selectedRows.length && <span className="form-help">No {label.toLocaleLowerCase()} assigned.</span>}
               </div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                <input className="form-input" value={value} placeholder={isGenre ? 'Add a genre' : 'Add a vibe'}
-                  onChange={event => setValue(event.target.value)}
-                  onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addNewTag(category); } }} />
-                <button type="button" className="btn btn-ghost" onClick={() => addNewTag(category)}>Add</button>
+              <div className="tag-autocomplete">
+                <input id={inputId} ref={inputRef} className="form-input" role="combobox"
+                  aria-label={`Add ${category}`} aria-autocomplete="list" aria-expanded={expanded}
+                  aria-controls={expanded ? listId : undefined}
+                  aria-activedescendant={expanded && activeIndex >= 0 ? `${listId}-option-${activeIndex}` : undefined}
+                  autoComplete="off" maxLength={120} disabled={managedDefinitions.loading || !managedDefinitions.definitions || !definitions.length}
+                  value={value} placeholder={`Search existing ${category.toLocaleLowerCase()} definitions`}
+                  onChange={event => { setValue(event.target.value); setOpenTagCategory(category); setActiveTagOption({ category, index: -1 }); }}
+                  onFocus={() => {
+                    setActiveTagOption({ category, index: -1 });
+                    if (normalizeDefinitionName(value)) setOpenTagCategory(category);
+                  }}
+                  onKeyDown={event => onTagKeyDown(event, category, options)} />
+                {expanded && <div id={listId} className="tag-suggestions" role="listbox" aria-label={`${label} definitions`}>
+                  {options.map((definition, index) => <div key={definition.id ?? definition.name}
+                    id={`${listId}-option-${index}`} role="option" aria-selected={activeIndex === index}
+                    className={`tag-suggestion${activeIndex === index ? ' active' : ''}`}
+                    ref={element => {
+                      if (!element || !expanded || activeIndex !== index) return;
+                      const list = element.parentElement;
+                      if (element.offsetTop < list.scrollTop) list.scrollTop = element.offsetTop;
+                      else if (element.offsetTop + element.offsetHeight > list.scrollTop + list.clientHeight) {
+                        list.scrollTop = element.offsetTop + element.offsetHeight - list.clientHeight;
+                      }
+                    }}
+                    onPointerDown={event => event.preventDefault()}
+                    onClick={() => chooseTagDefinition(category, definition)}>{definition.name}</div>)}
+                </div>}
               </div>
+              <div className="form-help tag-load-status" aria-live="polite">
+                {managedDefinitions.loading && `Loading ${label.toLocaleLowerCase()} definitions…`}
+                {!managedDefinitions.loading && managedDefinitions.source === 'cache' && `Showing saved ${label.toLocaleLowerCase()} definitions; changes will be checked when synced.`}
+                {!managedDefinitions.loading && !managedDefinitions.error && !definitions.length && `No ${label.toLocaleLowerCase()} definitions are available. Add them in Settings → Manage ${label.toLocaleLowerCase()}.`}
+                {!managedDefinitions.loading && definitions.length > 0 && normalizeDefinitionName(value) && !options.length && 'No matching unassigned definitions.'}
+                {!managedDefinitions.loading && definitions.length > 0 && !normalizeDefinitionName(value) && 'Type to search existing definitions.'}
+              </div>
+              {managedDefinitions.error && <div className="form-error" role="alert">{managedDefinitions.error}</div>}
+              {managedDefinitions.cacheWarning && managedDefinitions.source === 'server'
+                && <div className="form-help" role="status">{managedDefinitions.cacheWarning}</div>}
             </section>
           );
         })}
+        <span className="sr-only" aria-live="polite">{tagAnnouncement}</span>
 
         <div className="form-group">
           <label className="form-label">BeatBuddy structure</label>

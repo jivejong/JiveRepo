@@ -201,6 +201,19 @@ function sameEditValue(left, right) {
       && sameEditValue(left[key], right[key]));
 }
 
+function assignmentKey(value) {
+  return String(value?.name ?? value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
+function sameAssignmentValues(left, right, genre = false) {
+  if (!Array.isArray(left) || !Array.isArray(right)) return false;
+  const project = values => values.map(value => {
+    const key = assignmentKey(value);
+    return genre ? `${key}:${value && typeof value === 'object' && value.is_primary === true}` : key;
+  }).filter(value => !value.startsWith(':')).sort();
+  return sameEditValue(project(left), project(right));
+}
+
 function mergeExistingOfflineEdit(latest, submitted, pendingMutation, baseline, changedFields) {
   if (!latest || latest._sync?.operation === 'delete') {
     throw new Error('This song was removed or changed in another tab. Reload it and retry your save.');
@@ -235,11 +248,19 @@ function mergeExistingOfflineEdit(latest, submitted, pendingMutation, baseline, 
   const chartChangePending = changedFields.includes('chart_source')
     || latest._sync?.chart_source_unchanged === false
     || (pendingUpdate && latest._sync?.chart_source_unchanged !== true);
+  const genresChangePending = changedFields.includes('genres')
+    || latest._sync?.genres_unchanged === false
+    || (pendingUpdate && latest._sync?.genres_unchanged !== true);
+  const vibesChangePending = changedFields.includes('vibes')
+    || latest._sync?.vibes_unchanged === false
+    || (pendingUpdate && latest._sync?.vibes_unchanged !== true);
   merged._sync = {
     ...latest._sync,
     operation: 'update',
     base_updated_at: latest._sync?.base_updated_at ?? latest.updated_at ?? baseline.updated_at ?? null,
     chart_source_unchanged: !chartChangePending,
+    genres_unchanged: !genresChangePending,
+    vibes_unchanged: !vibesChangePending,
   };
   return merged;
 }
@@ -300,6 +321,21 @@ export async function savePendingSong(song, operationId = null, editMerge = null
           operation.op_id = mutationId();
           delete operation.sent_payload;
           delete operation.sent_revision;
+        }
+      }
+      if (operation.rejected_code) {
+        const rejectedField = operation.rejected_category === 'Genre' ? 'genres' : 'vibes';
+        const candidate = rejectedField === 'genres' ? patch.genres : patch.vibes;
+        const rejectedPayload = operation.sent_payload?.[rejectedField];
+        const corrected = rejectedPayload !== undefined
+          && !sameAssignmentValues(candidate, rejectedPayload, rejectedField === 'genres');
+        if (corrected) {
+          operation.op_id = mutationId();
+          operation.sent = false;
+          delete operation.sent_payload;
+          delete operation.sent_revision;
+          delete operation.rejected_code;
+          delete operation.rejected_category;
         }
       }
       operation.local_revision = (operation.local_revision || 0) + 1;
@@ -645,7 +681,49 @@ export function editablePayload(song) {
   ];
   const payload = Object.fromEntries(fields.map(field => [field, song[field]]));
   if (song._sync?.chart_source_unchanged) delete payload.chart_source;
+  if (song._sync?.operation !== 'create' && song._sync?.genres_unchanged === true) delete payload.genres;
+  if (song._sync?.operation !== 'create' && song._sync?.vibes_unchanged === true) delete payload.vibes;
   return payload;
+}
+
+export async function markSongValidationRejected(songId, operationId, sentRevision, code, category) {
+  await openDb();
+  return transact(['songs', 'meta'], 'readwrite', (transaction, setValue, fail) => {
+    const songs = transaction.objectStore('songs');
+    const meta = transaction.objectStore('meta');
+    const songRequest = songs.get(songId);
+    const queueRequest = meta.get('pending_mutations');
+    const ready = () => {
+      if (songRequest.readyState !== 'done' || queueRequest.readyState !== 'done') return;
+      const local = songRequest.result;
+      const queue = queueRequest.result?.value || [];
+      const operation = queue.find(item => item.entity === 'song' && item.op_id === operationId);
+      if (!operation || !local || (operation.sent_revision || 0) !== sentRevision) return setValue(false);
+      if (!['UNKNOWN_TAG_DEFINITION', 'AMBIGUOUS_TAG_DEFINITION'].includes(code)
+          || !['Genre', 'Vibe'].includes(category)) return fail(new Error('Invalid tag-definition rejection response.'));
+      const field = category === 'Genre' ? 'genres' : 'vibes';
+      const current = field === 'genres' ? local.genres : local.vibes;
+      const dispatched = operation.sent_payload?.[field];
+      const correctedWhileInFlight = operation.local_revision !== sentRevision
+        && dispatched !== undefined
+        && !sameAssignmentValues(current, dispatched, field === 'genres');
+      if (correctedWhileInFlight) {
+        operation.op_id = mutationId();
+        operation.sent = false;
+        delete operation.sent_payload;
+        delete operation.sent_revision;
+        delete operation.rejected_code;
+        delete operation.rejected_category;
+      } else {
+        operation.sent = false;
+        operation.rejected_code = code;
+        operation.rejected_category = category;
+      }
+      meta.put({ key: 'pending_mutations', value: queue, updatedAt: Date.now() });
+      setValue(true);
+    };
+    songRequest.onsuccess = queueRequest.onsuccess = ready;
+  });
 }
 
 async function keepServerVersion(songId, songApi) {
@@ -748,7 +826,13 @@ async function acknowledgeSongUpdate(songId, sentRevision, sentOperationId, save
         // Keep edits made during the request, but rebase them on its committed
         // server version. The next sync dispatches a fresh immutable payload.
         current.updated_at = saved.updated_at;
-        current._sync = { ...current._sync, operation: 'update', base_updated_at: saved.updated_at };
+        current._sync = {
+          ...current._sync,
+          operation: 'update',
+          base_updated_at: saved.updated_at,
+          genres_unchanged: sameAssignmentValues(current.genres, saved.genres, true),
+          vibes_unchanged: sameAssignmentValues(current.vibes, saved.vibes),
+        };
         // The acknowledged UUID now names the dispatched revision's receipt;
         // later local work needs a new idempotency key.
         operation.op_id = mutationId();
@@ -810,7 +894,9 @@ async function acknowledgeSongCreate(localId, sentRevision, sentOperationId, sav
         && (operation.local_revision || 0) > sentRevision);
       if (changedAfterDispatch) {
         const rebased = { ...local, id: serverId, created_at: saved.created_at, updated_at: saved.updated_at,
-          _sync: { ...local._sync, operation: 'update', base_updated_at: saved.updated_at } };
+          _sync: { ...local._sync, operation: 'update', base_updated_at: saved.updated_at,
+            genres_unchanged: sameAssignmentValues(local.genres, saved.genres, true),
+            vibes_unchanged: sameAssignmentValues(local.vibes, saved.vibes) } };
         songs.delete(localId);
         songs.put(rebased);
         operation.id = serverId;
@@ -852,8 +938,13 @@ async function pushPendingSongs(songApi, assertSyncOwned) {
 
     const operation = local._sync?.operation || 'update';
     const baseUpdatedAt = local._sync?.base_updated_at || local.updated_at || null;
+    if (queued.rejected_code) {
+      const category = queued.rejected_category || 'tag';
+      throw new Error(`${category} assignment needs correction before sync (${queued.rejected_code}).`);
+    }
     const dispatch = operation === 'create' ? await markSongCreateDispatched(songId) : null;
     local = dispatch?.local || local;
+    let dispatchedOperation = dispatch?.operation || null;
 
     try {
       if (operation === 'create') {
@@ -869,6 +960,7 @@ async function pushPendingSongs(songApi, assertSyncOwned) {
       } else {
         const dispatchUpdate = await markSongUpdateDispatched(songId);
         local = dispatchUpdate.local;
+        dispatchedOperation = dispatchUpdate.operation;
         const sent = dispatchUpdate.operation.sent_payload;
         const saved = await songApi.update(songId, sent);
         await assertSyncOwned();
@@ -883,6 +975,14 @@ async function pushPendingSongs(songApi, assertSyncOwned) {
       pushed += 1;
     } catch (error) {
       await assertSyncOwned();
+      if (error.status === 422
+          && ['UNKNOWN_TAG_DEFINITION', 'AMBIGUOUS_TAG_DEFINITION'].includes(error.code)
+          && dispatchedOperation) {
+        await markSongValidationRejected(songId, dispatchedOperation.op_id,
+          dispatchedOperation.sent_revision || 0, error.code, error.category);
+        error.message = `${error.category} (${error.code}): ${error.message}`;
+        throw error;
+      }
       const serverWins = operation !== 'create'
         && (error.status === 404 || error.status === 409);
       if (!serverWins) throw error;
@@ -1180,7 +1280,13 @@ export async function syncWithServer({ library, setlists: setlistApi, songs: son
   } catch (error) {
     const message = error?.message || 'IndexedDB transaction failed';
     console.warn('Sync failed:', message);
-    return { ok: false, error: message };
+    return {
+      ok: false,
+      error: message,
+      ...(Number.isInteger(error?.status) ? { status: error.status } : {}),
+      ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+      ...(typeof error?.category === 'string' ? { category: error.category } : {}),
+    };
   }
   });
 }

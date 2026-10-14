@@ -204,8 +204,15 @@ test('two stale offline editors merge disjoint fields and sync the latest chart 
       expect(merged.mutation).toMatchObject({ local_revision: 2 });
       expect(merged.mutation.sent).toBeUndefined();
 
-      const syncResponse = pageA.waitForResponse(response => response.url().endsWith(`/api/songs/${song.id}`)
-        && response.request().method() === 'PUT');
+      const syncResponse = new Promise(resolve => {
+        const onResponse = response => {
+          if (response.url().endsWith(`/api/songs/${song.id}`) && response.request().method() === 'PUT') {
+            context.off('response', onResponse);
+            resolve(response);
+          }
+        };
+        context.on('response', onResponse);
+      });
       await context.setOffline(false);
       const response = await syncResponse;
       expect(response.ok()).toBeTruthy();

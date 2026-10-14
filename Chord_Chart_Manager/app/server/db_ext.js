@@ -18,10 +18,14 @@ const crypto = require("crypto");
 const {
   parseChartBody, chartToText, isGeneratedSourceUnchanged, isGeneratedChartSource,
 } = require("./chartParser");
+const {
+  definitionKey, findTagDefinition, lockTagDefinitionNames, normalizeDefinitionName, resolveTagDefinitionSet,
+} = require("./tagDefinitionNames");
 
 function conflictError() {
   const error = new Error("Song changed on the server; server version kept");
   error.status = 409;
+  error.code = "SONG_VERSION_CONFLICT";
   return error;
 }
 
@@ -58,15 +62,18 @@ function normalizeTagSet(values, category) {
   if (!Array.isArray(values)) {
     const error = new Error(`${category} must be a list`);
     error.status = 400;
+    error.code = "INVALID_TAG_INPUT";
+    error.category = category === "Genres" ? "Genre" : "Vibe";
     throw error;
   }
   const seen = new Set();
   const result = [];
   for (const item of values) {
     const raw = typeof item === "object" && item !== null ? item.name : item;
-    const name = String(raw ?? "").trim().replace(/\s+/g, " ");
+    if (raw === null || raw === undefined || raw === "") continue;
+    const name = normalizeDefinitionName(raw, category === "Genres" ? "Genre" : "Vibe");
     if (!name) continue;
-    const key = name.toLocaleLowerCase();
+    const key = definitionKey(name);
     if (!seen.has(key)) {
       seen.add(key);
       result.push({ name, is_primary: !!(item && typeof item === "object" && item.is_primary) });
@@ -89,35 +96,15 @@ function validatedReleaseYear(value) {
 async function replaceSongTagSet(client, songId, table, joinTable, fkColumn, values) {
   await client.query(`DELETE FROM ${joinTable} WHERE song_id = $1`, [songId]);
   for (const tag of values) {
-    let found = await client.query(`SELECT id FROM ${table} WHERE LOWER(name) = LOWER($1)`, [tag.name]);
-    let tagId;
-    if (found.rows.length) tagId = found.rows[0].id;
-    else {
-      const inserted = await client.query(
-        `INSERT INTO ${table} (name) VALUES ($1)
-         ON CONFLICT (LOWER(name)) DO UPDATE SET name = ${table}.name RETURNING id`,
-        [tag.name],
-      );
-      tagId = inserted.rows[0].id;
-    }
     if (table === "genres") {
       await client.query(
         `INSERT INTO ${joinTable} (song_id, ${fkColumn}, is_primary) VALUES ($1,$2,$3)`,
-        [songId, tagId, tag.is_primary],
+        [songId, tag.id, tag.is_primary],
       );
     } else {
-      await client.query(`INSERT INTO ${joinTable} (song_id, ${fkColumn}) VALUES ($1,$2)`, [songId, tagId]);
+      await client.query(`INSERT INTO ${joinTable} (song_id, ${fkColumn}) VALUES ($1,$2)`, [songId, tag.id]);
     }
   }
-}
-
-async function getOrCreateTag(client, table, name) {
-  const { rows } = await client.query(
-    `INSERT INTO ${table} (name) VALUES ($1)
-     ON CONFLICT (LOWER(name)) DO UPDATE SET name = ${table}.name RETURNING id`,
-    [name],
-  );
-  return rows[0].id;
 }
 
 // ---------------------------------------------------------------- mapping
@@ -198,6 +185,8 @@ async function createSong(patch, operationId = null) {
         return prior.rows[0].response;
       }
     }
+    const resolvedGenres = genres === null ? null : await resolveTagDefinitionSet(client, "Genre", genres);
+    const resolvedVibes = vibes === null ? null : await resolveTagDefinitionSet(client, "Vibe", vibes);
     const artistId = await getOrCreate(client, "artists", patch.artist || "Unknown");
     // Derive structured content from the edited text.
     const source = patch.chart_source || "";
@@ -221,8 +210,8 @@ async function createSong(patch, operationId = null) {
         JSON.stringify(content),
       ]
     );
-    if (genres !== null) await replaceSongTagSet(client, rows[0].id, "genres", "song_genres", "genre_id", genres);
-    if (vibes !== null) await replaceSongTagSet(client, rows[0].id, "vibes", "song_vibes", "vibe_id", vibes);
+    if (resolvedGenres !== null) await replaceSongTagSet(client, rows[0].id, "genres", "song_genres", "genre_id", resolvedGenres);
+    if (resolvedVibes !== null) await replaceSongTagSet(client, rows[0].id, "vibes", "song_vibes", "vibe_id", resolvedVibes);
     const saved = await getSongFull(rows[0].id, client);
     if (operationId) {
       await client.query(
@@ -271,9 +260,21 @@ async function updateSongFull(id, patch, operationId) {
       return replay;
     }
 
-    // Tablet sync supplies the version it originally downloaded. Lock the row
-    // while comparing so a desktop write cannot race between this check and
-    // the update. A mismatch is a 409 and the desktop/server copy wins.
+    let resolvedGenres = null;
+    let resolvedVibes = null;
+    if (genres !== null || vibes !== null) {
+      const versionRead = await client.query(
+        `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
+         FROM songs WHERE id=$1`, [id]);
+      if (!versionRead.rowCount) { await client.query("COMMIT"); return null; }
+      if (!sameVersion(versionRead.rows[0].updated_at, patch.base_updated_at)) throw conflictError();
+      if (genres !== null) resolvedGenres = await resolveTagDefinitionSet(client, "Genre", genres);
+      if (vibes !== null) resolvedVibes = await resolveTagDefinitionSet(client, "Vibe", vibes);
+    }
+
+    // Assignment updates acquire definition locks before the song lock, as do
+    // management operations. Recheck the version under FOR UPDATE so the
+    // optimistic preflight cannot authorize a stale write.
     const locked = await client.query(
       `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,
               chart_source, chart_content
@@ -333,8 +334,8 @@ async function updateSongFull(id, patch, operationId) {
       vals.push(id);
       await client.query(`UPDATE songs SET ${sets.join(", ")} WHERE id = $${vals.length}`, vals);
     }
-    if (genres !== null) await replaceSongTagSet(client, id, "genres", "song_genres", "genre_id", genres);
-    if (vibes !== null) await replaceSongTagSet(client, id, "vibes", "song_vibes", "vibe_id", vibes);
+    if (resolvedGenres !== null) await replaceSongTagSet(client, id, "genres", "song_genres", "genre_id", resolvedGenres);
+    if (resolvedVibes !== null) await replaceSongTagSet(client, id, "vibes", "song_vibes", "vibe_id", resolvedVibes);
     if (genres !== null || vibes !== null) {
       await client.query("UPDATE songs SET updated_at = now() WHERE id = $1", [id]);
     }
@@ -473,13 +474,18 @@ async function listManagedTagDefinitions() {
 async function createTagDefinition(category, rawName) {
   const { table } = tagDefinitionTable(category);
   const name = cleanDefinitionName(rawName);
+  const client = await pool.connect();
   try {
-    const { rows } = await pool.query(`INSERT INTO ${table}(name) VALUES($1) RETURNING id,name`, [name]);
+    await client.query("BEGIN");
+    await lockTagDefinitionNames(client, category, [name]);
+    const { rows } = await client.query(`INSERT INTO ${table}(name) VALUES($1) RETURNING id,name`, [name]);
+    await client.query("COMMIT");
     return { ...rows[0], category, song_count: 0 };
   } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
     if (error.code === "23505") { error.status = 409; error.message = `A ${category} named “${name}” already exists.`; }
     throw error;
-  }
+  } finally { client.release(); }
 }
 
 async function mutateTagDefinition(category, id, mutation) {
@@ -492,17 +498,47 @@ async function mutateTagDefinition(category, id, mutation) {
     await client.query("BEGIN");
     const source = await client.query(`SELECT id,name FROM ${table} WHERE id=$1`, [id]);
     if (!source.rowCount) { const error = new Error("Definition not found."); error.status = 404; throw error; }
+    const mode = mutation.mode;
+    let replacementId = null;
+    let replacementName = null;
+    if (!Object.hasOwn(mutation, "name")) {
+      if (!['remove', 'reassign'].includes(mode)) {
+        const error = new Error("Choose whether to remove these assignments or reassign them."); error.status = 400; throw error;
+      }
+      if (mode === 'reassign') {
+        replacementId = Number(mutation.replacement_id);
+        if (!Number.isSafeInteger(replacementId) || replacementId < 1 || replacementId === id) {
+          const error = new Error("Choose a different replacement definition in the same category."); error.status = 400; throw error;
+        }
+        const replacement = await client.query(`SELECT name FROM ${table} WHERE id=$1`, [replacementId]);
+        if (!replacement.rowCount) { const error = new Error("Replacement definition not found in this category."); error.status = 400; throw error; }
+        replacementName = replacement.rows[0].name;
+      }
+    }
+    const renameName = Object.hasOwn(mutation, "name") ? cleanDefinitionName(mutation.name) : null;
+    const definitionNames = [source.rows[0].name, replacementName, renameName].filter(Boolean);
+    await lockTagDefinitionNames(client, category, definitionNames);
+
+    const definitionIds = [...new Set([id, replacementId].filter(Number.isSafeInteger))].sort((a, b) => a - b);
+    const lockedDefinitions = await client.query(
+      `SELECT id,name FROM ${table} WHERE id=ANY($1::int[]) ORDER BY id FOR UPDATE`, [definitionIds]);
+    const lockedById = new Map(lockedDefinitions.rows.map(row => [row.id, row]));
+    const lockedSource = lockedById.get(id);
+    if (!lockedSource) { const error = new Error("Definition no longer exists."); error.status = 404; throw error; }
+    if (lockedSource.name !== source.rows[0].name) {
+      const error = new Error("Definition changed while this action was being prepared. Reload and retry."); error.status = 409; throw error;
+    }
+    if (replacementId && !lockedById.has(replacementId)) {
+      const error = new Error("Replacement definition no longer exists in this category."); error.status = 400; throw error;
+    }
+
     const initiallyAffected = await client.query(`SELECT DISTINCT song_id FROM ${join} WHERE ${fk}=$1 ORDER BY song_id`, [id]);
-    let songIds = initiallyAffected.rows.map(row => row.song_id);
+    const songIds = initiallyAffected.rows.map(row => row.song_id);
     if (songIds.length) {
       await client.query("SELECT id FROM public.songs WHERE id=ANY($1::int[]) ORDER BY id FOR UPDATE", [songIds]);
     }
-    const locked = await client.query(`SELECT id,name FROM ${table} WHERE id=$1 FOR UPDATE`, [id]);
-    if (!locked.rowCount) { const error = new Error("Definition no longer exists."); error.status = 404; throw error; }
-
-    // The definition row lock fences new FK assignments. Re-read after it is
-    // acquired; if an assignment appeared while song rows were being locked,
-    // require a fresh count/confirmation rather than mutate an unseen song.
+    // Definition-key locks prevent new assignments while this count is read;
+    // song locks serialize direct removals before mutation and version bumps.
     const currentAffected = await client.query(`SELECT DISTINCT song_id FROM ${join} WHERE ${fk}=$1 ORDER BY song_id`, [id]);
     const currentSongIds = currentAffected.rows.map(row => row.song_id);
     if (currentSongIds.some(songId => !songIds.includes(songId))) {
@@ -510,32 +546,21 @@ async function mutateTagDefinition(category, id, mutation) {
       error.status = 409;
       throw error;
     }
-    songIds = currentSongIds;
+    const affectedSongIds = currentSongIds;
 
     let result;
     if (Object.hasOwn(mutation, "name")) {
-      const name = cleanDefinitionName(mutation.name);
-      await client.query(`UPDATE ${table} SET name=$1 WHERE id=$2`, [name, id]);
-      result = { id, name, category, affected_songs: songIds.length };
+      await client.query(`UPDATE ${table} SET name=$1 WHERE id=$2`, [renameName, id]);
+      result = { id, name: renameName, category, affected_songs: affectedSongIds.length };
     } else {
-      const mode = mutation.mode;
-      if (!['remove', 'reassign'].includes(mode)) {
-        const error = new Error("Choose whether to remove these assignments or reassign them."); error.status = 400; throw error;
-      }
-      if (!Number.isSafeInteger(mutation.expected_song_count) || mutation.expected_song_count !== songIds.length) {
+      if (!Number.isSafeInteger(mutation.expected_song_count) || mutation.expected_song_count !== affectedSongIds.length) {
         const error = new Error("Assignment count changed. Reload the definition and confirm the current song count.");
         error.status = 409;
         throw error;
       }
       if (mode === "reassign") {
-        const replacementId = Number(mutation.replacement_id);
-        if (!Number.isSafeInteger(replacementId) || replacementId < 1 || replacementId === id) {
-          const error = new Error("Choose a different replacement definition in the same category."); error.status = 400; throw error;
-        }
-        const replacement = await client.query(`SELECT id FROM ${table} WHERE id=$1 FOR UPDATE`, [replacementId]);
-        if (!replacement.rowCount) { const error = new Error("Replacement definition not found in this category."); error.status = 400; throw error; }
         if (category === "Genre") {
-          for (const songId of songIds) {
+          for (const songId of affectedSongIds) {
             const from = await client.query("SELECT is_primary FROM public.song_genres WHERE song_id=$1 AND genre_id=$2", [songId, id]);
             if (!from.rowCount) continue;
             const to = await client.query("SELECT is_primary FROM public.song_genres WHERE song_id=$1 AND genre_id=$2", [songId, replacementId]);
@@ -567,12 +592,12 @@ async function mutateTagDefinition(category, id, mutation) {
         }
       }
       await client.query(`DELETE FROM ${table} WHERE id=$1`, [id]);
-      result = { id, name: locked.rows[0].name, category, mode, replacement_id: mode === 'reassign' ? Number(mutation.replacement_id) : null, affected_songs: songIds.length };
+      result = { id, name: lockedSource.name, category, mode, replacement_id: mode === 'reassign' ? replacementId : null, affected_songs: affectedSongIds.length };
     }
     // A shared definition edit changes each affected song's observable tag set.
     // The existing strict-version trigger advances updated_at and makes queued
     // stale song edits follow the established 409/server-wins path.
-    if (songIds.length) await client.query("UPDATE public.songs SET updated_at=updated_at WHERE id=ANY($1::int[])", [songIds]);
+    if (affectedSongIds.length) await client.query("UPDATE public.songs SET updated_at=updated_at WHERE id=ANY($1::int[])", [affectedSongIds]);
     await client.query("COMMIT");
     return result;
   } catch (error) {
@@ -588,16 +613,27 @@ async function mutateTagDefinition(category, id, mutation) {
 // (secondary), Feel/Vibe -> vibes. Era is derived and not directly taggable.
 async function addSongTag(songId, name, category, baseUpdatedAt) {
   const cat = String(category || "").toLowerCase();
-  const cleanName = String(name || "").trim().replace(/\s+/g, " ");
-  if (!cleanName || !["genre", "feel", "vibe"].includes(cat)) {
-    const error = new Error("A tag name and Genre or Feel category are required");
+  if (!["genre", "feel", "vibe"].includes(cat)) {
+    const error = new Error("Only Genre or Vibe assignments are supported.");
     error.status = 400;
+    error.code = "INVALID_TAG_INPUT";
+    error.category = category || undefined;
     throw error;
   }
+  const definitionCategory = cat === "genre" ? "Genre" : "Vibe";
+  const cleanName = normalizeDefinitionName(name, definitionCategory);
   validateVersionToken(baseUpdatedAt, true);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const current = await client.query(
+      `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
+       FROM songs WHERE id = $1`, [songId]);
+    if (!current.rows.length) {
+      const error = new Error("Song not found"); error.status = 404; throw error;
+    }
+    if (!sameVersion(current.rows[0].updated_at, baseUpdatedAt)) throw conflictError();
+    const definition = await findTagDefinition(client, definitionCategory, cleanName);
     const locked = await client.query(
       `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
        FROM songs WHERE id = $1 FOR UPDATE`, [songId]);
@@ -606,16 +642,14 @@ async function addSongTag(songId, name, category, baseUpdatedAt) {
     }
     if (!sameVersion(locked.rows[0].updated_at, baseUpdatedAt)) throw conflictError();
     if (cat === "genre") {
-      const gid = await getOrCreateTag(client, "genres", cleanName);
       await client.query(
         `INSERT INTO song_genres (song_id, genre_id, is_primary)
          VALUES ($1,$2,NOT EXISTS (SELECT 1 FROM song_genres WHERE song_id=$1 AND is_primary))
-         ON CONFLICT (song_id, genre_id) DO NOTHING`, [songId, gid]);
+         ON CONFLICT (song_id, genre_id) DO NOTHING`, [songId, definition.id]);
     } else {
-      const vid = await getOrCreateTag(client, "vibes", cleanName);
       await client.query(
         `INSERT INTO song_vibes (song_id, vibe_id) VALUES ($1,$2)
-         ON CONFLICT DO NOTHING`, [songId, vid]);
+         ON CONFLICT DO NOTHING`, [songId, definition.id]);
     }
     await client.query("UPDATE songs SET updated_at = now() WHERE id = $1", [songId]);
     await client.query("COMMIT");

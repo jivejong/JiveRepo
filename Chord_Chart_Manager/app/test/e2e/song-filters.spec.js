@@ -1,13 +1,42 @@
 import { randomUUID } from 'node:crypto';
 import { expect, request as playwrightRequest, test } from '@playwright/test';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { pool: testDatabase } = require('../../server/db.js');
+
+async function cleanupOwnedRows(initialArtistIds, initialReceiptIds, songIds, artistPrefix, cleanupErrors) {
+  try {
+    const receipts = (await testDatabase.query('SELECT operation_id,resource_id FROM public.mutation_receipts')).rows
+      .filter(row => !initialReceiptIds.has(row.operation_id) && songIds.has(Number(row.resource_id)));
+    for (const receipt of receipts) {
+      const removed = await testDatabase.query('DELETE FROM public.mutation_receipts WHERE operation_id=$1 AND resource_id=$2 RETURNING operation_id',
+        [receipt.operation_id, receipt.resource_id]);
+      if (removed.rowCount !== 1) throw new Error(`T18 receipt ${receipt.operation_id} was not removed exactly`);
+    }
+    const artists = (await testDatabase.query('SELECT id,name FROM public.artists ORDER BY id')).rows
+      .filter(row => !initialArtistIds.has(row.id) && row.name.startsWith(artistPrefix));
+    for (const artist of artists) {
+      const removed = await testDatabase.query(`DELETE FROM public.artists a WHERE a.id=$1 AND a.name=$2
+        AND NOT EXISTS (SELECT 1 FROM public.songs s WHERE s.artist_id=a.id) RETURNING id`, [artist.id, artist.name]);
+      if (removed.rowCount !== 1) throw new Error(`T18 artist ${artist.id} still has song references or changed`);
+    }
+  } catch (error) { cleanupErrors.push(error); }
+}
 
 test('combined category filters work from cache offline and chart swipe follows filtered title order', async ({ page, context, request }) => {
+  const initialArtistIds = new Set((await testDatabase.query('SELECT id FROM public.artists')).rows.map(row => row.id));
+  const initialReceiptIds = new Set((await testDatabase.query('SELECT operation_id FROM public.mutation_receipts')).rows.map(row => row.operation_id));
   const suffix = randomUUID();
   const prefix = `T18 filter ${suffix}`;
   const shared = `T18 secondary ${suffix}`;
   const primary = `T18 primary ${suffix}`;
   const vibeA = `T18 calm ${suffix}`;
   const vibeB = `T18 bright ${suffix}`;
+  const definitions = [
+    ...[primary, shared, `T18 excluded ${suffix}`].map(name => ({ category: 'Genre', name })),
+    ...[vibeA, vibeB].map(name => ({ category: 'Vibe', name })),
+  ];
   const fixtures = [
     { title: `${prefix} Alpha`, genres: [{ name: primary, is_primary: true }, { name: shared }], vibes: [vibeA], release_year: 1979 },
     { title: `${prefix} Bravo`, genres: [{ name: shared, is_primary: true }], vibes: [vibeB], release_year: 1975 },
@@ -15,9 +44,16 @@ test('combined category filters work from cache offline and chart swipe follows 
     { title: `${prefix} Delta`, genres: [{ name: `T18 excluded ${suffix}`, is_primary: true }], vibes: [vibeA], release_year: 1970 },
   ];
   const ids = [];
+  const definitionIds = new Map();
   const cleanupRequest = await playwrightRequest.newContext({ baseURL: process.env.E2E_BASE_URL });
   let primaryError = null;
   try {
+    for (const definition of definitions) {
+      const response = await request.post('/api/tag-definitions', { data: definition });
+      if (response.status() !== 201) throw new Error(`T18 definition create failed with HTTP ${response.status()}.`);
+      const created = await response.json();
+      definitionIds.set(`${definition.category}:${definition.name}`, created.id);
+    }
     for (const fixture of fixtures) {
       const response = await request.post('/api/songs', { data: {
         ...fixture, artist: `T18 test artist ${suffix}`, chart_written_key: 'C', original_key: 'C',
@@ -119,6 +155,23 @@ test('combined category filters work from cache offline and chart swipe follows 
         if ((await cleanupRequest.get(`/api/songs/${id}`)).status() !== 404) throw new Error(`Owned T18 song ${id} remains after cleanup.`);
       } catch (error) { cleanupErrors.push(error); }
     }
+    for (const { category, name } of definitions) {
+      try {
+        const id = definitionIds.get(`${category}:${name}`);
+        if (!id) continue;
+        const removed = await cleanupRequest.delete(`/api/tag-definitions/${category}/${id}`, {
+          data: { mode: 'remove', expected_song_count: 0 },
+        });
+        if (!removed.ok()) throw new Error(`Could not remove T18 definition ${name}: HTTP ${removed.status()}.`);
+        const remaining = await cleanupRequest.get('/api/tag-definitions');
+        if (!remaining.ok()) throw new Error(`Could not verify T18 definition cleanup: HTTP ${remaining.status()}.`);
+        const values = await remaining.json();
+        if (values[category === 'Genre' ? 'genres' : 'vibes'].some(value => value.id === id)) {
+          throw new Error(`Owned T18 definition ${category}/${id} remains.`);
+        }
+      } catch (error) { cleanupErrors.push(error); }
+    }
+    await cleanupOwnedRows(initialArtistIds, initialReceiptIds, new Set(ids), 'T18 test artist ', cleanupErrors);
     await cleanupRequest.dispose().catch(error => { cleanupErrors.push(error); });
     if (cleanupErrors.length) {
       const cleanup = new AggregateError(cleanupErrors, 'T18 exact-ID fixture cleanup failed.');
@@ -130,19 +183,33 @@ test('combined category filters work from cache offline and chart swipe follows 
 });
 
 test('online filters overlay pending create, edit, and delete projections until acknowledgement', async ({ page, context, request }) => {
+  const initialArtistIds = new Set((await testDatabase.query('SELECT id FROM public.artists')).rows.map(row => row.id));
+  const initialReceiptIds = new Set((await testDatabase.query('SELECT operation_id FROM public.mutation_receipts')).rows.map(row => row.operation_id));
   const suffix = randomUUID();
   const prefix = `T18 pending ${suffix}`;
   const target = `T18 pending target ${suffix}`;
   const old = `T18 pending old ${suffix}`;
+  const pendingVibe = `T18 pending vibe ${suffix}`;
+  const definitions = [
+    { category: 'Genre', name: target }, { category: 'Genre', name: old },
+    { category: 'Vibe', name: pendingVibe },
+  ];
   const fixtures = [
-    { title: `${prefix} enters`, genres: [{ name: old, is_primary: true }], vibes: ['Calm'], release_year: 1978 },
-    { title: `${prefix} leaves`, genres: [{ name: target, is_primary: true }], vibes: ['Calm'], release_year: 1978 },
-    { title: `${prefix} deleted`, genres: [{ name: target, is_primary: true }], vibes: ['Calm'], release_year: 1978 },
+    { title: `${prefix} enters`, genres: [{ name: old, is_primary: true }], vibes: [pendingVibe], release_year: 1978 },
+    { title: `${prefix} leaves`, genres: [{ name: target, is_primary: true }], vibes: [pendingVibe], release_year: 1978 },
+    { title: `${prefix} deleted`, genres: [{ name: target, is_primary: true }], vibes: [pendingVibe], release_year: 1978 },
   ];
   const ids = [];
+  const definitionIds = new Map();
   const cleanupRequest = await playwrightRequest.newContext({ baseURL: process.env.E2E_BASE_URL });
   let primaryError = null;
   try {
+    for (const definition of definitions) {
+      const response = await request.post('/api/tag-definitions', { data: definition });
+      if (response.status() !== 201) throw new Error(`T18 pending definition create failed with HTTP ${response.status()}.`);
+      const created = await response.json();
+      definitionIds.set(`${definition.category}:${definition.name}`, created.id);
+    }
     for (const fixture of fixtures) {
       const response = await request.post('/api/songs', { data: { ...fixture, artist: `${prefix} artist`,
         chart_written_key: 'C', original_key: 'C', chart_source: 'Verse\nInvented pending filter fixture' } });
@@ -167,15 +234,20 @@ test('online filters overlay pending create, edit, and delete projections until 
     }, ids)).toBe(true);
     await page.getByRole('button', { name: 'Songs' }).click();
     const search = page.getByPlaceholder('Search songs, artists…');
+    await search.fill(`${prefix} enters`);
+    await page.locator('.song-row').filter({ hasText: `${prefix} enters` }).click();
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await expect(page.getByRole('combobox', { name: 'Add Genre' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Back' }).click();
+    await expect(search).toBeVisible();
     await search.fill(prefix);
     await expect(page.locator('.song-row')).toHaveCount(3);
 
     await context.setOffline(true);
     await page.locator('.song-row').filter({ hasText: `${prefix} enters` }).click();
     await page.getByRole('button', { name: 'Edit' }).click();
-    const genres = page.locator('[aria-label="Genre tags"]');
-    await genres.locator('input[placeholder="Add a genre"]').fill(target);
-    await genres.getByRole('button', { name: 'Add', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Add Genre' }).fill(target);
+    await page.getByRole('option', { name: target, exact: true }).click();
     await page.getByRole('button', { name: 'Save changes' }).click();
     await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
     await page.getByRole('button', { name: 'Back' }).click();
@@ -184,7 +256,7 @@ test('online filters overlay pending create, edit, and delete projections until 
     await page.locator('.song-row').click();
     await page.getByRole('button', { name: 'Edit' }).click();
     const leaveGenres = page.locator('[aria-label="Genre tags"]');
-    await leaveGenres.getByRole('button', { name: target, exact: true }).click();
+    await leaveGenres.getByRole('button', { name: `Remove ${target} from Genre` }).click();
     await page.getByRole('button', { name: 'Save changes' }).click();
     await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
     await page.getByRole('button', { name: 'Back' }).click();
@@ -199,8 +271,8 @@ test('online filters overlay pending create, edit, and delete projections until 
     await page.getByRole('button', { name: 'Add a new song' }).click();
     await page.locator('.form-group').filter({ hasText: 'Title' }).locator('input').fill(`${prefix} local create`);
     await page.locator('.form-group').filter({ hasText: 'Artist' }).locator('input').fill(`${prefix} local artist`);
-    const createGenres = page.locator('[aria-label="Genre tags"]');
-    await createGenres.getByRole('button', { name: target, exact: true }).click();
+    await page.getByRole('combobox', { name: 'Add Genre' }).fill(target);
+    await page.getByRole('option', { name: target, exact: true }).click();
     await page.locator('.form-textarea').fill('Invented local pending filter fixture');
     await page.getByRole('button', { name: 'Save changes' }).click();
     await expect(page.locator('.chart-topbar-title')).toHaveText(`${prefix} local create`);
@@ -272,6 +344,23 @@ test('online filters overlay pending create, edit, and delete projections until 
         if ((await cleanupRequest.get(`/api/songs/${id}`)).status() !== 404) throw new Error(`T18 pending song ${id} remains after cleanup.`);
       } catch (error) { cleanupErrors.push(error); }
     }
+    for (const { category, name } of definitions) {
+      try {
+        const id = definitionIds.get(`${category}:${name}`);
+        if (!id) continue;
+        const removed = await cleanupRequest.delete(`/api/tag-definitions/${category}/${id}`, {
+          data: { mode: 'remove', expected_song_count: 0 },
+        });
+        if (!removed.ok()) throw new Error(`Could not remove T18 pending definition ${name}: HTTP ${removed.status()}.`);
+        const remaining = await cleanupRequest.get('/api/tag-definitions');
+        if (!remaining.ok()) throw new Error(`Could not verify T18 pending definition cleanup: HTTP ${remaining.status()}.`);
+        const values = await remaining.json();
+        if (values[category === 'Genre' ? 'genres' : 'vibes'].some(value => value.id === id)) {
+          throw new Error(`Owned T18 pending definition ${category}/${id} remains.`);
+        }
+      } catch (error) { cleanupErrors.push(error); }
+    }
+    await cleanupOwnedRows(initialArtistIds, initialReceiptIds, new Set(ids), `${prefix} `, cleanupErrors);
     await cleanupRequest.dispose().catch(error => cleanupErrors.push(error));
     if (cleanupErrors.length) throw new AggregateError(primaryError ? [primaryError, ...cleanupErrors] : cleanupErrors,
       'T18 pending online-filter fixture cleanup failed.');

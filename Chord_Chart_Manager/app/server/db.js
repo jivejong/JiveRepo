@@ -179,7 +179,8 @@ async function exportAll() {
     ORDER BY a.name, s.title`;
   const genresQ = `
     SELECT sg.song_id, g.name, sg.is_primary
-    FROM song_genres sg JOIN genres g ON g.id = sg.genre_id`;
+    FROM song_genres sg JOIN genres g ON g.id = sg.genre_id
+    ORDER BY sg.song_id, sg.is_primary DESC, g.name`;
   const vibesQ = `
     SELECT sv.song_id, v.name
     FROM song_vibes sv JOIN vibes v ON v.id = sv.vibe_id`;

@@ -34,6 +34,17 @@ describe('tag editing data', () => {
     const omitted = JSON.parse(JSON.stringify(editablePayload({ title: 'Example' })));
     expect(Object.hasOwn(omitted, 'genres')).toBe(false);
     expect(Object.hasOwn(omitted, 'vibes')).toBe(false);
+    const unchangedAssignments = editablePayload({ genres: [{ name: 'Rock', is_primary: true }], vibes: ['Moody'],
+      _sync: { operation: 'update', genres_unchanged: true, vibes_unchanged: true } });
+    expect(unchangedAssignments).not.toHaveProperty('genres');
+    expect(unchangedAssignments).not.toHaveProperty('vibes');
+    const changedAssignment = editablePayload({ genres: [{ name: 'Rock', is_primary: true }], vibes: ['Moody'],
+      _sync: { operation: 'update', genres_unchanged: false, vibes_unchanged: true } });
+    expect(changedAssignment.genres).toEqual([{ name: 'Rock', is_primary: true }]);
+    expect(changedAssignment).not.toHaveProperty('vibes');
+    const createPayload = editablePayload({ genres: [], vibes: [],
+      _sync: { operation: 'create', genres_unchanged: true, vibes_unchanged: true } });
+    expect(createPayload).toMatchObject({ genres: [], vibes: [] });
   });
 
   it('keeps cached unassigned category values available and adds offline values from songs', () => {

@@ -232,7 +232,11 @@ app.get(/^(?!\/api\/).*/, (_req, res) => {
 app.use((err, _req, res, _next) => {
   console.error(err);
   const status = Number.isInteger(err.status) ? err.status : 500;
-  res.status(status).json({ error: status === 500 ? "Internal error" : err.message });
+  res.status(status).json({
+    error: status === 500 ? "Internal error" : err.message,
+    ...(status !== 500 && err.code ? { code: err.code } : {}),
+    ...(status !== 500 && err.category ? { category: err.category } : {}),
+  });
 });
 
 const PORT = process.env.PORT || 3000;
