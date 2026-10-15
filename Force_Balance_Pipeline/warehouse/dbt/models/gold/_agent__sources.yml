@@ -1,0 +1,53 @@
+version: 2
+
+# Phase 6. gold.deployment is owned by the Yoda agent, not by dbt: it is created from agent/sql/create_deployment.sql (doc 03,
+# "gold.deployment") and written by agent/run.py, so it is declared here as a source for dbt's tests to reference.
+#
+# The schema must be the one gold_disturbance resolves to, in every place dbt runs:
+#   --target dev   generate_schema_name returns target.schema (dev_jivejong) for every model, so gold_disturbance is
+#                  force.dev_jivejong.gold_disturbance, and this source is force.dev_jivejong.deployment.
+#   Job 1          the dbt task sets catalog=force and schema=gold on the Databricks-generated profile, so target.schema is
+#                  "gold"; gold_disturbance has +schema: gold, used literally, so it is force.gold.gold_disturbance, and this
+#                  source is force.gold.deployment.
+#   --target prod  target.schema is gold, so the same as Job 1.
+# `{{ target.schema }}` gives all three. (A literal `gold` here would point a dev test at the production table.)
+sources:
+  - name: agent
+    database: force
+    schema: "{{ target.schema }}"
+    tables:
+      - name: deployment
+        description: >
+          One row per decision of the Yoda agent or of a user (doc 03, "gold.deployment"). Written by agent/run.py with a MERGE on
+          disturbance_id; Delta enforces no unique key, so the uniqueness test below is the check that it holds.
+        columns:
+          - name: deployment_id
+            description: ULID.
+            data_tests:
+              - unique
+              - not_null
+          - name: disturbance_id
+            description: The incident decided. One decision per incident.
+            data_tests:
+              - unique
+              - not_null
+              - relationships:
+                  arguments:
+                    to: ref('gold_disturbance')
+                    field: disturbance_id
+          - name: decided_by
+            data_tests:
+              - accepted_values:
+                  arguments:
+                    values: [yoda_agent, user]
+          - name: decision
+            data_tests:
+              - accepted_values:
+                  arguments:
+                    values: [deploy, stand_down]
+          - name: rationale
+            data_tests:
+              - not_null
+          - name: decided_at
+            data_tests:
+              - not_null
