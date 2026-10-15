@@ -7,6 +7,7 @@ It raises GeminiUnavailable or BudgetExhausted, in which case the caller leaves 
 """
 from dataclasses import dataclass, field
 
+from agent.budget import BudgetExhausted, CallBudget  # noqa: F401  (re-exported)
 from agent.constraints import check_deploy, forced_stand_down
 from agent.context import constraint_inputs
 from agent.distance import distance_units, eta_hours
@@ -25,23 +26,6 @@ NUDGE = "Call exactly one of deploy or stand_down now."
 
 INFO_TOOLS = ("get_disturbance_context", "list_available_jedi", "list_available_starships")
 TERMINAL_TOOLS = ("deploy", "stand_down")
-
-
-class BudgetExhausted(Exception):
-    """The run's model-call budget is spent. The caller leaves the incident unprocessed."""
-
-
-class CallBudget:
-    def __init__(self, limit):
-        self.limit = limit
-        self.used = 0
-
-    @property
-    def spent(self):
-        return self.used >= self.limit
-
-    def take(self):
-        self.used += 1
 
 
 @dataclass
@@ -105,7 +89,6 @@ def decide(context, client, budget, *, monotonic):
             raise BudgetExhausted(f"the run's model-call budget of {budget.limit} is spent")
         if calls >= MAX_MODEL_CALLS_PER_INCIDENT:
             return finish("stand_down", reason="agent_no_decision")
-        budget.take()
         calls += 1
         started = monotonic()
         try:

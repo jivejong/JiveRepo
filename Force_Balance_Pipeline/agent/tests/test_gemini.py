@@ -5,6 +5,7 @@ import unittest
 import _support as S
 from _support import FakeClock, FakeOpener
 from agent import gemini
+from agent.budget import BudgetExhausted, CallBudget
 from agent.prompt import SYSTEM_PROMPT
 
 KEY = "AIza-NOT-A-REAL-KEY-4417"
@@ -188,6 +189,48 @@ class Answers(unittest.TestCase):
         client, opener, clock = make([(429, "x"), finish("MAX_TOKENS"), OK])
         client.generate(CONTENTS)
         self.assertEqual((len(opener.requests), clock.sleeps), (3, [10]))
+
+
+class Budget(unittest.TestCase):
+    def test_a_plain_call_costs_one_unit(self):
+        budget = CallBudget(10)
+        client, _, _ = make([OK], budget=budget)
+        client.generate(CONTENTS)
+        self.assertEqual(budget.used, 1)
+
+    def test_a_retried_call_costs_two_units(self):
+        budget = CallBudget(10)
+        client, opener, _ = make([(429, "slow"), OK], budget=budget)
+        client.generate(CONTENTS)
+        self.assertEqual((len(opener.requests), budget.used), (2, 2))
+
+    def test_a_response_retry_costs_two_units(self):
+        budget = CallBudget(10)
+        client, _, _ = make([finish("MAX_TOKENS"), OK], budget=budget)
+        client.generate(CONTENTS)
+        self.assertEqual(budget.used, 2)
+
+    def test_a_failed_call_is_charged_for_every_attempt(self):
+        budget = CallBudget(10)
+        client, _, _ = make([(503, "x"), (503, "x")], budget=budget)
+        with self.assertRaises(gemini.GeminiUnavailable):
+            client.generate(CONTENTS)
+        self.assertEqual(budget.used, 2)
+
+    def test_a_retry_that_would_pass_the_cap_is_not_sent(self):
+        budget = CallBudget(1)
+        client, opener, clock = make([(429, "slow"), OK], budget=budget)
+        with self.assertRaises(BudgetExhausted):
+            client.generate(CONTENTS)
+        self.assertEqual(len(opener.requests), 1)
+
+    def test_a_spent_budget_sends_nothing(self):
+        budget = CallBudget(1)
+        budget.charge()
+        client, opener, _ = make([OK], budget=budget)
+        with self.assertRaises(BudgetExhausted):
+            client.generate(CONTENTS)
+        self.assertEqual(opener.requests, [])
 
 
 class Blocked(unittest.TestCase):

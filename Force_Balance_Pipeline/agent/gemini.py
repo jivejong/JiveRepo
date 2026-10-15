@@ -38,7 +38,7 @@ class _BadResponse(Exception):
 
 
 class GeminiClient:
-    def __init__(self, api_key, model, *, opener, sleep, monotonic, thinking_level="low", max_output_tokens=2048):
+    def __init__(self, api_key, model, *, opener, sleep, monotonic, thinking_level="low", max_output_tokens=2048, budget=None):
         if not isinstance(model, str) or not _MODEL_RE.match(model):
             raise ValueError("model is not a plain model name")
         if thinking_level not in THINKING_LEVELS:
@@ -48,7 +48,8 @@ class GeminiClient:
         self._opener = opener
         self._sleep = sleep
         self._monotonic = monotonic
-        self._thinking_level = thinking_level
+        self.thinking_level = thinking_level
+        self._budget = budget
         self._max_output_tokens = max_output_tokens
 
     def request_body(self, contents):
@@ -58,13 +59,15 @@ class GeminiClient:
             "tools": [{"functionDeclarations": FUNCTION_DECLARATIONS}],
             "toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
             "generationConfig": {
-                "thinkingConfig": {"thinkingLevel": self._thinking_level},
+                "thinkingConfig": {"thinkingLevel": self.thinking_level},
                 "maxOutputTokens": self._max_output_tokens,
             },
         }
 
     def _post(self, payload):
-        """(status, body) for one request, or None for a transport error."""
+        """(status, body) for one request, or None for a transport error. Charges the budget first: one unit per attempt."""
+        if self._budget is not None:
+            self._budget.charge()
         url = f"{API_ROOT}/models/{self.model}:generateContent"
         headers = {"x-goog-api-key": self._api_key, "Content-Type": "application/json"}
         try:

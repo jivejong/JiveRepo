@@ -1,0 +1,366 @@
+{
+  "context": {
+    "available_jedi": [
+      {
+        "distance_from_sector": 2,
+        "homeworld_region": "Unknown Regions",
+        "jedi_id": "yoda",
+        "jedi_name": "Yoda",
+        "lightsaber_form": "Form IV Ataru",
+        "notable_for": "The oldest and wisest Jedi, serving as the head of the High Council for centuries.",
+        "power_rating": 10,
+        "primary_specialty": "diplomacy",
+        "rank": "grand_master",
+        "secondary_specialty": "investigation"
+      },
+      {
+        "distance_from_sector": 5,
+        "homeworld_region": "Core Worlds",
+        "jedi_id": "adi_gallia",
+        "jedi_name": "Adi Gallia",
+        "lightsaber_form": "Form V Djem So",
+        "notable_for": "Highly skilled pilot and expert on intelligence-gathering operations across the galaxy.",
+        "power_rating": 6,
+        "primary_specialty": "investigation",
+        "rank": "council_member",
+        "secondary_specialty": "combat"
+      },
+      {
+        "distance_from_sector": 2,
+        "homeworld_region": "Mid Rim",
+        "jedi_id": "eeth_koth",
+        "jedi_name": "Eeth Koth",
+        "lightsaber_form": "Form V Djem So",
+        "notable_for": "Known for his incredible pain tolerance and focus during high-intensity conflict.",
+        "power_rating": 6,
+        "primary_specialty": "combat",
+        "rank": "council_member",
+        "secondary_specialty": null
+      },
+      {
+        "distance_from_sector": 2,
+        "homeworld_region": "Mid Rim",
+        "jedi_id": "ki_adi_mundi",
+        "jedi_name": "Ki-Adi-Mundi",
+        "lightsaber_form": "Form IV Ataru",
+        "notable_for": "Known for his analytical mind and his role in major campaigns during the Clone Wars.",
+        "power_rating": 6,
+        "primary_specialty": "investigation",
+        "rank": "council_member",
+        "secondary_specialty": "combat"
+      },
+      {
+        "distance_from_sector": 2,
+        "homeworld_region": "Mid Rim",
+        "jedi_id": "kit_fisto",
+        "jedi_name": "Kit Fisto",
+        "lightsaber_form": "Form I Shii-Cho",
+        "notable_for": "An expert duelist whose amphibious biology grants him unique agility in aquatic environments.",
+        "power_rating": 7,
+        "primary_specialty": "combat",
+        "rank": "council_member",
+        "secondary_specialty": "investigation"
+      },
+      {
+        "distance_from_sector": 2,
+        "homeworld_region": "Mid Rim",
+        "jedi_id": "mace_windu",
+        "jedi_name": "Mace Windu",
+        "lightsaber_form": "Form VII Vaapad",
+        "notable_for": "Created the Vaapad fighting style and served as the champion of the Jedi Order.",
+        "power_rating": 9,
+        "primary_specialty": "combat",
+        "rank": "council_member",
+        "secondary_specialty": "diplomacy"
+      },
+      {
+        "distance_from_sector": 1,
+        "homeworld_region": "Outer Rim",
+        "jedi_id": "plo_koon",
+        "jedi_name": "Plo Koon",
+        "lightsaber_form": "Form V Djem So",
+        "notable_for": "Renowned for his keen Force intuition and strong bond with the Clone Troopers.",
+        "power_rating": 7,
+        "primary_specialty": "investigation",
+        "rank": "council_member",
+        "secondary_specialty": "combat"
+      },
+      {
+        "distance_from_sector": 2,
+        "homeworld_region": "Mid Rim",
+        "jedi_id": "saesee_tiin",
+        "jedi_name": "Saesee Tiin",
+        "lightsaber_form": "Form V Djem So",
+        "notable_for": "A telepathic pilot known for his reflexes and tactical brilliance in space combat.",
+        "power_rating": 7,
+        "primary_specialty": "combat",
+        "rank": "council_member",
+        "secondary_specialty": "stealth"
+      },
+      {
+        "distance_from_sector": 3,
+        "homeworld_region": "Expansion Region",
+        "jedi_id": "shaak_ti",
+        "jedi_name": "Shaak Ti",
+        "lightsaber_form": "Form II Makashi",
+        "notable_for": "A master of meditation who oversaw the training of clones on Kamino.",
+        "power_rating": 7,
+        "primary_specialty": "stealth",
+        "rank": "council_member",
+        "secondary_specialty": "combat"
+      },
+      {
+        "distance_from_sector": 2,
+        "homeworld_region": "Mid Rim",
+        "jedi_id": "yarael_poof",
+        "jedi_name": "Yarael Poof",
+        "lightsaber_form": "Form II Makashi",
+        "notable_for": "A master of mind tricks and negotiation who served on the Council for many years.",
+        "power_rating": 5,
+        "primary_specialty": "diplomacy",
+        "rank": "council_member",
+        "secondary_specialty": "investigation"
+      },
+      {
+        "distance_from_sector": 1,
+        "homeworld_region": "Outer Rim",
+        "jedi_id": "ayla_secura",
+        "jedi_name": "Ayla Secura",
+        "lightsaber_form": "Form IV Ataru",
+        "notable_for": "Often deployed for covert operations and reconnaissance behind enemy lines.",
+        "power_rating": 6,
+        "primary_specialty": "stealth",
+        "rank": "master",
+        "secondary_specialty": "combat"
+      },
+      {
+        "distance_from_sector": 5,
+        "homeworld_region": "Core Worlds",
+        "jedi_id": "jocasta_nu",
+        "jedi_name": "Jocasta Nu",
+        "lightsaber_form": "Form I Shii-Cho",
+        "notable_for": "The Chief Librarian of the Jedi Archives, dedicated to preserving the history of the Order.",
+        "power_rating": 4,
+        "primary_specialty": "investigation",
+        "rank": "master",
+        "secondary_specialty": null
+      },
+      {
+        "distance_from_sector": 1,
+        "homeworld_region": "Outer Rim",
+        "jedi_id": "luminara_unduli",
+        "jedi_name": "Luminara Unduli",
+        "lightsaber_form": "Form III Soresu",
+        "notable_for": "A disciplined strategist and practitioner of precise, defensive lightsaber techniques.",
+        "power_rating": 6,
+        "primary_specialty": "combat",
+        "rank": "master",
+        "secondary_specialty": "investigation"
+      },
+      {
+        "distance_from_sector": 1,
+        "homeworld_region": "Outer Rim",
+        "jedi_id": "obi_wan_kenobi",
+        "jedi_name": "Obi-Wan Kenobi",
+        "lightsaber_form": "Form III Soresu",
+        "notable_for": "Known as the Negotiator and for his mastery of defensive lightsaber combat.",
+        "power_rating": 8,
+        "primary_specialty": "diplomacy",
+        "rank": "master",
+        "secondary_specialty": "combat"
+      },
+      {
+        "distance_from_sector": 2,
+        "homeworld_region": "Unknown Regions",
+        "jedi_id": "qui_gon_jinn",
+        "jedi_name": "Qui-Gon Jinn",
+        "lightsaber_form": "Form IV Ataru",
+        "notable_for": "A maverick who followed the Living Force and discovered the technique for immortality.",
+        "power_rating": 7,
+        "primary_specialty": "diplomacy",
+        "rank": "master",
+        "secondary_specialty": "investigation"
+      },
+      {
+        "distance_from_sector": 1,
+        "homeworld_region": "Outer Rim",
+        "jedi_id": "anakin_skywalker",
+        "jedi_name": "Anakin Skywalker",
+        "lightsaber_form": "Form V Djem So",
+        "notable_for": "The Chosen One, renowned for his unprecedented skill in lightsaber combat and piloting.",
+        "power_rating": 9,
+        "primary_specialty": "combat",
+        "rank": "knight",
+        "secondary_specialty": null
+      },
+      {
+        "distance_from_sector": 1,
+        "homeworld_region": "Outer Rim",
+        "jedi_id": "barriss_offee",
+        "jedi_name": "Barriss Offee",
+        "lightsaber_form": "Form III Soresu",
+        "notable_for": "Known for her academic interests and eventual disillusionment with the Jedi Order.",
+        "power_rating": 5,
+        "primary_specialty": "stealth",
+        "rank": "padawan",
+        "secondary_specialty": "investigation"
+      }
+    ],
+    "available_starships": [
+      {
+        "crew": 3,
+        "hyperdrive_rating": 1.0,
+        "mglt": 100,
+        "passengers": 0,
+        "starship_class": "starfighter",
+        "starship_id": "arc_170",
+        "starship_name": "arc-170"
+      },
+      {
+        "crew": 4,
+        "hyperdrive_rating": 0.9,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "yacht",
+        "starship_id": "h_type_nubian_yacht",
+        "starship_name": "H-type Nubian yacht"
+      },
+      {
+        "crew": 5,
+        "hyperdrive_rating": 0.7,
+        "mglt": null,
+        "passengers": 10,
+        "starship_class": "Diplomatic barge",
+        "starship_id": "j_type_diplomatic_barge",
+        "starship_name": "J-type diplomatic barge"
+      },
+      {
+        "crew": 1,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "starfighter",
+        "starship_id": "jedi_interceptor",
+        "starship_name": "Jedi Interceptor"
+      },
+      {
+        "crew": 1,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "Starfighter",
+        "starship_id": "jedi_starfighter",
+        "starship_name": "Jedi starfighter"
+      },
+      {
+        "crew": 1,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "Starfighter",
+        "starship_id": "naboo_fighter",
+        "starship_name": "Naboo fighter"
+      },
+      {
+        "crew": 8,
+        "hyperdrive_rating": 1.8,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "yacht",
+        "starship_id": "naboo_royal_starship",
+        "starship_name": "Naboo Royal Starship"
+      },
+      {
+        "crew": 3,
+        "hyperdrive_rating": 0.5,
+        "mglt": null,
+        "passengers": 3,
+        "starship_class": "yacht",
+        "starship_id": "naboo_star_skiff",
+        "starship_name": "Naboo star skiff"
+      },
+      {
+        "crew": 700,
+        "hyperdrive_rating": 0.6,
+        "mglt": null,
+        "passengers": 16000,
+        "starship_class": "assault ship",
+        "starship_id": "republic_assault_ship",
+        "starship_name": "Republic Assault ship"
+      },
+      {
+        "crew": 7400,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 2000,
+        "starship_class": "star destroyer",
+        "starship_id": "republic_attack_cruiser",
+        "starship_name": "Republic attack cruiser"
+      },
+      {
+        "crew": 9,
+        "hyperdrive_rating": 2.0,
+        "mglt": null,
+        "passengers": 16,
+        "starship_class": "Space cruiser",
+        "starship_id": "republic_cruiser",
+        "starship_name": "Republic Cruiser"
+      },
+      {
+        "crew": 5,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 16,
+        "starship_class": "transport",
+        "starship_id": "theta_class_t_2c_shuttle",
+        "starship_name": "Theta-class T-2c shuttle"
+      },
+      {
+        "crew": 1,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "starfighter",
+        "starship_id": "v_wing",
+        "starship_name": "V-wing"
+      }
+    ],
+    "channels_present": 3,
+    "detected_at": "2026-10-14T12:00:00.000Z",
+    "disturbance_id": "fixture-probe_unclassified_marginal",
+    "evidence_kind": "probe",
+    "imbalance_score": 5.8,
+    "is_report_sourced": false,
+    "open_deployments": 0,
+    "recent_history": {
+      "deployments_last_7d": 0,
+      "disturbances_last_7d": 0,
+      "last_signature": null
+    },
+    "report_description": null,
+    "report_relevance": null,
+    "sector": {
+      "description": "A temperate world, though it has a unique atmosphere that is toxic to most other species.",
+      "force_history": "The homeworld of the Kel Dor. The unique environmental pressures create a specific, resilient Force signature.",
+      "population": null,
+      "region": "Outer Rim",
+      "sector_id": "dorin",
+      "sector_name": "Dorin",
+      "system_name": "Dorin system"
+    },
+    "severity": 6.38,
+    "signature": "unclassified",
+    "signature_specialty": null,
+    "sustained_scans": 2,
+    "z_scores": {
+      "dark": 1.9,
+      "kyber": -1.6,
+      "midi": 1.2
+    }
+  },
+  "expect": {
+    "decision": "any"
+  },
+  "name": "probe_unclassified_marginal",
+  "notes": ""
+}

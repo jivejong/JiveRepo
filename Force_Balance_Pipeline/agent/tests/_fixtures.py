@@ -71,9 +71,10 @@ class ScriptedClient:
     """Stands in for GeminiClient: returns scripted answers (or raises scripted exceptions) and records what it was sent."""
     model = "test-model"
 
-    def __init__(self, script, repeat_last=False):
+    def __init__(self, script, repeat_last=False, budget=None):
         self.script = list(script)
         self.repeat_last = repeat_last
+        self.budget = budget
         self.sent = []
 
     @property
@@ -82,6 +83,8 @@ class ScriptedClient:
 
     def generate(self, contents):
         self.sent.append(copy.deepcopy(contents))
+        if self.budget is not None:
+            self.budget.charge()          # the real client charges one unit per HTTP attempt
         if not self.script:
             raise AssertionError("the scripted client has no answer left")
         item = self.script[0] if (self.repeat_last and len(self.script) == 1) else self.script.pop(0)

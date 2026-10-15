@@ -56,8 +56,9 @@ def tables(target):
     return dict(names)
 
 
-def load_env(path=DEFAULT_ENV_FILE):
-    """KEY=VALUE lines of .env.agent, # comments, optional quotes. All of ENV_KEYS are required; any other key is refused."""
+def load_env(path=DEFAULT_ENV_FILE, required=ENV_KEYS):
+    """KEY=VALUE lines of .env.agent, # comments, optional quotes. The keys in `required` (default: all of ENV_KEYS) must be set
+    and non-empty; a key outside ENV_KEYS is refused."""
     path = Path(path)
     values = {}
     for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -75,7 +76,7 @@ def load_env(path=DEFAULT_ENV_FILE):
         if key in values:
             raise ConfigError(f"{path.name} line {number}: {key} is set twice")
         values[key] = value
-    for key in ENV_KEYS:
+    for key in required:
         if not values.get(key):
             raise ConfigError(f"{path.name}: {key} is missing or empty")
     return values

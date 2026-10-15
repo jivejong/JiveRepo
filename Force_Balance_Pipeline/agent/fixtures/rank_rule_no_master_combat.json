@@ -1,0 +1,186 @@
+{
+  "context": {
+    "available_jedi": [
+      {
+        "distance_from_sector": 5,
+        "homeworld_region": "Outer Rim",
+        "jedi_id": "anakin_skywalker",
+        "jedi_name": "Anakin Skywalker",
+        "lightsaber_form": "Form V Djem So",
+        "notable_for": "The Chosen One, renowned for his unprecedented skill in lightsaber combat and piloting.",
+        "power_rating": 9,
+        "primary_specialty": "combat",
+        "rank": "knight",
+        "secondary_specialty": null
+      },
+      {
+        "distance_from_sector": 5,
+        "homeworld_region": "Outer Rim",
+        "jedi_id": "barriss_offee",
+        "jedi_name": "Barriss Offee",
+        "lightsaber_form": "Form III Soresu",
+        "notable_for": "Known for her academic interests and eventual disillusionment with the Jedi Order.",
+        "power_rating": 5,
+        "primary_specialty": "stealth",
+        "rank": "padawan",
+        "secondary_specialty": "investigation"
+      }
+    ],
+    "available_starships": [
+      {
+        "crew": 3,
+        "hyperdrive_rating": 1.0,
+        "mglt": 100,
+        "passengers": 0,
+        "starship_class": "starfighter",
+        "starship_id": "arc_170",
+        "starship_name": "arc-170"
+      },
+      {
+        "crew": 4,
+        "hyperdrive_rating": 0.9,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "yacht",
+        "starship_id": "h_type_nubian_yacht",
+        "starship_name": "H-type Nubian yacht"
+      },
+      {
+        "crew": 5,
+        "hyperdrive_rating": 0.7,
+        "mglt": null,
+        "passengers": 10,
+        "starship_class": "Diplomatic barge",
+        "starship_id": "j_type_diplomatic_barge",
+        "starship_name": "J-type diplomatic barge"
+      },
+      {
+        "crew": 1,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "starfighter",
+        "starship_id": "jedi_interceptor",
+        "starship_name": "Jedi Interceptor"
+      },
+      {
+        "crew": 1,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "Starfighter",
+        "starship_id": "jedi_starfighter",
+        "starship_name": "Jedi starfighter"
+      },
+      {
+        "crew": 1,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "Starfighter",
+        "starship_id": "naboo_fighter",
+        "starship_name": "Naboo fighter"
+      },
+      {
+        "crew": 8,
+        "hyperdrive_rating": 1.8,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "yacht",
+        "starship_id": "naboo_royal_starship",
+        "starship_name": "Naboo Royal Starship"
+      },
+      {
+        "crew": 3,
+        "hyperdrive_rating": 0.5,
+        "mglt": null,
+        "passengers": 3,
+        "starship_class": "yacht",
+        "starship_id": "naboo_star_skiff",
+        "starship_name": "Naboo star skiff"
+      },
+      {
+        "crew": 700,
+        "hyperdrive_rating": 0.6,
+        "mglt": null,
+        "passengers": 16000,
+        "starship_class": "assault ship",
+        "starship_id": "republic_assault_ship",
+        "starship_name": "Republic Assault ship"
+      },
+      {
+        "crew": 7400,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 2000,
+        "starship_class": "star destroyer",
+        "starship_id": "republic_attack_cruiser",
+        "starship_name": "Republic attack cruiser"
+      },
+      {
+        "crew": 9,
+        "hyperdrive_rating": 2.0,
+        "mglt": null,
+        "passengers": 16,
+        "starship_class": "Space cruiser",
+        "starship_id": "republic_cruiser",
+        "starship_name": "Republic Cruiser"
+      },
+      {
+        "crew": 5,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 16,
+        "starship_class": "transport",
+        "starship_id": "theta_class_t_2c_shuttle",
+        "starship_name": "Theta-class T-2c shuttle"
+      },
+      {
+        "crew": 1,
+        "hyperdrive_rating": 1.0,
+        "mglt": null,
+        "passengers": 0,
+        "starship_class": "starfighter",
+        "starship_id": "v_wing",
+        "starship_name": "V-wing"
+      }
+    ],
+    "channels_present": 3,
+    "detected_at": "2026-10-14T12:00:00.000Z",
+    "disturbance_id": "fixture-rank_rule_no_master_combat",
+    "evidence_kind": "probe",
+    "imbalance_score": 8.0,
+    "is_report_sourced": false,
+    "open_deployments": 0,
+    "recent_history": {
+      "deployments_last_7d": 0,
+      "disturbances_last_7d": 0,
+      "last_signature": null
+    },
+    "report_description": null,
+    "report_relevance": null,
+    "sector": {
+      "description": "A massive ecumenopolis that covers the entire surface of the planet. It serves as the political and financial heart of the galaxy.",
+      "force_history": "The planet contains a massive, ancient Sith shrine buried deep beneath the Jedi Temple. It was the seat of the Galactic Republic and the Jedi Order for millennia.",
+      "population": 1000000000000.0,
+      "region": "Core Worlds",
+      "sector_id": "coruscant",
+      "sector_name": "Coruscant",
+      "system_name": "Coruscant system"
+    },
+    "severity": 17.6,
+    "signature": "sith_presence",
+    "signature_specialty": "combat",
+    "sustained_scans": 3,
+    "z_scores": {
+      "dark": 5.2,
+      "kyber": -2.8,
+      "midi": 0.4
+    }
+  },
+  "expect": {
+    "decision": "stand_down"
+  },
+  "name": "rank_rule_no_master_combat",
+  "notes": ""
+}

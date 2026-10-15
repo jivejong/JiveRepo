@@ -87,6 +87,19 @@ class LoadEnv(unittest.TestCase):
                     for value in values.values():
                         self.assertNotIn(value, message)
 
+    def test_a_smaller_required_set_needs_only_those_keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            values = {"GEMINI_API_KEY": "key-NOT-A-REAL-ONE-1", "INFERENCE_MODEL": "gemini-3.1-flash-lite"}
+            loaded = config.load_env(write_env(d, values), required=("GEMINI_API_KEY", "INFERENCE_MODEL"))
+            self.assertEqual(loaded, values)
+
+    def test_a_smaller_required_set_still_names_a_missing_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(config.ConfigError) as caught:
+                config.load_env(write_env(d, {"GEMINI_API_KEY": "k-NOT-REAL"}), required=("GEMINI_API_KEY", "INFERENCE_MODEL"))
+            self.assertIn("INFERENCE_MODEL", str(caught.exception))
+            self.assertNotIn("k-NOT-REAL", str(caught.exception))
+
     def test_an_empty_value_counts_as_missing(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(config.ConfigError) as caught:

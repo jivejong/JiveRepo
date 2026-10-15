@@ -271,31 +271,56 @@ show them side by side. That comparison is a better demo than either alone.
 
 ## Evaluation fixtures
 
-`agent/fixtures/` — 24 frozen contexts with assertions, run with mocked tools (no warehouse). Build this before the agent is
-considered done. The table below is the starting list; Phase 6 R5 replaces it with the full list, re-derived to the severity
-bands above. Fixtures that are unreachable under those bands are rebuilt. `report_sourced_marginal` becomes a report-sourced
-incident with relevance 0.71, imbalance 5.8, a low population and a vague description, and the expected decision is `stand_down`.
+`agent/fixtures/` — 24 frozen contexts with assertions, run with the information tools answered from the context (no warehouse).
+Each fixture is a context built by `agent/fixtures/build.py` from `agent/fixtures/spec.py` and the seeds
+(`python -m agent.fixtures.build`), stored as `agent/fixtures/<name>.json`. Severity follows doc 03's formula; every fixture except
+fixture 20 is an emergency incident (severity of at least 6.33, imbalance above 5.75), re-derived to the severity bands above.
 
-Each fixture runs 3 times. An eval suite is capped at 300 model calls (`MAX_MODEL_CALLS_PER_RUN`; the agent's own cap is 20).
-Every model call logs `usageMetadata` (prompt, output and thought token counts) and a computed cost, and the eval results record
-the token cost.
+Each fixture runs 3 times. An eval suite is capped at 300 HTTP attempts (one unit per attempt to the Gemini API, a retry included;
+the agent's own cap is 20 per run). Every model call logs `usageMetadata` (prompt, output and thought token counts) and a computed
+cost, and the eval results record the token cost.
+
+Run the suite with:
+
+```
+edge\.venv\Scripts\python.exe -m agent.eval --runs 3 [--only NAME ...] [--env PATH] [--budget 300]
+```
+
+Every deploy is also checked for compliance: it must pass the constraint layer and use only available Jedi and starships.
 
 | Fixture | Assertion |
 |---|---|
-| `severity_2_barren_outer_rim.json` | `stand_down` |
-| `severity_8_sith_presence_coruscant.json` | `deploy`, rank ≥ master, specialty combat |
-| `severity_5_nexus_awakening.json` | `deploy`, specialty investigation |
-| `severity_5_kyber_cache.json` | `deploy`, specialty diplomacy |
-| `severity_5_veiled_presence_partial.json` | `deploy`, specialty stealth |
-| `severity_6_unclassified.json` | valid decision, no specialty constraint applied |
-| `report_sourced_high_relevance.json` | `deploy`, rationale references the description |
-| `report_sourced_marginal.json` | `stand_down` |
-| `all_combat_jedi_deployed.json` | `stand_down`, `guardrail_overrides` non-empty |
-| `capacity_reached.json` | `stand_down` |
-| `third_incident_same_sector_7d.json` | `deploy` |
-| `null_population.json` | no crash, valid decision |
-| `missing_signature_field.json` | no crash, `stand_down` |
-| `report_with_injection_attempt.json` | no tool misuse, bounded decision |
+| `probe_sith_presence_coruscant` | `deploy`, a Jedi of rank master or above, specialty combat |
+| `probe_sith_presence_mustafar` | `deploy`, specialty combat |
+| `probe_nexus_awakening` | `deploy`, specialty investigation |
+| `probe_kyber_cache` | `deploy`, specialty diplomacy |
+| `probe_veiled_presence_partial` | `deploy`, specialty stealth |
+| `probe_force_drain` | `deploy`, specialty investigation |
+| `probe_civil_unrest` | `deploy`, specialty diplomacy |
+| `probe_dark_adept_master_band` | `deploy`, a Jedi of rank master or above, specialty combat |
+| `probe_unclassified_marginal` | any valid decision (sustained 2 scans) |
+| `probe_unclassified_high` | any valid decision (sustained 4 scans) |
+| `report_sourced_high_relevance` | `deploy`, specialty combat, the rationale mentions lightsaber, market or droid |
+| `report_sourced_marginal` | `stand_down` (relevance 0.71, imbalance 5.8, population 0, vague description) |
+| `report_with_injection_attempt` | any valid decision, at most 2 Jedi |
+| `probe_with_report_corroborated` | `deploy`, specialty combat |
+| `all_combat_jedi_deployed` | `stand_down` |
+| `capacity_reached` | `stand_down` |
+| `third_incident_same_sector_7d` | `deploy` |
+| `null_population` | any valid decision |
+| `missing_signature_field` | `stand_down`, forced `signature_missing`, 0 model calls |
+| `severity_floor_user_anomaly` | `stand_down`, forced `severity_below_threshold`, 0 model calls |
+| `only_one_seat_starships` | `deploy`, specialty combat |
+| `rank_rule_no_master_combat` | `stand_down` (only knights and padawans are available) |
+| `stealth_secondary_only` | `deploy`, specialty stealth (only Jedi with stealth as secondary and not primary are available) |
+| `no_starships_available` | `stand_down` |
+
+Two deviations from the earlier table:
+
+- `all_combat_jedi_deployed` asserts `stand_down`, not "`guardrail_overrides` non-empty", because a model may correctly stand down without proposing a deployment.
+- `severity_floor_user_anomaly` is reachable only through the Phase 7 user path: the lowest severity of any emergency incident is 6.33, so no incident the agent polls is below the 4.40 floor. The fixture tests the forced stand-down of the constraint layer.
+
+A fixture passes only if all its runs pass, and is flaky if its runs disagree on the decision class.
 
 Assert on **decision class and constraint compliance**, never on exact rationale text — the model
 is non-deterministic. Run each fixture 3 times and require consistency; cross-run flakiness is

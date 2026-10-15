@@ -5,12 +5,13 @@ import _support as S  # noqa: F401  (sets the import paths)
 from _fixtures import ScriptedClient, StepClock, answer, call, context, deploy, stand_down
 from agent import loop
 from agent.gemini import GeminiUnavailable, ModelBlocked
-from agent.loop import BudgetExhausted, CallBudget
+from agent.budget import BudgetExhausted, CallBudget
 
 
 def run(script, ctx=None, budget=None, repeat_last=False, clock=None):
-    client = ScriptedClient(script, repeat_last=repeat_last)
-    decision = loop.decide(ctx or context(), client, budget or CallBudget(20), monotonic=clock or StepClock())
+    budget = budget or CallBudget(20)
+    client = ScriptedClient(script, repeat_last=repeat_last, budget=budget)
+    decision = loop.decide(ctx or context(), client, budget, monotonic=clock or StepClock())
     return decision, client
 
 
@@ -286,8 +287,8 @@ class Unavailable(unittest.TestCase):
 
 class Budgets(unittest.TestCase):
     def test_a_run_budget_of_one_allows_exactly_one_call(self):
-        client = ScriptedClient([answer([call("list_available_starships")])], repeat_last=True)
         budget = CallBudget(1)
+        client = ScriptedClient([answer([call("list_available_starships")])], repeat_last=True, budget=budget)
         with self.assertRaises(BudgetExhausted):
             loop.decide(context(), client, budget, monotonic=StepClock())
         self.assertEqual(client.calls, 1)
@@ -303,8 +304,8 @@ class Budgets(unittest.TestCase):
 
     def test_a_spent_budget_makes_no_call(self):
         budget = CallBudget(1)
-        budget.take()
-        client = ScriptedClient([answer([deploy(["amy"], "a_ship")])])
+        budget.charge()
+        client = ScriptedClient([answer([deploy(["amy"], "a_ship")])], budget=budget)
         with self.assertRaises(BudgetExhausted):
             loop.decide(context(), client, budget, monotonic=StepClock())
         self.assertEqual(client.calls, 0)
