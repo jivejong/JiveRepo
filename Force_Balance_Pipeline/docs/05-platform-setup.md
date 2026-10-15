@@ -64,7 +64,7 @@
      `PERMISSION_DENIED` (no `READ VOLUME`). A call to the SQL warehouses API returns 403 "Provided
      OAuth token does not have required scopes: sql", so the files scope is enforced.
 5. Create a Gemini API key in Google AI Studio. Locally it lives in `.env` as `GEMINI_API_KEY`.
-   Cloud Run (Yoda agent) and the collector bridge read it from Secret Manager, not from a file.
+   Cloud Run (Yoda agent) and the collector bridge read it from Secret Manager, not from a file. Phase 6 runs the agent locally as a Windows scheduled task; Cloud Run is an optional later stage (doc 06, "Runtime").
 
 ### Outbound HTTP clients — set a User-Agent
 

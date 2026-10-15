@@ -277,18 +277,19 @@ as of the baseline's `computed_at` (doc 03, "dbt tests"). The checkpoint file ru
 
 ## Phase 6 — Yoda agent · 10–14h
 
-1. Five tools against the SQL Statement Execution API.
-2. **Constraint layer first** — ordinary code, easier to test in isolation than through a model.
-3. Gemini wiring with function calling.
-4. ~24 fixtures from doc 06.
-5. `make test-agent`, 3 runs per fixture.
-6. Cloud Run job, scheduled hourly offset 4 (Stage 4c; follows Job 1's own cadence, was 30 minutes (Stage 4b),
-   then 15 minutes).
+Every round updates the Phase 6 entry in `docs/ENGINEERING-LOG.md`.
+
+1. Constraint layer, specialty map and distance/ETA, as pure Python with tests (doc 06).
+2. `dim_starship` seed from the SWAPI snapshot with a reviewed allowlist.
+3. Statement Execution API and Jobs API client, the agent SQL (deployment DDL, repair, poll, context, availability, MERGE, mark), tested with a fake transport.
+4. Gemini function-calling loop with thought-signature replay, tested with a fake transport.
+5. 24 fixtures (doc 06), eval runner `edge\.venv\Scripts\python.exe -m agent.eval --runs 3`, results and token cost in `agent/eval_results.md`.
+6. `ForceAgent` Windows scheduled task, hourly at :15, skipping the 03:xx UTC hour, with the S4 check. Cloud Run is an optional later cloud stage.
 
 **Checkpoint:** fixture suite passes on decision class and constraint compliance across 3 runs
 each. A real disturbance from Phase 4 produces a `gold.deployment` row with populated
 `context_snapshot`, non-null `eta_hours`, a matched specialty, and a rationale referencing the
-actual sector and signature.
+actual sector and signature. Run on the geonosis probe incident of 2026-10-14 07:15Z and the coruscant report incident of 2026-10-12 18:23:54Z. For the report incident the rationale must reference the witness description.
 
 ---
 
@@ -340,7 +341,7 @@ editing a file.
 
 - **Phases 0–4 are strictly sequential.** Phase 1 especially — the enrichment parameters are
   upstream of everything.
-- Phases 5 and 6 can run in parallel with each other; they share only gold tables, frozen after 4.
+- Phases 5 and 6 can run in parallel with each other; they share gold tables; Phase 5 changed gold_disturbance (report firing and escalation), which Phase 6 reads as built.
 - Phase 7 depends on both if you want the full dashboard, but the read-only panels only need 4.
 - Do not start Phase 8 early.
 

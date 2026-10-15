@@ -27,7 +27,7 @@ what was decided and why.
 | Transform | dbt Core + `dbt-databricks` (pinned ≥1.6), run as native `dbt` job task pulled from Git |
 | Serving | Postgres on the GCP e2-micro; dashboard never queries the warehouse |
 | Bridge | Mosquitto + Python on the e2-micro (the developer's desktop in Phase 3); also hosts the report inference endpoint |
-| Agent | Cloud Run job, Gemini (`gemini-3.1-flash-lite`), function calling; reads/writes via SQL Statement Execution API |
+| Agent | Cloud Run job, Gemini (`gemini-3.1-flash-lite`), function calling; reads/writes via SQL Statement Execution API. Phase 6 runs the agent locally as a Windows scheduled task; Cloud Run is an optional later stage (doc 06, "Runtime"). |
 | Dashboard | Node/React, hosted outside Databricks |
 | Local demo | Docker Compose, Postgres standing in for the lakehouse, `make demo` |
 

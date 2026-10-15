@@ -14,7 +14,7 @@ lives elsewhere.
 | Intergalactic probe | Raspberry Pi 3 | Simulates Force readings, four operating modes, store-and-forward buffering |
 | Web intake | Any browser | Human reports; model infers sensor-equivalent values |
 | Collector bridge | GCP e2-micro (Always Free) | MQTT broker, batcher, **and the report inference endpoint**; writes NDJSON to the UC volume |
-| Yoda agent | Cloud Run (scheduled) | Reads incidents, calls Gemini, writes decisions back |
+| Yoda agent | Cloud Run (scheduled) | Reads incidents, calls Gemini, writes decisions back. Phase 6 runs the agent locally as a Windows scheduled task; Cloud Run is an optional later stage (doc 06, "Runtime"). |
 | Jedi Council dashboard | Cloud Run / Vercel | Reads Postgres serving store; manual deployment UI |
 | Postgres serving store | GCP e2-micro (same VM) | Gold aggregates, published from Databricks |
 
@@ -181,7 +181,7 @@ same schema with the same `context_snapshot`, which lets the dashboard show them
 
 **Decision.** All inference runs in the cloud. The Raspberry Pi 3 probe runs no model; it
 simulates readings and buffers them. Report inference runs on the collector bridge and the Yoda
-agent calls Gemini from Cloud Run (see Component boundaries).
+agent calls Gemini from Cloud Run (see Component boundaries). Phase 6 runs the agent locally as a Windows scheduled task; Cloud Run is an optional later stage (doc 06, "Runtime").
 
 **Why.** The Pi 3 has 1 GB of RAM and no accelerator, so it would be slow and memory-bound, and an
 on-device model would couple sensor reliability to the heaviest workload in the system. This is a
@@ -210,7 +210,7 @@ replaces.
 5. Daily, `gold.sector_baseline` rebuilds from the trailing 90 days of **probe-only** data.
 6. Every hour (offset 4 minutes behind the pipeline job -- follows Job 1's own cadence, Stage 4c; not yet built,
    Phase 6), Cloud Run polls `gold.disturbance` for unprocessed incidents. The Yoda agent reasons over context
-   and writes to `gold.deployment`.
+   and writes to `gold.deployment`. Phase 6 runs the agent locally as a Windows scheduled task; Cloud Run is an optional later stage (doc 06, "Runtime").
 7. Dashboard polls Postgres. Users can view by region, system, and planet, and deploy manually
    through the shared constraint layer.
 

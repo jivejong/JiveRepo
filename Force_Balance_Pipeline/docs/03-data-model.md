@@ -464,8 +464,7 @@ most valuable case in the system and it should not be silently dropped.
   incidents, are still checked.
 - **Known edges.** If a report incident was recorded first and a late-replayed probe run later makes that report fall inside the probe
   incident's window, the report now escalates the probe incident but its earlier row stays (a merge never deletes): both rows exist.
-  A re-escalation after the agent has processed an incident is not re-queued (`agent_processed` is carried forward unchanged): a
-  Phase 6 item. A report whose `event_time` is older than 90 days before its arrival is rejected at silver (above).
+  A re-escalation after the agent has processed an incident is not re-queued (`agent_processed` is carried forward unchanged); decided in Phase 6 (doc 06, "Re-escalation"). A report whose `event_time` is older than 90 days before its arrival is rejected at silver (above).
 - **`gold.disturbance` reads `silver.force_report` directly**, for a report's relevance and description: they are not columns of
   `gold.sector_reading`, and no column was added there. The earlier statement that gold never reads silver is no longer true for
   this one input.
@@ -499,6 +498,9 @@ open in the Engineering Log.
 | `model`, `decision_latency_ms` | null for user decisions |
 | `guardrail_overrides` | array of rejected proposals with reasons |
 | `decided_at` | |
+| `released_at` | `decided_at` + `eta_hours` + `MISSION_HOURS` (24), set at write time. A Jedi or starship named by a `deploy` row is unavailable while `released_at > current_timestamp()`. Null for a `stand_down` row |
+
+`gold.deployment` is agent-owned, not a dbt model. It is created from `agent/sql/create_deployment.sql` and declared as a dbt source so dbt tests can reference it. Prod: `force.gold.deployment`. Dev: `force.dev_jivejong.deployment`. Uniqueness of `disturbance_id` is enforced by the agent's MERGE, not by a constraint (Delta does not enforce unique keys); see doc 06, "Runtime".
 
 **User deployments run through the identical constraint layer.** `decided_by` is the only
 difference. A human must not be able to create states the agent cannot reason about — such as
@@ -529,7 +531,7 @@ Minimum set. Part of the deliverable.
   verbatim description; a probe incident carries report fields only when a qualifying report escalated it),
   `assert_gold_report_rows_match_silver`, `assert_reports_stay_in_their_own_tables` (a report event is in `silver.force_report` or
   `silver.report_rejects` and in no probe table), `assert_stg_report_fields_are_typed`, and `assert_walk_depth_below_limit` (above)
-- Every `gold.deployment` references a `gold.disturbance` with `agent_processed = true`
+- Every `gold.deployment` references a `gold.disturbance` with `agent_processed = true` (added in Phase 6 R6 as a test on the `deployment` source)
 - Every `signature` value has at least one matching Jedi specialty available in `dim_jedi`
 - Freshness is **not** a dbt test: it is monitored outside dbt by three dead-man's-switch signals (S1 bridge alive, S2 Job 1
   succeeding, S3 data landed), doc 05 "Monitoring". (A 45-minute `bronze.events` rule would trip between hourly Job 1 runs and in
