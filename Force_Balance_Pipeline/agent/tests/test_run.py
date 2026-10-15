@@ -1,10 +1,12 @@
 """agent/run.py: one cycle against a fake database, a fake model, a fake clock and a fake ping. One test per case."""
 import json
+import logging
 import shutil
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 import _support as S
 from _fixtures import JEDI, SHIPS, StepClock, row
@@ -95,6 +97,7 @@ class Harness:
         self.job1 = job1
         self.monotonic = monotonic or StepClock(0.1)
         self.limit = limit
+        self.epoch = run.AGENT_EPOCH
         self.ulids = iter(f"01ULID{i:020d}" for i in range(100))
 
     def _default_decide(self, context, gemini, budget, *, monotonic):
@@ -106,7 +109,7 @@ class Harness:
             target="dev", limit=self.limit, lock_path=self.lock_path, db=self.db, gemini=object(), budget=self.budget,
             job1_check=lambda: self.job1, ping=self.pings.append, clock=lambda: NOW.replace(hour=self.hour),
             monotonic=self.monotonic, log=self.logs.append, decisions_path=self.decisions_path,
-            decide_fn=self.decide_fn, ulid_fn=lambda: next(self.ulids))
+            decide_fn=self.decide_fn, ulid_fn=lambda: next(self.ulids), epoch=self.epoch)
         if self.held:
             self.held.release()
         return code
@@ -324,6 +327,45 @@ class Limit(unittest.TestCase):
         h = harness()
         h.go()
         self.assertEqual(h.db.params("poll")[0]["epoch"], (datetime(2026, 10, 12, tzinfo=timezone.utc), "TIMESTAMP"))
+
+
+class Epoch(unittest.TestCase):
+    def test_the_default_epoch_is_agent_epoch(self):
+        h = harness()
+        h.go()
+        self.assertEqual(h.db.params("poll")[0]["epoch"][0], datetime(2026, 10, 12, tzinfo=timezone.utc))
+
+    def test_an_epoch_override_reaches_the_poll(self):
+        h = harness()
+        h.epoch = datetime(2026, 10, 14, 7, 14, 59, tzinfo=timezone.utc)
+        h.go()
+        self.assertEqual(h.db.params("poll")[0]["epoch"], (datetime(2026, 10, 14, 7, 14, 59, tzinfo=timezone.utc), "TIMESTAMP"))
+
+    def test_no_override_means_agent_epoch(self):
+        self.assertEqual(run.resolve_epoch("dev", None), run.AGENT_EPOCH)
+        self.assertEqual(run.resolve_epoch("prod", None), run.AGENT_EPOCH)
+
+    def test_dev_accepts_an_override(self):
+        self.assertEqual(run.resolve_epoch("dev", "2026-10-14T07:14:59Z"), datetime(2026, 10, 14, 7, 14, 59, tzinfo=timezone.utc))
+
+    def test_an_override_without_a_zone_is_utc(self):
+        self.assertEqual(run.resolve_epoch("dev", "2026-10-14T07:14:59"), datetime(2026, 10, 14, 7, 14, 59, tzinfo=timezone.utc))
+
+    def test_an_override_with_an_offset_is_converted_to_utc(self):
+        self.assertEqual(run.resolve_epoch("dev", "2026-10-14T03:14:59-04:00"), datetime(2026, 10, 14, 7, 14, 59, tzinfo=timezone.utc))
+
+    def test_prod_refuses_an_override(self):
+        with self.assertRaises(ValueError) as caught:
+            run.resolve_epoch("prod", "2026-10-14T07:14:59Z")
+        self.assertIn("only with --target dev", str(caught.exception))
+
+    def test_main_exits_2_for_prod_with_an_epoch_before_reading_any_file(self):
+        with mock.patch.object(run, "configure_logging", return_value=logging.getLogger("agent-test")):
+            self.assertEqual(run.main(["--target", "prod", "--epoch", "2026-10-14T07:14:59Z", "--env", "does-not-exist.env"]), 2)
+
+    def test_main_exits_2_for_a_bad_epoch(self):
+        with mock.patch.object(run, "configure_logging", return_value=logging.getLogger("agent-test")):
+            self.assertEqual(run.main(["--target", "dev", "--epoch", "not a date", "--env", "does-not-exist.env"]), 2)
 
 
 class Records(unittest.TestCase):

@@ -96,12 +96,13 @@ def append_ndjson(path, record):
         f.write((json.dumps(record, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii"))
 
 
-def run_cycle(*, target, limit, db, gemini, budget, clock, monotonic, log, decisions_path, decide_fn=decide, ulid_fn=ulid_now):
+def run_cycle(*, target, limit, db, gemini, budget, clock, monotonic, log, decisions_path, decide_fn=decide, ulid_fn=ulid_now,
+              epoch=AGENT_EPOCH):
     """Steps d to f of the cycle. Returns the summary dict (it is also logged)."""
     started = monotonic()
     statements_before = db.statements
     db.write(*queries.repair(target))
-    polled = db.read(*queries.poll(target, AGENT_EPOCH, min(limit or MAX_INCIDENTS_PER_RUN, MAX_INCIDENTS_PER_RUN)))
+    polled = db.read(*queries.poll(target, epoch, min(limit or MAX_INCIDENTS_PER_RUN, MAX_INCIDENTS_PER_RUN)))
     ids = [r["disturbance_id"] for r in polled]
     totals = {"deploy": 0, "stand_down": 0, "model_calls": 0, "prompt": 0, "output": 0, "thought": 0, "cost": 0.0}
 
@@ -158,7 +159,7 @@ def run_cycle(*, target, limit, db, gemini, budget, clock, monotonic, log, decis
 
 
 def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, ping, clock, monotonic, log, decisions_path,
-                decide_fn=decide, ulid_fn=ulid_now):
+                decide_fn=decide, ulid_fn=ulid_now, epoch=AGENT_EPOCH):
     """Steps a to c and g: the lock, the quota window, the Job 1 check, and the S4 ping. Returns the exit code."""
     lock = InstanceLock(lock_path)
     try:
@@ -177,7 +178,7 @@ def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, pin
             ping("success")
             return 0
         run_cycle(target=target, limit=limit, db=db, gemini=gemini, budget=budget, clock=clock, monotonic=monotonic, log=log,
-                  decisions_path=decisions_path, decide_fn=decide_fn, ulid_fn=ulid_fn)
+                  decisions_path=decisions_path, decide_fn=decide_fn, ulid_fn=ulid_fn, epoch=epoch)
         ping("success")
         return 0
     except Exception:
@@ -186,6 +187,17 @@ def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, pin
         return 1
     finally:
         lock.release()
+
+
+def resolve_epoch(target, epoch_text):
+    """AGENT_EPOCH, or the --epoch override as an aware UTC datetime. The override is for dev runs only: with prod it raises
+    ValueError, so a production cycle can never be pointed at older incidents."""
+    if epoch_text is None:
+        return AGENT_EPOCH
+    if target != "dev":
+        raise ValueError("--epoch is allowed only with --target dev")
+    moment = datetime.fromisoformat(epoch_text.strip().replace("Z", "+00:00"))
+    return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment.astimezone(timezone.utc)
 
 
 # ---- command line ---------------------------------------------------------------------------------------------------
@@ -207,10 +219,19 @@ def main(argv=None):
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--env", default=str(ROOT / ".env.agent"))
     parser.add_argument("--no-ping", action="store_true")
+    parser.add_argument("--epoch", default=None, help="ISO 8601; dev only: overrides AGENT_EPOCH for this run")
     args = parser.parse_args(argv)
 
     logger = configure_logging()
     log = logger.info
+    try:
+        epoch = resolve_epoch(args.target, args.epoch)
+    except ValueError as e:
+        log(f"agent: {e}")
+        print(f"agent: {e}")
+        return 2
+    if args.epoch is not None:
+        log(f"agent: epoch override {iso_z(epoch)} (dev only)")
     try:
         env = load_env(args.env, required=ENV_KEYS if args.no_ping else RUN_ENV_KEYS)
         url = None if args.no_ping else env[PING_KEY]
@@ -230,7 +251,7 @@ def main(argv=None):
         target=args.target, limit=args.limit, lock_path=LOCK_PATH, db=db, gemini=gemini, budget=budget,
         job1_check=lambda: jobs.job1_active(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], opener=opener),
         ping=make_pinger(url, opener=opener, log=log), clock=lambda: datetime.now(timezone.utc), monotonic=time.monotonic,
-        log=log, decisions_path=DECISIONS_PATH)
+        log=log, decisions_path=DECISIONS_PATH, epoch=epoch)
 
 
 if __name__ == "__main__":
