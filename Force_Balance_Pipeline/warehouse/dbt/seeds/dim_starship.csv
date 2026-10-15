@@ -1,0 +1,14 @@
+starship_id,starship_name,model,starship_class,hyperdrive_rating,mglt,crew,passengers
+republic_cruiser,Republic Cruiser,Consular-class cruiser,Space cruiser,2.0,,9,16
+naboo_fighter,Naboo fighter,N-1 starfighter,Starfighter,1.0,,1,0
+naboo_royal_starship,Naboo Royal Starship,J-type 327 Nubian royal starship,yacht,1.8,,8,0
+j_type_diplomatic_barge,J-type diplomatic barge,J-type diplomatic barge,Diplomatic barge,0.7,,5,10
+jedi_starfighter,Jedi starfighter,Delta-7 Aethersprite-class interceptor,Starfighter,1.0,,1,0
+h_type_nubian_yacht,H-type Nubian yacht,H-type Nubian yacht,yacht,0.9,,4,0
+republic_assault_ship,Republic Assault ship,Acclamator I-class assault ship,assault ship,0.6,,700,16000
+theta_class_t_2c_shuttle,Theta-class T-2c shuttle,Theta-class T-2c shuttle,transport,1.0,,5,16
+republic_attack_cruiser,Republic attack cruiser,Senator-class Star Destroyer,star destroyer,1.0,,7400,2000
+naboo_star_skiff,Naboo star skiff,J-type star skiff,yacht,0.5,,3,3
+jedi_interceptor,Jedi Interceptor,Eta-2 Actis-class light interceptor,starfighter,1.0,,1,0
+arc_170,arc-170,Aggressive Reconnaissance-170 starfighte,starfighter,1.0,100,3,0
+v_wing,V-wing,Alpha-3 Nimbus-class V-wing starfighter,starfighter,1.0,,1,0
