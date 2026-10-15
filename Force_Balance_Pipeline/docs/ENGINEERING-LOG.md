@@ -1522,7 +1522,33 @@ Planning was done outside Claude Code. This round records the decisions in docs 
 
 **Deferred, not Phase 6.** `confirmed_at`; the definition of "active anomaly" (Phase 7, with user deployments); STEALTH composite scaling; the other Phase 4 carry-overs.
 
-**Commits:** recorded in Round 2.
+**Commits:** docs `467513541113e90789776ab09cc1e275d64ba145`, log `d86ffe0c0272d78771b8133f34225477afe64177`.
+
+### Round 2 (2026-10-14): constraint layer and starship seed
+
+Built as pure Python with the standard library only, no warehouse, no Gemini and no Docker.
+
+- **`agent/signatures.py`**: the eight signature names, the signature-to-specialty map (without `unclassified`) and `evidence_kind`.
+- **`agent/distance.py`**: the region rings, `distance_units`, `eta_hours` (not rounded) and `released_at`.
+- **`agent/constraints.py`**: the frozen dataclasses `Jedi`, `Starship`, `Incident` and `FleetState`, `forced_stand_down` and `check_deploy`. `check_deploy` returns every failing reason in a fixed order, each once, and never raises on bad input.
+- **`scripts/starship_roster.py` and `scripts/build_starship_seed.py`**: a hand-maintained roster of 13 Episode I-III Republic, Jedi and neutral civilian ships, and a snapshot-only, idempotent builder for `warehouse/dbt/seeds/dim_starship.csv`. `_seeds.yml` declares the seed with `unique` and `not_null` on `starship_id` and `not_null` on `hyperdrive_rating`.
+
+**New rejection reasons, and why.** `no_jedi` and `duplicate_jedi` (an empty party or a repeated id would otherwise pass the other rules or double-count a Jedi), and `signature_missing` (an incident whose signature is missing or not one of the eight cannot be matched to a specialty, so it forces a stand-down like the severity floor). An unknown Jedi or starship id is reported as `jedi_unavailable` or `starship_unavailable`, so a bad id from the model is an ordinary rejection. The three rows are in doc 06, "Constraint layer".
+
+**Tests.** The agent suite has 80 tests (constraints, distance, signatures with doc 03 and edge parity, and the starship parser and seed). The edge, ingest and intake suites are unchanged at 553 (1 skipped), 373 and 384. `dbt parse` with dummy environment values exits 0 with 12 models, 5 seeds, 110 tests (107 before the seed's 3) and 81 unit tests.
+
+**Mutation check.** 14 mutations were applied one at a time to a copy outside the repository, against a green baseline: severity floor, master severity line, party size, secondary specialty, the `unclassified` exemption, ship capacity, fleet capacity, an `Unknown Regions` ring, the `+ 1` in `distance_units`, `MISSION_HOURS`, the `civil_unrest` specialty, `evidence_kind`, the range parser and the `n/a` parser. All 14 ended in an assertion FAIL.
+
+**Issues.**
+
+- *Edge parity could not load by file path.* `edge/forcesim/signatures.py` uses package-relative imports, so a path-based import raised `ImportError`. Found by the first agent test run. The test now reads the `SPECIALTY` literal from the source with `ast`, so nothing is imported from `edge`.
+- *The `unclassified` mutation raised an error instead of failing.* Removing the exemption makes the lookup `SPECIALTY["unclassified"]` raise `KeyError`, which counts as an ERROR, not a catch. The mutation was changed to `SPECIALTY.get(...)`, so the rule fails by assertion.
+- *That mutation was caught only by accident.* The test for `unclassified` used a Jedi with no secondary specialty, and `None in (primary, None)` is true, so the mutant passed it. The test now uses a Jedi with a secondary specialty and fails against the mutant.
+
+**Starship roster.** 13 ships are listed in `scripts/starship_roster.py`, each with its reason: Republic Cruiser, Naboo fighter, Naboo Royal Starship, J-type diplomatic barge, Jedi starfighter, H-type Nubian yacht, Republic Assault ship, Theta-class T-2c shuttle, Republic attack cruiser, Naboo star skiff, Jedi Interceptor, arc-170 and V-wing. `AA-9 Coruscant freighter` was considered and left out because its `hyperdrive_rating` is `unknown`. Six Separatist, Sith or Trade Federation ships in films 4 to 6 were left out by rule.
+
+**Commits:** recorded in Round 3.
+
 
 ## Open items
 
