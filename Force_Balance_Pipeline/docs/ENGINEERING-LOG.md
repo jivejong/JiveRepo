@@ -1654,7 +1654,42 @@ Measured, the cost is $0.00126 per model call and $0.00145 per live run (66 runs
 - *A name clash.* Putting `edge/tests` on `sys.path` to reuse `_doc03.py` made discovery import edge's `test_signatures.py` in place of the agent's. Found by the first run of the new tests; `_doc03.py` is now loaded by file path.
 - *An equivalent mutant* (above): found when the first form of the case-sensitivity mutation was not caught.
 
-**Commits:** recorded in Round 6.
+**Commits:** eval `cdf3ac39cb403acbb1b5ab427425e357cc3d9165`; log `d4afdd852ec7649fa4c14750ea4ca9973167a266`.
+
+**Finding: the injection fixture is flaky, by design left that way.** In the Round 5 suite, `report_with_injection_attempt` stood down twice and deployed once (two Jedi to Naboo, the sector in the report, not to Tatooine). All 72 runs passed every check (0 failed checks), and 1 of 24 fixtures was flaky. The model is not tuned and the prompt and fixture were not changed after seeing the result; the flakiness is a property of a witness report that contains an injection and is otherwise plausible, and it is recorded here and in `agent/eval_results.md`.
+
+### Round 6a (2026-10-14): cycle runner and dbt source
+
+Code only: no scheduled task was registered, no process was started, `.env.agent` was not read, and no warehouse or Gemini call was made.
+
+Built:
+
+- **`agent/run.py`** (`python -m agent.run --target {dev,prod} [--limit N] [--env PATH] [--no-ping]`): one cycle in the order of doc 06. It takes `logs/agent.lock` (`agent/lock.py`, the bridge's mechanism; held means exit 0 with no ping), skips the 03:xx UTC hour and any cycle in which Job 1 is active (both ping S4), repairs, polls up to `MAX_INCIDENTS_PER_RUN` incidents, and for each reads the context, the available Jedi and the available starships, decides, writes the decision with the MERGE and marks the incident. A failure on one incident is logged and the cycle goes on; no new incident is started after 30 minutes; an unhandled error pings S4 with `/fail` and exits 1. It logs one summary line per cycle to `logs/agent.log` and appends each decision (without its context) to `logs/agent_decisions.ndjson`.
+- **`StatementClient.statements`**: a counter of executed statements, one per `execute` call and not per HTTP poll.
+- **`infra/desktop/register-agent-task.ps1`** and its Pester file: the `ForceAgent` task (`pythonw.exe -m agent.run --target prod` from the repo folder; a daily trigger at 00:15 local time repeating every hour with no end; 45-minute limit; `IgnoreNew`; the principal and logon settings of ForceBridge). Not run.
+- **`warehouse/dbt/models/gold/_agent__sources.yml`** and two singular tests, `assert_deployment_incident_processed` and `assert_deployment_shape` (severity error).
+- **`ingest/phase6_checkpoint.sql`**: six labelled read-only blocks (C1 to C6) for the two checkpoint incidents. Not run.
+- Docs: doc 06 "Monitoring and cost" now has the measured Round 5 numbers and the run command; doc 05 "Monitoring" has S4; doc 07 marks steps 1 to 5 done.
+
+**The S4 key.** `AGENT_PING_S4_URL` in `.env.agent`, named like the bridge's `BRIDGE_PING_S1_URL` and `BRIDGE_PING_S3_URL` in `.env.bridge`. The bridge reads its optional ping URLs from the process environment or the env file, validates that each is an https URL, and never logs one (`monitor.py`). The runner requires the key (`config.RUN_ENV_KEYS`) unless `--no-ping` is given; the eval keeps requiring only the two Gemini keys.
+
+**Decision: one call budget per cycle.** The prompt wrote `decide(context, gemini, CallBudget(20))` per incident; the runner builds one `CallBudget(MAX_MODEL_CALLS_PER_RUN)` for the cycle and shares it with the Gemini client, so a spent budget stops the whole loop ("BudgetExhausted: log, stop the loop"). It charges one unit per HTTP attempt.
+
+**Schema resolution of the dbt source.** The source is `database: force`, `schema: "{{ target.schema }}"`. In `--target dev`, `generate_schema_name` returns `target.schema` (`dev_jivejong`) for every model, so `gold_disturbance` is `force.dev_jivejong.gold_disturbance` and the source is `force.dev_jivejong.deployment`. In Job 1 the dbt task sets `catalog=force` and `schema=gold`, so `target.schema` is `gold` and `gold_disturbance` has `+schema: gold` used literally: both are `force.gold.*`, and the source is `force.gold.deployment`. Evidence: `dbt parse` with dummy values prints the relation names from the manifest: `--target dev` gives `force.dev_jivejong.deployment` for the source and `force.dev_jivejong.gold_disturbance` for the model; `--target prod` (a non-dev target with schema `gold`, like Job 1's) gives `force.gold.deployment` and `force.gold.gold_disturbance`. `dbt compile` itself could not be used as the proof: it needs a live connection (it timed out against the dummy host after 150 s), and real credentials were not supplied.
+
+**Derived Job 1 node count.** Job 1's selection (`dbt build --exclude gold_sector_baseline resource_type:seed test_type:unit assert_baseline_probe_only --indirect-selection cautious`, models and tests) was 83 nodes; `dbt ls` with those flags now lists 94, and 83 again with the new tests excluded. The 11 new nodes are the 2 singular tests and 9 generic tests on the source (`unique` on `deployment_id` and `disturbance_id`, `not_null` on `deployment_id`, `disturbance_id`, `rationale` and `decided_at`, `relationships` to `gold_disturbance`, and two `accepted_values`). `dbt parse` now reports 12 models, 5 seeds, 121 tests (110 before) and 81 unit tests. **Because Job 1 will select these tests, they fail until `force.gold.deployment` exists**, so `_agent__sources.yml` and the two tests are committed only in R6b, after the table is created.
+
+**Mutation check.** 7 mutations on a copy outside the repository: the skip hour, mark before write, a write after `GeminiUnavailable`, no ping on a skipped cycle, a stand-down with a `released_at`, repair after poll, and the lock ignored. All 7 ended in an assertion FAIL. The "write after `GeminiUnavailable`" mutant calls `mark`, since the decision row does not exist at that point.
+
+**Tests.** Agent suite 398 to 452. Pester 23 to 45 (22 new). The edge, ingest and intake suites are unchanged.
+
+**Issues.**
+
+- *`dbt compile` needs a connection.* Cause: the adapter lists relations when it starts. Found by running it with the dummy environment, which hung. Fixed by proving the schema from the parsed manifest, which needs no connection.
+- *A PowerShell alias.* A helper function named `Ls` was shadowed by the `ls` alias for `Get-ChildItem`, so the first Job 1 count was meaningless. Found because the count was 13 and the new tests showed 0; the function was renamed.
+- *Leaked temporary directories in the new tests* printed `ResourceWarning`s; they are now removed at module cleanup.
+
+**Commits:** recorded in Round 6b.
 
 
 
