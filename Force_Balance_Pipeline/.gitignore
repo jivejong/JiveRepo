@@ -5,6 +5,7 @@
 .env.mqtt
 .env.intake
 .env.intake.mqtt
+.env.agent
 
 # Python
 __pycache__/

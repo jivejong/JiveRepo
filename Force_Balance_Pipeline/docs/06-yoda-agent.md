@@ -20,7 +20,7 @@ Before any warehouse query, each cycle calls the Jobs API, which costs no wareho
 active run, the cycle is skipped.
 
 **Eligible incidents.** Only incidents with `detected_at >= AGENT_EPOCH` are processed. `AGENT_EPOCH` is a config constant,
-2026-10-12T00:00:00Z. Older incidents are never processed and stay `agent_processed = false`. There is no bulk update.
+2026-10-12T00:00:00Z. Older incidents are never processed and stay `agent_processed = false`. There is no bulk update. A cycle processes at most `MAX_INCIDENTS_PER_RUN` = 5 incidents, the oldest 5 eligible ones; the rest wait for the next hour.
 
 **Cycle order** (Delta does not enforce unique keys, so idempotency is in the order of the steps):
 
@@ -41,6 +41,8 @@ Reads and writes go through the **Databricks SQL Statement Execution API**. Gemi
 but every Statement API query runs on the warehouse and uses it. The warehouse cost per incident is 3 reads (context, available
 Jedi, available starships) and 2 writes (the decision MERGE and the processed mark), plus 2 statements per cycle for the repair and
 the poll. A cycle in which Job 1 is running costs 0 statements. An hour with nothing to process makes no Gemini call.
+
+The request sets `toolConfig` mode `ANY`, so every answer is a tool call. A forced stand-down (severity below the floor, or a missing signature) makes no model call. An incident gets at most `MAX_MODEL_CALLS_PER_INCIDENT` = 6 model calls. The ETA of a deploy is the slowest party member's.
 
 Model: `gemini-3.1-flash-lite` with Gemini function calling only (no `responseJsonSchema`), no temperature sent, `thinkingLevel`
 `low` (configurable) and `maxOutputTokens` 2048. All HTTP goes through `files_api.http_request`.
@@ -158,7 +160,12 @@ cannot reason about.
 | Max 3 concurrent deployments galaxy-wide | `deployment_capacity_reached` |
 | Max 4 Jedi in a single deployment | `party_too_large` |
 | Max 2 tool-call retries per incident | force stand-down, `agent_exhausted_retries` |
+| Arguments of `deploy` or `stand_down` are malformed (not a list of strings, not a string, or an empty or over-long rationale) | `invalid_arguments` |
+| The model calls a tool that does not exist | `unknown_tool` |
+| The model declines to assess the input (blocked prompt or answer) | `blocked_by_model` — force stand-down |
 | Decision write is idempotent (MERGE on `disturbance_id`) | - (see "Runtime", cycle order) |
+
+`one_decision_per_turn` is an answer the agent loop gives a second terminal call in the same turn. It is not a rejection and is not recorded in `guardrail_overrides`.
 
 **Resolved (Phase 6, 2026-10-14):** the severity bands were re-derived against the thresholds tuned on 2026-09-26.
 
@@ -312,7 +319,7 @@ a known edge. The Phase 7 dashboard may flag "severity rose after decision" by c
 | Gemini API unavailable | Retry once on HTTP 429 or 5xx. If that fails, leave `agent_processed = false`, retry next cycle. Write nothing |
 | No tool call returned | One nudge, then stand-down with `agent_no_decision` |
 | Nonexistent tool called, or a constraint rejection | Reject; at most 2 such retries, then stand-down with `agent_exhausted_retries` |
-| Statement Execution API write fails | 3 attempts with 5, 15 and 45 s backoff; a Delta concurrent-modification error counts as retryable. On final failure log and leave unprocessed |
+| Statement Execution API write fails | 3 attempts with waits of 5 s and 15 s; a Delta concurrent-modification error counts as retryable. On final failure log and leave unprocessed |
 | Statement still running (warehouse cold start) | Poll for at most 15 minutes, then treat as a failed statement |
 | Cycle runs long | The whole cycle is limited to 30 minutes |
 
