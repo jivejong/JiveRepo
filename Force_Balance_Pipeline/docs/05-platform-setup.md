@@ -1205,9 +1205,12 @@ runs and in every scheduled DISCONNECTED window.
 | **S1** | the bridge is alive and connected | `bridge.py` (`monitor.py`) | every 5 min while `client.is_connected()`, data or not | `fbp-s1-bridge-alive` | 5 min | 25 min | 30 min of silence |
 | **S2** | Job 1 is running and succeeding | Databricks, on each successful Job 1 run (design below) | once per success | `fbp-s2-job1-success` | 1 h | 1 h | 2 h of silence |
 | **S3** | data is landing | `bridge.py` (`monitor.py`) | after an upload that landed at least 1 line, at most one per 5 min | `fbp-s3-data-landed` | 15 min | 3 h 45 min | 4 h of silence |
+| **S4** | the Yoda agent cycle ran, or skipped on purpose | `agent/run.py` (Phase 6) | at the end of every cycle, skipped cycles included; `/fail` on a crash | `fbp-s4-agent` | 1 h | 2 h | 3 h of silence |
 | (test) | exercises the alert path only | by hand | — | `fbp-test` | 1 min | 1 min | 2 min |
 
 "Grace" here is the Healthchecks.io grace time and the alert comes after period plus grace, i.e. **total silence** (decision, Q-B1).
+
+**S4 (Phase 6).** The agent runs hourly at :15 (the `ForceAgent` task), so its check has a period of 1 hour and a grace of 2 hours. Every cycle pings it, including a cycle that skips the 03:xx UTC hour or an active Job 1 run, because a skipped cycle means the agent is alive; a crashed cycle pings the `/fail` URL. The URL is `AGENT_PING_S4_URL` in `.env.agent`. The check is created by hand when the task is registered (Phase 6 R6b).
 
 **What Healthchecks.io does** (from its own documentation, read 2026-10-11).
 - *Ping URLs:* `https://hc-ping.com/<uuid>` for success, with `/start`, `/fail`, `/log` and `/<exit-status>` variants, or

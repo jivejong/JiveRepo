@@ -357,10 +357,21 @@ incident, the next cycle's repair step marks it and no second decision is writte
 
 ## Monitoring and cost
 
-A Healthchecks check, S4 `fbp-s4-agent`, is pinged at the end of every cycle, including skipped cycles. Jong creates it in Phase 6 R6.
+A Healthchecks check, S4 `fbp-s4-agent` (period 1 h, grace 2 h), is pinged at the end of every cycle, including a cycle skipped for the
+03:xx UTC hour or for an active Job 1 run, and with the `/fail` suffix when a cycle crashes (doc 05, "Monitoring"). The ping URL is
+`AGENT_PING_S4_URL` in `.env.agent`, named like the bridge's `BRIDGE_PING_S1_URL`; it is credential-like and is never logged. A cycle is run
+with:
 
-Every model call logs `usageMetadata` (prompt, output and thought token counts) and a computed cost.
+```
+edge\.venv\Scripts\python.exe -m agent.run --target {dev,prod} [--limit N] [--env PATH] [--no-ping]
+```
 
-Expected Gemini cost (derived, not measured; list price $0.25 per million input tokens and $1.50 per million output tokens): about
-$0.002 per model call, $0.002 to $0.008 per incident, and under $0.25 per month at the observed rate of about 0.6 incidents a day.
-An hour with nothing to process makes no Gemini call. Measured numbers replace these in R5 and R6.
+Every cycle logs one summary line to `logs/agent.log`: target, incidents polled and decided, warehouse statements, model calls, HTTP attempts,
+tokens and cost. Every decision is also appended to `logs/agent_decisions.ndjson` without its context.
+
+Every model call logs `usageMetadata` (prompt, output and thought token counts) and a computed cost. Measured cost (Phase 6 R5, the
+24-fixture suite of 72 runs against `gemini-3.1-flash-lite` at thinking level `low`; list price $0.25 per million input tokens and $1.50
+per million output tokens, thought tokens billed as output): 76 model calls cost $0.095, or **$0.00126 per model call**. The average
+prompt is about 3,670 tokens, mostly the Jedi and starship lists. At the observed rate of about 0.6 incidents a day, production costs
+under $0.03 a month (derived from the measured per-call cost). An hour with nothing to process makes no Gemini call and costs 2 warehouse
+statements.

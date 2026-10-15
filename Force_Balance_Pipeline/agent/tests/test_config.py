@@ -125,6 +125,36 @@ class LoadEnv(unittest.TestCase):
             self.assertNotIn("just-some-secret-text", str(caught.exception))
 
 
+class PingKey(unittest.TestCase):
+    RUN = dict(GOOD, AGENT_PING_S4_URL="https://hc.example.invalid/ping/NOT-A-REAL-UUID")
+
+    def test_the_key_name(self):
+        self.assertEqual(config.PING_KEY, "AGENT_PING_S4_URL")
+
+    def test_the_runner_requires_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(config.ConfigError) as caught:
+                config.load_env(write_env(d, GOOD), required=config.RUN_ENV_KEYS)
+            self.assertIn("AGENT_PING_S4_URL", str(caught.exception))
+            self.assertNotIn("hc.example", str(caught.exception))
+
+    def test_the_default_does_not_require_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(config.load_env(write_env(d, GOOD)), GOOD)
+
+    def test_the_eval_can_read_a_file_that_has_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            loaded = config.load_env(write_env(d, self.RUN), required=("GEMINI_API_KEY", "INFERENCE_MODEL"))
+            self.assertEqual(loaded["AGENT_PING_S4_URL"], self.RUN["AGENT_PING_S4_URL"])
+
+    def test_the_full_run_set_loads(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(config.load_env(write_env(d, self.RUN), required=config.RUN_ENV_KEYS), self.RUN)
+
+    def test_the_run_set_is_the_five_plus_the_ping_key(self):
+        self.assertEqual(config.RUN_ENV_KEYS, config.ENV_KEYS + ("AGENT_PING_S4_URL",))
+
+
 class GitIgnore(unittest.TestCase):
     def test_env_agent_is_listed_in_gitignore(self):
         lines = (S.ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()

@@ -114,6 +114,7 @@ class StatementClient:
         self._opener = opener
         self._sleep = sleep
         self._monotonic = monotonic
+        self.statements = 0                         # statements executed (one per execute call, not per HTTP poll)
 
     def _request(self, method, path, payload=None):
         url = f"{self._host}{path}"
@@ -140,6 +141,7 @@ class StatementClient:
 
     def execute(self, sql, params=None):
         """Run one statement; the rows as a list of dicts. Raises a StatementError subclass on any failure."""
+        self.statements += 1
         body = {
             "warehouse_id": self._warehouse_id,
             "statement": sql,

@@ -79,6 +79,35 @@ class Request(unittest.TestCase):
         self.assertEqual(self.rows, [{"n": 1}])
 
 
+class StatementCounter(unittest.TestCase):
+    def test_starts_at_zero(self):
+        client, _, _ = make([])
+        self.assertEqual(client.statements, 0)
+
+    def test_counts_one_per_execute_not_per_http_poll(self):
+        client, opener, _ = make([(200, in_state("PENDING")), (200, in_state("RUNNING")), (200, succeeded([("n", "INT")], [["1"]]))])
+        client.execute(SQL)
+        self.assertEqual(len(opener.requests), 3)
+        self.assertEqual(client.statements, 1)
+
+    def test_a_failed_statement_is_counted(self):
+        client, _, _ = make([(200, failed("PARSE_SYNTAX_ERROR", "bad"))])
+        with self.assertRaises(dbsql.StatementFailed):
+            client.execute(SQL)
+        self.assertEqual(client.statements, 1)
+
+    def test_a_retried_write_counts_each_attempt(self):
+        client, _, _ = make([(200, failed("DELTA_CONCURRENT_APPEND", "x")), (200, succeeded([], []))])
+        client.write(SQL)
+        self.assertEqual(client.statements, 2)
+
+    def test_reads_and_writes_are_counted_together(self):
+        client, _, _ = make([(200, succeeded([], [])), (200, succeeded([], []))])
+        client.read(SQL)
+        client.write(SQL)
+        self.assertEqual(client.statements, 2)
+
+
 class Conversion(unittest.TestCase):
     def rows(self, type_name, value):
         client, _, _ = make([(200, succeeded([("v", type_name)], [[value]]))])

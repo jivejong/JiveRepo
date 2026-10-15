@@ -37,6 +37,10 @@ TARGETS = {
 }
 
 ENV_KEYS = ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_WAREHOUSE_ID", "GEMINI_API_KEY", "INFERENCE_MODEL")
+# The S4 dead-man's-switch ping URL (doc 05, "Monitoring"), named like the bridge's BRIDGE_PING_S1_URL. Credential-like: never logged.
+PING_KEY = "AGENT_PING_S4_URL"
+RUN_ENV_KEYS = ENV_KEYS + (PING_KEY,)             # what the cycle runner needs (agent.run); the eval needs only the Gemini keys
+ALLOWED_KEYS = RUN_ENV_KEYS                        # the whole of .env.agent
 
 
 class ConfigError(Exception):
@@ -58,7 +62,7 @@ def tables(target):
 
 def load_env(path=DEFAULT_ENV_FILE, required=ENV_KEYS):
     """KEY=VALUE lines of .env.agent, # comments, optional quotes. The keys in `required` (default: all of ENV_KEYS) must be set
-    and non-empty; a key outside ENV_KEYS is refused."""
+    and non-empty; a key outside ALLOWED_KEYS is refused."""
     path = Path(path)
     values = {}
     for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -71,8 +75,8 @@ def load_env(path=DEFAULT_ENV_FILE, required=ENV_KEYS):
         key, value = key.strip(), value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
-        if key not in ENV_KEYS:
-            raise ConfigError(f"{path.name} line {number}: {key} is not allowed; this file holds only " + ", ".join(ENV_KEYS))
+        if key not in ALLOWED_KEYS:
+            raise ConfigError(f"{path.name} line {number}: {key} is not allowed; this file holds only " + ", ".join(ALLOWED_KEYS))
         if key in values:
             raise ConfigError(f"{path.name} line {number}: {key} is set twice")
         values[key] = value

@@ -97,7 +97,7 @@ WHEN NOT MATCHED THEN INSERT *"""
         "eta_hours": (row.get("eta_hours"), "DOUBLE"),
         "released_at": (row.get("released_at"), "TIMESTAMP"),
         "rationale": (row["rationale"], "STRING"),
-        "context_json": (json.dumps(row.get("context_snapshot")), "STRING"),
+        "context_json": (json.dumps(row.get("context_snapshot"), sort_keys=True), "STRING"),
         "signature_at_decision": (row.get("signature_at_decision"), "STRING"),
         "model": (row.get("model"), "STRING"),
         "decision_latency_ms": (row.get("decision_latency_ms"), "BIGINT"),
