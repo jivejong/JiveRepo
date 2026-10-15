@@ -291,6 +291,8 @@ each. A real disturbance from Phase 4 produces a `gold.deployment` row with popu
 `context_snapshot`, non-null `eta_hours`, a matched specialty, and a rationale referencing the
 actual sector and signature. Run on the geonosis probe incident of 2026-10-14 07:15Z and the coruscant report incident of 2026-10-12 18:23:54Z. For the report incident the rationale must reference the witness description.
 
+**Checkpoint status: passed (2026-10-15).** The first production cycle (2026-10-15 04:24Z) decided both incidents: each has a `deploy` row in `force.gold.deployment` with a populated `context_snapshot`, a non-null `eta_hours`, a Jedi with the signature's specialty (combat), and a rationale that names the sector and the signature (the report incident's also says "report"); both incidents have `agent_processed = true`, and no incident has two decisions or predates the epoch. The queries are in `ingest/phase6_checkpoint.sql` (C1 to C6; C3 was run in an equivalent form, see `docs/ENGINEERING-LOG.md`, Round 6b-2).
+
 ---
 
 ## Phase 7 — Dashboard · 12–18h

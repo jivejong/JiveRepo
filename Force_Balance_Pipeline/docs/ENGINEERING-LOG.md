@@ -1721,7 +1721,37 @@ Built:
 - *The window.* The round was first checked at 03:44Z, inside the 03:00 to 03:45Z window, and began at 03:46Z. The runner's own 03:xx skip then held the cycles back until 04:00Z; they were started at 04:00:21Z, two minutes before Job 1's run.
 - *Budget.* The prompt's separate query for `agent_processed` was folded into the deployment query as a join, to stay inside 30 statements (the dbt tests alone were expected to take about 12).
 
-**Commits:** recorded in Round 6b-2.
+**Commits:** DDL `07e54553e4270bd6552529be7a2ef287f6f7a908`; log `6f6491ebd43c8964aab7cc534e6a46db09920568`.
+
+### Round 6b-2 (2026-10-15): prod run and Phase 6 checkpoint
+
+With Jong's explicit approval for exactly: the prod seed, the prod DDL, one manual prod cycle, read-only SELECTs on prod, and one registration of the task. Nothing else ran on prod. Times are UTC; no warehouse step ran between 03:00 and 03:45Z (the round began at 04:19Z).
+
+**Steps.**
+
+- *Seed (04:22Z):* `dbt seed --select dim_starship --target prod` loaded 13 rows into `force.gold.dim_starship` (5 statements).
+- *DDL (04:24Z):* `python -m agent.ddl --target prod` created `force.gold.deployment` (1 statement).
+- *Eligibility:* two incidents at or after the epoch, both `agent_processed` false: the coruscant report incident `01K4OLMOA35QRLSEE2S8FAM` (2026-10-12 18:23:54Z, severity 29.31) and the geonosis probe incident `01K4SIGFB41DED3N5O5F1AM` (2026-10-14 07:15:00.9Z, severity 16.75; it was 16.81 when planned and moves with each rebuild).
+- *First prod cycle (04:24:33Z, by hand, with pings):* polled 2, decided 2 (both deploy), 12 statements, 2 model calls, 2 HTTP attempts, 7,708 prompt, 217 output and 262 thought tokens, cost $0.002645, 33.1 s.
+  - Coruscant report: `mace_windu` on `jedi_interceptor`, ETA 0.4 h, released 2026-10-16 04:48:48Z, no overrides. The rationale called the report credible and high-severity, named Coruscant and the dark adept signature, and chose a Council member for the target.
+  - Geonosis probe: `kit_fisto` and `anakin_skywalker` on `arc_170`, ETA 0.2 h, released 2026-10-16 04:37:02Z, no overrides. The rationale cited a severe, sustained Sith presence, a combat team and the ship's speed.
+
+**Checkpoint (`ingest/phase6_checkpoint.sql`): passed.**
+
+- C1: both rows are `deploy` by `yoda_agent`, with ETA, `released_at` (decided_at + eta + 24 h), rationale of 353 and 300 characters, a snapshot severity of 29.31 and 16.75, and evidence kinds `report` and `probe`.
+- C2: `mentions_sector` and `mentions_signature` true on both; `mentions_report_word` true for the report incident.
+- C3: specialty matched true on both (combat; `mace_windu`, and `kit_fisto` and `anakin_skywalker`). The block as committed failed on the warehouse: `UNSUPPORTED_SUBQUERY_EXPRESSION_CATEGORY.UNSUPPORTED_CORRELATED_REFERENCE_DATA_TYPE`, a correlated subquery cannot reference the VARIANT column `p.context_snapshot`. It was run in an equivalent form that extracts `signature_specialty` to a string column first. **The file still has the failing form and needs the same fix**, which is a change for a later round.
+- C4: `agent_processed` true on both. C5: 0 rows. C6: 0 rows.
+
+**Task registration.** `register-agent-task.ps1` registered `ForceAgent` (daily trigger at 00:15 local, repeating every hour with no end, 45-minute limit, `IgnoreNew`). Because today's 00:15 had passed and the task has `StartWhenAvailable`, Windows ran a cycle at once, 04:25:51Z, without being started: polled 0, 2 statements, no model call, result 0. That was a scheduled run, not a second manual run, and it is the first proof of the scheduled path.
+
+**First regular scheduled cycle:** 05:15:05Z, polled 0, decided 0, 2 statements, no model call, 4.1 s; the task's last result was 0 and the next run is 06:15Z (02:15 EDT). A successful S4 ping writes nothing to `logs/agent.log` (only a failure does), and the log has no "S4 ping failed" line; the Healthchecks page itself is the confirmation to read.
+
+**Measured use.** Warehouse statements: 30 of the 45 allowed (seed 5, DDL 1, eligibility 1, first cycle 12, checkpoint C1 to C6 6 including the failed C3, the C3 equivalent 1, the two scheduled cycles 2 + 2). Gemini: 2 HTTP attempts of 20, cost $0.002645 for the two decisions.
+
+**Not yet seen live.** A stand-down on a report incident, an override from the constraint layer, and a cycle that skips for Job 1 or for the 03:xx hour; they are covered by unit tests and, for the overrides, the Round 5 suite.
+
+**Commits:** recorded at phase close.
 
 
 
