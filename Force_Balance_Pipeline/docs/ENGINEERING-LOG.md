@@ -1689,7 +1689,39 @@ Built:
 - *A PowerShell alias.* A helper function named `Ls` was shadowed by the `ls` alias for `Get-ChildItem`, so the first Job 1 count was meaningless. Found because the count was 13 and the new tests showed 0; the function was renamed.
 - *Leaked temporary directories in the new tests* printed `ResourceWarning`s; they are now removed at module cleanup.
 
-**Commits:** recorded in Round 6b.
+**Commits:** runner `8619c0528c31e2cdb0052844933598c6df501346`; log `97e69a4c7b2495fbdaa1db3e404b3d114f453b6e`.
+
+### Round 6b-1 (2026-10-15): dev live run
+
+The first live run of the agent, against `force.dev_jivejong` only (nothing ran against prod, and no ping was sent: every run used `--no-ping`). It started at 03:46Z, after the 03:00 to 03:45Z window; the cycles ran at 04:00Z, because the runner itself skips the whole 03:xx UTC hour and the next Job 1 run starts at 04:03Z.
+
+Built:
+
+- **`agent/ddl.py`** (`python -m agent.ddl --target {dev,prod}`): renders `agent/sql/create_deployment.sql` with `{deployment}` as the only substitution (from `config.tables()`) and runs it once through `StatementClient.write`. It needs only the three Databricks keys.
+- **`--epoch ISO8601`** on `agent.run`, allowed only with `--target dev` (prod exits 2 before reading any file). Why: the dev `gold_disturbance` was last built before 2026-10-12 and holds no incident at or after `AGENT_EPOCH`, so the default epoch finds nothing to process. Production can never be pointed at older incidents.
+
+**Mutation check.** D1 (the DDL tool substitutes into the whole text, not only `{deployment}`) and D2 (`--epoch` accepted with prod): both ended in an assertion FAIL. Agent suite 452 to 473.
+
+**The live run.**
+
+- Seed: `dbt seed --select dim_starship --target dev` loaded 13 rows into `force.dev_jivejong.dim_starship`.
+- DDL: `force.dev_jivejong.deployment` created.
+- Eligibility: the newest dev incident is 2026-10-10 04:45:00.9Z, so no row was at or after the epoch; the run used `--epoch 2026-10-10T04:44:59.900Z`. The incident processed was `01K4I16D640GK1D3C8TCNL4`: geonosis, `unclassified`, severity 13.77, probe-sourced, 2 sustained scans.
+- Cycle 1 (`--limit 1`): polled 1, decided 1 (stand_down), 7 statements, 1 model call, 1 HTTP attempt, 3,936 prompt, 97 output and 97 thought tokens, cost $0.001275, 21.6 s. The model stood down: an unclassified signature on a short probe reading with no corroboration is not a clear threat. No guardrail override.
+- Cycle 2 (idempotency): polled 0, decided 0, 2 statements, no model call, 3.0 s.
+- The deployment row: `stand_down`, `decided_by` `yoda_agent`, no Jedi or starship, `eta_hours` and `released_at` null, a 431-character rationale, `context_snapshot` severity 13.77 and evidence kind `probe`, model `gemini-3.1-flash-lite`, latency 1,344 ms; the incident's `agent_processed` is true.
+- `dbt test --select source:agent+ --target dev`: 11 of 11 passed.
+
+**Measured warehouse use: 28 statements of the 30 allowed.** `dbt seed` 4 (list schemas, list relations, create table, insert); the DDL 1; the eligibility query 1; cycle 1 7; cycle 2 2; the deployment query 1; `dbt test` 12 (11 tests and 1 metadata statement). Gemini: 1 HTTP attempt of 20.
+
+**What this run did not show.** It exercised the stand-down path only. A deploy row (with `released_at`, a party and a ship) and a report-sourced incident are not covered live yet; the checkpoint incidents in prod are the first of each.
+
+**Issues.**
+
+- *The window.* The round was first checked at 03:44Z, inside the 03:00 to 03:45Z window, and began at 03:46Z. The runner's own 03:xx skip then held the cycles back until 04:00Z; they were started at 04:00:21Z, two minutes before Job 1's run.
+- *Budget.* The prompt's separate query for `agent_processed` was folded into the deployment query as a join, to stay inside 30 statements (the dbt tests alone were expected to take about 12).
+
+**Commits:** recorded in Round 6b-2.
 
 
 
