@@ -193,6 +193,81 @@ npm run dev
 
 Open <http://localhost:5173>. Vite proxies `/api` to the server on port 3001.
 
+## Existing song enrichment provider modules
+
+`server/existingSongEnrichment.js` remains a pure preview builder. The
+separate `server/songEnrichmentProviders.js` module exposes
+`createSongEnrichmentProviderClient({ transport, clock, delay, config, cache })`
+with `searchRecordings`, `lookupRecording`, `getAcousticBrainzEvidence`, and
+`requestGeminiTags`. These modules are not wired into an app route, command,
+database write, or ingestion flow. The default transport always returns
+`network_disabled`; provider requests require an injected transport.
+
+The transport receives `{url, method, headers, body, signal, timeoutMs,
+maxResponseBytes}` and returns `{status, headers, body}`, where `body` is text or
+bytes. It must enforce the timeout/response-size bounds, implement abort
+handling, and must not log request headers or bodies. Configure explicit
+positive integer limits for `maxAttempts`, `maxGeminiAttempts`, `timeoutMs`,
+`maxResponseBytes`, `geminiMaxInputBytes`, and `geminiMaxOutputTokens`; absent
+limits are rejected. The only accepted Gemini model is
+`gemini-3.1-flash-lite`. The MusicBrainz User-Agent must include the
+application name, version, and contact.
+MusicBrainz request starts are spaced by at least one second, following its
+[rate guidance](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting).
+Settled 429 and transient server failures retry at most once; retries consume
+the same shared budgets. An unsettled attempt at timeout is aborted
+cooperatively and returned as a transient timeout without an automatic retry.
+The transport may ignore abort, so timeout does not prove that the underlying
+request stopped; late results are ignored. Returned response bytes are bounded
+before parsing, while the injected transport must also enforce limits while
+receiving data to avoid unbounded buffering. Incomplete MusicBrainz result
+pages are rejected as `invalid_response` with reason
+`incomplete_search_results`, and no candidates are exposed to B1. AcousticBrainz
+uses its documented `X-RateLimit-Reset-In` header when supplied; the provider says its typical
+limit may change. A Gemini request is explicit; failures do not trigger
+automatic fallback. Gemini's project/model limits vary, so check the account
+quota before any future caller is authorized. Results carry stable statuses
+and a redacted attempt ledger. Gemini token usage is reported only when
+returned by the provider; the module does not estimate or claim a dollar cost
+or enforce a monetary spending cap.
+
+MusicBrainz search results are identity candidates only; their ranking score
+is discarded. Search candidates retain the provider's `first-release-date`
+and response digest. Pass the reviewed exact candidate as `searchCandidate`
+to `lookupRecording` to carry that recording's release-year evidence through;
+the lookup checks MBID equality and the supplied digest's format, but does not
+recompute or cryptographically verify that search-candidate digest. It does not
+infer a date from an incomplete release list. Cache reads do recompute and
+verify the digest of cached response bytes. AcousticBrainz evidence preserves
+each submission offset as a separate candidate and never averages or selects one. Its documented `bpm`,
+`key_key`, and `key_scale` leaves are accepted only with the expected number
+and string types; malformed values fail closed. Gemini receives only the
+recording MBID, title, artist, allowlisted release year/recording type context,
+and current Genre/Vibe names. Its output must be JSON with Genre and Vibe name
+arrays that resolve uniquely to the supplied category catalogs. It cannot
+propose scalar metadata or identifiers.
+
+Provider contracts were checked against the official [MusicBrainz API
+search](https://musicbrainz.org/doc/MusicBrainz_API/Search),
+[AcousticBrainz API](https://acousticbrainz.readthedocs.io/api.html), and
+[Gemini 3.1 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite)
+and [structured output](https://ai.google.dev/gemini-api/docs/structured-output)
+documentation. The AcousticBrainz feature paths are cross-checked against its
+API server's direct field mapping and the upstream Essentia output types.
+
+`server/songEnrichmentCache.js` provides an optional raw-response cache. A
+caller must supply an explicit operator-selected directory; the module creates
+no default cache location. Successful responses expire after seven days and
+confirmed absence after one hour. Cache keys include normalized provider
+identity/operation parameters and parser version; Gemini keys also include
+model, prompt/schema versions, and the category catalogs. Credentials are not
+part of keys or entries. Invalid, corrupt, oversized, and expired entries are
+cache misses. Files are written through unique same-directory temporary files
+and atomic rename. POSIX file modes are restricted where supported; this does
+not assert Windows ACL behavior. Unit tests use mocked provider transports
+and owned temporary cache directories; they make no live provider calls and
+do not use an operator cache directory.
+
 ## Automated tests
 
 Client tests are in `test/unit/`; Playwright tests are in `test/e2e/`. The client
