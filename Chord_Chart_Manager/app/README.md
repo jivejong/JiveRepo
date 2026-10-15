@@ -392,7 +392,20 @@ promotion leaves it secondary. Full-song reads and offline export use the same
 and ambiguous normalized matches separately by category; ambiguity stops the
 operation. Applying is restricted to the owner-marked `ccm_test` scratch
 database and requires the reviewed preview fingerprint. No live vocabulary
-population is part of this Stage A implementation.
+application is permitted by that utility.
+
+The separate `scripts/apply-initial-tag-definitions.cjs` command handles the
+explicitly authorized initial 45-Genre/40-Vibe population. It requires both
+input paths plus the reviewed preview, input-byte, and complete-data snapshot
+SHA-256 values. `--apply-live` accepts only the owner-connected `chords`
+database; `--rehearse` accepts only its uniquely named, owner-marked vocabulary
+scratch database. The original utility's T11 scratch guard remains intact.
+Before live use, verify a fresh backup through an owned scratch restore and
+obtain review of the bounded command. It rechecks the current complete snapshot
+and preview inside one transaction, takes the existing category/name locks and
+NOWAIT table protection, inserts only missing definitions, and verifies the
+exact ID/name delta and every other protected row before commit. Equivalent
+definitions and extras keep their existing IDs/spellings; no song is retagged.
 
 To inspect the current proposed delta from `app/`, run:
 
@@ -410,9 +423,22 @@ versions, sources, and documented associations for the eight protected
 Sample.docx songs; this evidence does not fingerprint every main-database
 record. Main health stayed healthy and aggregate counts remained 11 songs, 5
 tags, and 0 setlists. The vocabulary rehearsal ran only in scratch; the utility
-restricts application to owner-marked scratch storage. No live definitions or
-songs were changed. The Sol Medium review is clear; T24 remains in Review
-pending user acceptance. Physical tablet acceptance remains pending.
+restricts application to owner-marked scratch storage. Those guarded test runs
+left live definitions and songs unchanged. The Sol Medium review is clear;
+the user accepted the new tag system ("The new tag system works") and
+confirmed the populated choices. T24 is Done under explicit closeout authorization.
+Physical tablet acceptance is tracked separately.
+
+The separately authorized initial vocabulary population added 43 Genres and
+40 Vibes on 2026-10-14, reusing Classic Rock and Pop unchanged. Current totals
+are 45 Genres and 40 Vibes; the repeated live read-only preview has zero missing,
+ambiguous, or spelling-collision entries. A fresh full backup was verified by
+an owned scratch restore. The focused population integration rehearsal passed,
+including lossless large-number preservation and rollback checks, followed by
+clear Sol Medium re-review. Exact existing-definition and protected-row checks
+passed before commit and afterward. Browser storage was not opened or synced.
+The user accepted the population result: "They are in there. We're good."
+Stage A/T24 is complete.
 The Artist field in song create/edit offers a short case-insensitive prefix
 list drawn from songs in the local cache, including pending and locally created
 songs. Suggestions also work offline. Typing remains ordinary free text; the

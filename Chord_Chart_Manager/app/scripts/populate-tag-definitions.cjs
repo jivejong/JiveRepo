@@ -101,4 +101,8 @@ async function main() {
   }
 }
 
-main().catch(error => { console.error(error.message); process.exitCode = 1; });
+module.exports = { readNames, inspect, fingerprint };
+
+if (require.main === module) {
+  main().catch(error => { console.error(error.message); process.exitCode = 1; });
+}
