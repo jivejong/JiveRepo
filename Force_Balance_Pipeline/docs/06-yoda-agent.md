@@ -145,9 +145,12 @@ cannot reason about.
 
 | Rule | Rejection reason |
 |---|---|
-| Every Jedi must have no open deployment | `jedi_unavailable` |
-| Starship must have no open deployment | `starship_unavailable` |
+| A deployment names at least one Jedi | `no_jedi` |
+| A deployment names no Jedi twice | `duplicate_jedi` |
+| Every Jedi must have no open deployment. An unknown Jedi id is reported as `jedi_unavailable` too | `jedi_unavailable` |
+| Starship must have no open deployment. An unknown starship id is reported as `starship_unavailable` too | `starship_unavailable` |
 | `severity < 4.40` | `severity_below_threshold` — force stand-down |
+| `signature` missing or not one of the eight signatures | `signature_missing` — force stand-down |
 | `severity > 12.0` requires at least one Jedi of rank `master`, `council_member` or `grand_master` | `insufficient_rank` |
 | At least one deployed Jedi must match `signature_specialty` as primary or secondary | `specialty_mismatch` |
 | `unclassified` signature exempts the specialty rule | — |
