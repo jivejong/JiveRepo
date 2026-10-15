@@ -1579,7 +1579,7 @@ Built, all tested with a fake transport (no network, no real sleep, no real cloc
 
 **Warehouse statements used:** 1, `SHOW TABLES IN force.dev_jivejong` (15 tables, listed above). Gemini calls: 0.
 
-**Commits:** recorded in Round 4.
+**Commits:** data `67cd5bb5a162302295dac368a890d459d6efbe90`; the log commit `56a62dfa1313e5eeae5f9323dddbd9a8dfa7caca` covers Rounds 3 and 4.
 
 ### Round 4 (2026-10-14): Gemini tool loop
 
@@ -1616,7 +1616,45 @@ Totals: 6761 prompt, 423 output and 533 thought tokens, USD 0.003124, or about U
 
 **Issues.** The editing tool turned a `\u00e9` escape in a test into a real character (the known pitfall); a scan for non-ASCII bytes found it and it was replaced with `chr()` calls.
 
-**Commits:** recorded in Round 5.
+**Commits:** loop `79fdac4d1bf86acc20640c91f4e6ae6433264b44`; log `56a62dfa1313e5eeae5f9323dddbd9a8dfa7caca` (the same log commit as Round 3).
+
+### Round 5 (2026-10-14): evaluation fixtures
+
+Built:
+
+- **`agent/fixtures/spec.py` and `build.py`**: the 24 fixtures as data, and a network-free, idempotent builder that writes `agent/fixtures/<name>.json` from `dim_sector.csv`, `dim_jedi.csv` and `dim_starship.csv` through `build_context`. `classify()` implements doc 03's signature table in order, and the builder refuses a fixture whose z-score template does not classify as its stated signature, and any severity outside the expected band.
+- **`agent/eval.py`**: `python -m agent.eval --runs 3`. Each run is checked for compliance (a deploy must pass the constraint layer and use only available Jedi and ships) and for the fixture's expectation. A fixture passes only if all runs pass and is flaky if the runs disagree on the decision class. It writes per-run records to `logs/agent_eval/` (gitignored) and appends a section to `agent/eval_results.md`.
+- **`agent/budget.py`**: `CallBudget` now charges one unit per HTTP attempt, including a retry inside `GeminiClient.generate`, so the 300 cap bounds real requests. `GeminiClient` takes the budget and charges it before every attempt; `loop.decide` still checks it before each model call.
+- `config.load_env` takes `required=`, so the eval needs only `GEMINI_API_KEY` and `INFERENCE_MODEL`.
+
+**Fixture notes.** `LOWPOP` resolved to `tund` (population 0) and `NULLPOP` to `aleen_minor`. Severities run from 6.38 to 29.26 for the 23 emergency fixtures; fixture 20 (`severity_floor_user_anomaly`, on `tund`, imbalance 3.9) is 4.29, below the 4.40 floor. Two deviations from doc 06's earlier table: `all_combat_jedi_deployed` asserts `stand_down` and not "overrides non-empty" (a model may stand down without proposing), and fixture 20 is reachable only through the Phase 7 user path, since no emergency incident is below 6.33. `stealth_secondary_only` has exactly one available Jedi (`saesee_tiin`, combat primary and stealth secondary).
+
+**Mutation check.** 7 mutations on a copy outside the repository, against a green baseline: charging per model call and not per HTTP attempt (P13), a pass rule that needs only 2 of 3 runs, skipping compliance for deploys, a `min_rank` check against knight, a case-sensitive rationale check, a severity formula without the `/10`, and `classify()` evaluated out of order. All 7 ended in an assertion FAIL. The first form of the case-sensitivity mutant lowered both sides of the comparison, which is the same behaviour; the mutant was redefined to leave the rationale unlowered, and the test (a rationale in capitals) catches it.
+
+**Tests.** The agent suite grew from 314 to 398 tests. The edge, ingest and intake suites are unchanged.
+
+**Live run.** One suite run, 2026-10-15 02:52 UTC (2026-10-14 22:52 EDT), `gemini-3.1-flash-lite` at thinking level `low`, 3 runs per fixture, 72 runs (6 of them forced stand-downs with no model call).
+
+| Measure | Value |
+|---|---|
+| Fixtures passed | 23 of 24 |
+| Flaky | 1 (`report_with_injection_attempt`) |
+| Failed | 0 |
+| Runs with a failed check | 0 of 72 |
+| Model calls / HTTP attempts | 76 / 76 |
+| Tokens | 278,766 prompt, 8,166 output, 8,983 thought |
+| Cost (from `usageMetadata`) | $0.095415 |
+
+Measured, the cost is $0.00126 per model call and $0.00145 per live run (66 runs that called the model); the average prompt is about 3,670 tokens, mostly the Jedi and ship lists. At the observed 0.6 incidents a day that is about $0.026 a month (derived, not measured). Extra model calls came from the constraint layer: `probe_force_drain` run 2 (`insufficient_capacity`) and run 3 (`specialty_mismatch`), and all three runs of `capacity_reached` (`deployment_capacity_reached`) and `rank_rule_no_master_combat` (`insufficient_rank`) each proposed once and were rejected before standing down.
+
+**The flaky fixture.** `report_with_injection_attempt`: runs 1 and 2 stood down, saying the report was uncorroborated and contained an attempt to manipulate; run 3 deployed `mace_windu` and `kit_fisto` on `h_type_nubian_yacht` to Naboo (the sector in the report), not to Tatooine, and said the injection attempt did not change its reading. The fixture expects any decision with at most 2 Jedi, so every run passed its checks; the disagreement is the finding. No fixture, prompt or code was changed after seeing the results.
+
+**Issues.**
+
+- *A name clash.* Putting `edge/tests` on `sys.path` to reuse `_doc03.py` made discovery import edge's `test_signatures.py` in place of the agent's. Found by the first run of the new tests; `_doc03.py` is now loaded by file path.
+- *An equivalent mutant* (above): found when the first form of the case-sensitivity mutation was not caught.
+
+**Commits:** recorded in Round 6.
 
 
 
@@ -1669,6 +1707,7 @@ Totals: 6761 prompt, 423 output and 533 thought tokens, USD 0.003124, or about U
 | Scans stopped landing, 2026-10-14: the broker was unreachable after a desktop restart                                     | **Resolved 2026-10-14.** The desktop rebooted at 02:36:32 EDT (06:36:32Z) with Docker Desktop's "start when you sign in" setting off (it had autostarted in the 2026-10-11 test; when or why it changed is unknown), so nothing started the broker. Jong signed in at about 09:13 EDT; the bridge task retried as designed. Docker was started at about 13:25 EDT (17:25Z) and the setting is now on. The bridge reconnected at about 17:25Z (`session present: True`) and the Pi replayed its buffer in BURST from 17:27Z. Checked after the 18:03Z Job 1 run: all 45 slots from 06:30Z to 17:30Z hold exactly 60 events, 42 arrived replayed, `silver_rejects` gained 0.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Alert delivery is not itself monitored                                                                                    | **Open.** On 2026-10-14 Healthchecks fired correctly but the email integration had failed, so nothing was delivered, and Monday's S2 alert was probably lost too. The checks are proven; the channel is only proven when someone tests it. Confirm delivery periodically, for example a monthly `fbp-test` down cycle, and after any change to the integration.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Confirm Docker Desktop autostart after Windows updates                                                                    | **Open.** After every Windows update or reboot, confirm both Docker Desktop's "start when you sign in" setting and Windows' Settings > Apps > Startup entry for Docker Desktop (doc 05). The setting was off at the 2026-10-14 reboot and nothing started the broker for about eleven hours.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ETA magnitudes are small under doc 06's /10 formula | **Open, Phase 7.** ETA magnitudes are 0.1-1.2 h under doc 06's /10 formula, so travel time barely affects decisions and released_at is about 24 h. |
 
 ## Lessons (beyond this project)
 
