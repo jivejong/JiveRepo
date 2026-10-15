@@ -31,6 +31,10 @@ REASONS = (
     "insufficient_capacity",
     "agent_exhausted_retries",
     "agent_no_decision",
+    "invalid_arguments",
+    "unknown_tool",
+    "blocked_by_model",
+    "one_decision_per_turn",
 )
 
 
