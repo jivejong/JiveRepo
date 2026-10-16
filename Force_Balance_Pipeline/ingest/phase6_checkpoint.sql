@@ -51,6 +51,7 @@ ORDER BY cp.label;
 
 -- C3 SPECIALTY MATCHED. Expect: 2 rows; specialty_matched true on both (true when the incident has no signature specialty; null for a stand_down).
 --   For a deploy: at least one deployed Jedi (dim_jedi joined on jedi_ids) has the context's signature_specialty as primary or secondary.
+--   The VARIANT field is extracted to a string column in the dep CTE first: Databricks refuses a correlated reference to a VARIANT column.
 WITH cp AS (
   SELECT d.disturbance_id, CASE WHEN d.is_report_sourced THEN 'coruscant report' ELSE 'geonosis probe' END AS label
   FROM force.gold.gold_disturbance d
@@ -58,17 +59,20 @@ WITH cp AS (
          AND d.detected_at >= '2026-10-14 07:15:00' AND d.detected_at < '2026-10-14 07:16:00')
      OR (d.sector_id = 'coruscant' AND d.is_report_sourced
          AND d.detected_at >= '2026-10-12 18:23:54' AND d.detected_at < '2026-10-12 18:23:55')
+),
+dep AS (
+  SELECT p.disturbance_id, p.decision, p.jedi_ids, p.context_snapshot:signature_specialty::string AS spec
+  FROM force.gold.deployment p
 )
-SELECT cp.label, p.decision, p.context_snapshot:signature_specialty::string AS signature_specialty, p.jedi_ids,
+SELECT cp.label, dep.decision, dep.spec AS signature_specialty, dep.jedi_ids,
        CASE
-         WHEN p.decision <> 'deploy' THEN NULL
-         WHEN p.context_snapshot:signature_specialty::string IS NULL THEN true
+         WHEN dep.decision <> 'deploy' THEN NULL
+         WHEN dep.spec IS NULL THEN true
          ELSE (SELECT count(*) FROM force.gold.dim_jedi j
-               WHERE array_contains(p.jedi_ids, j.jedi_id)
-                 AND (j.primary_specialty = p.context_snapshot:signature_specialty::string
-                      OR j.secondary_specialty = p.context_snapshot:signature_specialty::string)) > 0
+               WHERE array_contains(dep.jedi_ids, j.jedi_id)
+                 AND (j.primary_specialty = dep.spec OR j.secondary_specialty = dep.spec)) > 0
        END AS specialty_matched
-FROM cp LEFT JOIN force.gold.deployment p ON p.disturbance_id = cp.disturbance_id
+FROM cp LEFT JOIN dep ON dep.disturbance_id = cp.disturbance_id
 ORDER BY cp.label;
 
 -- C4 PROCESSED FLAG. Expect: 2 rows, agent_processed true on both.

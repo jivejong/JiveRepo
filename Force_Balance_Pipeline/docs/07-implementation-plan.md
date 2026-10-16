@@ -284,7 +284,7 @@ Every round updates the Phase 6 entry in `docs/ENGINEERING-LOG.md`.
 3. **Done 2026-10-14.** Statement Execution API and Jobs API client, the agent SQL (deployment DDL, repair, poll, context, availability, MERGE, mark), tested with a fake transport.
 4. **Done 2026-10-14.** Gemini function-calling loop with thought-signature replay, tested with a fake transport and a capped live smoke test.
 5. **Done 2026-10-14.** 24 fixtures (doc 06), eval runner `edge\.venv\Scripts\python.exe -m agent.eval --runs 3`, results and token cost in `agent/eval_results.md` (23 of 24 passed, 1 flaky).
-6. `ForceAgent` Windows scheduled task, hourly at :15, skipping the 03:xx UTC hour, with the S4 check. Built 2026-10-14 (cycle runner `agent/run.py`, `infra/desktop/register-agent-task.ps1`, the dbt source and tests, `ingest/phase6_checkpoint.sql`); registration in R6b. Cloud Run is an optional later cloud stage.
+6. **Done 2026-10-15 (ForceAgent registered; first scheduled cycle 05:15Z).** `ForceAgent` Windows scheduled task, hourly at :15, skipping the 03:xx UTC hour, with the S4 check (cycle runner `agent/run.py`, `infra/desktop/register-agent-task.ps1`, the dbt source and tests, `ingest/phase6_checkpoint.sql`). Cloud Run is an optional later cloud stage.
 
 **Checkpoint:** fixture suite passes on decision class and constraint compliance across 3 runs
 each. A real disturbance from Phase 4 produces a `gold.deployment` row with populated
