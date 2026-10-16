@@ -8,6 +8,7 @@ from datetime import timedelta
 RINGS = {
     "Core Worlds": 0,
     "Colonies": 1,
+    "Inner Rim": 2,
     "Expansion Region": 2,
     "Mid Rim": 3,
     "Outer Rim": 4,

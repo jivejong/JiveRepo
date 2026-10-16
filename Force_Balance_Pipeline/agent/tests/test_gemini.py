@@ -191,6 +191,58 @@ class Answers(unittest.TestCase):
         self.assertEqual((len(opener.requests), clock.sleeps), (3, [10]))
 
 
+class ErrorClasses(unittest.TestCase):
+    def test_the_two_classes_share_a_base(self):
+        self.assertTrue(issubclass(gemini.GeminiTransient, gemini.GeminiUnavailable))
+        self.assertTrue(issubclass(gemini.GeminiPermanent, gemini.GeminiUnavailable))
+        self.assertFalse(issubclass(gemini.GeminiTransient, gemini.GeminiPermanent))
+
+    def test_twice_429_or_5xx_is_transient(self):
+        for script in ([(429, "x"), (429, "x")], [(503, "x"), (500, "x")], [S.url_error(), S.url_error()]):
+            with self.subTest(script=str(script)[:30]):
+                client, _, _ = make(script)
+                with self.assertRaises(gemini.GeminiUnavailable) as caught:
+                    client.generate(CONTENTS)
+                self.assertIsInstance(caught.exception, gemini.GeminiTransient)
+                self.assertEqual(caught.exception.kind, "transient")
+
+    def test_a_400_is_permanent(self):
+        client, _, _ = make([(400, {"error": {"message": "bad"}})])
+        with self.assertRaises(gemini.GeminiUnavailable) as caught:
+            client.generate(CONTENTS)
+        self.assertIsInstance(caught.exception, gemini.GeminiPermanent)
+        self.assertEqual(caught.exception.kind, "http_400")
+
+    def test_a_401_and_a_404_are_permanent(self):
+        for status in (401, 403, 404):
+            with self.subTest(status=status):
+                client, _, _ = make([(status, "x")])
+                with self.assertRaises(gemini.GeminiUnavailable) as caught:
+                    client.generate(CONTENTS)
+                self.assertIsInstance(caught.exception, gemini.GeminiPermanent)
+                self.assertEqual(caught.exception.kind, f"http_{status}")
+
+    def test_a_second_max_tokens_is_permanent(self):
+        client, _, _ = make([finish("MAX_TOKENS"), finish("MAX_TOKENS")])
+        with self.assertRaises(gemini.GeminiUnavailable) as caught:
+            client.generate(CONTENTS)
+        self.assertIsInstance(caught.exception, gemini.GeminiPermanent)
+        self.assertEqual(caught.exception.kind, "bad_output")
+
+    def test_a_second_malformed_answer_is_permanent(self):
+        client, _, _ = make([(200, "<html>"), (200, "<html>")])
+        with self.assertRaises(gemini.GeminiUnavailable) as caught:
+            client.generate(CONTENTS)
+        self.assertIsInstance(caught.exception, gemini.GeminiPermanent)
+
+    def test_a_first_bad_answer_then_a_good_one_raises_nothing(self):
+        client, _, _ = make([finish("MAX_TOKENS"), OK])
+        self.assertIn("candidates", client.generate(CONTENTS))
+
+    def test_a_plain_unavailable_has_a_default_kind(self):
+        self.assertEqual(gemini.GeminiUnavailable("x").kind, "unavailable")
+
+
 class Budget(unittest.TestCase):
     def test_a_plain_call_costs_one_unit(self):
         budget = CallBudget(10)

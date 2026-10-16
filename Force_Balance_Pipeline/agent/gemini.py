@@ -2,8 +2,8 @@
 
 Every request goes through files_api.http_request, with the API key in the x-goog-api-key header (never the URL), the same
 endpoint and blocked-reason handling as intake/intake_core.py. No temperature is ever sent. A transport error, HTTP 429 or 5xx
-is retried once after 10 s; a MAX_TOKENS, non-STOP or malformed answer is retried once; a blocked prompt or answer raises
-ModelBlocked. Opener, sleep and monotonic are injected. Error messages never contain the key or the request body.
+is retried once after 10 s, and fails as GeminiTransient if the retry fails too; a MAX_TOKENS, non-STOP or malformed answer is
+retried once, and a second one, or any other non-2xx status, fails as GeminiPermanent; a blocked prompt or answer raises ModelBlocked. Opener, sleep and monotonic are injected. Error messages never contain the key or the request body.
 """
 import json
 import re
@@ -26,7 +26,20 @@ _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class GeminiUnavailable(Exception):
-    """The service could not give a usable answer. The caller leaves the incident unprocessed and writes nothing."""
+    """The service could not give a usable answer. The caller leaves the incident unprocessed and writes nothing. `kind` is a short
+    label that is safe to log (never a response body or a key)."""
+
+    def __init__(self, message="", kind="unavailable"):
+        super().__init__(message)
+        self.kind = kind
+
+
+class GeminiTransient(GeminiUnavailable):
+    """A failure that may pass on its own: a transport error, HTTP 429 or 5xx, twice in a row."""
+
+
+class GeminiPermanent(GeminiUnavailable):
+    """A failure that will repeat: any other non-2xx answer (for example a 400), or a second malformed or truncated answer."""
 
 
 class ModelBlocked(Exception):
@@ -85,18 +98,18 @@ class GeminiClient:
             result = self._post(payload)
             if result is None or result[0] == 429 or result[0] >= 500:
                 if transport_retried:
-                    raise GeminiUnavailable("the Gemini API was unavailable twice in a row")
+                    raise GeminiTransient("the Gemini API was unavailable twice in a row", kind="transient")
                 transport_retried = True
                 self._sleep(TRANSPORT_RETRY_SECONDS)
                 continue
             status, raw = result
             if status != 200:
-                raise GeminiUnavailable(f"HTTP {status}: {_error_message(raw)}")
+                raise GeminiPermanent(f"HTTP {status}: {_error_message(raw)}", kind=f"http_{status}")
             try:
                 return self._check(raw)
             except _BadResponse as e:
                 if response_retried:
-                    raise GeminiUnavailable(f"unusable answer twice in a row: {e}") from None
+                    raise GeminiPermanent(f"unusable answer twice in a row: {e}", kind="bad_output") from None
                 response_retried = True
 
     @staticmethod

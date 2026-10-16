@@ -23,6 +23,7 @@ ROW = {
 def all_statements(target="dev"):
     return {
         "create_deployment": queries.create_deployment(target),
+        "repair_needed": queries.repair_needed(target),
         "repair": queries.repair(target),
         "poll": queries.poll(target, EPOCH, 5),
         "context": queries.context(target, "01KMARKERDISTURBANCEID001"),
@@ -97,6 +98,16 @@ class Repair(unittest.TestCase):
         self.assertEqual(params, {})
 
 
+class RepairNeeded(unittest.TestCase):
+    def test_it_is_a_read_that_counts_unmarked_incidents_with_a_deployment(self):
+        sql, params = queries.repair_needed("dev")
+        self.assertTrue(sql.startswith("SELECT count(*) AS n FROM force.dev_jivejong.gold_disturbance d"))
+        self.assertIn("d.agent_processed = false", sql)
+        self.assertIn("EXISTS (SELECT 1 FROM force.dev_jivejong.deployment p WHERE p.disturbance_id = d.disturbance_id)", sql)
+        self.assertNotIn("UPDATE", sql)
+        self.assertEqual(params, {})
+
+
 class Poll(unittest.TestCase):
     def test_sql(self):
         sql, params = queries.poll("prod", EPOCH, 5)
@@ -121,6 +132,14 @@ class Context(unittest.TestCase):
                        "report_description", "report_relevance", "is_report_sourced", "force_history", "population"):
             with self.subTest(column=column):
                 self.assertIn(column, sql)
+
+
+class ContextWindow(unittest.TestCase):
+    def test_deployments_last_7d_is_bounded_on_both_sides(self):
+        sql, _ = queries.context("prod", "abc")
+        part = sql[sql.index("p.decision = 'deploy' AND p.decided_at >="):sql.index("AS deployments_last_7d")]
+        self.assertIn("p.decided_at >= d.detected_at - INTERVAL 7 DAYS", part)
+        self.assertIn("p.decided_at < d.detected_at", part)
 
 
 class Availability(unittest.TestCase):

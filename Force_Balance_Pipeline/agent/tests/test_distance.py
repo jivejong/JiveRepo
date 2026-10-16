@@ -1,5 +1,6 @@
 """agent/distance.py: rings, distance units, ETA and release time (doc 06 "ETA")."""
 import csv
+import re
 import unittest
 from datetime import datetime, timezone
 
@@ -16,8 +17,21 @@ class Rings(unittest.TestCase):
         self.assertTrue(regions)
         self.assertLessEqual(regions, set(d.RINGS))
 
+    def test_every_region_the_sector_seed_accepts_has_a_ring(self):
+        text = (S.ROOT / "warehouse" / "dbt" / "seeds" / "_seeds.yml").read_text(encoding="utf-8")
+        block = text[text.index("- name: dim_sector"):text.index("- name: dim_jedi")]
+        field = block[block.index("- name: region"):]
+        field = field[:field.index("- name: is_unknown")]
+        accepted = re.findall(r'^\s+- "([^"]+)"\s*$', field, re.M)
+        self.assertGreaterEqual(len(accepted), 7)
+        self.assertLessEqual(set(accepted), set(d.RINGS))
+
+    def test_inner_rim_is_ring_two(self):
+        self.assertEqual(d.ring("Inner Rim"), 2)
+        self.assertEqual(d.distance_units("Inner Rim", "Core Worlds"), 3)
+
     def test_ring_values(self):
-        self.assertEqual(d.RINGS, {"Core Worlds": 0, "Colonies": 1, "Expansion Region": 2, "Mid Rim": 3, "Outer Rim": 4,
+        self.assertEqual(d.RINGS, {"Core Worlds": 0, "Colonies": 1, "Inner Rim": 2, "Expansion Region": 2, "Mid Rim": 3, "Outer Rim": 4,
                                    "Wild Space": 5, "Unknown Regions": 5})
 
     def test_unknown_region_counts_as_the_missing_ring(self):

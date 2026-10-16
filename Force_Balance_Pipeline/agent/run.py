@@ -26,7 +26,7 @@ from agent.config import AGENT_EPOCH, ENV_KEYS, MAX_INCIDENTS_PER_RUN, PING_KEY,
 from agent.context import build_context
 from agent.dbsql import StatementClient, StatementError, iso_z
 from agent.distance import released_at
-from agent.gemini import GeminiClient, GeminiUnavailable
+from agent.gemini import GeminiClient, GeminiPermanent, GeminiUnavailable
 from agent.lock import AlreadyRunning, InstanceLock
 from agent.loop import decide
 from agent.ulid import ulid_now
@@ -96,15 +96,20 @@ def append_ndjson(path, record):
         f.write((json.dumps(record, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii"))
 
 
-def run_cycle(*, target, limit, db, gemini, budget, clock, monotonic, log, decisions_path, decide_fn=decide, ulid_fn=ulid_now,
-              epoch=AGENT_EPOCH):
-    """Steps d to f of the cycle. Returns the summary dict (it is also logged)."""
+def run_cycle(*, target, limit, db, gemini, budget, job1_check, clock, monotonic, log, decisions_path, decide_fn=decide,
+              ulid_fn=ulid_now, epoch=AGENT_EPOCH):
+    """Steps d to f of the cycle. Returns the summary dict (it is also logged). summary["stop_reason"] is "job1_running" or
+    "jobs_api_error" when the Job 1 re-check before a write stopped the cycle; summary["degraded"] is True after a permanent model
+    error. Both make the caller's ping differ (see run_guarded)."""
     started = monotonic()
     statements_before = db.statements
-    db.write(*queries.repair(target))
+    needed = db.read(*queries.repair_needed(target))
+    if needed and int(needed[0]["n"]) > 0:
+        db.write(*queries.repair(target))
     polled = db.read(*queries.poll(target, epoch, min(limit or MAX_INCIDENTS_PER_RUN, MAX_INCIDENTS_PER_RUN)))
     ids = [r["disturbance_id"] for r in polled]
     totals = {"deploy": 0, "stand_down": 0, "model_calls": 0, "prompt": 0, "output": 0, "thought": 0, "cost": 0.0}
+    degraded, stop_reason = False, None
 
     for disturbance_id in ids:
         if monotonic() - started >= CYCLE_SECONDS:
@@ -119,11 +124,20 @@ def run_cycle(*, target, limit, db, gemini, budget, clock, monotonic, log, decis
                 continue
             context = build_context(context_rows[0], jedi_rows, ship_rows)
             decision = decide_fn(context, gemini, budget, monotonic=monotonic)
+            active, reason = job1_check()
+            if active:
+                stop_reason = reason
+                log(f"agent: Job 1 check before writing incident {disturbance_id}: {reason}; nothing more is written this cycle")
+                break
             decided_at = clock()
             row = build_row(context, decision, decided_at, ulid_fn())
             db.write(*queries.write_decision(target, row))
+        except GeminiPermanent as e:
+            degraded = True
+            log(f"agent: incident {disturbance_id}: a permanent model error ({e.kind}); nothing written; the cycle is degraded")
+            continue
         except GeminiUnavailable as e:
-            log(f"agent: incident {disturbance_id}: the model was unavailable ({e}); nothing written")
+            log(f"agent: incident {disturbance_id}: the model was unavailable ({e.kind}); nothing written")
             continue
         except BudgetExhausted as e:
             log(f"agent: {e}; stopping the cycle")
@@ -151,16 +165,24 @@ def run_cycle(*, target, limit, db, gemini, budget, clock, monotonic, log, decis
         "left": len(ids) - decided, "statements": db.statements - statements_before, "model_calls": totals["model_calls"],
         "http_attempts": budget.used, "prompt_tokens": totals["prompt"], "output_tokens": totals["output"],
         "thought_tokens": totals["thought"], "cost_usd": totals["cost"], "duration_s": round(monotonic() - started, 1),
+        "degraded": "true" if degraded else "false", "stop_reason": stop_reason,
     }
     log("agent: cycle target={target} polled={polled} decided={decided} (deploy={deploy} stand_down={stand_down}) left={left} "
         "statements={statements} model_calls={model_calls} http_attempts={http_attempts} "
-        "tokens={prompt_tokens}/{output_tokens}/{thought_tokens} cost_usd={cost_usd:.6f} duration_s={duration_s}".format(**summary))
+        "tokens={prompt_tokens}/{output_tokens}/{thought_tokens} cost_usd={cost_usd:.6f} duration_s={duration_s} "
+        "degraded={degraded}".format(**summary))
     return summary
+
+
+def cycle_ping_kind(summary):
+    """"fail" after a permanent model error or a Jobs API error during the cycle, else "success" (a Job 1 run in progress is normal)."""
+    return "fail" if summary["degraded"] == "true" or summary["stop_reason"] == "jobs_api_error" else "success"
 
 
 def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, ping, clock, monotonic, log, decisions_path,
                 decide_fn=decide, ulid_fn=ulid_now, epoch=AGENT_EPOCH):
-    """Steps a to c and g: the lock, the quota window, the Job 1 check, and the S4 ping. Returns the exit code."""
+    """Steps a to c and g: the lock, the quota window, the Job 1 check, and the S4 ping. Returns the exit code.
+    S4: success, or /fail after a Jobs API error, a permanent model error or a crash."""
     lock = InstanceLock(lock_path)
     try:
         lock.acquire()
@@ -175,11 +197,12 @@ def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, pin
         active, reason = job1_check()
         if active:
             log(f"agent: skipping the cycle: {reason}")
-            ping("success")
+            ping("fail" if reason == "jobs_api_error" else "success")
             return 0
-        run_cycle(target=target, limit=limit, db=db, gemini=gemini, budget=budget, clock=clock, monotonic=monotonic, log=log,
-                  decisions_path=decisions_path, decide_fn=decide_fn, ulid_fn=ulid_fn, epoch=epoch)
-        ping("success")
+        summary = run_cycle(target=target, limit=limit, db=db, gemini=gemini, budget=budget, job1_check=job1_check, clock=clock,
+                            monotonic=monotonic, log=log, decisions_path=decisions_path, decide_fn=decide_fn, ulid_fn=ulid_fn,
+                            epoch=epoch)
+        ping(cycle_ping_kind(summary))
         return 0
     except Exception:
         log("agent: the cycle failed:\n" + traceback.format_exc())
@@ -224,34 +247,41 @@ def main(argv=None):
 
     logger = configure_logging()
     log = logger.info
+    ping = make_pinger(None, opener=None, log=log)       # disabled until the URL is known
     try:
-        epoch = resolve_epoch(args.target, args.epoch)
-    except ValueError as e:
-        log(f"agent: {e}")
-        print(f"agent: {e}")
-        return 2
-    if args.epoch is not None:
-        log(f"agent: epoch override {iso_z(epoch)} (dev only)")
-    try:
-        env = load_env(args.env, required=ENV_KEYS if args.no_ping else RUN_ENV_KEYS)
-        url = None if args.no_ping else env[PING_KEY]
-        if url is not None and not valid_ping_url(url):
-            raise ValueError(f"{PING_KEY} is not an https URL")
-    except Exception as e:
-        log(f"agent: configuration problem: {e}")
-        return 2
+        try:
+            epoch = resolve_epoch(args.target, args.epoch)
+        except ValueError as e:
+            log(f"agent: {e}")
+            print(f"agent: {e}")
+            return 2
+        if args.epoch is not None:
+            log(f"agent: epoch override {iso_z(epoch)} (dev only)")
+        opener = urllib.request.urlopen
+        try:
+            env = load_env(args.env, required=ENV_KEYS if args.no_ping else RUN_ENV_KEYS)
+            url = None if args.no_ping else env[PING_KEY]
+            if url is not None and not valid_ping_url(url):
+                raise ValueError(f"{PING_KEY} is not an https URL")
+        except Exception as e:
+            log(f"agent: configuration problem: {e}")
+            return 2
+        ping = make_pinger(url, opener=opener, log=log)
 
-    opener = urllib.request.urlopen
-    budget = CallBudget(20)
-    db = StatementClient(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], env["DATABRICKS_WAREHOUSE_ID"], opener=opener,
-                         sleep=time.sleep, monotonic=time.monotonic)
-    gemini = GeminiClient(env["GEMINI_API_KEY"], env["INFERENCE_MODEL"], opener=opener, sleep=time.sleep, monotonic=time.monotonic,
-                          budget=budget)
-    return run_guarded(
-        target=args.target, limit=args.limit, lock_path=LOCK_PATH, db=db, gemini=gemini, budget=budget,
-        job1_check=lambda: jobs.job1_active(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], opener=opener),
-        ping=make_pinger(url, opener=opener, log=log), clock=lambda: datetime.now(timezone.utc), monotonic=time.monotonic,
-        log=log, decisions_path=DECISIONS_PATH, epoch=epoch)
+        budget = CallBudget(20)
+        db = StatementClient(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], env["DATABRICKS_WAREHOUSE_ID"], opener=opener,
+                             sleep=time.sleep, monotonic=time.monotonic)
+        gemini = GeminiClient(env["GEMINI_API_KEY"], env["INFERENCE_MODEL"], opener=opener, sleep=time.sleep,
+                              monotonic=time.monotonic, budget=budget)
+        return run_guarded(
+            target=args.target, limit=args.limit, lock_path=LOCK_PATH, db=db, gemini=gemini, budget=budget,
+            job1_check=lambda: jobs.job1_active(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], opener=opener),
+            ping=ping, clock=lambda: datetime.now(timezone.utc), monotonic=time.monotonic,
+            log=log, decisions_path=DECISIONS_PATH, epoch=epoch)
+    except Exception:
+        log("agent: the run failed:\n" + traceback.format_exc())
+        ping("fail")
+        return 1
 
 
 if __name__ == "__main__":

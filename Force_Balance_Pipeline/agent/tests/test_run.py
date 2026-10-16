@@ -13,7 +13,7 @@ from _fixtures import JEDI, SHIPS, StepClock, row
 from agent import run
 from agent.budget import BudgetExhausted, CallBudget
 from agent.dbsql import StatementFailed, StatementTimeout
-from agent.gemini import GeminiUnavailable
+from agent.gemini import GeminiPermanent, GeminiTransient, GeminiUnavailable
 from agent.lock import InstanceLock
 from agent.loop import Decision, decide
 
@@ -24,6 +24,8 @@ TOKEN_MARKER = "dapi-NOT-A-REAL-TOKEN-5521"
 def kind_of(sql):
     if sql.startswith("MERGE"):
         return "write"
+    if sql.startswith("SELECT count(*) AS n"):
+        return "repair_needed"
     if sql.startswith("UPDATE") and "disturbance_id IN" in sql:
         return "repair"
     if sql.startswith("UPDATE"):
@@ -40,8 +42,9 @@ def kind_of(sql):
 
 
 class FakeDb:
-    def __init__(self, ids=(), fail=None, context_overrides=None, no_context=False):
+    def __init__(self, ids=(), fail=None, context_overrides=None, no_context=False, repair_n=0):
         self.ids = list(ids)
+        self.repair_n = repair_n
         self.no_context = no_context
         self.fail = fail or {}                      # kind -> exception to raise on every call
         self.context_overrides = context_overrides or {}
@@ -56,6 +59,8 @@ class FakeDb:
         self.calls.append((kind, params))
         if kind in self.fail:
             raise self.fail[kind]
+        if kind == "repair_needed":
+            return [{"n": self.repair_n}]
         if kind == "poll":
             return [{"disturbance_id": i} for i in self.ids]
         if kind == "context":
@@ -84,9 +89,9 @@ def fake_decision(kind="deploy", **overrides):
 
 class Harness:
     def __init__(self, directory, ids=(), hour=12, job1=(False, "idle"), decide_fn=None, fail=None, monotonic=None, limit=None,
-                 context_overrides=None, hold_lock=False):
+                 context_overrides=None, hold_lock=False, repair_n=0):
         self.dir = Path(directory)
-        self.db = FakeDb(ids, fail, context_overrides)
+        self.db = FakeDb(ids, fail, context_overrides, repair_n=repair_n)
         self.pings, self.logs, self.decide_calls = [], [], []
         self.budget = CallBudget(20)
         self.lock_path = self.dir / "agent.lock"
@@ -95,6 +100,7 @@ class Harness:
         self.hour = hour
         self.decide_fn = decide_fn or self._default_decide
         self.job1 = job1
+        self.job1_calls = 0
         self.monotonic = monotonic or StepClock(0.1)
         self.limit = limit
         self.epoch = run.AGENT_EPOCH
@@ -104,10 +110,17 @@ class Harness:
         self.decide_calls.append(context)
         return fake_decision()
 
+    def job1_check(self):
+        """job1 is one (active, reason) pair, or a list of pairs consumed one per call (the last repeats)."""
+        self.job1_calls += 1
+        if isinstance(self.job1, list):
+            return self.job1[min(self.job1_calls, len(self.job1)) - 1]
+        return self.job1
+
     def go(self):
         code = run.run_guarded(
             target="dev", limit=self.limit, lock_path=self.lock_path, db=self.db, gemini=object(), budget=self.budget,
-            job1_check=lambda: self.job1, ping=self.pings.append, clock=lambda: NOW.replace(hour=self.hour),
+            job1_check=self.job1_check, ping=self.pings.append, clock=lambda: NOW.replace(hour=self.hour),
             monotonic=self.monotonic, log=self.logs.append, decisions_path=self.decisions_path,
             decide_fn=self.decide_fn, ulid_fn=lambda: next(self.ulids), epoch=self.epoch)
         if self.held:
@@ -141,7 +154,7 @@ class Skips(unittest.TestCase):
             with self.subTest(hour=hour):
                 h = harness(hour=hour)
                 h.go()
-                self.assertEqual(h.db.kinds, ["repair", "poll"])
+                self.assertEqual(h.db.kinds, ["repair_needed", "poll"])
 
     def test_an_active_job_1_skips_the_cycle_and_pings_success(self):
         h = harness(ids=["a"], job1=(True, "job1_running"))
@@ -152,9 +165,10 @@ class Skips(unittest.TestCase):
 
     def test_a_jobs_api_error_also_skips_the_cycle(self):
         h = harness(ids=["a"], job1=(True, "jobs_api_error"))
-        h.go()
+        self.assertEqual(h.go(), 0)
         self.assertEqual(h.db.kinds, [])
-        self.assertEqual(h.pings, ["success"])
+        self.assertEqual(h.pings, ["fail"])
+        self.assertTrue(any("jobs_api_error" in line for line in h.logs))
 
     def test_the_lock_is_released_after_a_cycle(self):
         h = harness()
@@ -167,7 +181,7 @@ class Cycle(unittest.TestCase):
     def test_no_incidents_costs_exactly_two_statements_and_no_model_call(self):
         h = harness()
         self.assertEqual(h.go(), 0)
-        self.assertEqual(h.db.kinds, ["repair", "poll"])
+        self.assertEqual(h.db.kinds, ["repair_needed", "poll"])
         self.assertEqual(h.db.statements, 2)
         self.assertEqual(h.decide_calls, [])
         self.assertEqual(h.pings, ["success"])
@@ -175,7 +189,7 @@ class Cycle(unittest.TestCase):
     def test_one_incident_runs_seven_statements_in_order(self):
         h = harness(ids=["inc-1"])
         self.assertEqual(h.go(), 0)
-        self.assertEqual(h.db.kinds, ["repair", "poll", "context", "jedi", "ships", "write", "mark"])
+        self.assertEqual(h.db.kinds, ["repair_needed", "poll", "context", "jedi", "ships", "write", "mark"])
         self.assertEqual(h.db.statements, 7)
         self.assertEqual(h.pings, ["success"])
 
@@ -243,7 +257,7 @@ class Cycle(unittest.TestCase):
         self.assertTrue(any("Traceback" in line and "RuntimeError" in line for line in h.logs))
 
     def test_a_failed_repair_is_a_crash(self):
-        h = harness(fail={"repair": StatementFailed("X", "boom", False)})
+        h = harness(repair_n=1, fail={"repair": StatementFailed("X", "boom", False)})
         self.assertEqual(h.go(), 1)
         self.assertEqual(h.pings, ["fail"])
 
@@ -306,6 +320,173 @@ class Rows(unittest.TestCase):
         h = harness(ids=["inc-1"], decide_fn=lambda c, g, b, *, monotonic: fake_decision(guardrail_overrides=overrides))
         h.go()
         self.assertEqual(json.loads(self.params_of_write(h)["overrides_json"][0]), overrides)
+
+
+class Repair(unittest.TestCase):
+    def test_an_idle_cycle_is_two_reads_and_no_write(self):
+        h = harness()
+        h.go()
+        self.assertEqual(h.db.kinds, ["repair_needed", "poll"])
+        self.assertEqual(h.db.statements, 2)
+
+    def test_the_update_runs_only_when_something_needs_repair(self):
+        h = harness(repair_n=2)
+        h.go()
+        self.assertEqual(h.db.kinds, ["repair_needed", "repair", "poll"])
+
+    def test_one_incident_with_a_repair_is_eight_statements(self):
+        h = harness(ids=["inc-1"], repair_n=1)
+        h.go()
+        self.assertEqual(h.db.kinds, ["repair_needed", "repair", "poll", "context", "jedi", "ships", "write", "mark"])
+        self.assertEqual(h.db.statements, 8)
+
+    def test_zero_needed_makes_no_update_even_with_incidents(self):
+        h = harness(ids=["inc-1"], repair_n=0)
+        h.go()
+        self.assertNotIn("repair", h.db.kinds)
+
+
+class ModelErrors(unittest.TestCase):
+    def raising(self, exc):
+        def fn(context, gemini, budget, *, monotonic):
+            raise exc
+        return fn
+
+    def summary_line(self, h):
+        return next(x for x in h.logs if x.startswith("agent: cycle "))
+
+    def test_a_transient_error_is_logged_and_the_cycle_still_pings_success(self):
+        h = harness(ids=["inc-1"], decide_fn=self.raising(GeminiTransient("down", kind="transient")))
+        self.assertEqual(h.go(), 0)
+        self.assertEqual(h.pings, ["success"])
+        self.assertIn("degraded=false", self.summary_line(h))
+        self.assertNotIn("write", h.db.kinds)
+
+    def test_a_permanent_error_writes_nothing_and_pings_fail(self):
+        h = harness(ids=["inc-1"], decide_fn=self.raising(GeminiPermanent("HTTP 400: secret-looking-body", kind="http_400")))
+        self.assertEqual(h.go(), 0)
+        self.assertEqual(h.pings, ["fail"])
+        self.assertNotIn("write", h.db.kinds)
+        self.assertNotIn("mark", h.db.kinds)
+        self.assertIn("degraded=true", self.summary_line(h))
+
+    def test_a_permanent_error_logs_the_kind_and_not_the_message(self):
+        h = harness(ids=["inc-1"], decide_fn=self.raising(GeminiPermanent("HTTP 400: secret-looking-body", kind="http_400")))
+        h.go()
+        text = "\n".join(h.logs)
+        self.assertIn("http_400", text)
+        self.assertNotIn("secret-looking-body", text)
+
+    def test_the_cycle_goes_on_to_the_next_incident_after_a_permanent_error(self):
+        calls = []
+
+        def fn(context, gemini, budget, *, monotonic):
+            calls.append(context["disturbance_id"])
+            if len(calls) == 1:
+                raise GeminiPermanent("x", kind="http_400")
+            return fake_decision()
+        h = harness(ids=["inc-1", "inc-2"], decide_fn=fn)
+        h.go()
+        self.assertEqual(calls, ["inc-1", "inc-2"])
+        self.assertEqual(h.db.kinds.count("write"), 1)
+        self.assertEqual(h.pings, ["fail"])
+
+    def test_a_clean_cycle_is_not_degraded(self):
+        h = harness(ids=["inc-1"])
+        h.go()
+        self.assertIn("degraded=false", self.summary_line(h))
+        self.assertEqual(h.pings, ["success"])
+
+
+class JobRecheck(unittest.TestCase):
+    def test_job_1_starting_mid_cycle_stops_before_the_write_and_pings_success(self):
+        h = harness(ids=["inc-1", "inc-2"], job1=[(False, "idle"), (True, "job1_running")])
+        self.assertEqual(h.go(), 0)
+        self.assertNotIn("write", h.db.kinds)
+        self.assertNotIn("mark", h.db.kinds)
+        self.assertEqual(h.db.kinds.count("context"), 1)          # the second incident was never started
+        self.assertEqual(h.pings, ["success"])
+        self.assertTrue(any("job1_running" in line for line in h.logs))
+
+    def test_a_jobs_api_error_mid_cycle_stops_and_pings_fail(self):
+        h = harness(ids=["inc-1", "inc-2"], job1=[(False, "idle"), (True, "jobs_api_error")])
+        self.assertEqual(h.go(), 0)
+        self.assertNotIn("write", h.db.kinds)
+        self.assertEqual(h.pings, ["fail"])
+
+    def test_the_check_runs_once_at_the_start_and_once_per_incident(self):
+        h = harness(ids=["inc-1", "inc-2"])
+        h.go()
+        self.assertEqual(h.job1_calls, 3)
+
+    def test_an_incident_written_before_job_1_started_stays_written(self):
+        h = harness(ids=["inc-1", "inc-2"], job1=[(False, "idle"), (False, "idle"), (True, "job1_running")])
+        h.go()
+        self.assertEqual(h.db.kinds.count("write"), 1)
+        self.assertEqual(h.db.kinds.count("mark"), 1)
+        self.assertEqual(h.pings, ["success"])
+
+
+class MainHandler(unittest.TestCase):
+    def env_file(self, **overrides):
+        values = {"DATABRICKS_HOST": "https://example.invalid", "DATABRICKS_TOKEN": "tok-NOT-A-REAL-ONE-77",
+                  "DATABRICKS_WAREHOUSE_ID": "0123456789abcdef", "GEMINI_API_KEY": "key-NOT-A-REAL-ONE-88",
+                  "INFERENCE_MODEL": "gemini-3.1-flash-lite", "AGENT_PING_S4_URL": "https://hc.example.invalid/ping/NOT-A-REAL-UUID"}
+        values.update(overrides)
+        directory = tempfile.mkdtemp()
+        unittest.addModuleCleanup(shutil.rmtree, directory, ignore_errors=True)
+        path = Path(directory) / ".env.agent"
+        path.write_text("".join(f"{k}={v}\n" for k, v in values.items()), encoding="utf-8")
+        return str(path)
+
+    def run_main(self, argv, opener=None):
+        logs = []
+        fake_logger = logging.getLogger("agent-test-main")
+        fake_logger.info = logs.append
+        patches = [mock.patch.object(run, "configure_logging", return_value=fake_logger)]
+        if opener is not None:
+            patches.append(mock.patch.object(run.urllib.request, "urlopen", opener))
+        for p in patches:
+            p.start()
+        try:
+            try:
+                code = run.main(argv)
+            except Exception as e:
+                self.fail(f"main must handle its own errors, but it raised {e!r}")
+        finally:
+            for p in patches:
+                p.stop()
+        return code, logs
+
+    def test_a_bad_model_name_is_logged_and_returns_non_zero(self):
+        code, logs = self.run_main(["--target", "dev", "--no-ping", "--env", self.env_file(INFERENCE_MODEL="../bad model")])
+        self.assertEqual(code, 1)
+        self.assertTrue(any("the run failed" in line and "ValueError" in line for line in logs))
+
+    def test_with_a_ping_url_a_failure_pings_fail(self):
+        from _support import FakeOpener
+        opener = FakeOpener([(200, "OK")])
+        code, _ = self.run_main(["--target", "dev", "--env", self.env_file(INFERENCE_MODEL="../bad model")], opener=opener)
+        self.assertEqual(code, 1)
+        self.assertEqual([r["url"] for r in opener.requests], ["https://hc.example.invalid/ping/NOT-A-REAL-UUID/fail"])
+
+    def test_the_traceback_has_no_secret(self):
+        _, logs = self.run_main(["--target", "dev", "--no-ping", "--env", self.env_file(INFERENCE_MODEL="../bad model")])
+        text = "\n".join(logs)
+        for secret in ("tok-NOT-A-REAL-ONE-77", "key-NOT-A-REAL-ONE-88", "hc.example.invalid"):
+            self.assertNotIn(secret, text)
+
+    def test_a_config_error_exits_2_and_pings_nothing(self):
+        from _support import FakeOpener
+        opener = FakeOpener([(200, "OK")])
+        directory = tempfile.mkdtemp()
+        unittest.addModuleCleanup(shutil.rmtree, directory, ignore_errors=True)
+        path = Path(directory) / ".env.agent"
+        path.write_text("DATABRICKS_HOST=https://example.invalid\n", encoding="utf-8")
+        code, logs = self.run_main(["--target", "dev", "--env", str(path)], opener=opener)
+        self.assertEqual(code, 2)
+        self.assertEqual(opener.requests, [])
+        self.assertTrue(any("configuration problem" in line for line in logs))
 
 
 class Limit(unittest.TestCase):

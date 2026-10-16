@@ -27,6 +27,13 @@ def create_deployment(target):
     return _render(CREATE_DEPLOYMENT_SQL.read_text(encoding="utf-8"), target), {}
 
 
+def repair_needed(target):
+    """How many incidents have a deployment row but are not marked processed. The UPDATE of repair() runs only when n > 0."""
+    sql = """SELECT count(*) AS n FROM {disturbance} d
+WHERE d.agent_processed = false AND EXISTS (SELECT 1 FROM {deployment} p WHERE p.disturbance_id = d.disturbance_id)"""
+    return _render(sql, target), {}
+
+
 def repair(target):
     sql = """UPDATE {disturbance} SET agent_processed = true
 WHERE agent_processed = false AND disturbance_id IN (SELECT disturbance_id FROM {deployment})"""
@@ -50,7 +57,8 @@ def context(target, disturbance_id):
        (SELECT count(*) FROM {disturbance} h
          WHERE h.sector_id = d.sector_id AND h.detected_at >= d.detected_at - INTERVAL 7 DAYS AND h.detected_at < d.detected_at) AS disturbances_last_7d,
        (SELECT count(*) FROM {deployment} p JOIN {disturbance} h2 ON h2.disturbance_id = p.disturbance_id
-         WHERE h2.sector_id = d.sector_id AND p.decision = 'deploy' AND p.decided_at >= d.detected_at - INTERVAL 7 DAYS) AS deployments_last_7d,
+         WHERE h2.sector_id = d.sector_id AND p.decision = 'deploy' AND p.decided_at >= d.detected_at - INTERVAL 7 DAYS
+           AND p.decided_at < d.detected_at) AS deployments_last_7d,
        (SELECT max_by(h3.signature, h3.detected_at) FROM {disturbance} h3
          WHERE h3.sector_id = d.sector_id AND h3.detected_at < d.detected_at) AS last_signature,
        (SELECT count(*) FROM {deployment} o WHERE o.decision = 'deploy' AND o.released_at > current_timestamp()) AS open_deployments
