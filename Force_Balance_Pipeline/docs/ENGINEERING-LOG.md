@@ -1751,9 +1751,97 @@ With Jong's explicit approval for exactly: the prod seed, the prod DDL, one manu
 
 **Not yet seen live.** A stand-down on a report incident, an override from the constraint layer, and a cycle that skips for Job 1 or for the 03:xx hour; they are covered by unit tests and, for the overrides, the Round 5 suite.
 
-**Commits:** recorded at phase close.
+**Commits:** checkpoint record `032b4fc6e471aeaf13c8d70aee83ef47aa8ba0ad`; the held dbt source and tests `97ad974593d30116fbde971a6bca9fc507439774`.
+
+### Phase 6 summary
+
+**Goal.** An agent that reads each new incident in `gold.disturbance`, decides whether to deploy Jedi or stand down under a code-enforced constraint layer, and writes the decision to `gold.deployment`, running unattended on the desktop.
+
+**What was built.**
+
+- `agent/signatures.py`: the signature names, the signature-to-specialty map (parity-tested against doc 03 and the edge simulator) and `evidence_kind`.
+- `agent/distance.py`: region rings, distance units, ETA and `released_at`.
+- `agent/constraints.py`: the constraint layer (`forced_stand_down`, `check_deploy`, the rejection reasons).
+- `agent/config.py`, `agent/ulid.py`, `agent/budget.py`, `agent/lock.py`: configuration and table names, deployment ids, the per-attempt call budget, the single-instance lock.
+- `agent/dbsql.py`, `agent/jobs.py`, `agent/queries.py`, `agent/sql/create_deployment.sql`, `agent/ddl.py`: the Statement Execution API client, the Job 1 check, every SQL statement, the deployment table and its creation tool.
+- `agent/context.py`, `agent/prompt.py`, `agent/tools.py`, `agent/gemini.py`, `agent/loop.py`: the context the model sees, the prompts, the tool declarations, the Gemini client and the function-calling loop with thought-signature replay.
+- `agent/fixtures/` (spec, builder, 24 contexts) and `agent/eval.py`: the evaluation suite and its runner.
+- `agent/run.py`: one cycle (lock, quota window, Job 1 check, repair, poll, decide, write, mark, S4 ping).
+- `scripts/starship_roster.py`, `scripts/build_starship_seed.py` and the seed `dim_starship.csv`: 13 Episode I-III ships.
+- `infra/desktop/register-agent-task.ps1` and its Pester file: the `ForceAgent` task.
+- `warehouse/dbt/models/gold/_agent__sources.yml` and two singular tests; `ingest/phase6_checkpoint.sql`.
+
+**Checkpoint.** Passed on 2026-10-15: the coruscant report incident and the geonosis probe incident each got a `deploy` decision with a combat Jedi, an ETA, a populated snapshot and a rationale naming the sector and the signature (Round 6b-2). C3 of the checkpoint file failed on a VARIANT correlation and was fixed at phase close; the fixed block returns `specialty_matched` true for both. Job 1's run of 2026-10-15 14:03Z on commit `97ad974` passed 94 of 94 tests, including the 11 agent-source tests.
+
+**Measured numbers.**
+
+| Measure | Value |
+|---|---|
+| Evaluation suite (72 runs, 24 fixtures x 3) | $0.095; 23 of 24 pass, 1 flaky, 0 failed checks |
+| First prod cycle | 12 statements, 2 model calls, $0.0026 |
+| An idle cycle | 2 statements, no model call, $0 |
+| Agent suite | 473 tests |
+| Pester | 45 (23 bridge, 22 agent) |
+| Job 1 nodes | 94 (83 before the agent source) |
+
+**Deviations from docs 06 and 07 as written at the start of the phase.**
+
+- The agent runs as a local Windows scheduled task (`ForceAgent`), not as a Cloud Run job; Cloud Run is an optional later stage.
+- The context is preloaded into the first user message; the three information tools are answered from it with no further warehouse query.
+- No temperature is sent (doc 06 said 0.2); thinking level `low`.
+- New rejection reasons: `no_jedi`, `duplicate_jedi`, `signature_missing`, `invalid_arguments`, `unknown_tool`, `blocked_by_model`; `one_decision_per_turn` is an answer, not an override. Severity bands were re-derived (floor 4.40, rank rule above 12.0).
+- A forced stand-down makes no model call; a deploy's ETA is the slowest party member's; `released_at` and `MISSION_HOURS` were added to `gold.deployment`.
+- Fixtures: 24 re-derived contexts replaced the original 14 rows; `all_combat_jedi_deployed` asserts `stand_down` only, and `severity_floor_user_anomaly` is reachable only through the Phase 7 user path.
+- `gold.deployment` is agent-owned and declared as a dbt source, not a dbt model; the call budget counts HTTP attempts, not model calls.
+- The write retry is 3 attempts with waits of 5 s and 15 s (doc 06 had said 5, 15 and 45 s).
+
+**Phase 6 commits, in order** (`git log --oneline -- Force_Balance_Pipeline` since `5f59129`):
+
+1. `4675135` Record Phase 6 agent design decisions in docs
+2. `d86ffe0` Start Phase 6 log entry; fill outage entry details
+3. `8303d50` Add agent constraint layer, specialty map and ETA
+4. `a471de4` Add dim_starship seed from SWAPI snapshot
+5. `b65dd0a` Log Phase 6 constraint layer round
+6. `79fdac4` Add agent Gemini tool loop with signature replay
+7. `56a62df` Log Phase 6 tool loop round
+8. `67cd5bb` Add agent data layer: Statement API client and SQL
+9. `cdf3ac3` Add agent evaluation fixtures and runner
+10. `d4afdd8` Log Phase 6 evaluation round
+11. `8619c05` Add agent cycle runner and ForceAgent task script
+12. `97e69a4` Log Phase 6 cycle runner round
+13. `07e5455` Add agent DDL tool and dev-only epoch override
+14. `6f6491e` Log Phase 6 dev live run
+15. `032b4fc` Record Phase 6 prod run and checkpoint
+16. `97ad974` Add dbt source and tests for agent deployments
+
+The two close-out commits (the C3 fix with the doc updates, and this summary) follow these.
 
 
+
+### Review fixes (2026-10-15)
+
+A read-only code review of everything Phase 6 changed (Opus) found no blockers and ten findings. The `ForceAgent` task was disabled while the fixes were made and enabled again after the suites passed.
+
+| # | Finding | Action |
+|---|---|---|
+| 1 | A Jobs API failure (for example an expired token) skipped the cycle and pinged S4 success, so S4 stayed green while the agent never ran | A `jobs_api_error` now logs the reason, pings `/fail` and exits 0; `job1_running` still pings success |
+| 2 | A permanent Gemini error (a 400) repeated every hour with S4 green | `GeminiUnavailable` is now a base class of `GeminiTransient` and `GeminiPermanent`; a permanent error logs its kind, writes nothing, goes on, and makes the cycle "degraded" (`/fail` ping, `degraded=true` in the summary) |
+| 3 | `assert_deployment_incident_processed` (severity error) could fail Job 1 in the gap between :03 and the :15 repair | Severity is now warn, with a comment and a note in doc 03; `dbt parse` is clean and Job 1's selection is still 94 nodes (11 agent-source) |
+| 4 | A bad `INFERENCE_MODEL` raised outside every handler, so nothing was logged and no ping was sent | All of `main()` is inside one handler: it logs the traceback, pings `/fail` if the URL is known, and returns 1; a config error before the URL is known returns 2 |
+| 5 | Job 1 was checked only at the start of a cycle, so an agent write could overlap a Job 1 MERGE | Job 1 is checked again before each incident's write; if it is active (or the Jobs API fails) the cycle stops and writes nothing more. A race of a few seconds remains (open item) |
+| 6 | "The whole cycle is limited to 30 minutes" was wrong: 30 minutes only stops new incidents | Doc 06 now says so, and describes the 45-minute task limit, the safety of a kill at any step and that a killed statement may finish on the server |
+| 7 | The repair `UPDATE` ran every idle hour | A read counts incidents that need repair first; the `UPDATE` runs only when the count is above 0. An idle cycle is 2 reads and no write |
+| 8 | `deployments_last_7d` had no upper bound | It now adds `p.decided_at < d.detected_at` |
+| 9 | The sector seed allows the region "Inner Rim", which had no ring | `RINGS["Inner Rim"] = 2`, with a test that every region the seed accepts has a ring, and the doc 06 table updated |
+| 10 | The task runs `agent/` from the working tree, so an uncommitted edit goes live at the next :15 | Recorded as an open item |
+
+**Mutation check.** 7 mutations on a copy outside the repository: `jobs_api_error` pings success (F1), a 400 treated as transient (F2), a degraded cycle pings success (F3), client construction outside the handler (F4), the per-incident Job 1 check removed (F5), the repair `UPDATE` runs when nothing needs repair (F6), and "Inner Rim" removed (F7). All 7 ended in an assertion FAIL. F2 and F4 first produced errors only (the tests let the wrong exception escape); the tests now catch it and fail by assertion.
+
+**Tests.** Agent suite 473 to 502. Pester 45 (unchanged). The edge, ingest and intake suites are unchanged.
+
+**Dev check.** One cycle against `force.dev_jivejong` with `--no-ping`: polled 0, 2 statements (the repair count and the poll, both reads, no `UPDATE`), no model call. Warehouse statements used: 2 of the 5 allowed. Nothing ran on prod.
+
+**Docs.** Doc 06 gains the Job 1 re-check, the S4 semantics (success, or `/fail` after a Jobs API error, a permanent model error or a crash), the failure-handling changes and the known behavior that a `capacity_reached` stand-down is permanent. The close-out commit SHAs were not supplied, so the "two close-out commits follow these" line in the Phase 6 summary is unchanged.
 
 ## Open items
 
@@ -1805,6 +1893,12 @@ With Jong's explicit approval for exactly: the prod seed, the prod DDL, one manu
 | Alert delivery is not itself monitored                                                                                    | **Open.** On 2026-10-14 Healthchecks fired correctly but the email integration had failed, so nothing was delivered, and Monday's S2 alert was probably lost too. The checks are proven; the channel is only proven when someone tests it. Confirm delivery periodically, for example a monthly `fbp-test` down cycle, and after any change to the integration.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Confirm Docker Desktop autostart after Windows updates                                                                    | **Open.** After every Windows update or reboot, confirm both Docker Desktop's "start when you sign in" setting and Windows' Settings > Apps > Startup entry for Docker Desktop (doc 05). The setting was off at the 2026-10-14 reboot and nothing started the broker for about eleven hours.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ETA magnitudes are small under doc 06's /10 formula | **Open, Phase 7.** ETA magnitudes are 0.1-1.2 h under doc 06's /10 formula, so travel time barely affects decisions and released_at is about 24 h. |
+| Gold severity drifts after a decision | **Open, Phase 7.** The daily baseline rebuild re-scores existing incidents (geonosis 16.81 on 2026-10-14, 16.75 on 2026-10-15); `context_snapshot` keeps the decision-time value; a "severity rose after decision" flag (doc 06, "Re-escalation") needs a materiality threshold. |
+| Agent personal access token in `.env.agent` | **Open, Jong.** Record its expiry and rotate before it. |
+| `report_with_injection_attempt` is flaky across runs | **Watch.** Both outcomes are compliant and the injection was never followed; not tuned. |
+| ForceAgent runs `agent/` from the working tree | **Open, soon.** An uncommitted edit, stash or checkout goes live at the next :15; the remedy is the same as the bridge's: a pinned checkout. |
+| Residual race between the agent and Job 1 | **Watch.** Job 1 can start seconds after the per-incident check; a Delta conflict could fail one Job 1 run (S2 alerts). |
+| `capacity_reached` stand-downs are permanent | **Phase 7.** An incident that arrives while the fleet cap is full is stood down for good and is not retried when a slot frees up. |
 
 ## Lessons (beyond this project)
 
