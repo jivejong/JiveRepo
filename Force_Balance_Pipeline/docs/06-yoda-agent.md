@@ -14,7 +14,7 @@ matching is fully testable, and the model is only doing the part that genuinely 
 
 The agent runs locally as a Windows scheduled task named `ForceAgent`. It runs `edge\.venv\Scripts\pythonw.exe` on the agent
 entry point from the working tree, the same pattern as `ForceBridge`. It is not in Docker. It runs hourly at :15 and skips the
-03:xx UTC hour. Cloud Run is an optional later stage, containerized then.
+03:xx UTC hour. Cloud Run is an optional later stage, containerized then. The task uses `StartWhenAvailable`, so a cycle missed while the computer was off or asleep runs at the next opportunity (seen at registration on 2026-10-15).
 
 Before any warehouse query, each cycle calls the Jobs API, which costs no warehouse time. If Job 1 (`692051683030737`) has an
 active run, the cycle is skipped.
@@ -24,9 +24,9 @@ active run, the cycle is skipped.
 
 **Cycle order** (Delta does not enforce unique keys, so idempotency is in the order of the steps):
 
-1. Repair: set `agent_processed = true` for every incident that already has a `gold.deployment` row.
+1. Repair: a read counts the incidents that have a `gold.deployment` row and are not marked processed; only if the count is above 0, set `agent_processed = true` for them. An idle cycle is therefore 2 statements (that count and the poll), both reads, with no write.
 2. Poll: eligible incidents with `agent_processed = false` and no `gold.deployment` row (an anti-join).
-3. For each incident, write the decision with `MERGE ... WHEN NOT MATCHED THEN INSERT` on `disturbance_id`.
+3. For each incident, check the Jobs API again, then write the decision with `MERGE ... WHEN NOT MATCHED THEN INSERT` on `disturbance_id`. If Job 1 is active (or the Jobs API fails) at that point, the cycle stops: nothing more is written and the remaining incidents stay unprocessed until the next cycle.
 4. Mark the incident processed.
 
 A full refresh of `gold_disturbance` resets `agent_processed`; the anti-join and the repair step handle that. Known caveat, not
@@ -200,6 +200,7 @@ Each region has a ring number:
 |---|---|
 | Core Worlds | 0 |
 | Colonies | 1 |
+| Inner Rim | 2 |
 | Expansion Region | 2 |
 | Mid Rim | 3 |
 | Outer Rim | 4 |
@@ -341,24 +342,29 @@ a known edge. The Phase 7 dashboard may flag "severity rose after decision" by c
 
 | Failure | Behavior |
 |---|---|
-| Gemini API unavailable | Retry once on HTTP 429 or 5xx. If that fails, leave `agent_processed = false`, retry next cycle. Write nothing |
+| Gemini API unavailable (transient: a transport error, HTTP 429 or 5xx, twice in a row) | Leave `agent_processed = false`, retry next cycle. Write nothing |
+| Gemini permanent error (any other non-2xx such as a 400, or a second malformed or truncated answer) | Write nothing, log the error kind (no body, no key), go on to the next incident, and end the cycle with a `/fail` ping to S4 |
 | No tool call returned | One nudge, then stand-down with `agent_no_decision` |
 | Nonexistent tool called, or a constraint rejection | Reject; at most 2 such retries, then stand-down with `agent_exhausted_retries` |
 | Statement Execution API write fails | 3 attempts with waits of 5 s and 15 s; a Delta concurrent-modification error counts as retryable. On final failure log and leave unprocessed |
 | Statement still running (warehouse cold start) | Poll for at most 15 minutes, then treat as a failed statement |
-| Cycle runs long | The whole cycle is limited to 30 minutes |
+| Cycle runs long | The cycle starts no new incident after 30 minutes. The task's 45-minute limit stops a run outright. |
 
 The agent must be idempotent. Delta does not enforce unique keys, so `disturbance_id` is not unique in `gold.deployment` by
 constraint. Idempotency comes from the cycle order in "Runtime": the repair step, the anti-join in the poll, and the
 `MERGE ... WHEN NOT MATCHED THEN INSERT` on `disturbance_id`. If the job crashes between writing the decision and marking the
 incident, the next cycle's repair step marks it and no second decision is written.
 
+A kill at any step is safe: the MERGE is atomic, the repair marks an unmarked row, and the operating system releases the lock when the process dies. A statement that was running when the process was killed may still finish on the server.
+
+Known behavior: an incident that arrives while the fleet cap is full is stood down permanently (`deployment_capacity_reached`, as the `capacity_reached` fixture specifies); it is not retried when a slot frees up. To be reconsidered in Phase 7.
+
 ---
 
 ## Monitoring and cost
 
 A Healthchecks check, S4 `fbp-s4-agent` (period 1 h, grace 2 h), is pinged at the end of every cycle, including a cycle skipped for the
-03:xx UTC hour or for an active Job 1 run, and with the `/fail` suffix when a cycle crashes (doc 05, "Monitoring"). The ping URL is
+03:xx UTC hour or for an active Job 1 run. S4 gets a success ping, or the `/fail` suffix after a Jobs API error (at the start or in the check before a write), a permanent model error, or a crash (doc 05, "Monitoring"). The ping URL is
 `AGENT_PING_S4_URL` in `.env.agent`, named like the bridge's `BRIDGE_PING_S1_URL`; it is credential-like and is never logged. A cycle is run
 with:
 

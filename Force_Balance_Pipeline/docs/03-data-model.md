@@ -531,7 +531,7 @@ Minimum set. Part of the deliverable.
   verbatim description; a probe incident carries report fields only when a qualifying report escalated it),
   `assert_gold_report_rows_match_silver`, `assert_reports_stay_in_their_own_tables` (a report event is in `silver.force_report` or
   `silver.report_rejects` and in no probe table), `assert_stg_report_fields_are_typed`, and `assert_walk_depth_below_limit` (above)
-- Every `gold.deployment` references a `gold.disturbance` with `agent_processed = true` (added in Phase 6 R6 as a test on the `deployment` source)
+- Every `gold.deployment` references a `gold.disturbance` with `agent_processed = true` (added in Phase 6 R6 as a test on the `deployment` source). `assert_deployment_incident_processed` has severity **warn**, not error: Job 1 runs at :03 and the agent repairs an unmarked row only at its :15 cycle, so such a row can exist for a few minutes without anything being wrong
 - Every `signature` value has at least one matching Jedi specialty available in `dim_jedi`
 - Freshness is **not** a dbt test: it is monitored outside dbt by three dead-man's-switch signals (S1 bridge alive, S2 Job 1
   succeeding, S3 data landed), doc 05 "Monitoring". (A 45-minute `bronze.events` rule would trip between hourly Job 1 runs and in
