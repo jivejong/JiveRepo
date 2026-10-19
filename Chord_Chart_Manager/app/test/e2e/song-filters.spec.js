@@ -252,8 +252,12 @@ test('online filters overlay pending create, edit, and delete projections until 
     await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
     await page.getByRole('button', { name: 'Back' }).click();
 
-    await search.fill(`${prefix} leaves`);
-    await page.locator('.song-row').click();
+    const leavesTitle = `${prefix} leaves`;
+    await search.fill(leavesTitle);
+    await expect(page.locator('.song-row .song-title')).toHaveText([leavesTitle]);
+    const leavesRow = page.locator('.song-row').filter({ has: page.getByText(leavesTitle, { exact: true }) });
+    await leavesRow.click();
+    await expect(page.locator('.chart-topbar-title')).toHaveText(leavesTitle);
     await page.getByRole('button', { name: 'Edit' }).click();
     const leaveGenres = page.locator('[aria-label="Genre tags"]');
     await leaveGenres.getByRole('button', { name: `Remove ${target} from Genre` }).click();
@@ -261,8 +265,12 @@ test('online filters overlay pending create, edit, and delete projections until 
     await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
     await page.getByRole('button', { name: 'Back' }).click();
 
-    await search.fill(`${prefix} deleted`);
-    await page.locator('.song-row').click();
+    const deletedTitle = `${prefix} deleted`;
+    await search.fill(deletedTitle);
+    await expect(page.locator('.song-row .song-title')).toHaveText([deletedTitle]);
+    const deletedRow = page.locator('.song-row').filter({ has: page.getByText(deletedTitle, { exact: true }) });
+    await deletedRow.click();
+    await expect(page.locator('.chart-topbar-title')).toHaveText(deletedTitle);
     await page.getByRole('button', { name: 'Edit' }).click();
     page.once('dialog', dialog => dialog.accept());
     await page.locator('.btn-danger').click();

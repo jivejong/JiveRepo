@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 
 const CACHE_VERSION = 1;
 const CACHE_VERSION_KEY = "song-enrichment-cache-v1";
+const MUSICBRAINZ_SEARCH_PARSER_VERSION = "musicbrainz-search-single-response-v1";
 const SUCCESS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const ABSENCE_TTL_MS = 60 * 60 * 1000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -39,7 +40,16 @@ function normalizeCacheRequest(request) {
   if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) throw new TypeError("Cache parameters are required.");
   let normalizedParameters;
   if (provider === "MusicBrainz" && operation === "recording_search") {
-    normalizedParameters = { artist: normalizeIdentity(parameters.artist), title: normalizeIdentity(parameters.title) };
+    const artist = normalizeIdentity(parameters.artist);
+    const title = normalizeIdentity(parameters.title);
+    const query = parameters.query === undefined
+      ? `recording:"${title}" AND artist:"${artist}"`
+      : normalizeIdentity(parameters.query);
+    const limit = parameters.limit === undefined ? 100 : parameters.limit;
+    const offset = parameters.offset === undefined ? 0 : parameters.offset;
+    if (limit !== 100) throw new TypeError("MusicBrainz search cache limit must be 100.");
+    if (offset !== 0) throw new TypeError("MusicBrainz search cache offset must be zero.");
+    normalizedParameters = { artist, limit, offset, query, title };
   } else if ((provider === "MusicBrainz" && operation === "recording_lookup") ||
       (provider === "AcousticBrainz" && ["recording_count", "recording_submission"].includes(operation))) {
     if (typeof parameters.mbid !== "string" || !UUID.test(parameters.mbid)) throw new TypeError("A valid recording MBID is required.");
@@ -64,7 +74,10 @@ function normalizeCacheRequest(request) {
   } else {
     throw new TypeError("Unsupported provider cache operation.");
   }
-  const normalized = { cacheVersion: CACHE_VERSION_KEY, provider, operation, parserVersion, parameters: normalizedParameters };
+  const normalized = { cacheVersion: CACHE_VERSION_KEY, provider, operation,
+    parserVersion: provider === "MusicBrainz" && operation === "recording_search"
+      ? MUSICBRAINZ_SEARCH_PARSER_VERSION : parserVersion,
+    parameters: normalizedParameters };
   if (provider === "Gemini") {
     normalized.model = model;
     normalized.promptVersion = promptVersion;

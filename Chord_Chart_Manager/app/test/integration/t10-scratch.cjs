@@ -32,8 +32,8 @@ async function main() {
   scratchCreated.add(databaseName);
   await adminPool.query(`CREATE DATABASE ${freshDatabaseName}`);
   scratchCreated.add(freshDatabaseName);
-  assert.deepEqual(await runMigrations({ database: freshDatabaseName }), ['0001', '0002', '0003']);
-  assert.deepEqual(await runMigrations({ database: freshDatabaseName }), ['0001', '0002', '0003']);
+  assert.deepEqual(await runMigrations({ database: freshDatabaseName }), ['0001', '0002', '0003', '0004']);
+  assert.deepEqual(await runMigrations({ database: freshDatabaseName }), ['0001', '0002', '0003', '0004']);
   const root = path.resolve(__dirname, '../..');
   const migrations = path.join(root, 'db', 'migrations');
   const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-t10-legacy-'));
@@ -60,7 +60,7 @@ async function main() {
     [legacyList.rows[0].id])).rows;
 
   const applied = await runMigrations();
-  assert.deepEqual(applied, ['0001', '0002', '0003']);
+  assert.deepEqual(applied, ['0001', '0002', '0003', '0004']);
   const upgradedEntries = (await pool.query(
     'SELECT id,song_id,position,capo_fret FROM public.setlist_songs WHERE setlist_id=$1 ORDER BY position',
     [legacyList.rows[0].id])).rows;

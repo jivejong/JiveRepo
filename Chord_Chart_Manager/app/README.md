@@ -220,9 +220,21 @@ cooperatively and returned as a transient timeout without an automatic retry.
 The transport may ignore abort, so timeout does not prove that the underlying
 request stopped; late results are ignored. Returned response bytes are bounded
 before parsing, while the injected transport must also enforce limits while
-receiving data to avoid unbounded buffering. Incomplete MusicBrainz result
-pages are rejected as `invalid_response` with reason
-`incomplete_search_results`, and no candidates are exposed to B1. AcousticBrainz
+receiving data to avoid unbounded buffering. Each MusicBrainz recording search
+makes one request with `limit=100&offset=0`; no subsequent search request is
+made. The count must be a nonnegative integer no greater than 100, the returned
+offset must be exactly zero, and the recordings array length must equal the
+count. Candidate identities must validate and recording MBIDs must be unique
+within the response before any candidates are exposed to B1. Oversized,
+truncated, malformed, duplicate-containing, cancelled, failed, and
+budget-exhausted searches return no matchable partial candidates. Each candidate
+retains the digest of that response. A complete response may still reflect
+results that change later; it is not an atomic MusicBrainz snapshot. Validation
+failures retain the public `incomplete_search_results` reason and add a stable
+`validation_diagnostic.code` with safe relevant counts/offsets. B4 reports
+attempted and validated response counts on success and failure. Duplicate
+identity diagnostics include the canonical MBID, duplicate scope, and first and
+repeated zero-based positions in the response. AcousticBrainz
 uses its documented `X-RateLimit-Reset-In` header when supplied; the provider says its typical
 limit may change. A Gemini request is explicit; failures do not trigger
 automatic fallback. Gemini's project/model limits vary, so check the account
@@ -233,19 +245,71 @@ or enforce a monetary spending cap.
 
 MusicBrainz search results are identity candidates only; their ranking score
 is discarded. Search candidates retain the provider's `first-release-date`
-and response digest. Pass the reviewed exact candidate as `searchCandidate`
+and response digest. Pass the selected exact candidate as `searchCandidate`
 to `lookupRecording` to carry that recording's release-year evidence through;
 the lookup checks MBID equality and the supplied digest's format, but does not
 recompute or cryptographically verify that search-candidate digest. It does not
 infer a date from an incomplete release list. Cache reads do recompute and
-verify the digest of cached response bytes. AcousticBrainz evidence preserves
-each submission offset as a separate candidate and never averages or selects one. Its documented `bpm`,
-`key_key`, and `key_scale` leaves are accepted only with the expected number
-and string types; malformed values fail closed. Gemini receives only the
+verify the digest of cached response bytes. AcousticBrainz first reads the
+submission count, then samples at most three distinct offsets in ascending
+order: `0`, `floor((N - 1) / 2)`, and `N - 1`. Counts from one through three
+therefore retrieve every submission; larger counts are reported as partial
+enumerations with the total count, planned offsets, and successfully sampled
+offsets, plus the offsets with outbound attempts. Any reported agreement refers only to sampled submissions; for
+counts up to three, the sample includes every submission. Count zero is a
+complete absence with no agreement claim. A shared request
+budget exhaustion remains distinct from a large count; no count-based refusal
+prevents a bounded sample. Each validated BPM/key remains a separate
+submission-attributed candidate with its response digest. A present finite
+`tonal.key_strength` is carried with the key candidate when supplied. The
+adapter never chooses the first result, averages BPM, or halves/doubles tempo.
+The AcousticBrainz low-level API documents per-recording offset requests and
+lists `tonal.key_strength` as a low-level feature
+([API documentation](https://acousticbrainz.readthedocs.io/api.html)). Its
+`bpm`, `key_key`, and `key_scale` leaves are accepted only with the expected
+number and string types; malformed values fail closed. A sampled audio key is
+an estimate and does not establish the chart arrangement's key. Gemini receives only the
 recording MBID, title, artist, allowlisted release year/recording type context,
 and current Genre/Vibe names. Its output must be JSON with Genre and Vibe name
 arrays that resolve uniquely to the supplied category catalogs. It cannot
 propose scalar metadata or identifiers.
+
+B1 retains exact normalized title and credited-artist matching and requires a
+complete validated MusicBrainz search. It excludes explicit Live, Remix,
+Acoustic, Demo, alternate, music-video, and re-recorded markers at
+word/phrase boundaries in disambiguation text, bracketed title qualifiers,
+separator-delimited title suffixes, or a final title marker. ASCII and common
+Unicode hyphen variants are recognized in music-video and re-recorded
+markers. Unknown nonempty version descriptions are excluded and reported but
+do not veto other eligible matches.
+
+Among eligible candidates with valid `first-release-date` evidence, B1 selects
+the earliest release year; month/day differences within that year do not rank
+recordings. Missing or invalid dates on other candidates do not block a dated
+candidate, but selection abstains if no eligible candidate has a valid date.
+When several candidates share the earliest year, B4 looks up each tied
+recording through the existing bounded MusicBrainz client. B1 counts distinct
+Genre IDs whose lookup labels uniquely resolve in the captured managed Genre
+catalog. Unknown/ambiguous labels, MusicBrainz tags, and Vibe names do not add
+richness. A uniquely richer candidate wins; equal counts use the
+lexicographically smallest canonical MBID. Lookups use the shared attempt
+budget. If any tied lookup fails or cannot be dispatched within that budget,
+the comparison is marked incomplete and the smallest MBID is shown only as a
+stable provisional candidate; it is not a final selection and no
+recording-specific AcousticBrainz request follows. Successful tie lookups are
+reused for the final preview.
+
+Reports preserve the earliest search year and each source's response digest.
+If a selected recording's lookup release year differs from its search year,
+both values and their provenance are shown separately; neither is silently
+substituted for the other. Provider order, score, popularity, and raw tag
+counts never rank candidates. The selected MBID/date/digest are evidence, not
+human approval or an apply manifest. Selection does not change populated song
+values, manual assignments, or the chart's original key. MusicBrainz defines
+recording `firstreleasedate` as the earliest release including that recording
+and its JSON example uses `first-release-date`:
+[search-field documentation](https://musicbrainz.org/doc/MusicBrainz_API/Search),
+[recording JSON example](https://musicbrainz.org/doc/MusicBrainz_API/Search/RecordingJsonOutput).
 
 Provider contracts were checked against the official [MusicBrainz API
 search](https://musicbrainz.org/doc/MusicBrainz_API/Search),
@@ -268,6 +332,81 @@ not assert Windows ACL behavior. Unit tests use mocked provider transports
 and owned temporary cache directories; they make no live provider calls and
 do not use an operator cache directory.
 
+## Reviewed song enrichment apply (B3)
+
+`server/applySongEnrichment.js` exports
+`applySongEnrichment(pool, manifest)`. It requires an explicit pool and refuses
+unless the connection is to the current T11-owned `ccm_test` database, with the
+owner and per-run database marker matching `CCM_T11_RUN_ID`. It has no route,
+CLI, default connection, provider orchestration, or live-mode option. The
+`song_enrichment_runs` migration stores the validated reviewed manifest and
+committed response without a song foreign key, so exact operation replay still
+works after a song changes or is deleted. A repeated operation ID with a
+different canonical manifest is rejected.
+
+The apply transaction locks the operation, then normalized Genre/Vibe names
+and relevant definition rows, then target songs in ascending ID order. It
+rebuilds each B1 preview from the locked current snapshot and requires exact
+canonical equality with the submitted preview. Approved missing scalars and
+additive assignments are applied without chart/source edits. A changed target
+gets one song-row update and the existing trigger supplies its exact
+six-fractional-digit UTC version; no-op targets retain their version. Database
+row snapshots and preservation comparisons run inside the transaction before
+commit; any unexpected row side effect rolls the batch back. Chart bodies stay
+in the database during those checks and are excluded from the manifest and
+receipt.
+
+Migration 0004 is included in the normal migration sequence. **Do not start or
+restart the normal app, or run the default migration command, to exercise B3**:
+those entry points target the configured database and can apply migrations to
+`chords`. Run `npm.cmd run test:t11` from `app/` only after confirming the
+guarded harness prerequisites. It creates a fresh owner-marked `ccm_test`,
+applies migrations there, runs unit/API/enrichment/E2E checks, drops only that
+owned database, and verifies absence. Its protection check fingerprints the
+imported `Sample.docx` rows plus aggregate counts and health; it is not a full
+snapshot of every row in the main database. B3 remains scratch-only; any live
+apply path requires later review and explicit authorization.
+
+## Read-only provider preview (B4)
+
+`scripts/preview-existing-song-enrichment.cjs` is an import-safe command for a
+later, explicitly authorized read-only preview. It requires all of
+`--live-read-only`, `--song-ids` (one to three distinct IDs), `--max-attempts`
+(1–12), `--musicbrainz-user-agent` (application/version/contact), and
+`--output-dir`. Its default invocation refuses before opening a database
+connection or dispatching a request. It reads only song identity, allowed
+scalars, exact versions, current assignments, and Genre/Vibe definitions in a
+PostgreSQL `READ ONLY` transaction; it closes that transaction and releases
+the connection before contacting providers. The command does not import
+startup or migration code and does not call the B3 apply function.
+
+The preview uses the accepted B2 bounded MusicBrainz/AcousticBrainz client and
+native HTTPS transport. It has no Gemini adapter, cache, or fallback: the
+report records zero Gemini calls and zero cache hits. B2 supplies request
+spacing, the shared attempt budget, retry policy, parsing and evidence
+validation. The transport timeout is 10 seconds and one shared response limit
+of 1,048,576 bytes applies to both provider configuration and streamed body
+enforcement. At most three explicitly selected songs are handled in ID order;
+recording abstention prevents recording-specific requests. A captured baseline
+can become stale. The report never creates a review decision or approved
+apply manifest, and it performs no database writes.
+
+The output directory must be a new path already covered by this repository's
+ignore rules. The command exclusively creates the directory and versioned JSON
+and text report files; it never overwrites an existing run. POSIX mode bits
+are requested where supported; the command does not inspect or change Windows
+ACLs, so the operator must choose a location with suitable access controls.
+For example, from `app/`, replace every placeholder before use:
+
+```powershell
+node scripts/preview-existing-song-enrichment.cjs --live-read-only --song-ids "<song-id-1>[,<song-id-2>,<song-id-3>]" --max-attempts "<1-12>" --musicbrainz-user-agent "ChordChartManager/<version> (<contact>)" --output-dir "../backups/<new-ignored-run-directory>"
+```
+
+This documents a future invocation only. B4 implementation verification
+uses synthetic database and HTTP fixtures; no live preview, database, or
+provider call was run. The command has no automatic startup hook. Review and
+explicit authorization are required before executing the `--live-read-only`
+mode against real services.
 ## Automated tests
 
 Client tests are in `test/unit/`; Playwright tests are in `test/e2e/`. The client

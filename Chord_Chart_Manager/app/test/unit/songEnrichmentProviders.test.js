@@ -1,4 +1,4 @@
-import { createRequire } from 'node:module';
+﻿import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
@@ -47,6 +47,15 @@ function harness({ route, config = {}, cache = null, timeout = false, initialTim
 function searchBody(overrides = {}) {
   const recordings = [{ id: MBID, title: 'Song', 'artist-credit': [{ artist: { name: 'Artist' } }], score: '100', 'first-release-date': '1977-06-18' }];
   return { count: recordings.length, offset: 0, recordings, ...overrides };
+}
+
+function recordingRows(start, length, { matchFirst = false, ids = null } = {}) {
+  return Array.from({ length }, (_, index) => ({
+    id: ids?.[index] || `${String(start + index + 1).padStart(8, '0')}-1111-4111-8111-111111111111`,
+    title: matchFirst && index === 0 ? 'Song' : `Other ${start + index}`,
+    'artist-credit': [{ artist: { name: 'Artist' } }],
+    'first-release-date': '1977',
+  }));
 }
 
 function geminiResponse(json, usage = {}) {
@@ -115,28 +124,107 @@ describe('song enrichment provider adapters', () => {
     expect(queryEscape('a:b')).toBe('a\\:b');
   });
 
+  it('preserves only valid MusicBrainz first-release-date evidence on search candidates', () => {
+    for (const value of ['1977', '1977-06', '1977-06-18']) {
+      const parsed = normalizeMusicBrainzSearch(searchBody({ recordings: [{ ...searchBody().recordings[0],
+        'first-release-date': value }] }), 'c'.repeat(64));
+      expect(parsed.candidates[0]).toMatchObject({ mbid: MBID, title: 'Song', artist: 'Artist',
+        disambiguation: '', first_release_date: value, response_digest: 'c'.repeat(64) });
+      expect(parsed.candidates[0]).not.toHaveProperty('score');
+    }
+    for (const value of [undefined, '1977-02-29', '1977-13', '1977-06-32', 1977]) {
+      const row = { ...searchBody().recordings[0] };
+      if (value === undefined) delete row['first-release-date'];
+      else row['first-release-date'] = value;
+      const parsed = normalizeMusicBrainzSearch(searchBody({ recordings: [row] }), 'd'.repeat(64));
+      expect(parsed.status).toBe('ok');
+      expect(parsed.candidates[0]).not.toHaveProperty('first_release_date');
+      expect(parsed.candidates[0].response_digest).toBe('d'.repeat(64));
+    }
+  });
+
   it('reports no MusicBrainz results as documented absence and never ranks a candidate as identity', async () => {
     const { client } = harness({ route: () => response({ count: 0, offset: 0, recordings: [] }) });
     expect(await client.searchRecordings({ title: 'Song', artist: 'Artist' })).toMatchObject({ status: 'absent', candidates: [] });
   });
 
-  it('abstains on incomplete or malformed MusicBrainz paging and cannot establish a B1 match', async () => {
-    const complete = harness({ route: () => response(searchBody()) });
-    const found = await complete.client.searchRecordings({ title: 'Song', artist: 'Artist' });
-    expect(resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, found.candidates).matched).toBe(true);
-
-    const rows = Array.from({ length: 25 }, (_, index) => ({ id: `${String(index + 1).padStart(8, '0')}-1111-4111-8111-111111111111`,
-      title: index === 0 ? 'Song' : `Other ${index}`, 'artist-credit': [{ artist: { name: 'Artist' } }] }));
-    const truncated = harness({ route: () => response({ count: 26, offset: 0, recordings: rows }) });
-    const rejected = await truncated.client.searchRecordings({ title: 'Song', artist: 'Artist' });
-    expect(rejected).toMatchObject({ status: 'invalid_response', reason: 'incomplete_search_results', candidates: [] });
-    expect(resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, rejected.candidates))
-      .toEqual({ matched: false, reason: 'no_exact_match' });
-    for (const paging of [{ count: '1', offset: 0 }, { count: 1, offset: 1 }, { count: 2, offset: 0 }]) {
-      const malformed = harness({ route: () => response(searchBody(paging)) });
-      expect(await malformed.client.searchRecordings({ title: 'Song', artist: 'Artist' }))
-        .toMatchObject({ status: 'invalid_response', reason: 'incomplete_search_results', candidates: [] });
+  it('accepts complete 0, 75 and 100 result searches from one limit-100 request', async () => {
+    for (const count of [0, 75, 100]) {
+      const h = harness({ route: () => response({ count, offset: 0,
+        recordings: recordingRows(0, count, { matchFirst: true }) }) });
+      const found = await h.client.searchRecordings({ title: 'Song', artist: 'Artist' });
+      expect(h.calls).toHaveLength(1);
+      const url = new URL(h.calls[0].url);
+      expect(url.searchParams.get('limit')).toBe('100');
+      expect(url.searchParams.get('offset')).toBe('0');
+      expect(found).toMatchObject({ status: count === 0 ? 'absent' : 'ok',
+        pagination: { expected_total: count, attempted_pages: 1, validated_pages: 1,
+          collected_count: count, complete: true } });
+      expect(found.candidates).toHaveLength(count);
+      if (count > 0) {
+        expect(resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, found.candidates).matched).toBe(true);
+        expect(new Set(found.candidates.map(candidate => candidate.response_digest))).toEqual(new Set([found.response_digest]));
+      }
     }
+  });
+
+  it('rejects oversized, truncated, malformed, wrong-offset and duplicate results without exposing candidates', async () => {
+    const cases = [
+      { name: 'oversized count', body: { count: 101, offset: 0, recordings: recordingRows(0, 100) },
+        code: 'result_cap_exceeded', expected: { current_page_total: 101, returned_offset: 0, returned_recording_count: 100 } },
+      { name: 'truncated response', body: { count: 75, offset: 0, recordings: recordingRows(0, 74) },
+        code: 'unexpected_page_length', expected: { current_page_total: 75, returned_offset: 0, returned_recording_count: 74 } },
+      { name: 'malformed count', body: { count: 'provider-secret-sentinel', offset: 0, recordings: [] },
+        code: 'invalid_pagination_field', expected: { current_page_total: { type: 'string' }, returned_offset: 0, returned_recording_count: 0 } },
+      { name: 'malformed recordings', body: { count: 1, offset: 0, recordings: {} },
+        code: 'invalid_pagination_field', expected: { current_page_total: 1, returned_offset: 0, returned_recording_count: { type: 'object' } } },
+      { name: 'wrong offset', body: { count: 1, offset: 25, recordings: [searchBody().recordings[0]] },
+        code: 'unexpected_offset', expected: { current_page_total: 1, returned_offset: 25, returned_recording_count: 1 } },
+      { name: 'duplicate identity', body: { count: 2, offset: 0, recordings: [
+        searchBody().recordings[0], { ...searchBody().recordings[0], 'first-release-date': '1978' },
+      ] }, code: 'duplicate_recording_identity', expected: { current_page_total: 2, returned_offset: 0,
+        returned_recording_count: 2, duplicate_mbid: MBID, duplicate_scope: 'within_page',
+        first_occurrence: { requested_offset: 0, index_in_page: 0 },
+        repeated_occurrence: { requested_offset: 0, index_in_page: 1 } } },
+      { name: 'invalid candidate identity', body: { count: 1, offset: 0, recordings: [
+        { id: 'bad', title: 'Song', 'artist-credit': [{ artist: { name: 'Artist' } }] },
+      ] }, code: 'invalid_candidate', expected: { current_page_total: 1, returned_offset: 0, returned_recording_count: 1 } },
+    ];
+    for (const scenario of cases) {
+      const h = harness({ route: () => response(scenario.body) });
+      const rejected = await h.client.searchRecordings({ title: 'Song', artist: 'Artist' });
+      expect(h.calls).toHaveLength(1);
+      expect(rejected, scenario.name).toMatchObject({ status: 'invalid_response', reason: 'incomplete_search_results', candidates: [],
+        pagination: { expected_total: null,
+          attempted_pages: 1, validated_pages: 0, collected_count: 0, complete: false },
+        validation_diagnostic: { code: scenario.code, requested_offset: 0, ...scenario.expected,
+          validated_response_count: 0, collected_record_count: 0 } });
+      expect(JSON.stringify(rejected)).not.toContain('provider-secret-sentinel');
+      expect(resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, rejected.candidates).matched).toBe(false);
+    }
+  });
+
+  it('keeps the single request within shared retry, budget and cancellation safeguards', async () => {
+    const exhausted = harness({ config: { maxAttempts: 1, maxGeminiAttempts: 1 }, route: () => response({}, 503) });
+    expect(await exhausted.client.searchRecordings({ title: 'Song', artist: 'Artist' }))
+      .toMatchObject({ status: 'budget_exhausted', candidates: [],
+        pagination: { expected_total: null, attempted_pages: 1, validated_pages: 0, collected_count: 0, complete: false } });
+    expect(exhausted.calls).toHaveLength(1);
+
+    const retried = harness({ route: (_request, count) => count === 1 ? response({}, 503) : response(searchBody()) });
+    expect(await retried.client.searchRecordings({ title: 'Song', artist: 'Artist' })).toMatchObject({ status: 'ok', candidates: [expect.any(Object)] });
+    expect(retried.calls).toHaveLength(2);
+    expect(retried.calls.map(call => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '0']);
+    expect(retried.client.getAttemptCounts().total).toBe(2);
+
+    const controller = new AbortController();
+    const cancelled = harness({ route: () => response(searchBody()), delayImpl: (_milliseconds, { kind }) => {
+      if (kind === 'musicbrainz_spacing') { controller.abort(); throw new Error('synthetic cancel during spacing'); }
+    } });
+    expect((await cancelled.client.searchRecordings({ title: 'Song', artist: 'Artist' })).status).toBe('ok');
+    expect(await cancelled.client.searchRecordings({ title: 'Other', artist: 'Artist', signal: controller.signal }))
+      .toMatchObject({ status: 'cancelled', candidates: [], pagination: { complete: false } });
+    expect(cancelled.calls).toHaveLength(1);
   });
 
   it('passes actual MusicBrainz evidence through both accepted B1 public functions', async () => {
@@ -164,12 +252,17 @@ describe('song enrichment provider adapters', () => {
   });
 
   it('parses exact MusicBrainz MBID, earliest release year, genres and tags with digest attribution', async () => {
-    const { client } = harness({ route: () => response({
-      id: MBID, title: 'Song', 'artist-credit': [{ name: 'Artist', artist: { name: 'Artist' } }],
+    const { client, calls } = harness({ route: request => response({
+      id: MBID, title: 'Song',
+      ...(new URL(request.url).searchParams.get('inc').split(' ').includes('artist-credits')
+        ? { 'artist-credit': [{ name: 'Artist', artist: { name: 'Artist' } }] } : {}),
       genres: [{ name: 'Rock' }], tags: [{ name: 'Classic Rock' }],
     }) });
     const searchCandidate = { mbid: MBID, first_release_date: '1977-06-18', response_digest: 'a'.repeat(64) };
     const result = await client.lookupRecording({ mbid: MBID.toUpperCase(), searchCandidate });
+    expect(calls).toHaveLength(1);
+    expect(new URL(calls[0].url).pathname).toBe(`/ws/2/recording/${MBID}`);
+    expect(new URL(calls[0].url).searchParams.get('inc')).toBe('artist-credits genres tags');
     expect(result.status).toBe('ok');
     expect(result.recording.mbid).toBe(MBID);
     expect(result).toMatchObject({ mbid: MBID, vibes: [] });
@@ -177,6 +270,31 @@ describe('song enrichment provider adapters', () => {
     expect(result.recording.scalars.release_year[0].response_digest).toBe(searchCandidate.response_digest);
     expect(result.recording.genres.map(item => [item.name, item.association])).toEqual([['Rock', 'genre'], ['Classic Rock', 'tag']]);
     expect(result.recording.genres.every(item => item.response_digest === result.response_digest)).toBe(true);
+  });
+
+  it('rejects missing or malformed lookup artist credits without accepting scalar or Genre evidence', async () => {
+    for (const credits of [undefined, null, [], 'Artist', [{ name: 'Artist' }], [{ artist: {} }], [{ artist: { name: '' } }]]) {
+      const { client, calls } = harness({ route: () => response({
+        id: MBID, title: 'Song', 'first-release-date': '1978', genres: [{ name: 'Rock' }], tags: [],
+        ...(credits === undefined ? {} : { 'artist-credit': credits }),
+      }) });
+      expect(await client.lookupRecording({ mbid: MBID })).toEqual({
+        status: 'invalid_response', mbid: MBID, scalars: {}, genres: [], vibes: [],
+      });
+      expect(calls).toHaveLength(1);
+      expect(client.getRunLedger()[0].status).toBe('invalid_response');
+    }
+  });
+
+  it('accepts requested lookup credits with optional date, Genres and tags absent', async () => {
+    const { client, calls } = harness({ route: request => response({ id: MBID, title: 'Song',
+      ...(new URL(request.url).searchParams.get('inc').split(' ').includes('artist-credits')
+        ? { 'artist-credit': [{ artist: { name: 'Artist' } }] } : {}),
+    }) });
+    const result = await client.lookupRecording({ mbid: MBID });
+    expect(calls).toHaveLength(1);
+    expect(result).toMatchObject({ status: 'ok', mbid: MBID, scalars: { release_year: [] }, genres: [], vibes: [],
+      recording: { mbid: MBID, title: 'Song', artist: 'Artist', scalars: { release_year: [] }, genres: [] } });
   });
 
   it('omits an unavailable or invalid first release year and rejects a mismatched lookup identity', async () => {
@@ -365,8 +483,8 @@ describe('song enrichment provider adapters', () => {
       if (request.url.endsWith('/count')) return response({ mbid: MBID, count: 2 });
       const offset = Number(new URL(request.url).searchParams.get('n'));
       return response(offset === 0
-        ? acousticDocument(MBID, offset, { rhythm: { bpm: 100.2 }, tonal: { key_key: 'C', key_scale: 'major' } })
-        : acousticDocument(MBID, offset, { rhythm: { bpm: 101 }, tonal: { key_key: 'G', key_scale: 'minor' } }));
+        ? acousticDocument(MBID, offset, { rhythm: { bpm: 100.2 }, tonal: { key_key: 'C', key_scale: 'major', key_strength: 0.72 } })
+        : acousticDocument(MBID, offset, { rhythm: { bpm: 101 }, tonal: { key_key: 'G', key_scale: 'minor', key_strength: 0.91 } }));
     } });
     expect((await h.client.getAcousticBrainzEvidence({ mbid: 'invalid' })).status).toBe('invalid_response');
     expect(h.calls).toHaveLength(0);
@@ -374,8 +492,14 @@ describe('song enrichment provider adapters', () => {
     expect(result.status).toBe('ok');
     expect(result.mbid).toBe(MBID);
     expect(result.submission_enumeration).toBe('complete');
+    expect(result.submission_count).toBe(2);
+    expect(result.planned_sample_offsets).toEqual([0, 1]);
+    expect(result.attempted_offsets).toEqual([0, 1]);
+    expect(result.sampled_offsets).toEqual([0, 1]);
+    expect(result.agreement_scope).toBe('sampled_submissions');
     expect(result.scalars.bpm.map(item => item.value)).toEqual([100.2, 101]);
     expect(result.scalars.original_key.map(item => item.value.key_key)).toEqual(['C', 'G']);
+    expect(result.scalars.original_key.map(item => item.key_strength)).toEqual([0.72, 0.91]);
     expect(result.scalars.bpm.map(item => item.submission_id)).toEqual([`${MBID}:0`, `${MBID}:1`]);
     expect(h.calls).toHaveLength(3);
     expect(h.calls[1].url).toContain('/low-level?n=0');
@@ -413,6 +537,169 @@ describe('song enrichment provider adapters', () => {
     expect((await noKey.client.getAcousticBrainzEvidence({ mbid: MBID })).scalars.original_key).toEqual([]);
   });
 
+  it('samples deterministic distinct offsets and marks completeness only when every submission was retrieved', async () => {
+    for (const [count, expectedOffsets, expectedEnumeration] of [
+      [0, [], 'complete'], [1, [0], 'complete'], [2, [0, 1], 'complete'], [3, [0, 1, 2], 'complete'],
+      [226, [0, 112, 225], 'partial'],
+    ]) {
+      const h = harness({ route: request => {
+        if (request.url.endsWith('/count')) return response({ mbid: MBID, count });
+        const offset = Number(new URL(request.url).searchParams.get('n'));
+        return response(acousticDocument(MBID, offset, {
+          rhythm: { bpm: 90 + offset }, tonal: { key_key: 'C', key_scale: 'major', key_strength: 0.8 },
+        }));
+      } });
+      const result = await h.client.getAcousticBrainzEvidence({ mbid: MBID });
+      expect(result.status).toBe(count === 0 ? 'absent' : 'ok');
+      expect(result.submission_count).toBe(count);
+      expect(result.planned_sample_offsets).toEqual(expectedOffsets);
+      expect(result.attempted_offsets).toEqual(expectedOffsets);
+      expect(result.sampled_offsets).toEqual(expectedOffsets);
+      expect(result.submission_enumeration).toBe(expectedEnumeration);
+      expect(result.agreement_scope).toBe(count === 0 ? 'none' : 'sampled_submissions');
+      expect(h.calls.filter(call => !call.url.endsWith('/count')).map(call => Number(new URL(call.url).searchParams.get('n'))))
+        .toEqual(expectedOffsets);
+      expect(expectedOffsets.every(offset => offset < count)).toBe(true);
+    }
+  });
+
+  it('rejects malformed AcousticBrainz submission counts before sampling', async () => {
+    for (const count of [-1, 1.5, '226', Number.MAX_SAFE_INTEGER + 1, null, undefined]) {
+      const h = harness({ route: () => response({ mbid: MBID, ...(count === undefined ? {} : { count }) }) });
+      const result = await h.client.getAcousticBrainzEvidence({ mbid: MBID });
+      expect(result.status).toBe('invalid_response');
+      expect(result.scalars).toEqual({ original_key: [], bpm: [] });
+      expect(h.calls).toHaveLength(1);
+    }
+  });
+
+  it('keeps successful samples when shared request budget is exhausted before later offsets', async () => {
+    const h = harness({ config: { maxAttempts: 2 }, route: request => request.url.endsWith('/count')
+      ? response({ mbid: MBID, count: 226 })
+      : response(acousticDocument(MBID, 0, { rhythm: { bpm: 92 }, tonal: { key_key: 'D', key_scale: 'minor' } })) });
+    const result = await h.client.getAcousticBrainzEvidence({ mbid: MBID });
+    expect(result).toMatchObject({ status: 'budget_exhausted', submission_enumeration: 'partial', submission_count: 226,
+      planned_sample_offsets: [0, 112, 225], attempted_offsets: [0], sampled_offsets: [0], agreement_scope: 'sampled_submissions' });
+    expect(result.scalars.bpm.map(item => item.submission_id)).toEqual([`${MBID}:0`]);
+    expect(h.calls.map(call => new URL(call.url).pathname.endsWith('/count') ? 'count' : Number(new URL(call.url).searchParams.get('n'))))
+      .toEqual(['count', 0]);
+    expect(h.client.getAttemptCounts().total).toBe(2);
+  });
+
+  it('charges a retry within the shared budget before suppressing the final sample', async () => {
+    let transientUsed = false;
+    const h = harness({ config: { maxAttempts: 4 }, route: request => {
+      if (request.url.endsWith('/count')) return response({ mbid: MBID, count: 226 });
+      const offset = Number(new URL(request.url).searchParams.get('n'));
+      if (offset === 112 && !transientUsed) { transientUsed = true; return response({}, 503, { 'Retry-After': '0' }); }
+      return response(acousticDocument(MBID, offset, { rhythm: { bpm: 91 + offset } }));
+    } });
+    const result = await h.client.getAcousticBrainzEvidence({ mbid: MBID });
+    expect(result).toMatchObject({ status: 'budget_exhausted', submission_count: 226,
+      planned_sample_offsets: [0, 112, 225], attempted_offsets: [0, 112], sampled_offsets: [0, 112], submission_enumeration: 'partial' });
+    expect(result.scalars.bpm.map(item => item.submission_id)).toEqual([`${MBID}:0`, `${MBID}:112`]);
+    expect(h.calls.map(call => new URL(call.url).pathname.endsWith('/count') ? 'count' : new URL(call.url).searchParams.get('n')))
+      .toEqual(['count', '0', '112', '112']);
+    expect(h.client.getAttemptCounts().total).toBe(4);
+  });
+
+  it('retains validated samples on cancellation and transient failure at a later offset', async () => {
+    const controller = new AbortController();
+    const cancelled = harness({ route: request => {
+      if (request.url.endsWith('/count')) return response({ mbid: MBID, count: 226 });
+      const offset = Number(new URL(request.url).searchParams.get('n'));
+      return response(acousticDocument(MBID, offset, { rhythm: { bpm: 90 + offset } }), 200,
+        offset === 0 ? { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset-In': '1' } : {});
+    }, delayImpl: (_ms, { kind, signal }) => {
+      if (kind === 'provider_rate_limit') { controller.abort(); throw new Error('cancelled'); }
+      if (kind === 'timeout') return new Promise(resolve => signal?.addEventListener('abort', resolve, { once: true }));
+      return Promise.resolve();
+    } });
+    const cancelledResult = await cancelled.client.getAcousticBrainzEvidence({ mbid: MBID, signal: controller.signal });
+    expect(cancelledResult).toMatchObject({ status: 'cancelled', submission_enumeration: 'partial', submission_count: 226,
+      planned_sample_offsets: [0, 112, 225], attempted_offsets: [0], sampled_offsets: [0] });
+    expect(cancelledResult.scalars.bpm.map(item => item.submission_id)).toEqual([`${MBID}:0`]);
+    expect(cancelled.calls).toHaveLength(2);
+
+    const failed = harness({ route: request => {
+      if (request.url.endsWith('/count')) return response({ mbid: MBID, count: 226 });
+      const offset = Number(new URL(request.url).searchParams.get('n'));
+      if (offset === 225) return response({}, 503, { 'Retry-After': '0' });
+      return response(acousticDocument(MBID, offset, { rhythm: { bpm: offset === 0 ? 90 : 101 },
+        tonal: { key_key: offset === 0 ? 'C' : 'G', key_scale: offset === 0 ? 'major' : 'minor', key_strength: 0.7 + offset / 1000 } }));
+    } });
+    const failedResult = await failed.client.getAcousticBrainzEvidence({ mbid: MBID });
+    expect(failedResult).toMatchObject({ status: 'transient_error', submission_enumeration: 'partial', submission_count: 226,
+      planned_sample_offsets: [0, 112, 225], attempted_offsets: [0, 112, 225], sampled_offsets: [0, 112], agreement_scope: 'sampled_submissions' });
+    expect(failedResult.scalars.bpm.map(item => item.value)).toEqual([90, 101]);
+    expect(failedResult.scalars.original_key.map(item => item.value)).toEqual([
+      { key_key: 'C', key_scale: 'major' }, { key_key: 'G', key_scale: 'minor' },
+    ]);
+    expect(failedResult.scalars.original_key.every(item => /^[a-f0-9]{64}$/.test(item.response_digest) && Number.isFinite(item.key_strength))).toBe(true);
+    expect(failed.client.getAttemptCounts().total).toBe(5);
+    expect(failed.calls.filter(call => !call.url.endsWith('/count')).map(call => Number(new URL(call.url).searchParams.get('n'))))
+      .toEqual([0, 112, 225, 225]);
+  });
+
+  it('cancellation during cache reads or writes never returns successful AcousticBrainz evidence', async () => {
+    const readController = new AbortController();
+    const read = harness({ cache: { get: async () => { readController.abort(); return null; }, set: async () => true } });
+    const readResult = await read.client.getAcousticBrainzEvidence({ mbid: MBID, signal: readController.signal });
+    expect(readResult).toMatchObject({ status: 'cancelled', submission_enumeration: 'unknown', scalars: { bpm: [], original_key: [] } });
+    expect(read.calls).toHaveLength(0);
+    expect(read.client.getAttemptCounts().total).toBe(0);
+
+    const sampleReadController = new AbortController();
+    const sampleRead = harness({ cache: { get: async request => {
+      if (request.operation === 'recording_submission') {
+        sampleReadController.abort();
+        return { status: 'ok', response: Buffer.from(JSON.stringify(acousticDocument(MBID, 0, { rhythm: { bpm: 97 } }))),
+          response_digest: 'e'.repeat(64) };
+      }
+      return null;
+    }, set: async () => true }, route: () => response({ mbid: MBID, count: 1 }) });
+    const sampleReadResult = await sampleRead.client.getAcousticBrainzEvidence({ mbid: MBID, signal: sampleReadController.signal });
+    expect(sampleReadResult).toMatchObject({ status: 'cancelled', submission_count: 1,
+      attempted_offsets: [], sampled_offsets: [], scalars: { bpm: [], original_key: [] } });
+    expect(sampleRead.calls).toHaveLength(1);
+    expect(sampleRead.client.getAttemptCounts().total).toBe(1);
+
+    const writeController = new AbortController();
+    const write = harness({ cache: {
+      get: async () => null,
+      set: async request => {
+        if (request.operation === 'recording_submission' && request.parameters.offset === 225) writeController.abort();
+        return true;
+      },
+    }, route: request => request.url.endsWith('/count')
+      ? response({ mbid: MBID, count: 226 })
+      : response(acousticDocument(MBID, Number(new URL(request.url).searchParams.get('n')),
+        { rhythm: { bpm: 96 }, tonal: { key_key: 'D', key_scale: 'major', key_strength: 0.8 } })) });
+    const writeResult = await write.client.getAcousticBrainzEvidence({ mbid: MBID, signal: writeController.signal });
+    expect(writeResult).toMatchObject({ status: 'cancelled', submission_count: 226,
+      planned_sample_offsets: [0, 112, 225], attempted_offsets: [0, 112, 225], sampled_offsets: [0, 112, 225],
+      submission_enumeration: 'partial', agreement_scope: 'sampled_submissions' });
+    expect(writeResult.scalars.bpm.map(item => item.submission_id)).toEqual([`${MBID}:0`, `${MBID}:112`, `${MBID}:225`]);
+    expect(writeResult.scalars.original_key.map(item => item.key_strength)).toEqual([0.8, 0.8, 0.8]);
+    expect(write.calls).toHaveLength(4);
+    expect(write.client.getAttemptCounts().total).toBe(4);
+  });
+
+  it('preserves conflicting sampled BPM and key candidates without choosing, averaging, or tempo-adjusting', async () => {
+    const h = harness({ route: request => {
+      if (request.url.endsWith('/count')) return response({ mbid: MBID, count: 226 });
+      const offset = Number(new URL(request.url).searchParams.get('n'));
+      return response(acousticDocument(MBID, offset, { rhythm: { bpm: offset === 0 ? 90 : offset === 112 ? 92 : 180 },
+        tonal: { key_key: offset === 0 ? 'C' : offset === 112 ? 'D' : 'G', key_scale: 'major', key_strength: 0.5 } }));
+    } });
+    const result = await h.client.getAcousticBrainzEvidence({ mbid: MBID });
+    expect(result).toMatchObject({ status: 'ok', submission_enumeration: 'partial', submission_count: 226,
+      attempted_offsets: [0, 112, 225], sampled_offsets: [0, 112, 225], agreement_scope: 'sampled_submissions' });
+    expect(result.scalars.bpm.map(item => item.value)).toEqual([90, 92, 180]);
+    expect(result.scalars.original_key.map(item => item.value.key_key)).toEqual(['C', 'D', 'G']);
+    expect(result.scalars.bpm.map(item => item.submission_id)).toEqual([`${MBID}:0`, `${MBID}:112`, `${MBID}:225`]);
+  });
+
   it('keeps partial AcousticBrainz submissions distinct and never claims enumeration completeness on budget exhaustion', async () => {
     const partial = harness({ config: { maxAttempts: 2 }, route: request => request.url.endsWith('/count')
       ? response({ mbid: MBID, count: 2 })
@@ -421,8 +708,11 @@ describe('song enrichment provider adapters', () => {
     expect(result.status).toBe('budget_exhausted');
     expect(result.submission_enumeration).toBe('partial');
     expect(result.scalars.bpm).toHaveLength(1);
-    const tooMany = harness({ route: () => response({ mbid: MBID, count: 101 }) });
-    expect((await tooMany.client.getAcousticBrainzEvidence({ mbid: MBID })).status).toBe('budget_exhausted');
+    const largeCount = harness({ route: () => response({ mbid: MBID, count: 101 }) });
+    expect(await largeCount.client.getAcousticBrainzEvidence({ mbid: MBID })).toMatchObject({
+      status: 'ok', submission_enumeration: 'partial', submission_count: 101,
+      planned_sample_offsets: [0, 50, 100], sampled_offsets: [0, 50, 100],
+    });
   });
 
   it('sends Gemini only allowlisted identity/context/catalog data and resolves canonical tag names', async () => {

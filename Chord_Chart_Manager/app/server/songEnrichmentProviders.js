@@ -15,7 +15,9 @@ const DEFAULTS = Object.freeze({
 });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACOUSTIC_KEY_NAMES = new Set(["A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#"]);
-const MAX_ACOUSTIC_SUBMISSIONS = 100;
+const MUSICBRAINZ_SEARCH_MAX_RESULTS = 100;
+const MUSICBRAINZ_SEARCH_LIMIT = MUSICBRAINZ_SEARCH_MAX_RESULTS;
+const MUSICBRAINZ_SEARCH_PARSER_VERSION = "musicbrainz-search-single-response-v1";
 const GEMINI_PROMPT_VERSION = "genre-vibe-candidate-v1";
 const GEMINI_SCHEMA_VERSION = "genre-vibe-schema-v1";
 const GEMINI_SCHEMA = Object.freeze({
@@ -128,21 +130,55 @@ function validMusicBrainzDate(value) {
 }
 
 function normalizeMusicBrainzSearch(body, digest) {
+  const requestedOffset = 0;
+  const safeField = value => {
+    if (value === null) return { type: "null" };
+    if (typeof value === "number" || typeof value === "boolean") return { type: typeof value, value };
+    if (typeof value === "string") return /^\s*[+-]?\d+(?:\.\d+)?\s*$/.test(value) && value.length <= 32
+      ? { type: "string", value } : { type: "string" };
+    if (Array.isArray(value)) return { type: "array", length: value.length };
+    return { type: typeof value };
+  };
+  const diagnostic = (code, values = {}) => ({
+    code,
+    requested_offset: requestedOffset,
+    ...(Number.isSafeInteger(body?.count) && body.count >= 0 ? { current_page_total: body.count } :
+      body && Object.hasOwn(body, "count") ? { current_page_total: safeField(body.count) } : {}),
+    ...(body && Object.hasOwn(body, "offset") ? { returned_offset: Number.isSafeInteger(body.offset) && body.offset >= 0 ? body.offset : safeField(body.offset) } : {}),
+    ...(Array.isArray(body?.recordings) ? { returned_recording_count: body.recordings.length } :
+      body && Object.hasOwn(body, "recordings") ? { returned_recording_count: safeField(body.recordings) } : {}),
+    ...values,
+  });
+  const invalidPage = (code, details = {}) => ({ status: "invalid_response", reason: "incomplete_search_results",
+    candidates: [], validation_diagnostic: diagnostic(code, details) });
   if (!isRecord(body) || !Number.isSafeInteger(body.count) || body.count < 0 ||
       !Number.isSafeInteger(body.offset) || body.offset < 0 || !Array.isArray(body.recordings)) {
-    return { status: "invalid_response", reason: "incomplete_search_results", candidates: [] };
+    return invalidPage("invalid_pagination_field");
   }
-  if (body.offset !== 0 || body.count !== body.recordings.length) {
-    return { status: "invalid_response", reason: "incomplete_search_results", candidates: [] };
+  if (body.offset !== requestedOffset) return invalidPage("unexpected_offset");
+  if (body.count > MUSICBRAINZ_SEARCH_MAX_RESULTS) return invalidPage("result_cap_exceeded");
+  if (body.recordings.length !== body.count) {
+    return invalidPage("unexpected_page_length");
   }
-  if (body.count === 0) return { status: "absent", candidates: [], response_digest: digest };
+  if (body.count === 0) return { status: "absent", candidates: [], response_digest: digest, count: 0, offset: 0 };
   const candidates = [];
-  for (const row of body.recordings) {
+  const seen = new Map();
+  for (let indexInPage = 0; indexInPage < body.recordings.length; indexInPage += 1) {
+    const row = body.recordings[indexInPage];
     const artist = creditedArtist(row?.["artist-credit"]);
     if (!isRecord(row) || typeof row.id !== "string" || !UUID.test(row.id) ||
-        typeof row.title !== "string" || !artist) return { status: "invalid_response" };
+        typeof row.title !== "string" || !artist ||
+        row.disambiguation != null && typeof row.disambiguation !== "string") return invalidPage("invalid_candidate");
+    const mbid = row.id.toLowerCase();
+    if (seen.has(mbid)) return invalidPage("duplicate_recording_identity", {
+      duplicate_mbid: mbid,
+      duplicate_scope: "within_page",
+      first_occurrence: { requested_offset: requestedOffset, index_in_page: seen.get(mbid) },
+      repeated_occurrence: { requested_offset: requestedOffset, index_in_page: indexInPage },
+    });
+    seen.set(mbid, indexInPage);
     candidates.push({
-      mbid: row.id.toLowerCase(),
+      mbid,
       title: row.title,
       artist,
       disambiguation: typeof row.disambiguation === "string" ? row.disambiguation : "",
@@ -152,7 +188,7 @@ function normalizeMusicBrainzSearch(body, digest) {
         : {}),
     });
   }
-  return { status: "ok", candidates, response_digest: digest };
+  return { status: "ok", candidates, response_digest: digest, count: body.count, offset: body.offset };
 }
 
 function normalizeMusicBrainzLookup(body, expectedMbid, digest, searchCandidate = null) {
@@ -230,12 +266,14 @@ function normalizeAcousticSubmission(document, mbid, offset, digest) {
     if (hasKey) {
       if (typeof tonal.key_key !== "string" || typeof tonal.key_scale !== "string" ||
           !ACOUSTIC_KEY_NAMES.has(tonal.key_key) || !["major", "minor", "none"].includes(tonal.key_scale)) return null;
+      if (tonal.key_strength !== undefined && (typeof tonal.key_strength !== "number" || !Number.isFinite(tonal.key_strength))) return null;
       if (tonal.key_scale !== "none") {
         evidence.original_key.push({
           value: { key_key: tonal.key_key, key_scale: tonal.key_scale },
           source: "AcousticBrainz",
           response_digest: digest,
           submission_id: `${mbid.toLowerCase()}:${offset}`,
+          ...(tonal.key_strength !== undefined ? { key_strength: tonal.key_strength } : {}),
         });
       }
     }
@@ -397,7 +435,7 @@ function createSongEnrichmentProviderClient({
     try { await cache.set(key, { status, response: bytes }); } catch { /* cache failures do not alter provider results */ }
   }
 
-  async function send(provider, operation, request, { signal, gemini = false, musicBrainz = false } = {}) {
+  async function send(provider, operation, request, { signal, gemini = false, musicBrainz = false, onAttempt = null } = {}) {
     const run = async () => {
       for (let retry = 0; retry <= 1; retry += 1) {
         if (signal?.aborted) return { status: "cancelled" };
@@ -449,6 +487,7 @@ function createSongEnrichmentProviderClient({
           totalAttempts += 1;
           if (gemini) geminiAttempts += 1;
           attempt = totalAttempts;
+          onAttempt?.(attempt);
           const timeout = Symbol("timeout");
           let transportPromise;
           try {
@@ -586,23 +625,55 @@ function createSongEnrichmentProviderClient({
     const normalizedArtist = normalizeIdentity(artist);
     if (!normalizedTitle || !normalizedArtist) return result("invalid_response", { candidates: [] });
     const query = `recording:"${queryEscape(title.trim())}" AND artist:"${queryEscape(artist.trim())}"`;
-    const url = `https://musicbrainz.org/ws/2/recording/?query=${queryString(query)}&fmt=json&limit=25`;
-    const cacheRequest = { provider: "MusicBrainz", operation: "recording_search", parameters: { title, artist } };
-    const fetched = await requestCached("MusicBrainz", "recording_search", { url, method: "GET", headers: musicBrainzHeaders() }, cacheRequest,
-      { signal, musicBrainz: true });
-    if (!["ok"].includes(fetched.status)) return result(fetched.status, { candidates: [], ...(fetched.reason ? { reason: fetched.reason } : {}) });
+    let expectedTotal = null;
+    let attemptedResponses = 0;
+    let validatedResponses = 0;
+    let collectedCount = 0;
+    const pagination = complete => ({ expected_total: expectedTotal, attempted_pages: attemptedResponses,
+      validated_pages: validatedResponses, collected_count: collectedCount, complete });
+    const failed = (status, reason = undefined, validationDiagnostic = undefined) => result(status, {
+      candidates: [], pagination: pagination(false), ...(reason ? { reason } : {}),
+      ...(validationDiagnostic ? { validation_diagnostic: { ...validationDiagnostic,
+        validated_response_count: validatedResponses, collected_record_count: collectedCount } } : {}),
+    });
+    if (signal?.aborted) return failed("cancelled");
+    const offset = 0;
+    const url = `https://musicbrainz.org/ws/2/recording/?query=${queryString(query)}&fmt=json&limit=${MUSICBRAINZ_SEARCH_LIMIT}&offset=${offset}`;
+    const cacheRequest = { provider: "MusicBrainz", operation: "recording_search",
+      parserVersion: MUSICBRAINZ_SEARCH_PARSER_VERSION,
+      parameters: { title, artist, query, limit: MUSICBRAINZ_SEARCH_LIMIT, offset } };
+    attemptedResponses += 1;
+    const fetched = await requestCached("MusicBrainz", "recording_search",
+      { url, method: "GET", headers: musicBrainzHeaders() }, cacheRequest, { signal, musicBrainz: true });
+    if (signal?.aborted) return failed("cancelled");
+    if (fetched.status !== "ok") return failed(fetched.status, fetched.reason);
+
     const parsed = normalizeMusicBrainzSearch(parseJson(fetched.bytes), fetched.digest);
     updateFetchedStatus(fetched, parsed.status);
-    if (!fetched.cache_hit && ["ok", "absent"].includes(parsed.status)) await cacheResponse(cacheRequest, parsed.status, fetched.bytes);
-    if (parsed.status === "absent") return result("absent", { candidates: [], response_digest: fetched.digest, cache_hit: Boolean(fetched.cache_hit) });
-    if (parsed.status !== "ok") return result(parsed.status, { candidates: [], ...(parsed.reason ? { reason: parsed.reason } : {}) });
-    return { ...parsed, cache_hit: Boolean(fetched.cache_hit) };
+    if (parsed.status !== "ok" && parsed.status !== "absent") {
+      if (parsed.validation_diagnostic) {
+        parsed.validation_diagnostic.validated_response_count = 0;
+        parsed.validation_diagnostic.collected_record_count = 0;
+      }
+      return failed(parsed.status, parsed.reason, parsed.validation_diagnostic);
+    }
+    expectedTotal = parsed.count;
+    validatedResponses = 1;
+    collectedCount = parsed.candidates.length;
+    if (!fetched.cache_hit) await cacheResponse(cacheRequest, parsed.status, fetched.bytes);
+    if (signal?.aborted) return failed("cancelled");
+    if (parsed.status === "absent") {
+      return result("absent", { candidates: [], response_digest: fetched.digest, cache_hit: Boolean(fetched.cache_hit),
+        pagination: pagination(true) });
+    }
+    return { status: "ok", candidates: parsed.candidates, response_digest: fetched.digest,
+      cache_hit: Boolean(fetched.cache_hit), pagination: pagination(true) };
   }
 
   async function lookupRecording({ mbid, searchCandidate = null, signal } = {}) {
     if (typeof mbid !== "string" || !UUID.test(mbid)) return result("invalid_response");
     const normalized = mbid.toLowerCase();
-    const url = `https://musicbrainz.org/ws/2/recording/${encodeURIComponent(normalized)}?inc=genres+tags&fmt=json`;
+    const url = `https://musicbrainz.org/ws/2/recording/${encodeURIComponent(normalized)}?inc=artist-credits+genres+tags&fmt=json`;
     const cacheRequest = { provider: "MusicBrainz", operation: "recording_lookup", parameters: { mbid: normalized } };
     const fetched = await requestCached("MusicBrainz", "recording_lookup", { url, method: "GET", headers: musicBrainzHeaders() }, cacheRequest,
       { signal, musicBrainz: true });
@@ -620,7 +691,8 @@ function createSongEnrichmentProviderClient({
     };
   }
 
-  async function acousticRequest(mbid, offset, signal) {
+  async function acousticRequest(mbid, offset, signal, validatedSubmissionCount = null, onAttempt = null) {
+    if (signal?.aborted) return { status: "cancelled" };
     const base = `https://acousticbrainz.org/api/v1/${encodeURIComponent(mbid.toLowerCase())}`;
     const url = offset === null ? `${base}/count` : `${base}/low-level?n=${offset}`;
     const cacheRequest = {
@@ -629,6 +701,7 @@ function createSongEnrichmentProviderClient({
       parameters: offset === null ? { mbid } : { mbid, offset },
     };
     const cached = await cachedRequest(cacheRequest);
+    if (signal?.aborted) return { status: "cancelled" };
     if (cached) {
       const bytes = responseBytes(cached.response);
       const body = bytes && parseJson(bytes);
@@ -636,7 +709,8 @@ function createSongEnrichmentProviderClient({
     }
     const fetched = await send("AcousticBrainz", offset === null ? "count" : "submission", {
       url, method: "GET", headers: { Accept: "application/json" },
-    }, { signal });
+      ...(offset === null ? {} : { acousticbrainzSubmissionCount: validatedSubmissionCount }),
+    }, { signal, onAttempt });
     return { ...fetched, cache_key: cacheRequest };
   }
 
@@ -645,6 +719,8 @@ function createSongEnrichmentProviderClient({
       { original_key: [], bpm: [] }, [], [], { submission_enumeration: "unknown" });
     const id = mbid.toLowerCase();
     const countResponse = await acousticRequest(id, null, signal);
+    if (signal?.aborted) return evidenceResult("cancelled", id,
+      { original_key: [], bpm: [] }, [], [], { submission_enumeration: "unknown" });
     if (countResponse.status !== "ok") return evidenceResult(countResponse.status, id,
       { original_key: [], bpm: [] }, [], [], { submission_enumeration: "unknown", ...(countResponse.reason ? { reason: countResponse.reason } : {}) });
     if (typeof countResponse.body.mbid !== "string" || countResponse.body.mbid.toLowerCase() !== id ||
@@ -653,40 +729,64 @@ function createSongEnrichmentProviderClient({
       return evidenceResult("invalid_response", id, { original_key: [], bpm: [] }, [], [], { submission_enumeration: "unknown" });
     }
     const count = countResponse.body.count;
+    const plannedSampleOffsets = count === 0 ? [] : [...new Set([0, Math.floor((count - 1) / 2), count - 1])].sort((a, b) => a - b);
     if (count === 0) {
       updateFetchedStatus(countResponse, "absent");
       if (!countResponse.cache_hit) await cacheResponse(countResponse.cache_key, "absent", countResponse.bytes);
+      if (signal?.aborted) return evidenceResult("cancelled", id, { original_key: [], bpm: [] }, [], [], {
+        submission_enumeration: "complete", submission_count: 0, planned_sample_offsets: [], attempted_offsets: [],
+        sampled_offsets: [], agreement_scope: "none",
+      });
       return evidenceResult("absent", id, { original_key: [], bpm: [] }, [], [], {
-        submission_enumeration: "complete", response_digest: countResponse.digest, cache_hit: Boolean(countResponse.cache_hit),
+        submission_enumeration: "complete", submission_count: 0, planned_sample_offsets: [], attempted_offsets: [], sampled_offsets: [],
+        agreement_scope: "none", response_digest: countResponse.digest, cache_hit: Boolean(countResponse.cache_hit),
       });
     }
     if (!countResponse.cache_hit) await cacheResponse(countResponse.cache_key, "ok", countResponse.bytes);
-    if (count > MAX_ACOUSTIC_SUBMISSIONS) {
-      updateFetchedStatus(countResponse, "budget_exhausted");
-      return evidenceResult("budget_exhausted", id, { original_key: [], bpm: [] }, [], [], { submission_enumeration: "partial" });
-    }
     const evidence = { original_key: [], bpm: [] };
-    for (let offset = 0; offset < count; offset += 1) {
-      const fetched = await acousticRequest(id, offset, signal);
+    const attemptedOffsets = [];
+    const sampledOffsets = [];
+    const partialResult = (status, extra = {}) => evidenceResult(status, id, evidence, [], [], {
+      submission_enumeration: "partial", submission_count: count,
+      planned_sample_offsets: plannedSampleOffsets, attempted_offsets: attemptedOffsets, sampled_offsets: sampledOffsets,
+      agreement_scope: "sampled_submissions", ...extra,
+    });
+    if (signal?.aborted) return partialResult("cancelled");
+    for (const offset of plannedSampleOffsets) {
+      if (signal?.aborted) return partialResult("cancelled");
+      const fetched = await acousticRequest(id, offset, signal, count, () => {
+        if (!attemptedOffsets.includes(offset)) attemptedOffsets.push(offset);
+      });
+      if (signal?.aborted) return partialResult("cancelled");
       if (fetched.status !== "ok") return evidenceResult(fetched.status, id, evidence, [], [], {
-        submission_enumeration: "partial", ...(fetched.reason ? { reason: fetched.reason } : {}),
+        submission_enumeration: "partial", submission_count: count,
+        planned_sample_offsets: plannedSampleOffsets, attempted_offsets: attemptedOffsets, sampled_offsets: sampledOffsets,
+        agreement_scope: "sampled_submissions", ...(fetched.reason ? { reason: fetched.reason } : {}),
       });
       const document = unwrapAcousticDocument(fetched.body, id, offset);
       if (!document) {
         updateFetchedStatus(fetched, "invalid_response");
-        return evidenceResult("invalid_response", id, evidence, [], [], { submission_enumeration: "partial" });
+        return partialResult("invalid_response");
       }
       const parsed = normalizeAcousticSubmission(document, id, offset, fetched.digest);
       if (!parsed) {
         updateFetchedStatus(fetched, "invalid_response");
-        return evidenceResult("invalid_response", id, evidence, [], [], { submission_enumeration: "partial" });
+        return partialResult("invalid_response");
       }
       updateFetchedStatus(fetched, "ok");
-      if (!fetched.cache_hit) await cacheResponse(fetched.cache_key, "ok", fetched.bytes);
       evidence.original_key.push(...parsed.original_key);
       evidence.bpm.push(...parsed.bpm);
+      sampledOffsets.push(offset);
+      if (!fetched.cache_hit) await cacheResponse(fetched.cache_key, "ok", fetched.bytes);
+      if (signal?.aborted) return partialResult("cancelled");
     }
-    return evidenceResult("ok", id, evidence, [], [], { submission_enumeration: "complete", submission_count: count });
+    if (signal?.aborted) return partialResult("cancelled");
+    const complete = sampledOffsets.length === count;
+    return evidenceResult("ok", id, evidence, [], [], {
+      submission_enumeration: complete ? "complete" : "partial", submission_count: count,
+      planned_sample_offsets: plannedSampleOffsets, attempted_offsets: attemptedOffsets, sampled_offsets: sampledOffsets,
+      agreement_scope: "sampled_submissions",
+    });
   }
 
   function geminiPayload({ mbid, title, artist, context, definitions }) {

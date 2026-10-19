@@ -1,14 +1,15 @@
-import { createRequire } from 'node:module';
+﻿import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const require = createRequire(import.meta.url);
-const { ABSENCE_TTL_MS, SUCCESS_TTL_MS, cacheKey, createSongEnrichmentCache } =
+const { ABSENCE_TTL_MS, SUCCESS_TTL_MS, cacheKey, createSongEnrichmentCache, normalizeCacheRequest } =
   require('../../server/songEnrichmentCache.js');
 const { GEMINI_PROMPT_VERSION, GEMINI_SCHEMA_VERSION, createSongEnrichmentProviderClient } =
   require('../../server/songEnrichmentProviders.js');
+const { resolveRecordingCandidate } = require('../../server/existingSongEnrichment.js');
 
 const MBID = 'a1111111-1111-4111-8111-111111111111';
 const REQUIRED_BOUNDS = { maxAttempts: 12, maxGeminiAttempts: 2, timeoutMs: 10000, maxResponseBytes: 1000000,
@@ -48,6 +49,17 @@ describe('song enrichment response cache', () => {
     expect(cacheKey(gemini)).not.toBe(cacheKey({ ...gemini, promptVersion: 'p2' }));
     expect(cacheKey(gemini)).not.toBe(cacheKey({ ...gemini, definitionCatalog: { genres: ['Rock'], vibes: ['Upbeat'] } }));
     expect(JSON.stringify(gemini)).not.toContain('credential');
+  });
+
+  it('versions single-response MusicBrainz search cache identity and fixes limit and offset', () => {
+    const search = { ...baseRequest, parserVersion: 'musicbrainz-search-pages-v2', parameters: { ...baseRequest.parameters,
+      query: 'recording:"Song Title" AND artist:"The Artist"', limit: 100, offset: 0 } };
+    const changedQuery = { ...search, parameters: { ...search.parameters, query: 'recording:"Other" AND artist:"The Artist"' } };
+    expect(cacheKey(search)).not.toBe(cacheKey(changedQuery));
+    expect(normalizeCacheRequest(search).parserVersion).toBe('musicbrainz-search-single-response-v1');
+    expect(normalizeCacheRequest(search).parameters).toMatchObject({ limit: 100, offset: 0 });
+    expect(() => cacheKey({ ...search, parameters: { ...search.parameters, limit: 25 } })).toThrow(/limit must be 100/);
+    expect(() => cacheKey({ ...search, parameters: { ...search.parameters, offset: 25 } })).toThrow(/offset must be zero/);
   });
 
   it('writes and reads raw successful responses with digest, fetch time, version and seven-day expiry', async () => {
@@ -163,6 +175,71 @@ describe('song enrichment response cache', () => {
     expect(cached).toMatchObject({ status: 'ok', cache_hit: true });
     expect(second.getAttemptCounts()).toEqual({ total: 0, gemini: 0 });
     expect(dispatches).toBe(1);
+  });
+
+  it('rejects a truncated cached single response without exposing matchable candidates', async () => {
+    const cache = await createSongEnrichmentCache({ directory: root });
+    const truncated = { count: 75, offset: 0, recordings: Array.from({ length: 74 }, (_, index) => ({
+      id: `${String(index + 1).padStart(8, '0')}-1111-4111-8111-111111111111`,
+      title: index === 0 ? 'Song Title' : `Other ${index}`,
+      'artist-credit': [{ artist: { name: 'The Artist' } }],
+    })) };
+    await cache.set({ provider: 'MusicBrainz', operation: 'recording_search', parserVersion: 'musicbrainz-search-single-response-v1',
+      parameters: { title: 'Song Title', artist: 'The Artist', query: 'recording:"Song Title" AND artist:"The Artist"', limit: 100, offset: 0 } },
+    { status: 'ok', response: JSON.stringify(truncated) });
+    let dispatches = 0;
+    const client = createSongEnrichmentProviderClient({ cache,
+      config: { ...REQUIRED_BOUNDS, maxAttempts: 1, maxGeminiAttempts: 1, musicBrainzUserAgent: 'ChordChartManager/1.0.0 (contact@example.test)' },
+      transport: async () => {
+        dispatches += 1;
+        return { status: 200, headers: {}, body: JSON.stringify({ count: 1, offset: 0, recordings: [{
+          id: MBID, title: 'Priming', 'artist-credit': [{ artist: { name: 'The Artist' } }],
+        }] }) };
+      },
+      delay: async () => {},
+    });
+    const result = await client.searchRecordings({ title: 'Song Title', artist: 'The Artist' });
+    expect(result).toMatchObject({ status: 'invalid_response', reason: 'incomplete_search_results', candidates: [],
+      pagination: { expected_total: null, attempted_pages: 1, validated_pages: 0, collected_count: 0, complete: false },
+      validation_diagnostic: { code: 'unexpected_page_length', current_page_total: 75, returned_recording_count: 74 } });
+    expect(resolveRecordingCandidate({ title: 'Song Title', artist: 'The Artist' }, result.candidates))
+      .toEqual({ matched: false, reason: 'no_exact_match', selection_reason: 'no_eligible_recording', eligible_candidate_count: 0,
+        exclusion_counts: {}, missing_release_date_count: 0, earliest_year: null, same_year_candidate_mbids: [],
+        matched_genre_counts: [], richness_comparison_complete: false, provisional_mbid: null, tie_break_reason: null });
+    expect(dispatches).toBe(0);
+    expect(client.getAttemptCounts().total).toBe(0);
+  });
+
+  it('fails closed when cancellation races a cached page or its cache write', async () => {
+    const pageBytes = Buffer.from(JSON.stringify({ count: 1, offset: 0, recordings: [{
+      id: MBID, title: 'Song Title', 'artist-credit': [{ artist: { name: 'The Artist' } }],
+    }] }));
+    const config = { ...REQUIRED_BOUNDS, musicBrainzUserAgent: 'ChordChartManager/1.0.0 (contact@example.test)' };
+    const preAbortedController = new AbortController();
+    preAbortedController.abort();
+    let preAbortedCacheReads = 0;
+    const preAborted = createSongEnrichmentProviderClient({ config, cache: {
+      get: async () => { preAbortedCacheReads += 1; return { status: 'ok', response: pageBytes, response_digest: 'a'.repeat(64) }; },
+    }, transport: async () => { throw new Error('must not dispatch'); }, delay: async () => {} });
+    expect(await preAborted.searchRecordings({ title: 'Song Title', artist: 'The Artist', signal: preAbortedController.signal }))
+      .toMatchObject({ status: 'cancelled', candidates: [], pagination: { validated_pages: 0, collected_count: 0, complete: false } });
+    expect(preAbortedCacheReads).toBe(0);
+
+    const duringReadController = new AbortController();
+    const duringRead = createSongEnrichmentProviderClient({ config, cache: {
+      get: async () => { duringReadController.abort(); return { status: 'ok', response: pageBytes, response_digest: 'b'.repeat(64) }; },
+    }, transport: async () => { throw new Error('cached hit must not dispatch'); }, delay: async () => {} });
+    expect(await duringRead.searchRecordings({ title: 'Song Title', artist: 'The Artist', signal: duringReadController.signal }))
+      .toMatchObject({ status: 'cancelled', candidates: [], pagination: { validated_pages: 0, collected_count: 0, complete: false } });
+
+    const duringWriteController = new AbortController();
+    const duringWrite = createSongEnrichmentProviderClient({ config, cache: {
+      get: async () => null,
+      set: async () => { duringWriteController.abort(); return true; },
+    }, transport: async () => ({ status: 200, headers: {}, body: pageBytes }), delay: async () => {} });
+    expect(await duringWrite.searchRecordings({ title: 'Song Title', artist: 'The Artist', signal: duringWriteController.signal }))
+      .toMatchObject({ status: 'cancelled', candidates: [],
+        pagination: { expected_total: 1, validated_pages: 1, collected_count: 1, complete: false } });
   });
 
   it('serves Gemini tag evidence from cache without an API key or attempt budget', async () => {

@@ -172,7 +172,7 @@ async function main() {
     process.env.DATABASE_URL = databaseUrl(local, scratchName);
     const { runMigrations } = require('../server/migrate.js');
     const applied = await runMigrations({ database: scratchName });
-    assert.deepEqual(applied, ['0001', '0002', '0003']);
+    assert.deepEqual(applied, ['0001', '0002', '0003', '0004']);
     testPool = require('../server/db.js').pool;
     await seedSyntheticChartFixtures(testPool);
     const app = require('../server/server.js');
@@ -209,6 +209,7 @@ async function main() {
     process.env.CCM_T11_ISOLATED = '1';
     await runNode('Unit tests (Vitest)', path.join(appDir, 'node_modules/vitest/vitest.mjs'), ['run'], testEnv);
     await runNode('Scratch-database API integration tests', path.join(appDir, 'test/integration/t11-api.test.cjs'), [], testEnv);
+    await runNode('Scratch-database song enrichment apply tests', path.join(appDir, 'test/integration/song-enrichment.test.cjs'), [], testEnv);
     const e2eArgs = ['test', '--workers=1'];
     if (process.env.CCM_T11_E2E_GREP) {
       e2eArgs.push('--grep', process.env.CCM_T11_E2E_GREP);
