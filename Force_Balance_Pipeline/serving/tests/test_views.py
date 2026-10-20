@@ -224,7 +224,7 @@ class SourceHealth(ViewTest):
 
     def test_newest_snapshot_and_newest_scan(self):
         for when, mode in ((T0 - timedelta(hours=1), "DISCONNECTED"), (T0, "CONNECTED")):
-            self.conn.execute("INSERT INTO serving.source_health_snapshot VALUES (%s, 'probe-01', %s, %s, 'x', 1.0)", (when, mode, when))
+            self.conn.execute("INSERT INTO serving.source_health_snapshot VALUES (%s, 'probe-01', %s, %s, 'x', true)", (when, mode, when))
         for n in range(60):
             self.probe(T0 - timedelta(minutes=15), T0, 3, scan="OLD")
             self.probe(T0, T0, 3, scan="NEW")

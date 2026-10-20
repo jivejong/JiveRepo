@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS serving.disturbance (
   disturbance_id text PRIMARY KEY, sector_id text NOT NULL, detected_at timestamptz NOT NULL, scan_id text,
   imbalance_score double precision, z_midi double precision, z_kyber double precision, z_dark double precision, signature text,
   severity double precision, is_report_sourced boolean, report_description text, report_relevance double precision,
-  sustained_scans integer, cooldown_conflict boolean, agent_processed boolean
+  sustained_scans bigint, cooldown_conflict boolean, agent_processed boolean
 );
 
 CREATE TABLE IF NOT EXISTS serving.deployment (
@@ -66,7 +66,7 @@ CREATE INDEX IF NOT EXISTS rejects_arrival ON serving.rejects (arrival_ts);
 
 CREATE TABLE IF NOT EXISTS serving.source_health_snapshot (
   published_at timestamptz, source_id text, current_mode text, last_seen_at timestamptz, last_scan_id text,
-  scan_completeness double precision, PRIMARY KEY (published_at, source_id)
+  scan_completeness boolean, PRIMARY KEY (published_at, source_id)
 );
 
 CREATE TABLE IF NOT EXISTS serving.publish_log (

@@ -51,6 +51,28 @@ class Schema(unittest.TestCase):
                       "AND table_name = 'deployment' AND constraint_type = 'FOREIGN KEY'")[0][0]
         self.assertEqual(n, 0)
 
+    def test_column_types(self):
+        for table, column, kind in (("source_health_snapshot", "scan_completeness", "boolean"), ("disturbance", "sustained_scans", "bigint")):
+            got = self.rows("SELECT data_type FROM information_schema.columns WHERE table_schema = 'serving' AND table_name = %s "
+                            "AND column_name = %s", table, column)[0][0]
+            self.assertEqual(got, kind, f"{table}.{column}")
+
+    def test_recreate_succeeds_and_empties_the_tables(self):
+        self.conn.execute("INSERT INTO serving.watermark VALUES ('x', now())")
+        self.conn.commit()
+        self.assertEqual(schema.recreate(self.conn), 12)
+        self.assertEqual(self.rows("SELECT count(*) FROM serving.watermark")[0][0], 0)
+
+    def test_recreate_refuses_when_a_live_publish_row_exists(self):
+        self.conn.execute("INSERT INTO serving.publish_log (kind, started_at, status) VALUES ('live', now(), 'ok')")
+        self.conn.execute("INSERT INTO serving.watermark VALUES ('keep', now())")
+        self.conn.commit()
+        self.addCleanup(lambda: (self.conn.execute("DELETE FROM serving.publish_log WHERE kind = 'live'"),
+                                 self.conn.execute("DELETE FROM serving.watermark"), self.conn.commit()))
+        with self.assertRaises(schema.Refused):
+            schema.recreate(self.conn)
+        self.assertEqual(self.rows("SELECT count(*) FROM serving.watermark")[0][0], 1)
+
     def test_publish_log_checks_kind_and_status(self):
         for sql in ("INSERT INTO serving.publish_log (kind, started_at, status) VALUES ('other', now(), 'ok')",
                     "INSERT INTO serving.publish_log (kind, started_at, status) VALUES ('live', now(), 'other')"):

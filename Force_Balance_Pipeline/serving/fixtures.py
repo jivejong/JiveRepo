@@ -88,8 +88,8 @@ def build(now):
     jedi = read_seed("dim_jedi", floats=("canon_confidence",), ints=("power_rating",))
     ships = read_seed("dim_starship", floats=("hyperdrive_rating",), ints=("mglt", "crew", "passengers"))
     require(sectors, "sector_id", ("geonosis", "naboo", "bespin", "kamino", "coruscant", "tatooine"), "sector")
-    require(jedi, "jedi_id", ("kit_fisto", "anakin_skywalker", "mace_windu"), "Jedi")
-    require(ships, "starship_id", ("arc_170", "jedi_interceptor"), "starship")
+    require(jedi, "jedi_id", ("kit_fisto", "anakin_skywalker", "mace_windu", "obi_wan_kenobi"), "Jedi")
+    require(ships, "starship_id", ("arc_170", "jedi_interceptor", "naboo_fighter"), "starship")
     by_sector = {s["sector_id"]: s for s in sectors}
     ago = lambda **kw: now - timedelta(**kw)  # noqa: E731
 
@@ -178,7 +178,8 @@ def build(now):
     deps.append(("FIXDEP2", "FIXD2", "yoda_agent", "stand_down", Jsonb([]), None, None, None,
                  "No capacity: the fleet cap is full, so no deployment is possible.",
                  Jsonb({"severity": 9.4, "signature": "force_drain"}), "force_drain", "gemini-3.1-flash-lite", 1500,
-                 Jsonb([{"reason": "deployment_capacity_reached"}]), t2))
+                 Jsonb([{"proposal": {"jedi_ids": ["obi_wan_kenobi"], "starship_id": "naboo_fighter",
+                                      "rationale": "Send the Negotiator."}, "reasons": ["deployment_capacity_reached"]}]), t2))
     t3 = ago(hours=19)
     e3 = eta(["mace_windu"], "coruscant", "jedi_interceptor")
     deps.append(("FIXDEP3", "FIXD3", "user", "deploy", Jsonb(["mace_windu"]), "jedi_interceptor", e3, released_at(t3, e3),
@@ -205,7 +206,7 @@ def build(now):
                         "CONNECTED", rng.choice(REJECT_REASONS)))
     out["rejects"] = rejects
 
-    out["source_health_snapshot"] = [(now - timedelta(hours=h), SOURCE_ID, "CONNECTED", now - timedelta(hours=h), None, 1.0)
+    out["source_health_snapshot"] = [(now - timedelta(hours=h), SOURCE_ID, "CONNECTED", now - timedelta(hours=h), None, True)
                                     for h in (2, 1, 0)]
     out["source_health_snapshot"] = [(p, s, m, ls, f"FIX{SCANS - 1 - h * PER_HOUR:04d}", c)
                                      for (p, s, m, ls, _x, c), h in zip(out["source_health_snapshot"], (2, 1, 0))]

@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 import pg_support
-from serving import fixtures
+from serving import fixtures, views
 
 NOW = datetime(2026, 10, 19, 15, 45, tzinfo=timezone.utc)
 EPOCH = datetime(2026, 10, 12, tzinfo=timezone.utc)
@@ -15,6 +15,7 @@ class Fixtures(unittest.TestCase):
     def setUpClass(cls):
         cls.conn = pg_support.connect_test()
         pg_support.fresh_schema(cls.conn)
+        views.apply(cls.conn)
 
     @classmethod
     def tearDownClass(cls):
@@ -72,6 +73,14 @@ class Fixtures(unittest.TestCase):
         stand = self.q("SELECT jedi_ids FROM serving.deployment WHERE decision = 'stand_down'")
         self.assertTrue(stand and all(r[0] == [] for r in stand))
         self.assertEqual(self.q("SELECT count(*) FROM serving.deployment WHERE rationale IS NULL OR rationale = ''")[0][0], 0)
+
+    def test_the_capacity_stand_down_has_the_agents_override_shape(self):
+        rows = self.q("SELECT capacity_reached, guardrail_overrides FROM serving.v_deployment_log WHERE deployment_id = 'FIXDEP2'")
+        self.assertTrue(rows[0][0])
+        element = rows[0][1][0]
+        self.assertEqual(sorted(element), ["proposal", "reasons"])
+        self.assertEqual(sorted(element["proposal"]), ["jedi_ids", "rationale", "starship_id"])
+        self.assertEqual(self.q("SELECT count(*) FROM serving.v_deployment_log WHERE capacity_reached")[0][0], 1)
 
     def test_the_loader_refuses_when_a_live_publish_row_exists(self):
         self.conn.execute("INSERT INTO serving.publish_log (kind, started_at, status) VALUES ('live', now(), 'ok')")

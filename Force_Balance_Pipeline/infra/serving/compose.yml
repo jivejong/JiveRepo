@@ -1,6 +1,7 @@
 # The local Postgres serving store for the Phase 7 dashboard (doc 05, "Serving (Phase 7)"; doc 01, D4 amended).
 # Start it from Force_Balance_Pipeline:  docker compose --env-file .env.serving -f infra/serving/compose.yml up -d
 # POSTGRES_PASSWORD is interpolated from .env.serving; there is no env_file key, so no other key reaches the container.
+name: force-serving
 services:
   force-postgres:
     image: postgres:17
@@ -20,4 +21,4 @@ services:
       retries: 5
 
 volumes:
-  force-postgres-data:
+  force-postgres-data: { name: force-postgres-data }

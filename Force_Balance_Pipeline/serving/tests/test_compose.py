@@ -23,6 +23,10 @@ class Compose(unittest.TestCase):
     def test_no_env_file_key(self):
         self.assertFalse([ln for ln in self.lines if ln.startswith("env_file")])
 
+    def test_project_and_volume_names_are_explicit(self):
+        self.assertIn("name: force-serving", self.lines)
+        self.assertIn("force-postgres-data: { name: force-postgres-data }", self.lines)
+
     def test_restart_policy(self):
         self.assertIn("restart: unless-stopped", self.lines)
 
