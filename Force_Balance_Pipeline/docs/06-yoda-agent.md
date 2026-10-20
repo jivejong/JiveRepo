@@ -257,7 +257,11 @@ you want the voice, apply it as a display transform on `rationale` in the dashbo
 
 The dashboard lets a user deploy to any planet with an active anomaly, choosing Jedi and ship.
 
-**Deferred to Phase 7:** "active anomaly" is defined with the dashboard's manual deployment UI.
+**Active anomaly (decided, Phase 7).** An open, undecided incident: a `gold_disturbance` row with `detected_at >= AGENT_EPOCH` and no row in `gold.deployment`. A deployment needs a `disturbance_id` (NOT NULL, with a `relationships` test), so a planet without an incident cannot be targeted. Every incident has an imbalance above 5.75 (severity about 6.33 or more), so the severity floor (4.40) and fixture 20 (`severity_floor_user_anomaly`) cannot be reached from the dashboard. The floor stays as defense in depth and is exercised by the eval. The 4.0 anomaly threshold is used by the galaxy view as a color band: above 4.0 is an anomaly, above 5.75 an emergency.
+
+**Human-first window (decided, Phase 7).** The agent decides an incident only in a cycle after the one that first polled it; first-seen ids are kept in `logs\agent_seen.json`. A person gets about 50 minutes, from the :25 publish to the next :15 cycle, and every agent decision is delayed by one cycle.
+
+**Manual deployment path (decided, Phase 7).** The dashboard backend runs these steps in order: (1) refuse during the 03:xx UTC hour; (2) take `logs\agent.lock`, retrying for up to 10 seconds, then refuse with "agent cycle in progress" (a missed S4 ping is inside its grace); (3) ask the Jobs API whether Job 1 is active, and refuse if so; (4) read the context, the available Jedi and the available starships live through `agent.context`; (5) run `agent.constraints.check_deploy`. A rejection shows every reason and writes nothing. (6) On a pass, run the agent's MERGE (`decided_by = 'user'`, `model` and `decision_latency_ms` null, the rationale required, `released_at` from `agent.distance`) and mark the incident processed, so the agent's repair never fires on user rows. A rejected deploy costs 3 statements and an accepted one 5, plus 1 to refresh the deployment table in Postgres. The party's ETA comes from a function in `agent/distance.py` shared with the agent loop.
 
 - Same constraint layer, same rejection reasons surfaced in the UI
 - `decided_by = 'user'`, `model` and `decision_latency_ms` null
@@ -338,6 +342,8 @@ An escalation that arrives after `agent_processed = true` is not re-queued in Ph
 a known edge. The Phase 7 dashboard may flag "severity rose after decision" by comparing the current severity with
 `context_snapshot.severity`.
 
+**Flag (decided, Phase 7).** The dashboard flags "severity rose after decision" only when the current severity crosses a boundary the decision depended on: above 4.40 after a stand-down whose reason was the floor, or above 12.0 when the party has no Jedi of rank `master`, `council_member` or `grand_master`.
+
 ## Failure handling
 
 | Failure | Behavior |
@@ -357,7 +363,7 @@ incident, the next cycle's repair step marks it and no second decision is writte
 
 A kill at any step is safe: the MERGE is atomic, the repair marks an unmarked row, and the operating system releases the lock when the process dies. A statement that was running when the process was killed may still finish on the server.
 
-Known behavior: an incident that arrives while the fleet cap is full is stood down permanently (`deployment_capacity_reached`, as the `capacity_reached` fixture specifies); it is not retried when a slot frees up. To be reconsidered in Phase 7.
+Known behavior: an incident that arrives while the fleet cap is full is stood down permanently (`deployment_capacity_reached`, as the `capacity_reached` fixture specifies); it is not retried when a slot frees up. To be reconsidered in Phase 7. The dashboard shows it as a badge; it is not retried (unchanged in Phase 7).
 
 ---
 

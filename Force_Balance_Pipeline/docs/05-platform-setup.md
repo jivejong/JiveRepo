@@ -524,7 +524,6 @@ against that limit concurrently**, so a four-task linear job is well within budg
 | ----------------- | -------------------------------------------------------------------------------- | --------------- |
 | `ingest_bronze`   | Notebook (Auto Loader)                                                        | —               |
 | `transform`       | dbt (`dbt build --exclude gold_sector_baseline`, catalog=force, schema=gold) | `ingest_bronze` |
-| `publish_serving` | Notebook — **not built yet.** Writes gold aggregates to Postgres, so it waits on the Postgres/local demo stack, deferred to Phase 8 (07:157-158's own fallback, taken in Phase 4). Add it here, `depends_on: transform`, once that stack exists. | `transform`     |
 
 Signature classification and detection live inside the dbt DAG as `gold_sector_reading` and
 `gold_disturbance`, so neither needs its own task.
@@ -550,9 +549,7 @@ at observed per-run durations — real margin under the inferred budget. Still *
 itself stays 15 minutes unchanged, so an hourly run now processes roughly four scans' worth of new rows instead
 of one.
 
-`publish_serving` writes gold aggregates to Postgres. If outbound egress to your Postgres host is
-blocked, invert it: have a Cloud Run job pull via the SQL Statement Execution API on the same
-schedule. The pull direction is preferred anyway — it keeps the work off the Databricks quota.
+`publish_serving` is not a Job 1 task. Databricks serverless cannot reach the desktop, so it runs locally as `ForceServe` (see "Serving (Phase 7)").
 
 ### Job 2 — `rebuild_baseline` (daily, 03:40 UTC)
 
@@ -722,6 +719,15 @@ columns only, and should be run with care that it does not clobber enriched colu
 
 Pulling from Git means the repository is the source of truth for production transformation code.
 That's a deliberate property: someone reading the repo sees the actual production path.
+
+### Serving (Phase 7)
+
+- `ForceServe` scheduled task: hourly at :25 UTC, skips the 03:xx UTC hour, `IgnoreNew`, runs `serving/` from the working tree with `serving\.venv` (its own venv; `edge/requirements.txt` is also installed on the Pi, so serving dependencies stay out of it), lock `logs\serve.lock`.
+- Gate: it asks the Jobs API for Job 1's latest successful run (free) and pulls only when that run is newer than the last publish's.
+- Reads, all read-only SELECTs: incremental with upsert on `event_id` and 30 days kept in Postgres: `gold_sector_reading` (watermark `_gold_built_at`), `silver_probe_reading` lag columns and `silver_rejects` (watermark `arrival_ts`). Full pulls each run: `gold_disturbance` (the daily baseline rebuild re-scores it), `gold.deployment`, `gold_sector_baseline`, the dim tables, and `silver_source_health` (one snapshot kept per publish, so the panel has history). Aggregations (ingest lag histogram, rejection rate) are Postgres views.
+- Results larger than one chunk are fetched through the Statement API's result-chunk endpoint, through `files_api.http_request`; `agent/dbsql.py` is not changed.
+- Postgres: Docker container `force-postgres`, pinned major version, bound to 127.0.0.1:5433 (5432 is published by another project's stopped container and claimed by the dbt `local` target, which Phase 7 does not use), database `force_serving`, schema `serving`, credentials in `.env.serving` (gitignored).
+- Cost: measured on the first live pull, before the task is registered.
 
 ---
 
@@ -1206,11 +1212,16 @@ runs and in every scheduled DISCONNECTED window.
 | **S2** | Job 1 is running and succeeding | Databricks, on each successful Job 1 run (design below) | once per success | `fbp-s2-job1-success` | 1 h | 1 h | 2 h of silence |
 | **S3** | data is landing | `bridge.py` (`monitor.py`) | after an upload that landed at least 1 line, at most one per 5 min | `fbp-s3-data-landed` | 15 min | 3 h 45 min | 4 h of silence |
 | **S4** | the Yoda agent cycle ran, or skipped on purpose | `agent/run.py` (Phase 6) | at the end of every cycle, skipped cycles included; `/fail` on a crash | `fbp-s4-agent` | 1 h | 2 h | 3 h of silence |
+| **S5** | the `ForceServe` puller ran, or was gated on purpose (Phase 7) | `serving/` | at the end of every run, a gated no-op run included; `/fail` on an error | `fbp-s5-serving` | 1 h | 2 h | 3 h of silence |
 | (test) | exercises the alert path only | by hand | — | `fbp-test` | 1 min | 1 min | 2 min |
 
 "Grace" here is the Healthchecks.io grace time and the alert comes after period plus grace, i.e. **total silence** (decision, Q-B1).
 
 **S4 (Phase 6).** The agent runs hourly at :15 (the `ForceAgent` task), so its check has a period of 1 hour and a grace of 2 hours. Every cycle pings it, including a cycle that skips the 03:xx UTC hour or an active Job 1 run, because a skipped cycle means the agent is alive; a crashed cycle pings the `/fail` URL. The URL is `AGENT_PING_S4_URL` in `.env.agent`. The check is created by hand when the task is registered (Phase 6 R6b).
+
+**S5 (Phase 7).** `ForceServe` runs hourly at :25 UTC, so `fbp-s5-serving` has a period of 1 hour and a grace of 2 hours. Every run pings it, including a run gated because Job 1 has no newer successful run; an error pings `/fail`.
+
+**Rule (decided, Phase 7):** every check has both the email integration and a push integration attached, and delivery is proven with `fbp-test`. The email integration failed again on 2026-10-18 and 10-19 (no alert reached Jong during the agent outage).
 
 **What Healthchecks.io does** (from its own documentation, read 2026-10-11).
 - *Ping URLs:* `https://hc-ping.com/<uuid>` for success, with `/start`, `/fail`, `/log` and `/<exit-status>` variants, or

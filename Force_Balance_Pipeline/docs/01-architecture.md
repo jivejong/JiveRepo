@@ -16,7 +16,7 @@ lives elsewhere.
 | Collector bridge | GCP e2-micro (Always Free) | MQTT broker, batcher, **and the report inference endpoint**; writes NDJSON to the UC volume |
 | Yoda agent | Cloud Run (scheduled) | Reads incidents, calls Gemini, writes decisions back. Phase 6 runs the agent locally as a Windows scheduled task; Cloud Run is an optional later stage (doc 06, "Runtime"). |
 | Jedi Council dashboard | Cloud Run / Vercel | Reads Postgres serving store; manual deployment UI |
-| Postgres serving store | GCP e2-micro (same VM) | Gold aggregates, published from Databricks |
+| Postgres serving store | Local Postgres in Docker on the desktop (`force-postgres`, 127.0.0.1:5433) | Gold aggregates, published from Databricks by the local `ForceServe` puller |
 
 ### Inside Databricks
 
@@ -108,6 +108,8 @@ for analytics, a serving store is for applications.
 
 **Direction.** Pull from outside using the SQL Statement Execution API rather than pushing from
 inside a notebook. This keeps the work off the Databricks quota and avoids the egress question.
+
+**Amended, Phase 7 (2026-10-19).** Databricks serverless cannot reach a Postgres on the desktop, so `publish_serving` is a local puller, not a Job 1 task. The `ForceServe` scheduled task reads gold, plus three silver sources the panels need (`silver_source_health`, `silver_rejects`, and the lag columns of `silver_probe_reading`), with read-only SELECTs through the SQL Statement Execution API, and writes them to local Postgres. The pull still runs on the warehouse and draws on the quota; the "keeps the work off the Databricks quota" claim above is wrong, and only the egress question is avoided. The dashboard reads Postgres only. The one exception is a manual deployment, a rare explicit write: it runs the agent's per-incident path against the warehouse (doc 06, "User-initiated deployment").
 
 ### D5 — dbt Core over Lakeflow declarative pipelines
 
@@ -206,7 +208,7 @@ replaces.
    - **Ingest** — Auto Loader reads new files into `bronze.events`, then stops.
    - **Transform** — `dbt build` runs silver and gold plus tests. Signature classification and
      incident detection live inside this DAG.
-   - **Publish** — gold aggregates copied to Postgres.
+   - **Publish** — gold aggregates copied to Postgres. (Phase 7: done by the local `ForceServe` puller after a successful run, not inside the job; D4.)
 5. Daily, `gold.sector_baseline` rebuilds from the trailing 90 days of **probe-only** data.
 6. Every hour (offset 4 minutes behind the pipeline job -- follows Job 1's own cadence, Stage 4c; not yet built,
    Phase 6), Cloud Run polls `gold.disturbance` for unprocessed incidents. The Yoda agent reasons over context

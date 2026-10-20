@@ -297,7 +297,7 @@ actual sector and signature. Run on the geonosis probe incident of 2026-10-14 07
 
 ## Phase 7 — Dashboard · 12–18h
 
-1. `publish_serving` — gold aggregates to Postgres.
+1. `publish_serving` — gold aggregates to Postgres. Built in Phase 7 as a local puller (doc 05, "Serving (Phase 7)").
 2. React dashboard reading Postgres.
 3. Manual deployment UI running through the **same constraint layer**, with rejection reasons
    surfaced in the interface.
@@ -319,6 +319,12 @@ Panels, in priority order:
 the incident appear with its signature, and the deployment log populate. Then deploy manually to a
 different planet and confirm the constraint layer rejects an already-deployed Jedi. Record both as
 a GIF.
+
+**Decisions:** doc 01 D4 (amended), doc 05 "Serving (Phase 7)", doc 06 "User-initiated deployment" and "Re-escalation".
+
+**Display rules:** the ETA formula is unchanged and the countdown targets `released_at`; a deployment whose `disturbance_id` no longer matches an incident (identities can shift on a full refresh) shows an "orphaned" badge and is not dropped; buffer depth shows "n/a" (`silver_source_health.buffer_depth` is always NULL); a Yoda voice for rationales is Phase 8.
+
+**Order:** the Postgres stack, the puller and the read-only panels first, against fixture data in Postgres; then the agent changes (human-first window, the shared ETA function, logging the Statement API's error body on a 400); then the manual deploy path; then the live pull, its cost measurement and the checkpoint, which are the only steps that need warehouse compute.
 
 ---
 
