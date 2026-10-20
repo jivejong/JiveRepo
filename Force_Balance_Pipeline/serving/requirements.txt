@@ -1,0 +1,3 @@
+# Pins for the Phase 7 serving code (doc 05, "Serving (Phase 7)"). Its own venv: edge/requirements.txt is also installed on the Pi.
+#   python -m venv serving/.venv ; serving/.venv/Scripts/python.exe -m pip install -r serving/requirements.txt   (Windows)
+psycopg[binary]==3.3.6
