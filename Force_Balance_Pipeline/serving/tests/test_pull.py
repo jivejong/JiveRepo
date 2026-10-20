@@ -1,8 +1,11 @@
 """Tests for serving/pull.py (doc 05 "Serving (Phase 7)": "Reads"): a fake warehouse client and force_serving_test. No network."""
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 
 import pg_support
+from agent.dbsql import TransientHTTPError
+from fake_http import FakeOpener
 from serving import config, fixtures, pull, statements
 
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
@@ -52,7 +55,7 @@ class FakeClient:
         self.script, self.fail_on, self.error = {k: (v if callable(v) else list(v)) for k, v in (script or {}).items()}, fail_on, error
         self.calls, self.statements = [], 0
 
-    def execute(self, sql, params=None, *, expected_types=None, max_rows=None):
+    def read(self, sql, params=None, *, expected_types=None, max_rows=None):
         self.statements += 1
         self.calls.append((sql, params, expected_types))
         if self.fail_on == self.statements:
@@ -231,6 +234,65 @@ class Retention(PullTest):
         self.assertEqual(self.q("SELECT event_id FROM serving.probe_reading"), [("P0",)])     # arrival_ts decides
         self.assertEqual(self.q("SELECT event_id FROM serving.rejects"), [("J0",)])           # arrival_ts decides
         self.assertEqual(self.q("SELECT source_id FROM serving.source_health_snapshot ORDER BY 1"), [("b",)])
+
+
+def wire(key, row):
+    """A warehouse row as the Statement API sends it: every cell a string (or null)."""
+    def cell(v):
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, datetime):
+            return v.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if isinstance(v, (list, dict)):
+            return json.dumps(v)
+        return str(v)
+    return [cell(row[c]) for c in pull.SPECS[key]["cols"]]
+
+
+class Retries(PullTest):
+    """The real serving client over a fake transport: a transient error is retried once, a second one fails the run."""
+
+    def client(self, transient):
+        sent = {"posts": 0}
+
+        def handler(method, url, body):
+            if method != "POST":
+                return 500, {}
+            sent["posts"] += 1
+            if sent["posts"] <= transient:
+                return 503, {}
+            key = next(k for name, k in SOURCE_KEYS.items() if f" FROM {name}" in body["statement"])
+            cols = [{"name": c, "type_name": t} for c, t in pull.SPECS[key]["types"].items()]
+            data = [wire(key, disturbance("D1"))] if key == "disturbance" else []
+            return 200, {"statement_id": "S", "status": {"state": "SUCCEEDED"}, "manifest": {"schema": {"columns": cols}},
+                         "result": {"data_array": data}}
+        return statements.ServingStatementClient("example.invalid", "t", "w", opener=FakeOpener(handler), sleep=lambda s: None,
+                                                 monotonic=lambda: 0.0), sent
+
+    def warm(self, extra=None):
+        script = {"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]], "rejects": [[reject(1, NOW - HOUR)]]}
+        script.update(extra or {})
+        self.first_run(script)
+
+    def test_one_transient_error_then_success_writes_the_data(self):
+        self.warm()
+        client, sent = self.client(1)
+        try:
+            pull.run_pulls(client, self.conn, NOW + HOUR)
+        except TransientHTTPError:
+            self.fail("one transient error must be retried")
+        self.assertEqual(self.q("SELECT disturbance_id FROM serving.disturbance"), [("D1",)])
+        self.assertEqual(sent["posts"], 8)                       # 7 reads + 1 retry
+
+    def test_two_transient_errors_fail_the_run_and_write_nothing(self):
+        self.warm({"disturbance": [[disturbance("OLD")]]})
+        before = self.state()
+        client, _ = self.client(2)
+        with self.assertRaises(TransientHTTPError):
+            pull.run_pulls(client, self.conn, NOW + HOUR)
+        self.assertEqual(self.state(), before)
 
 
 class Atomicity(PullTest):

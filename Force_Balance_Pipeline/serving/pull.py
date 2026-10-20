@@ -3,7 +3,7 @@ the local Postgres in ONE transaction.
 
 run_pulls(client, conn, now) does, in order: (1) read the watermarks and decide whether the dims are due, then end that transaction;
 (2) every warehouse read, in a fixed order (dims if due, sector_baseline, disturbance, deployment, source_health, sector_reading,
-probe_reading, rejects), each through client.execute with expected_types; (3) one Postgres transaction: full tables are replaced
+probe_reading, rejects), each through client.read (two attempts, 5 s apart) with expected_types; (3) one Postgres transaction: full tables are replaced
 (DELETE then INSERT), the source_health snapshot is added, the incremental tables are upserted, the watermarks move, and 30-day
 retention is applied. Any error rolls everything back and is re-raised; a failed read changes nothing because no write has started.
 Watermarks: sector_reading on _gold_built_at (upsert, because a probe row is recomputed in place); probe_reading and rejects on
@@ -162,7 +162,7 @@ def run_pulls(client, conn, now, backfill_days=DEFAULT_BACKFILL_DAYS):
         spec = SPECS[key]
         rows = []
         for sql, params in statements:
-            rows.extend(client.execute(sql, params, expected_types=spec["types"]))
+            rows.extend(client.read(sql, params, expected_types=spec["types"]))
         results[key] = rows
     try:
         with conn.cursor() as cur:
