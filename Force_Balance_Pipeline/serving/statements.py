@@ -3,8 +3,10 @@
 A subclass of agent.dbsql.StatementClient: polling, retries, type conversion and the statement counter are the agent's own. This adds
 only (1) following next_chunk_internal_link, so a result larger than one chunk is joined in order; (2) a row cap (max_rows, default
 50000, ResultTooLarge once exceeded); (3) an optional expected_types check against the manifest (SchemaMismatch); (4) a read-only
-guard: the first keyword must be SELECT or WITH and no statement may hold a semicolon except a trailing one (NotReadOnly, raised
-before any HTTP call). It has no write method. The guard is a keyword check, not a SQL parser: it does not look inside a WITH body.
+guard: the first keyword must be SELECT or WITH, no statement may hold a semicolon except a trailing one, and none of INSERT, UPDATE,
+DELETE, MERGE, CREATE, DROP, ALTER, TRUNCATE, COPY, GRANT, REVOKE, REPLACE, OPTIMIZE or VACUUM may appear as a word outside quotes and
+comments (NotReadOnly, raised before any HTTP call). It has no write method. It is a keyword check, not a SQL parser, and defense in
+depth only: a read-only principal on the warehouse is the real control.
 """
 import re
 
@@ -55,6 +57,10 @@ def _scrub(sql):
     return "".join(out)
 
 
+DENIED = frozenset(("INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "DROP", "ALTER", "TRUNCATE", "COPY", "GRANT", "REVOKE",
+                    "REPLACE", "OPTIMIZE", "VACUUM"))
+
+
 def check_read_only(sql):
     """Raise NotReadOnly unless sql is one SELECT or WITH statement (one trailing semicolon is allowed)."""
     code = _scrub(sql).strip()
@@ -65,6 +71,9 @@ def check_read_only(sql):
     m = re.match(r"[A-Za-z]+", code)
     if not m or m.group(0).upper() not in ("SELECT", "WITH"):
         raise NotReadOnly("the first keyword is not SELECT or WITH")
+    found = DENIED.intersection(re.findall(r"[A-Za-z_]+", code.upper()))
+    if found:
+        raise NotReadOnly(f"the statement uses {sorted(found)[0]}")
 
 
 class ServingStatementClient(StatementClient):
@@ -74,9 +83,17 @@ class ServingStatementClient(StatementClient):
         self._expected = None
         self._cap = max_rows
 
-    def execute(self, sql, params=None):
+    def execute(self, sql, params=None, *, expected_types=None, max_rows=None):
         check_read_only(sql)
-        return super().execute(sql, params)
+        if expected_types is None and max_rows is None:
+            return super().execute(sql, params)
+        saved = (self._expected, self._cap)
+        self._expected = expected_types if expected_types is not None else self._expected
+        self._cap = max_rows if max_rows is not None else self._cap
+        try:
+            return super().execute(sql, params)
+        finally:
+            self._expected, self._cap = saved
 
     def read(self, sql, params=None, *, expected_types=None, max_rows=None):
         check_read_only(sql)

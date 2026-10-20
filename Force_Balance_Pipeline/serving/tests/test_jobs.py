@@ -41,8 +41,15 @@ class Lookup(unittest.TestCase):
         got, _ = latest({"runs": [run(1, 1000, "FAILED"), run(2, 2000, "CANCELED")]})
         self.assertIsNone(got)
 
+    def test_an_object_without_runs_is_none(self):
+        try:
+            got, _ = latest({"has_more": False})
+        except jobs.JobsApiError:
+            self.fail("an answer without runs must give None")
+        self.assertIsNone(got)
+
     def test_bad_answers_raise(self):
-        for status, payload in ((500, {"runs": []}), (200, b"not json"), (200, {"nothing": 1}), (200, [1]), (200, {"runs": "x"})):
+        for status, payload in ((500, {"runs": []}), (200, b"not json"), (200, [1]), (200, {"runs": "x"})):
             with self.assertRaises(jobs.JobsApiError, msg=str((status, payload))):
                 latest(payload, status)
 

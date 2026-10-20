@@ -97,7 +97,7 @@ class ExpectedTypes(unittest.TestCase):
 class ReadOnly(unittest.TestCase):
     def test_selects_and_withs_pass(self):
         for sql in ("  -- c\nselect 1", "/* x */ WITH a AS (select 1) select * from a", "SELECT", "select 1;", "select 'a;b'",
-                    "select 1 -- ; drop table x", 'select "x;y" from t'):
+                    "select 1 -- ; drop table x", 'select "x;y" from t', "select 'drop' as x", "select last_update, created_at from t"):
             client, opener = make(rows(0, 1))
             try:
                 client.read(sql)
@@ -107,12 +107,19 @@ class ReadOnly(unittest.TestCase):
 
     def test_anything_else_is_refused_before_any_http(self):
         for sql in ("update t set a = 1", "  merge into t", "delete from t", "insert into t values (1)", "create table t (a int)",
-                    "select 1; drop table x", "select 1; select 2", "", "-- only a comment", "drop table x"):
+                    "select 1; drop table x", "select 1; select 2", "", "-- only a comment", "drop table x",
+                    "WITH a AS (select 1) INSERT INTO t select * from a", "select 1 from t where x in (select 1) union select optimize"):
             client, opener = make(rows(0, 1))
             with self.assertRaises(statements.NotReadOnly, msg=sql):
                 client.read(sql)
             self.assertEqual(opener.calls, [], sql)
             self.assertEqual(client.statements, 0, sql)
+
+    def test_execute_accepts_expected_types(self):
+        client, _ = make(rows(0, 1))
+        self.assertEqual(len(client.execute("select 1", None, expected_types={"n": "INT", "s": "STRING"})), 1)
+        with self.assertRaises(statements.SchemaMismatch):
+            client.execute("select 1", None, expected_types={"n": "INT"})
 
     def test_execute_is_guarded_too_and_write_does_not_exist(self):
         client, opener = make(rows(0, 1))

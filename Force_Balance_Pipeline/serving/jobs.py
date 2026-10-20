@@ -29,7 +29,7 @@ def _succeeded(run):
 
 def latest_successful_run(env, job_id, *, opener=None):
     """(run_id, end_time as an aware UTC datetime) of the newest successful run of the job, or None if none of the last 25 finished runs
-    succeeded. Raises JobsApiError on a non-200, bad JSON or an unexpected shape."""
+    succeeded or the answer has no "runs" key. Raises JobsApiError on a non-200, bad JSON or an unexpected shape."""
     kwargs = {} if opener is None else {"opener": opener}
     try:
         url = f"{files_api.normalise_host(env['DATABRICKS_HOST'])}/api/2.1/jobs/runs/list?job_id={int(job_id)}&completed_only=true&limit=25"
@@ -42,8 +42,12 @@ def latest_successful_run(env, job_id, *, opener=None):
         data = json.loads(body)
     except ValueError:
         raise JobsApiError("the Jobs API answer is not JSON") from None
-    if not isinstance(data, dict) or not isinstance(data.get("runs"), list):
-        raise JobsApiError("the Jobs API answer has no runs list")
+    if not isinstance(data, dict):
+        raise JobsApiError("the Jobs API answer is not an object")
+    if "runs" not in data:                          # the API omits "runs" when no run has finished
+        return None
+    if not isinstance(data["runs"], list):
+        raise JobsApiError("the Jobs API answer has a runs value that is not a list")
     best = None
     for run in data["runs"]:
         if not isinstance(run, dict) or not _succeeded(run):
