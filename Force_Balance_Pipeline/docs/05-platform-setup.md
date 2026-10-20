@@ -722,9 +722,9 @@ That's a deliberate property: someone reading the repo sees the actual productio
 
 ### Serving (Phase 7)
 
-- `ForceServe` scheduled task: hourly at :25 UTC, skips the 03:xx UTC hour, `IgnoreNew`, runs `serving/` from the working tree with `serving\.venv` (its own venv; `edge/requirements.txt` is also installed on the Pi, so serving dependencies stay out of it), lock `logs\serve.lock`.
+- `ForceServe` scheduled task: hourly at :17 UTC; it first waits for `logs\agent.lock` to be free (up to 10 minutes), so the pull follows the agent's cycle while the warehouse is still on; skips the 03:xx UTC hour, `IgnoreNew`, runs `serving/` from the working tree with `serving\.venv` (its own venv; `edge/requirements.txt` is also installed on the Pi, so serving dependencies stay out of it), lock `logs\serve.lock`.
 - Gate: it asks the Jobs API for Job 1's latest successful run (free) and pulls only when that run is newer than the last publish's.
-- Reads, all read-only SELECTs: incremental with upsert on `event_id` and 30 days kept in Postgres: `gold_sector_reading` (watermark `_gold_built_at`), `silver_probe_reading` lag columns and `silver_rejects` (watermark `arrival_ts`). Full pulls each run: `gold_disturbance` (the daily baseline rebuild re-scores it), `gold.deployment`, `gold_sector_baseline`, the dim tables, and `silver_source_health` (one snapshot kept per publish, so the panel has history). Aggregations (ingest lag histogram, rejection rate) are Postgres views.
+- Reads, all read-only SELECTs: incremental with upsert on `event_id` and 30 days kept in Postgres (the first run backfills 7): `gold_sector_reading` (watermark `_gold_built_at`), `silver_probe_reading` lag columns and `silver_rejects` (watermark `arrival_ts`). Full pulls each run: `gold_disturbance` (the daily baseline rebuild re-scores it), `gold.deployment`, `gold_sector_baseline`, the dim tables, and `silver_source_health` (one snapshot kept per publish, so the panel has history). Aggregations (ingest lag histogram, rejection rate) are Postgres views.
 - Results larger than one chunk are fetched through the Statement API's result-chunk endpoint, through `files_api.http_request`; `agent/dbsql.py` is not changed.
 - Postgres: Docker container `force-postgres`, pinned major version, bound to 127.0.0.1:5433 (5432 is published by another project's stopped container and claimed by the dbt `local` target, which Phase 7 does not use), database `force_serving`, schema `serving`, credentials in `.env.serving` (gitignored).
 - Cost: measured on the first live pull, before the task is registered.
@@ -1219,7 +1219,7 @@ runs and in every scheduled DISCONNECTED window.
 
 **S4 (Phase 6).** The agent runs hourly at :15 (the `ForceAgent` task), so its check has a period of 1 hour and a grace of 2 hours. Every cycle pings it, including a cycle that skips the 03:xx UTC hour or an active Job 1 run, because a skipped cycle means the agent is alive; a crashed cycle pings the `/fail` URL. The URL is `AGENT_PING_S4_URL` in `.env.agent`. The check is created by hand when the task is registered (Phase 6 R6b).
 
-**S5 (Phase 7).** `ForceServe` runs hourly at :25 UTC, so `fbp-s5-serving` has a period of 1 hour and a grace of 2 hours. Every run pings it, including a run gated because Job 1 has no newer successful run; an error pings `/fail`.
+**S5 (Phase 7).** `ForceServe` runs hourly at :17 UTC, so `fbp-s5-serving` has a period of 1 hour and a grace of 2 hours. Every run pings it, including a run gated because Job 1 has no newer successful run; an error pings `/fail`.
 
 **Rule (decided, Phase 7):** every check has both the email integration and a push integration attached, and delivery is proven with `fbp-test`. The email integration failed again on 2026-10-18 and 10-19 (no alert reached Jong during the agent outage).
 

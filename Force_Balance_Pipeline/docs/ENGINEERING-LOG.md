@@ -1969,6 +1969,27 @@ Derived: the median run time stepped up by roughly 10 to 15 percent around 10-13
 
 **Tests.** `serving` 46 to 71 (25 new: statements 12, jobs 6, gate 7). Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green.
 
+**Commits:** H (client, lookup, gate) `54a4508`, I (log) `a171975`.
+
+### Round 5b (2026-10-19): pull core
+
+**Built.** `serving/pull.py` (new) and two 5a fixes. `run_pulls(client, conn, now, backfill_days=7)` reads the watermarks and whether the dims are due, ends that transaction, makes every warehouse read in a fixed order (dims if due, sector_baseline, disturbance, deployment, source_health, sector_reading, probe_reading, rejects) through `client.execute` with `expected_types`, and then writes everything in one Postgres transaction: full tables are replaced (DELETE then INSERT), the dims likewise (watermark `dims` = now), the source_health snapshot is added, the incremental tables are upserted, the watermarks move, and 30-day retention is applied. Any error rolls back and is re-raised. The two fixes: the read-only guard now also refuses INSERT, UPDATE, DELETE, MERGE, CREATE, DROP, ALTER, TRUNCATE, COPY, GRANT, REVOKE, REPLACE, OPTIMIZE and VACUUM as whole words outside quotes and comments, and `latest_successful_run` returns None for a 200 object with no `runs` key.
+
+**Decisions taken in code.**
+- Watermarks: `sector_reading` on `_gold_built_at` (strictly greater, upsert on `event_id`, no overlap); `probe_reading` and `rejects` on `arrival_ts` with a 1-hour overlap (the query is `> stored - 1 h`, DO NOTHING on conflict). The next watermark is the maximum of the pulled rows; a source that returns no rows keeps its watermark. With no watermark a source backfills one UTC day per statement, `backfill_days + 1` pages (the last page ends at now + 1 h); `sector_reading` pages on `event_time`, the other two on `arrival_ts`.
+- `expected_types` per column are the Round 2 static check translated to manifest type names (BIGINT as LONG, VARIANT, ARRAY). The documented ones (the dims' seed types, `deployment` DDL, the boolean `scan_completeness`) are separated in the header of `pull.py` from the inferred ones, which have not been seen on the live warehouse; a wrong guess raises `SchemaMismatch` and writes nothing, so the first live pull is the check.
+- Reads use `client.execute` as specified, which has no retry (the client's `read` retries a transient error once). A transient error fails the whole run, which rolls back nothing and is tried again at the next slot.
+- ARRAY and VARIANT values arrive as JSON text from the client's conversion and are stored as jsonb; a null stays SQL NULL.
+- The Postgres transaction is explicit (`commit` at the end, `rollback` on any exception), not a `with conn.transaction()` block, so a stray commit in the middle would be a real commit.
+
+**Statements per run (counted by the tests, fake client).** Steady, dims not due: 7 (4 full or snapshot reads, 3 incremental). Steady, dims due: 10. First run, 7-day backfill with dims due: 31 (3 dims, 4, and 8 pages for each of 3 incremental sources).
+
+**Docs.** Doc 05 "Serving (Phase 7)": `ForceServe` runs hourly at :17 UTC after waiting up to 10 minutes for `logs\agent.lock`, and the first run backfills 7 days (the S5 paragraph says :17 too). Doc 06 "Human-first window": about 58 minutes, from the :17 publish to the next :15 cycle.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 `>=` on the watermark FAIL; M2 no overlap FAIL; M3 DO NOTHING for sector_reading FAIL; M4 no DELETE for disturbance FAIL (first run was an ERROR from a duplicate key; the test now brings a new id instead); M5 the watermark from now FAIL; M6 rejects retention on event_time FAIL; M7 a commit after each table FAIL; M8 dims always pulled FAIL; M9 the backfill misses the last page FAIL; M10 VARIANT stored as text FAIL; M11 the denylist removed FAIL; M12 a missing `runs` raises FAIL (first run was an ERROR; the test now fails explicitly).
+
+**Tests.** `serving` 71 to 88 (15 new in `test_pull.py`, 1 in the statements tests and 1 in the jobs tests, plus wider cases in existing ones). Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green.
+
 **Commits:** listed in the next round.
 
 ## Open items
@@ -2032,6 +2053,8 @@ Derived: the median run time stepped up by roughly 10 to 15 percent around 10-13
 | `silver_source_health.buffer_depth` is always NULL | **Open.** The dashboard shows n/a. |
 | `silver_source_health` can pick a housekeeping row and counts duplicates toward the 60 | **Watch.** |
 | Port 5432 is published by another project's container and by the dbt `local` target | **Phase 7 uses 5433.** |
+| Warehouse-on time: the agent's :15 cycle extends the warehouse about 6 min an hour (Round 5a, derived); candidate fix: start the agent after Job 1 and lower auto-stop | **Phase 7, agent round.** |
+| A read-only service principal for the serving puller (the keyword guard is defense in depth only) | **Phase 8.** |
 
 ## Lessons (beyond this project)
 
