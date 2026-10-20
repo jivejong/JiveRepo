@@ -1865,6 +1865,87 @@ Planning was done outside Claude Code. This round records the decisions in docs 
 - P7-D9, display rules: countdown to `released_at`; an orphaned-deployment badge; buffer depth "n/a"; `capacity_reached` as a badge; Yoda voice in Phase 8.
 - P7-D10, order: Postgres stack, puller and read-only panels on fixture data; agent changes; manual deploy path; then the live pull, its cost measurement and the checkpoint (the only steps needing warehouse compute).
 
+**Commits:** A (docs) `90c97c6`, B (log) `218a83d`.
+
+### Round 2 (2026-10-19): Postgres, schema and fixtures
+
+**Built.** `infra/serving/compose.yml` (one service, `force-postgres`: `postgres:17`, resolved to 17.11, published on 127.0.0.1:5433 only, named volume, `restart: unless-stopped`, a `pg_isready` healthcheck, `POSTGRES_PASSWORD` interpolated from `.env.serving` with no `env_file` key). `serving/` with its own venv (`serving\.venv`, Python 3.10.6 from the same base as `edge\.venv`, `psycopg[binary]==3.3.6`, pinned in `serving/requirements.txt`), `config.py` (the `.env.serving` loader, the connection, the 10 source table names), `sql/schema.sql` and `schema.py` (12 tables in schema `serving`, idempotent), and `fixtures.py` (display data for the UI: 72 h of scans for 60 planets, 5 incidents, 4 deployments, 40 rejects). `.gitignore` gained `serving/.venv/` (`.env.serving` was already listed). The fixtures were loaded once into `force_serving`.
+
+**Decisions taken in code.**
+- `serving/config.py` imports `TABLE_NAME` from `agent/config.py` and checks every source name at import; it has its own `ConfigError` and loader because the agent's loader rejects unknown keys.
+- `deployment` has no foreign key, so an orphaned deployment is kept; `fixtures` includes one (`FIXORPHAN`).
+- The loader refuses (exit 2, nothing changed) when `publish_log` has a `live` row, `--reset` included; without `--reset` it refuses a non-empty table. A load is deterministic for a given `--now` (one `random.Random(7)`).
+- The ETA of a fixture deployment is built from `agent.distance.distance_units` and `eta_hours`, and `released_at` is `agent.distance.released_at`; the max over the party is the one-line expression from `agent/loop.py` (which is inline there, not a function), so it is repeated in `fixtures.py` until the shared ETA function exists.
+- Reject reasons in the fixtures use the warehouse vocabulary of `silver_rejects` (`null_required_field`, `out_of_range`, `unknown_sector`, `impossible_timestamp`), not doc 04's fault names, so a panel built on them works on live data.
+- The report-sourced fixture incident has `sustained_scans` 1 (as the model produces), not 2 to 4.
+- The `source_health_snapshot.scan_completeness` column is `double precision` as specified, but the warehouse column is a boolean (see issues).
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts, all against a green baseline): M1 (sector_reading primary key removed) FAIL; M2 (`jedi_ids` as text) FAIL; M3 (live guard removed) FAIL; M4 (unseeded Random) FAIL; M5 (port on 0.0.0.0) FAIL; M6 (`env_file` added) FAIL; M7 (D4 dropped) FAIL; M8 (unknown env keys allowed) FAIL; M9 (orphan given a matching id) FAIL; M10 (old doc 03 text with the new parity needle) FAIL. None produced only an ERROR.
+
+**Tests.** `serving` 24 (config 6, schema 5, fixtures 9, compose 4), run with `serving\.venv\Scripts\python.exe -m unittest discover -s serving/tests`, against a throwaway database `force_serving_test`. Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 are unchanged and green before and after. The doc 03 parity fix (the Thresholds clause and the needle in `edge/tests/test_doc_parity.py`) is the only change to existing tests.
+
+**Issues.**
+- Compose names the volume `serving_force-postgres-data` (the project name is the folder `serving`), not `force-postgres-data`.
+- Static type check: the warehouse type differs from the serving type for `deployment.jedi_ids` (ARRAY<STRING> to jsonb), `context_snapshot` and `guardrail_overrides` (VARIANT to jsonb) (the puller must convert), `disturbance.sustained_scans` (BIGINT to integer), and `source_health_snapshot.scan_completeness` (BOOLEAN, `sector_count = 60`, to double precision: the puller must cast, or the column should become boolean). Not determinable from the SQL: `imbalance_score` and the z-scores (macro expressions, expected double). `buffer_depth` is not in the snapshot table.
+- The fixture incident D1 has severity 16.8 as specified while its series peaks at an imbalance of 16.8; the displayed `imbalance_score` of incidents is severity divided by 1.4, a display value only.
+
+**Commits:** C (doc 03 parity) `70027af`, D (serving schema and fixture loader) `b83e5f9`.
+
+### Round 3 (2026-10-19): serving views
+
+**Built.** `serving/sql/views.sql` (10 views in schema `serving`, `CREATE OR REPLACE`, no `now()`: every window is anchored to the data), `serving/views.py` (`python -m serving.views [--database NAME]`, one transaction, prints the view count) and `serving/tests/test_views.py`. Views: `v_incidents` (incident + newest decision + status + the severity-drift flag), `v_galaxy` (latest probe reading per planet and its band), `v_baseline_bands` (1 and 2 sigma), `v_signature_breakdown`, `v_scan_completeness`, `v_source_health`, `v_ingest_lag_histogram` (ten fixed bins that always appear), `v_rejection_rate`, `v_rejects_by_reason` and `v_deployment_log`. Applied to `force_serving`; row counts on the fixtures: galaxy 60, baseline bands 180, incidents 5, signature breakdown 5, scan completeness 288, source health 1, histogram 10, rejection rate 72, rejects by reason 23, deployment log 4.
+
+**Decisions taken in code.**
+- Bands use the thresholds of doc 03 (`> 5.75` emergency, `> 4.0` anomaly); only probe rows colour a planet. Status uses AGENT_EPOCH inclusively (`>=`). The drift flag is the doc 06 "Re-escalation" rule and never null.
+- `capacity_reached` reads the shape the agent really writes: `{"proposal": ..., "reasons": [..., "deployment_capacity_reached"]}` (`agent/loop.py` lines 78 and 138). The Round 2 fixture row `FIXDEP2` uses `{"reason": "deployment_capacity_reached"}`, which is not that shape, so it shows `capacity_reached` false. The fixture needs the real shape (a Round 2 file; not changed here).
+- Hours are cut in UTC (`date_trunc('hour', ts, 'UTC')`), so the result does not depend on the session time zone.
+- `v_source_health` takes the newest scan across all sources (one probe today); `buffer_depth` is left out.
+- The 4.40, 12.0 and rank list in the view are checked against `agent/constraints.py`, the two thresholds against `edge/forcesim/signatures.py` (read with `ast`, not imported), and the epoch against `agent/config.py`.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 band `>=` FAIL; M2 epoch `>` FAIL; M3 inner join in the deployment log FAIL (first run was an ERROR only, a `KeyError`; the test now asserts the set of rows first); M4 inner join of the bins FAIL; M5 drift `>= 12.0` FAIL; M6 latest reading ascending FAIL; M7 future-time filter removed FAIL; M8 newest-deployment dedupe removed FAIL; M9 `council_member` dropped FAIL; M10 rate denominator rejects only FAIL. The first harness run also showed the fixtures smoke test erroring in the copies because the copy lacked the seeds; the harness was fixed, not the test.
+
+**Tests.** `serving` 24 to 41 (17 new in `test_views.py`). Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 are unchanged and green.
+
+**Issues.** The fixture shape mismatch above. The histogram bins on `ingest_lag_seconds` as stored, and excludes rows whose `event_time` is more than 10 minutes after `arrival_ts`.
+
+**Commits:** E `d9a7b47`.
+
+### Round 4 (2026-10-19): fixes and the Job 1 trend
+
+**Job 1 duration trend** (Jobs API `runs/list`, read-only, 332 runs from 2026-10-05; durations are end minus start). Per UTC day:
+
+| Day | Runs | OK | Not OK | Median s | Max s | Total min | Median transform s |
+|---|---|---|---|---|---|---|---|
+| 10-05 | 31 | 31 | 0 | 410 | 1195 | 241.0 | 357 |
+| 10-06 | 20 | 20 | 0 | 346 | 1126 | 173.0 | 267 |
+| 10-07 | 24 | 24 | 0 | 347 | 1142 | 150.9 | 268 |
+| 10-08 | 24 | 24 | 0 | 348 | 1458 | 168.3 | 267 |
+| 10-09 | 24 | 24 | 0 | 348 | 365 | 135.9 | 274 |
+| 10-10 | 24 | 24 | 0 | 318 | 1089 | 150.4 | 263 |
+| 10-11 | 24 | 24 | 0 | 351 | 1126 | 168.2 | 271 |
+| 10-12 | 20 | 20 | 0 | 362 | 698 | 133.5 | 282 |
+| 10-13 | 21 | 21 | 0 | 419 | 1343 | 157.8 | 339 |
+| 10-14 | 24 | 24 | 0 | 408 | 443 | 159.8 | 341 |
+| 10-15 | 24 | 24 | 0 | 381 | 442 | 154.0 | 294 |
+| 10-16 | 21 | 21 | 0 | 418 | 469 | 140.7 | 341 |
+| 10-17 | 24 | 24 | 0 | 404 | 435 | 158.6 | 329 |
+| 10-18 | 17 | 17 | 0 | 373 | 442 | 111.0 | 293 |
+| 10-19 | 8 | 8 | 0 | 392 | 452 | 54.1 | 308 |
+| 10-20 (to 01:03Z) | 2 | 2 | 0 | 432 | 433 | 14.4 | 357 |
+
+Every run in the window succeeded. On 10-17 all 24 hourly runs (including 03:03Z) ran, 347 to 435 s each. On 10-18 17 runs ran (00:03 to 17:03Z, none at 03:03Z), 347 to 442 s each. Job 1 stopped after the 10-18 17:03Z run and resumed with the 10-19 16:03Z run (the first after 22 missed hourly slots); 10-19 had 8 runs (16:03 to 23:03Z) and 10-20 had 2. Job 2 ran daily at 03:40Z from 10-06 (10-05 at 03:18Z took 1028 s, 10-06 took 1123 s, then 192 to 214 s each day); it has no run on 10-19.
+
+Derived: the median run time stepped up by roughly 10 to 15 percent around 10-13 (about 320 to 360 s before, 370 to 420 s after; transform about 265 to 280 s before, 290 to 340 s after) and has been flat since, with no continuing climb; the large maxima (1000 s and more) stopped after 10-13. Full days use about 110 to 160 minutes of Job 1 time.
+
+**Changes.**
+- Types: `source_health_snapshot.scan_completeness` is boolean (the warehouse column is boolean) and `disturbance.sustained_scans` is bigint. `python -m serving.schema --recreate` drops schema `serving` and re-applies `schema.sql` in one transaction; it exits 2 and changes nothing when `publish_log` holds a `live` row (apply `serving.views` afterwards).
+- Volume and project name: `infra/serving/compose.yml` has `name: force-serving` and an explicit volume name `force-postgres-data`. The old project (`serving`) and its volume `serving_force-postgres-data` (fixtures only) were removed and the container recreated: `force-postgres  postgres:17  Up (healthy)  127.0.0.1:5433->5432/tcp`; `docker volume ls --filter name=force-postgres` shows `force-postgres-data`.
+- Fixture D2: `guardrail_overrides` has the shape the agent writes (`agent/loop.py`: `{"proposal": <the tool call's args>, "reasons": [...]}`; a deploy proposal has `jedi_ids`, `starship_id`, `rationale`), here one proposal (`obi_wan_kenobi` on `naboo_fighter`) with `["deployment_capacity_reached"]`, so `v_deployment_log.capacity_reached` is true for `FIXDEP2` (1 row on the reloaded `force_serving`). The snapshots' `scan_completeness` is true.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 the live guard removed from `--recreate` FAIL; M2 `scan_completeness` back to double precision FAIL; M3 the old override shape in D2 (`"reason"` instead of a `reasons` array) FAIL.
+
+**Tests.** `serving` 41 to 46 (compose +1, schema +3, fixtures +1). Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green.
+
 **Commits:** listed in the next round.
 
 ## Open items
@@ -1923,7 +2004,7 @@ Planning was done outside Claude Code. This round records the decisions in docs 
 | ForceAgent runs `agent/` from the working tree | **Open, soon.** An uncommitted edit, stash or checkout goes live at the next :15; the remedy is the same as the bridge's: a pinned checkout. |
 | Residual race between the agent and Job 1 | **Watch.** Job 1 can start seconds after the per-incident check; a Delta conflict could fail one Job 1 run (S2 alerts). |
 | `capacity_reached` stand-downs are permanent | **Phase 7.** An incident that arrives while the fleet cap is full is stood down for good and is not retried when a slot frees up. Phase 7: badge only, not retried. |
-| Quota block 2026-10-18/19 outlasted the inferred 03:00Z reset | **Open.** The reset time is unknown; see Phase 7 Round 1. |
+| Quota block 2026-10-18/19 outlasted the inferred 03:00Z reset | **Open.** The reset time is unknown; see Phase 7 Round 1. Job 1 resumed with its 2026-10-19 16:03Z run after 22 missed hourly slots (last run before: 10-18 17:03Z), so the block lasted about 22 hours; Job 2 missed its 10-19 03:40Z run (Round 4). |
 | `agent/dbsql.py` discards the Statement API's error body | **Phase 7, agent round.** Log `error_code` and `message` on a non-2xx status. |
 | `silver_source_health.buffer_depth` is always NULL | **Open.** The dashboard shows n/a. |
 | `silver_source_health` can pick a housekeeping row and counts duplicates toward the 60 | **Watch.** |
