@@ -727,7 +727,7 @@ That's a deliberate property: someone reading the repo sees the actual productio
 - Reads, all read-only SELECTs: incremental with upsert on `event_id` and 30 days kept in Postgres (the first run backfills 7): `gold_sector_reading` (watermark `_gold_built_at`), `silver_probe_reading` lag columns and `silver_rejects` (watermark `arrival_ts`). Full pulls each run: `gold_disturbance` (the daily baseline rebuild re-scores it), `gold.deployment`, `gold_sector_baseline`, the dim tables, and `silver_source_health` (one snapshot kept per publish, so the panel has history). Aggregations (ingest lag histogram, rejection rate) are Postgres views.
 - Results larger than one chunk are fetched through the Statement API's result-chunk endpoint, through `files_api.http_request`; `agent/dbsql.py` is not changed.
 - Postgres: Docker container `force-postgres`, pinned major version, bound to 127.0.0.1:5433 (5432 is published by another project's stopped container and claimed by the dbt `local` target, which Phase 7 does not use), database `force_serving`, schema `serving`, credentials in `.env.serving` (gitignored).
-- Cost: measured on the first live pull, before the task is registered.
+- Cost: the first live pull (2026-10-20, the 7-day backfill with the dims due) took 31 statements and 58 seconds and wrote 83,024 rows; a steady run is 7 statements (10 when the dims are due), measured by the tests. The live steady number comes after the next scheduled run.
 
 ---
 

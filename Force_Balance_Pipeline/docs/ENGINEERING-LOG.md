@@ -2017,6 +2017,22 @@ Derived: the median run time stepped up by roughly 10 to 15 percent around 10-13
 
 **Tests.** Pester: the new file 26 (23 bridge and 22 agent unchanged). Serving 102, edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green. The guard against a missing `pythonw.exe` sits in the part of the script that does not run when it is dot-sourced, so that test checks the script text.
 
+**Commits:** N (registration script) `10a3f9f`, O (docs and log) `b4f9863`.
+
+### Round 7 (2026-10-20): first live pull
+
+**Steps.** A first attempt at 03:42Z stopped on the time check (the 03:xx hour). A second attempt at 04:25Z stopped because `.env.serving` had no `SERVING_PING_S5_URL`; Jong added it and the run went on at 04:28Z. Preconditions: serving baseline 102 green; the five keys present; `logs\agent.lock` free; Job 1's latest successful run had ended 15 minutes earlier. Postgres: the database `force_serving_fixture` was created (12 tables, 10 views, fixtures loaded: 17,280 sector readings, 1 fixture publish row), and `force_serving` was recreated empty (12 tables, 10 views, `publish_log` 0 rows).
+
+**The live pull** (`python -m serving.publish`, once, 04:28:53Z). Exit 0; `serve.log`: `decision=publish status=ok statements=31 rows=83024 duration_s=58.4`; `publish_log` row 1: live, ok, 31 statements, started 04:28:53Z, finished 04:29:51Z, Job 1 run ended 04:10:31Z. No `SchemaMismatch`: every inferred column type in `pull.py` matched the live warehouse. Rows: sector_reading 41,340, probe_reading 41,340 (689 scans of 60), disturbance 66, deployment 7, sector_baseline 180, dim_sector 60, dim_jedi 17, dim_starship 13, source_health_snapshot 1, rejects 0.
+
+**Verification.** All 12 tables and 10 views counted (views: galaxy 60, baseline bands 180, incidents 66, signature breakdown 6, scan completeness 689, source health 1, ingest lag histogram 10, rejection rate 149, rejects by reason 0, deployment log 7). Galaxy: 58 normal, 2 anomaly, 0 emergency. Incidents: 7 decided, 59 historical, 0 open. Deployment log: 0 orphaned, 0 with the capacity reason. `probe_reading` arrival_ts runs from 2026-10-13 00:00:05Z to 2026-10-20 04:00:05Z. Watermarks: dims 04:28:53Z, probe_reading 04:00:05Z, sector_reading 04:08:18Z, none for rejects. The source-health view shows probe-01 CONNECTED, last scan 04:00:00Z with 60 rows, complete. Cross-checks: `logs\agent_decisions.ndjson` has 8 lines, one of them the dev decision of 2026-10-15, so 7 prod decisions, equal to `serving.deployment` (7). Three prod COUNT statements against Postgres: gold_disturbance 66 = 66; deployment 7 = 7; gold_sector_reading with event_time in the backfill window 41,340 = 41,340. No difference at all.
+
+**Measured cost.** The backfill took 31 statements and 58.4 s of run time. The warehouse state by free GET: RUNNING at 04:30:06Z right after the run, STOPPING at 04:40:39Z, STOPPED at 04:42:02Z (the 3 verification counts at 04:30:21Z were the last statements, so about 10 minutes of auto-stop after them). Statements against the budget: 31 (publish) + 3 (counts) = 34 of 40.
+
+**Registration.** `infra\desktop\register-serve-task.ps1` was run once at 04:42:07Z. The catch-up run started at once and wrote `2026-10-20T04:42:09Z decision=skip_no_new_run status=skipped statements=0 rows=0 duration_s=0.8`; `publish_log` row 2 is skipped with that reason. `ForceServe`: State Ready, LastTaskResult 0, NextRunTime 01:17 local (EDT), which is 05:17Z. The task was not touched afterwards.
+
+**Found.** `rejects` returned 0 rows (no reject since 2026-10-13), so it has no watermark and every run backfills it again, 8 pages instead of 1: a steady run is expected to cost 14 statements, not 7, until the first reject lands. Candidate fix for the next round: set the watermark to the window end (or the run time) when a backfill finds nothing.
+
 **Commits:** listed in the next round.
 
 ## Open items
@@ -2080,7 +2096,7 @@ Derived: the median run time stepped up by roughly 10 to 15 percent around 10-13
 | `silver_source_health.buffer_depth` is always NULL | **Open.** The dashboard shows n/a. |
 | `silver_source_health` can pick a housekeeping row and counts duplicates toward the 60 | **Watch.** |
 | Port 5432 is published by another project's container and by the dbt `local` target | **Phase 7 uses 5433.** |
-| Warehouse-on time: the agent's :15 cycle extends the warehouse about 6 min an hour (Round 5a, derived); candidate fix: start the agent after Job 1 and lower auto-stop | **Phase 7, agent round.** |
+| Warehouse-on time: the agent's :15 cycle extends the warehouse about 6 min an hour (Round 5a, derived); candidate fix: start the agent after Job 1 and lower auto-stop | **Phase 7, agent round.** ForceServe registered at :17 (Round 7). |
 | A read-only service principal for the serving puller (the keyword guard is defense in depth only) | **Phase 8.** |
 
 ## Lessons (beyond this project)
