@@ -63,7 +63,7 @@ class ThresholdParity(unittest.TestCase):
         text = " ".join(_doc03.text().split())
         for needle in ("Tuned on 2026-09-26 on the full local backfill", "false sustained incident",
                        "noise-only sustained runs are 9 per 90 days", "ambient spike episodes (62%) still fire",
-                       "The anomaly threshold is provisional until Phase 6", "Retuning requires rerunning the analysis"):
+                       "The anomaly threshold's consumer is the dashboard's galaxy view", "Retuning requires rerunning the analysis"):
             self.assertIn(needle, text, needle)
         self.assertTrue((Path(__file__).resolve().parents[1] / "analyze_thresholds.py").exists())
 

@@ -300,8 +300,7 @@ backfill (60 planets x 8,640 scans; the analysis is in `PHASE2-RESULTS.md`). The
 comes from a false-alarm target: at most about one false sustained incident (2 or more consecutive
 scans) per week galaxy-wide, on noise alone. At 5.75 the noise-only sustained runs are 9 per 90 days
 (about 0.7 a week) and 32 of the 52 ambient spike episodes (62%) still fire; it is the lowest
-threshold that meets the target. The anomaly threshold is provisional until Phase 6 defines "active
-anomaly" (doc 06); 4.0 puts about 1% of scans over it on noise. Retuning requires rerunning the
+threshold that meets the target. The anomaly threshold's consumer is the dashboard's galaxy view, as a color band (Phase 7; doc 06, "User-initiated deployment"); 4.0 puts about 1% of scans over it on noise. Retuning requires rerunning the
 analysis (`edge/analyze_thresholds.py`). Changing these requires updating `edge/forcesim` constants
 in the same commit; `test_doc_parity.py` enforces it.
 
