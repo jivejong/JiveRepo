@@ -1990,6 +1990,23 @@ Derived: the median run time stepped up by roughly 10 to 15 percent around 10-13
 
 **Tests.** `serving` 71 to 88 (15 new in `test_pull.py`, 1 in the statements tests and 1 in the jobs tests, plus wider cases in existing ones). Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green.
 
+**Commits:** J (pull core, guard) `33fa965`, K (docs and log) `ba22e84`.
+
+### Round 5c (2026-10-19): publish CLI
+
+**Built.** `serving/publish.py` (`python -m serving.publish [--env PATH] [--no-ping] [--backfill-days N]`) and a change to `serving/pull.py`: every warehouse read now goes through the client's `read` (2 attempts, 5 s apart). `StatementClient.read` calls `_with_retries`, which calls `self.execute`, so the serving subclass's chunk handling and `expected_types` apply on both attempts; the subclass's own `read` only sets the per-call options and calls the parent's, so `agent/` is untouched. A run: load `.env.serving` (exit 2 on a problem, no ping); take `logs\serve.lock` with the agent's `InstanceLock` (held: exit 0, no ping, no row, no log line); in the 03:xx UTC hour write a skipped row and ping success without a Jobs API call; wait up to 600 s, polling every 5 s, for `logs\agent.lock` to be takeable (it is released at once), else a skipped `agent_busy` row; refuse when a `fixture` row exists (no row, `/fail`, exit 2, "run python -m serving.schema --recreate"); ask the Jobs API for Job 1's latest successful run and let `gate.decide` choose; pull; write one `publish_log` row (ok, skipped or failed); ping S5; append one line to `logs\serve.log`. The pinger is `agent.run.make_pinger` (module-level, the one S4 uses) and the lock is `agent.lock.InstanceLock`.
+
+**Decisions taken in code.**
+- Exit codes: 0 published or skipped on purpose, 1 failed (Jobs API error, pull error, no database), 2 configuration problem or fixture data.
+- Error text in a row, the log and the console is scrubbed: any `https?://...` becomes `<url>`, cut to 500 characters. A failure before a row can be written (for example Postgres is down) pings `/fail`, logs one line and exits 1.
+- `logs\serve.log` is an append-only text file with no rotation (one short line an hour); the line holds the UTC time, decision, status, statements, rows, duration and the scrubbed reason.
+- The agent wait polls `agent.lock` without blocking; the pull itself does not hold `agent.lock`, so a manual deploy or the agent can still start during a pull (the warehouse work does not conflict: the pull only reads).
+- Testing seams are keyword arguments of `main` (clock, sleep, Jobs lookup, pull function, client and connection factories, pinger, lock and log paths).
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 agent wait removed FAIL; M2 fixture row ignored FAIL; M3 Jobs API called in the 03:xx hour FAIL; M4 a skip pinging `/fail` FAIL; M5 a failure pinging success FAIL; M6 URL scrub removed FAIL; M7 a held `serve.lock` writing a row FAIL; M8 reads without retry FAIL.
+
+**Tests.** `serving` 88 to 102 (12 in `test_publish.py`, 2 retry tests in `test_pull.py`). Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green.
+
 **Commits:** listed in the next round.
 
 ## Open items
