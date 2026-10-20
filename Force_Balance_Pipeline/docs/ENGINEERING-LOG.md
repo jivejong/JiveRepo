@@ -2007,6 +2007,16 @@ Derived: the median run time stepped up by roughly 10 to 15 percent around 10-13
 
 **Tests.** `serving` 88 to 102 (12 in `test_publish.py`, 2 retry tests in `test_pull.py`). Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green.
 
+**Commits:** L (publish CLI) `5ade06f`, M (log) `b2da8e8`.
+
+### Round 6 (2026-10-19): ForceServe registration script
+
+**Built.** `infra/desktop/register-serve-task.ps1` and `register-serve-task.Tests.ps1`, a one-to-one copy of the agent's script and tests with the names changed: task `ForceServe`; action `<RepoPath>\serving\.venv\Scripts\pythonw.exe -m serving.publish` with the repo folder as working directory; one daily trigger at 00:17 local time repeating every hour with no end; `IgnoreNew`, `StartWhenAvailable`, a 30-minute limit; the same principal (named user, Interactive, Limited) and battery settings; the same dot-source stop, the fail-closed running-process check (now matching `-m serving.publish`), and the same refusals (no `pythonw.exe` in the venv, no `serving\publish.py`, a pull already running). The agent's script has no elevation check (it only asks in its help text for a non-elevated shell), so none was added. The task is not registered and no scheduled task was touched.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 trigger minute 15 FAIL; M2 time limit 45 minutes FAIL; M3 arguments `-m agent.run` FAIL; M4 the missing-`pythonw` guard removed FAIL.
+
+**Tests.** Pester: the new file 26 (23 bridge and 22 agent unchanged). Serving 102, edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green. The guard against a missing `pythonw.exe` sits in the part of the script that does not run when it is dot-sourced, so that test checks the script text.
+
 **Commits:** listed in the next round.
 
 ## Open items
