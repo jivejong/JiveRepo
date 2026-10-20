@@ -1946,6 +1946,29 @@ Derived: the median run time stepped up by roughly 10 to 15 percent around 10-13
 
 **Tests.** `serving` 41 to 46 (compose +1, schema +3, fixtures +1). Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green.
 
+**Commits:** F (fixes) `ef67379`, G (log) `e1d8ddb`.
+
+### Round 5a (2026-10-19): serving client, Job 1 lookup and gate
+
+**Facts** (read-only GETs and the local log; fake transports only for the code; warehouse statements 0).
+- `agent/dbsql.py`: `StatementClient` is one class; `_rows` is a static method that `execute` calls as `self._rows(response)`, so a subclass can override it. `ResultTooLarge` is raised in `_rows`: `if result.get("next_chunk_internal_link"): raise ResultTooLarge("the result has more than one chunk")`. The auth header is built in `_request` (`{"Authorization": f"Bearer {self._token}"}`); the User-Agent is added by `files_api.http_request` (a caller cannot set it). `_rows` drops the chunk link and the manifest's chunk count, keeping only the manifest's column names and `type_name`s. Public names: `StatementClient`, `StatementError`, `StatementFailed`, `TransientHTTPError`, `StatementTimeout`, `ResultTooLarge`, `iso_z`, `parse_timestamp`, `convert`, `PARAM_TYPES` and the timing constants. `agent/jobs.py` has `job1_active` only and no module-level HTTP helper.
+- Warehouse: `auto_stop_mins` 10, serverless true, 2X-Small, state RUNNING when read.
+- Job 1: the `transform` (dbt) task's `warehouse_id` equals `.env.agent`'s (true); `ingest_bronze` is a notebook task with no cluster, environment or compute key, so it runs on the default serverless notebook compute, not on the warehouse; `transform` also names an environment (`dbt_env`).
+- `agent.log`, 95 prod cycle summaries since 2026-10-15: start at :15.00 (median; the latest start is :31.05), duration min 2.5 s, median 3.2 s, max 33.1 s.
+- Job 1, 142 runs since 2026-10-13: the run ends at a median of :09.8 and a maximum of :25.4 past the hour; `transform` starts at a median of :04.4.
+- **Derived (not measured):** assuming the warehouse stays on for 10 minutes after the last statement, and a pull of about one minute, the median hour has the warehouse on from about :04.4 to :19.8 for Job 1 alone (about 15 minutes), to about :25.1 with the agent's :15 cycle (about 21 minutes); a pull at :25 would extend it to about :36 (about 32 minutes), a pull at :20 to about :30.5 (about 26 minutes), and a pull right after the agent cycle (about :15.2) to about :25.7 (about 21 minutes). In an hour where Job 1 ends late (maximum :25.4) the figures move later by up to about 10 minutes.
+
+**Built** (`serving/`, new files only; `agent/` is untouched). `statements.py`: `ServingStatementClient`, a subclass of the agent's client that reuses its polling, retries, conversion and statement counter and overrides `_rows` to follow `next_chunk_internal_link` through `_request` (so `files_api.http_request`), cap the rows (`max_rows`, default 50000, `ResultTooLarge` past it), compare `expected_types` with the manifest (`SchemaMismatch` naming the column and both types), and refuse a statement that is not one SELECT or WITH (`NotReadOnly`, before any HTTP; it has no `write`). `jobs.py`: `latest_successful_run(env, job_id)` over `runs/list?completed_only=true&limit=25`. `gate.py`: the pure `decide()` and `last_live_ok(conn)`.
+
+**Decisions taken in code.**
+- The read-only guard scrubs comments and quoted text before looking, so a semicolon or keyword inside a string or comment is ignored; one trailing semicolon is allowed. It is a keyword check, not a parser: it does not look inside a `WITH` body.
+- `latest_successful_run` raises `JobsApiError` when the answer has no `runs` list, as specified. The real API may omit `runs` when no run has finished, so a job with no finished runs would raise instead of returning None; Job 1 has hundreds, but the first run of a new job would hit this.
+- `last_live_ok` ignores rows without a `job1_run_id` and orders by `started_at`, then `publish_id`.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 no chunk following FAIL; M2 `max_rows` check `>=` FAIL (first run was an ERROR only; the passing-case tests now fail explicitly); M3 guard checks only SELECT FAIL (same fix); M4 semicolon rule removed FAIL; M5 a FAILED run counted as success FAIL; M6 gate order swapped FAIL; M7 `last_live_ok` counts fixture rows FAIL; M8 `expected_types` ignores extra columns FAIL.
+
+**Tests.** `serving` 46 to 71 (25 new: statements 12, jobs 6, gate 7). Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green.
+
 **Commits:** listed in the next round.
 
 ## Open items
