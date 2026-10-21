@@ -2136,6 +2136,29 @@ The derived rows assume the warehouse is on from the `transform` task's start un
 
 **Finish.** ForceAgent and ForceServe were disabled from 01:45Z to 01:57Z, while the code changed. At 01:57Z ForceServe was enabled first: `2026-10-21T01:57:25Z decision=skip_no_new_run status=skipped statements=0`. ForceAgent was enabled next and its catch-up cycle failed on its first statement, as the 01:15Z cycle had (before this round started): the warehouse refuses statements again (`HTTP_400: HTTP 400: BAD_REQUEST: The request could not be processed by the warehouse.`, the first time the new error detail was seen in a log). Job 1's last run is the 00:03Z one; the 01:03Z run was not created. This is the same quota-style block as 2026-10-18/19. Warehouse statements used: 1 (the rejected first statement of that cycle, no further statement could be sent); Gemini attempts: 0. `logs\agent_seen_prod.json` was not created, because the cycle died before the poll; the first successful cycle will create it, and the live behaviour of the window is not yet observed.
 
+**Commits:** V (window, shared ETA, error body) `b69bb7e`, W (log) `17c538a`.
+
+### Round 11b (2026-10-20): schedule moved into Job 1's warm window
+
+**Decision and reason.** Quota blocks began on 2026-10-16, 10-18 and 10-21, all after the agent went live. The Round 11a model puts the warehouse on for about 23 minutes an hour with the agent at :15 and the pull at :17, against about 16 for Job 1 alone. The warehouse auto-stop cannot be shortened on Free Edition: the edit was rejected on 2026-10-20 ("Editing warehouse is not available to free users"), so it stays at 10 minutes. The agent and the pull were therefore moved into Job 1's warm tail: Job 1 ends by :11 in 99.4% of runs (Round 11a), so the agent now starts at :11 and ForceServe at :12. Modelled warehouse-on time is about 18 minutes an hour (a model, not a measurement).
+
+**What changed.**
+- `agent/run.py`: if Job 1 is active at the start of a cycle the agent polls it every 30 s for up to 10 minutes (`JOB1_WAIT_SECONDS`, `JOB1_POLL_SECONDS`, both injectable together with the sleep) and goes on as normal once it has finished; if it is still running after 10 minutes it skips as before (`job1_running`, a success ping). A Jobs API error during the wait ends it at once (`jobs_api_error`, `/fail`). The per-incident re-check before each write is unchanged. The cycle summary line ends `waited_s=<n>`, and the skip line says how long it waited. The wait is counted in whole polls (30 s each), not read from a clock, so tests do not depend on time.
+- `infra/desktop/register-agent-task.ps1`: the daily trigger is 00:11 local time (was 00:15); `register-serve-task.ps1`: 00:12 (was 00:17). Nothing else in either script changed. The agent's Pester file gained a test for the default trigger minute (it only built the definition with an explicit time before).
+- Docs: doc 05 (the ForceServe bullet, S4, S5) and doc 06 (Runtime, Human-first window) carry the new minutes; doc 06's human-first window is now about 59 minutes, from the :12 publish to the next :11 cycle. A doc 05 bullet records the warm-window schedule.
+- The agent's total time can now be up to 10 minutes of waiting plus the existing 30-minute cycle limit, inside the task's 45-minute limit.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts; the agent copy has two environment errors that are not in the real suite): M1 the wait removed FAIL; M2 no upper bound on the wait FAIL (the test harness stops an unbounded wait by raising an assertion after 100 sleeps instead of hanging); M3 an API error during the wait treated as finished FAIL; M4 the agent trigger at :15 FAIL; M5 the serve trigger at :17 FAIL.
+
+**Tests.** `agent` 532 to 540 (8 new in `Job1Wait`); Pester 23 + 23 + 26 (the agent file gained one test); serving 123, edge 553 (1 skipped), ingest 373, intake 384, intake node 205 and dashboard 32 unchanged and green.
+
+**Re-registration.** Both tasks were disabled from 02:25Z while the code and scripts changed. Each script replaces an existing task with `Register-ScheduledTask -Force` (the script's own supported way), so each was run once as it is: ForceServe first, then ForceAgent. The registration ran a catch-up run for each (`StartWhenAvailable`):
+- ForceServe: `2026-10-21T02:35:28Z decision=skip_no_new_run status=skipped statements=0 rows=0 duration_s=1.0`.
+- ForceAgent: the cycle failed on its first statement with `HTTP_400: HTTP 400: BAD_REQUEST: The request could not be processed by the warehouse.` The quota-style block that started with the 2026-10-21 01:03Z Job 1 run is still in force, so the wait and the new schedule could not be seen working live.
+- Both tasks are Ready; the next runs are at 03:11Z (agent) and 03:12Z (ForceServe), both in the 03:xx hour where each skips.
+
+**Usage.** Warehouse statements: 1 (the rejected first statement of the agent's catch-up cycle; ForceServe made none). Gemini attempts: 0.
+
 **Commits:** listed in the next round.
 
 ## Open items
@@ -2194,7 +2217,7 @@ The derived rows assume the warehouse is on from the `transform` task's start un
 | ForceAgent runs `agent/` from the working tree | **Open, soon.** An uncommitted edit, stash or checkout goes live at the next :15; the remedy is the same as the bridge's: a pinned checkout. |
 | Residual race between the agent and Job 1 | **Watch.** Job 1 can start seconds after the per-incident check; a Delta conflict could fail one Job 1 run (S2 alerts). |
 | `capacity_reached` stand-downs are permanent | **Phase 7.** An incident that arrives while the fleet cap is full is stood down for good and is not retried when a slot frees up. Phase 7: badge only, not retried. |
-| Quota block 2026-10-18/19 outlasted the inferred 03:00Z reset | **Open.** The reset time is unknown; see Phase 7 Round 1. Job 1 resumed with its 2026-10-19 16:03Z run after 22 missed hourly slots (last run before: 10-18 17:03Z), so the block lasted about 22 hours; Job 2 missed its 10-19 03:40Z run (Round 4). The block recurred from the 2026-10-21 01:03Z Job 1 run (Round 11a); the agent's error now shows the API body. |
+| Quota block 2026-10-18/19 outlasted the inferred 03:00Z reset | **Open.** The reset time is unknown; see Phase 7 Round 1. Job 1 resumed with its 2026-10-19 16:03Z run after 22 missed hourly slots (last run before: 10-18 17:03Z), so the block lasted about 22 hours; Job 2 missed its 10-19 03:40Z run (Round 4). The block recurred from the 2026-10-21 01:03Z Job 1 run (Round 11a); the agent's error now shows the API body. Mitigated 2026-10-20: agent at :11, ForceServe at :12 (auto-stop fixed at 10 min on Free Edition); to be confirmed by a week without a block. If blocks continue, the next lever is Job 1's own cost (the bounded walk). |
 | `agent/dbsql.py` discards the Statement API's error body | **Resolved, Round 11a.** A non-2xx answer carries its `error_code` and `message` (scrubbed, 300 characters) in the exception text and so in the failure log. |
 | `silver_source_health.buffer_depth` is always NULL | **Open.** The dashboard shows n/a. |
 | `silver_source_health` can pick a housekeeping row and counts duplicates toward the 60 | **Watch.** |

@@ -13,11 +13,11 @@ matching is fully testable, and the model is only doing the part that genuinely 
 ## Runtime
 
 The agent runs locally as a Windows scheduled task named `ForceAgent`. It runs `edge\.venv\Scripts\pythonw.exe` on the agent
-entry point from the working tree, the same pattern as `ForceBridge`. It is not in Docker. It runs hourly at :15 and skips the
+entry point from the working tree, the same pattern as `ForceBridge`. It is not in Docker. It runs hourly at :11 and skips the
 03:xx UTC hour. Cloud Run is an optional later stage, containerized then. The task uses `StartWhenAvailable`, so a cycle missed while the computer was off or asleep runs at the next opportunity (seen at registration on 2026-10-15).
 
 Before any warehouse query, each cycle calls the Jobs API, which costs no warehouse time. If Job 1 (`692051683030737`) has an
-active run, the cycle is skipped.
+active run, the cycle is skipped. If Job 1 is still running at the start of a cycle, the agent waits for it (polling every 30 s, up to 10 minutes) before skipping. A Jobs API error during the wait ends it at once and is handled like any other Jobs API error.
 
 **Eligible incidents.** Only incidents with `detected_at >= AGENT_EPOCH` are processed. `AGENT_EPOCH` is a config constant,
 2026-10-12T00:00:00Z. Older incidents are never processed and stay `agent_processed = false`. There is no bulk update. A cycle processes at most `MAX_INCIDENTS_PER_RUN` = 5 incidents, the oldest 5 eligible ones; the rest wait for the next hour.
@@ -259,7 +259,7 @@ The dashboard lets a user deploy to any planet with an active anomaly, choosing 
 
 **Active anomaly (decided, Phase 7).** An open, undecided incident: a `gold_disturbance` row with `detected_at >= AGENT_EPOCH` and no row in `gold.deployment`. A deployment needs a `disturbance_id` (NOT NULL, with a `relationships` test), so a planet without an incident cannot be targeted. Every incident has an imbalance above 5.75 (severity about 6.33 or more), so the severity floor (4.40) and fixture 20 (`severity_floor_user_anomaly`) cannot be reached from the dashboard. The floor stays as defense in depth and is exercised by the eval. The 4.0 anomaly threshold is used by the galaxy view as a color band: above 4.0 is an anomaly, above 5.75 an emergency.
 
-**Human-first window (decided, Phase 7).** The agent decides an incident only in a cycle after the one that first polled it; first-seen ids are kept in `logs\agent_seen_<target>.json`. A person gets about 58 minutes, from the :17 publish to the next :15 cycle, and every agent decision is delayed by one cycle. First-seen ids live in `logs\agent_seen_<target>.json`; the poll reads up to 50 undecided incidents (POLL_LIMIT) and the cycle decides at most 5 that were seen in an earlier cycle.
+**Human-first window (decided, Phase 7).** The agent decides an incident only in a cycle after the one that first polled it; first-seen ids are kept in `logs\agent_seen_<target>.json`. A person gets about 59 minutes, from the :12 publish to the next :11 cycle, and every agent decision is delayed by one cycle. First-seen ids live in `logs\agent_seen_<target>.json`; the poll reads up to 50 undecided incidents (POLL_LIMIT) and the cycle decides at most 5 that were seen in an earlier cycle.
 
 **Manual deployment path (decided, Phase 7).** The dashboard backend runs these steps in order: (1) refuse during the 03:xx UTC hour; (2) take `logs\agent.lock`, retrying for up to 10 seconds, then refuse with "agent cycle in progress" (a missed S4 ping is inside its grace); (3) ask the Jobs API whether Job 1 is active, and refuse if so; (4) read the context, the available Jedi and the available starships live through `agent.context`; (5) run `agent.constraints.check_deploy`. A rejection shows every reason and writes nothing. (6) On a pass, run the agent's MERGE (`decided_by = 'user'`, `model` and `decision_latency_ms` null, the rationale required, `released_at` from `agent.distance`) and mark the incident processed, so the agent's repair never fires on user rows. A rejected deploy costs 3 statements and an accepted one 5, plus 1 to refresh the deployment table in Postgres. The party's ETA comes from a function in `agent/distance.py` shared with the agent loop.
 
