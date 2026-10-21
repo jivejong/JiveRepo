@@ -1,8 +1,12 @@
 // The dashboard page (doc 07 Phase 7): the data-as-of header, the fixture banner, and the first four panels.
 import { useState } from "react";
 
+import DeploymentLog from "./DeploymentLog.jsx";
 import GalaxyView from "./GalaxyView.jsx";
+import IncidentFeed from "./IncidentFeed.jsx";
+import IngestLag from "./IngestLag.jsx";
 import PlanetDetail from "./PlanetDetail.jsx";
+import RejectionRate from "./RejectionRate.jsx";
 import SignatureBreakdown from "./SignatureBreakdown.jsx";
 import SourceHealth from "./SourceHealth.jsx";
 import { formatAgo, formatUtc } from "./lib/format.js";
@@ -32,6 +36,10 @@ export default function App() {
         {planet ? <PlanetDetail sectorId={planet} onClose={() => setPlanet(null)} /> : null}
         <SignatureBreakdown />
         <SourceHealth />
+        <IngestLag />
+        <RejectionRate />
+        <IncidentFeed />
+        <DeploymentLog />
       </main>
     </div>
   );

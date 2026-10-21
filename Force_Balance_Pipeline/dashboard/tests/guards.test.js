@@ -61,6 +61,16 @@ describe("built page", { skip: existsSync(join(DIST, "index.html")) ? false : "d
     assert.ok(!/<script\b[^>]*>\s*\S/i.test(html.replace(/<script\b[^>]*src=[^>]*>\s*<\/script>/gi, "")), "an inline script body");
     assert.ok(!/<style\b/i.test(html));
   });
+  it("never sets raw HTML in the built JavaScript", () => {
+    // React DOM and Recharts mention the name dangerouslySetInnerHTML themselves (as a property they read or filter), so the bundle always
+    // contains the word. A use by the app would be an object literal with the key or with __html, which the bundle must not contain.
+    const assets = join(DIST, "assets");
+    for (const name of readdirSync(assets).filter((n) => n.endsWith(".js"))) {
+      const code = readFileSync(join(assets, name), "utf-8");
+      assert.ok(!/dangerouslySetInnerHTML\s*:/.test(code), `${name} sets dangerouslySetInnerHTML`);
+      assert.ok(!/__html\s*:/.test(code), `${name} builds an __html object`);
+    }
+  });
   it("references only assets that exist", () => {
     const refs = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map((m) => m[1]);
     assert.ok(refs.length >= 2);

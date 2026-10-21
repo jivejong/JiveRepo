@@ -94,3 +94,31 @@ th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line
 .scan.complete { background: var(--ok); }
 .scan.incomplete { background: var(--anomaly); }
 .scan.disconnected { background: var(--other); }
+
+/* Round 10 panels: tabs, feeds, badges, reject-reason bars */
+.footnote { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.tab { padding: 3px 10px; border: 1px solid var(--line); border-radius: 4px; background: transparent; }
+.tab.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.feed { margin: 0; padding: 0; list-style: none; }
+.feed li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.row-sub { color: var(--muted); }
+.row-sub .badge, .row-head .badge { margin-left: 6px; }
+.note { margin-left: 8px; font-style: italic; }
+.quote { margin: 4px 0; padding-left: 8px; border-left: 3px solid var(--line); overflow-wrap: anywhere; }
+.badge-report { color: var(--accent); }
+.badge-open { border-color: var(--open); color: var(--open); }
+.badge-decided { border-color: var(--decided); color: var(--decided); }
+.badge-historical { border-color: var(--other); color: var(--other); }
+.badge-severity-rose { border-color: var(--anomaly); color: var(--anomaly); }
+.badge-cooldown-conflict { border-color: var(--other); color: var(--other); }
+.badge-yoda_agent { border-color: var(--decided); color: var(--decided); }
+.badge-user { border-color: var(--ok); color: var(--ok); }
+.badge-orphaned { border-color: var(--emergency); color: var(--emergency); }
+.badge-capacity { border-color: var(--anomaly); color: var(--anomaly); }
+.reason-0 { fill: var(--open); }
+.reason-1 { fill: var(--anomaly); }
+.reason-2 { fill: var(--decided); }
+.reason-3 { fill: var(--ok); }
+.reason-4 { fill: var(--other); }
+.reason-5 { fill: var(--accent); }
