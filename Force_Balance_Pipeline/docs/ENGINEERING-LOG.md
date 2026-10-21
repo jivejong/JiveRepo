@@ -2159,6 +2159,46 @@ The derived rows assume the warehouse is on from the `transform` task's start un
 
 **Usage.** Warehouse statements: 1 (the rejected first statement of the agent's catch-up cycle; ForceServe made none). Gemini attempts: 0.
 
+**Commits:** X (agent at :11, serve at :12) `0b03bd2`, Y (docs and log) `8b25bb5`.
+
+### Round 12a (2026-10-21): manual deployment service
+
+Built with no warehouse use (every client, the Jobs check and the lock folder are fakes). The start checks for the 03:xx hour and the :20-:55 window were waived by Jong for this round because it sends no statement.
+
+**The agent's per-incident path, step by step, and what the service calls.**
+
+| Step of the agent (`agent/run.py`) | Function and signature | In `serving/deploy.py` |
+|---|---|---|
+| context read | `queries.context(target, disturbance_id)` returns `(sql, params)`; `db.read(...)` | the same call, target `prod` |
+| available Jedi, available starships | `queries.available_jedi(target)`, `queries.available_starships(target)` | the same |
+| build the payload | `context.build_context(ctx_row, jedi_rows, ship_rows)` returns the context dict | the same; it is also the row's `context_snapshot` |
+| inputs of the layer | `context.constraint_inputs(context)` returns `(Incident, jedi_by_id, ships_by_id, FleetState)` | the same |
+| forced stand-down | `constraints.forced_stand_down(incident)` returns a reason or None | a reason refuses the request |
+| legality | `constraints.check_deploy(incident, jedi_ids, starship_id, jedi_by_id, ships_by_id, state)` returns a list of reasons, in the layer's order | any reason refuses, with that list |
+| ETA and release | `distance.party_eta_hours(homeworld_regions, incident_region, hyperdrive_rating)`; `distance.released_at(decided_at, eta)` | the same (`released_at` is applied inside `build_row`) |
+| the row | `run.build_row(context, decision, decided_at, deployment_id)` with a `loop.Decision`; fields: deployment_id, disturbance_id, decided_by, decision, jedi_ids, starship_id, eta_hours, released_at, rationale, context_snapshot, signature_at_decision (the context's signature), model, decision_latency_ms, guardrail_overrides, decided_at | the same, with `decided_by` set to `user` afterwards (`build_row` hard-codes `yoda_agent`), `model` and `decision_latency_ms` None |
+| the write | `queries.write_decision(target, row)`: `MERGE ... WHEN NOT MATCHED THEN INSERT *`; `db.write` returns the statement's result row | the same; the agent ignores the result, the service reads `num_inserted_rows` from it |
+| the mark | `queries.mark(target, disturbance_id)` | the same |
+| no overrides | `Decision.guardrail_overrides` defaults to `[]`, written as `'[]'` | the same |
+| `deployment_id` | `ulid.ulid_now()` (passed to `build_row` by `run_cycle` as `ulid_fn()`) | the same |
+
+**Built.**
+- `serving/deploy.py`: `deploy(request, *, env, now, client, jobs, pg_conn, lock_path, sleep, log, serving_client, ulid_fn)` returns `{"ok", "reasons", "deployment_id", "statements"}` (plus `warnings` or `detail` in two cases below). Order: validate (a disturbance id of letters, digits and underscores, 1 to 4 distinct lowercase Jedi ids, a lowercase starship id, a rationale of 1 to 2000 characters after strip); refuse in the 03:xx UTC hour; check in the local Postgres (`serving.v_incidents`) that the incident is `open` (`not_open`, `unknown_incident`); take `agent.lock` (10 tries a second apart, then `agent_cycle_in_progress`); Jobs API (`job1_running`, `jobs_api_error`); the three reads; forced stand-down; `check_deploy`; the Job 1 re-check; the MERGE; the mark; the Postgres refresh and `agent_processed`. Every refusal writes nothing. The lock is released in a `finally`.
+- `serving/pull.py`: `refresh_source(client, conn, name)` replaces one full-mode table in one transaction (any other mode raises `ValueError`); nothing else, no watermark, is touched.
+- `logs\deploy.log`: one line per call (time, id, ok, reasons, statements, the rationale's length); never the rationale, a URL or a host.
+
+**Decisions taken in code.**
+- The two Statement clients are separate: the agent's `StatementClient` writes, a `ServingStatementClient` does the read-only refresh; `statements` is the sum of both counters (an accepted deployment is 6: 3 reads, the MERGE, the mark and the refresh read; a constraint rejection is 3).
+- The agent does not look at the MERGE result. The service treats `num_inserted_rows == 0` as `already_decided` and does not mark. If the result carries no such field it goes on, because the field name has not been checked on the live warehouse; the MERGE is still `WHEN NOT MATCHED`, so a second row cannot be written.
+- A failure after the warehouse write is not a failure of the deployment: a failed mark or refresh gives `ok` true with `warnings` (`mark_failed`: the agent's repair marks it; `refresh_failed`: the next ForceServe pull replaces the table). An unexpected exception before that gives `internal_error` with only the exception's class name in `detail`, never its message.
+- `build_row` is reused rather than copied; `decided_by` is overwritten with `user` because `build_row` hard-codes the agent's name. This is the one place the agent's code knows who decided.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 validation after the lock FAIL; M2 the quota hour skipped FAIL; M3 the Job 1 re-check removed FAIL; M4 a write on a constraint rejection FAIL; M5 a mark after a 0-row MERGE FAIL; M6 `decided_by` the agent's name FAIL; M7 `model` set FAIL; M8 the rationale in the log FAIL; M9 the lock not released after an exception FAIL; M10 `refresh_source` changing another table FAIL. The first M10 run did not select `test_pull.py` (a harness glob mistake) and was re-run against it.
+
+**Tests.** `serving` 123 to 148 (22 in `test_deploy.py`, 3 for `refresh_source`). Agent 540, edge 553 (1 skipped), ingest 373, intake 384, intake node 205, dashboard 32 and Pester 23 + 23 + 26 unchanged and green. The invalid-input, quota-hour and not-open tests hold the agent lock on purpose, so a check that came after the lock would show up as `agent_cycle_in_progress`.
+
+**Finish.** ForceServe was disabled from 03:35Z while `serving/` changed and enabled again at 03:48Z; its catch-up line was `2026-10-21T03:48:50Z decision=skip_quota_hour status=skipped statements=0 rows=0 duration_s=0.4` (it is the 03:xx hour). ForceAgent was not touched. Warehouse statements used: 0. Gemini: 0.
+
 **Commits:** listed in the next round.
 
 ## Open items
