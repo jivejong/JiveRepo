@@ -2199,6 +2199,28 @@ Built with no warehouse use (every client, the Jobs check and the lock folder ar
 
 **Finish.** ForceServe was disabled from 03:35Z while `serving/` changed and enabled again at 03:48Z; its catch-up line was `2026-10-21T03:48:50Z decision=skip_quota_hour status=skipped statements=0 rows=0 duration_s=0.4` (it is the 03:xx hour). ForceAgent was not touched. Warehouse statements used: 0. Gemini: 0.
 
+**Commits:** Z `ea317be`, AA `d8b940e`.
+
+### Round 12b (2026-10-21): deploy endpoint and form
+
+Built with no warehouse use: the deploy call is a fake in every test, and the one local serve in step 5 ran on `force_serving_fixture`, where deploy is off.
+
+**Built.**
+- `serving/server.py`: `POST /api/deploy`, `GET /api/deploy/token`, `GET /api/deploy/options?disturbance_id=X`, and `deploy_enabled` and `deploy_disabled_why` in `/api/meta`. The read API's connections stay READ ONLY; only the deploy call opens a writable connection (`default_deps`), and it is closed afterwards. `serving/api_queries.py` holds the five new queries; `serving/deploy.py` (step 1) adds the warning `merge_result_unverified` when the MERGE result has no `num_inserted_rows` (still `ok` true).
+- Dashboard: `lib/deploy.js` (`validate` mirroring `serving/deploy.py`, `buildRequest`, `reasonLabel`, `nextAgentDecision`), `postJson` in `api.js` (the only other `fetch` caller; it reads and caches the token and retries once on `bad_token`), `DeployForm.jsx` (a "Deploy..." button on open incidents in the feed and on galaxy tiles with an open incident, hidden behind a note when deploy is off), and a refresh bus in `usePoll.js` so an accepted deployment reloads every panel at once.
+
+**CSRF design, and why.** The page is served from 127.0.0.1, so any web page open in the same browser could post to it. The checks run in this order, each refusing before the next: the `Origin` header must be exactly `http://127.0.0.1:<port>` or `http://localhost:<port>` (403 `bad_origin`; a cross-site form or fetch carries its own origin, and a missing one is refused); `Content-Type` must be `application/json` (415; a cross-site form cannot send it without a CORS preflight, and there is no preflight answer because every `OPTIONS` is 405 and no response carries an `Access-Control-*` header); `X-Deploy-Token` must equal a per-process `secrets.token_urlsafe(32)`, compared with `hmac.compare_digest` (403 `bad_token`; a page on another origin cannot read `/api/deploy/token` because no CORS header is sent); then the deploy-enabled check (503), a body of at most 8,192 bytes (413), a JSON object with exactly the four keys (400), and one deploy at a time through a non-blocking lock (409 `deploy_in_progress`). The token is not a login: it only proves the request came from a page that could read this server's own origin.
+
+**The fixture-database guard, and why.** Deploy is enabled only when the backend serves the live `force_serving` database, `serving.publish_log` has no `fixture` row, and `.env.serving` has the three Databricks values; it is checked at startup and again on every POST. A fixture incident id (`FIXD4`) must never reach the production warehouse: the service always writes to `prod`, and the id would otherwise be looked up there. Off, the endpoint answers 503 `deploy_disabled` with the first reason that applies (`fixture_database`, `fixture_rows`, `no_credentials`) and `deploy.deploy` is never called.
+
+**Decision taken in code.** `nextAgentDecision(firstSeen, now)` returns the :11 of the hour after the first-seen hour (the agent runs at :11 and decides one cycle after it first sees an incident), moved forward an hour at a time until it is strictly after now. The prompt's three examples (first seen 02:10, 02:11:00 and 02:11:01 all give 03:11) fix that shape; a "nearest :11 at or after, plus an hour" rule would give 04:11 for 02:11:01, so it was not used.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 the `merge_result_unverified` warning missing FAIL (first run was an ERROR from a missing key; the test now asserts the key); M2 the Origin check removed FAIL; M3 the token compared with `!=` instead of `hmac.compare_digest` FAIL (behaviourally equal, so a test spies on `compare_digest`); M4 the Content-Type check removed FAIL; M5 extra body keys accepted FAIL; M6 deploy enabled on `force_serving_fixture` FAIL; M7 `Access-Control-Allow-Origin: *` added FAIL; M8 `nextAgentDecision` returning the same hour's :11 FAIL (the first run survived because every test asked after :11; two tests ask before it now); M9 unavailable Jedi made unselectable FAIL; M10 `reasonLabel` missing `jedi_unavailable` FAIL.
+
+**Step 5 (local serve on `force_serving_fixture`, then stopped).** `/api/meta`: `deploy_enabled` false, `deploy_disabled_why` `fixture_database`. A POST with a valid token and Origin: 503 `deploy_disabled` (`fixture_database`). `/api/deploy/options?disturbance_id=FIXD4`: 200 with 17 Jedi, 13 starships and `agent_first_seen` null.
+
+**Tests.** `serving` 148 to 175 (new `test_deploy_api.py` and two in `test_deploy.py`), dashboard 32 to 47 (`deploy.test.js`). Warehouse statements used: 0. Gemini: 0.
+
 **Commits:** listed in the next round.
 
 ## Open items
@@ -2265,6 +2287,8 @@ Built with no warehouse use (every client, the Jobs check and the lock folder ar
 | Warehouse-on time: the agent's :15 cycle extends the warehouse about 6 min an hour (Round 5a, derived); candidate fix: start the agent after Job 1 and lower auto-stop | **Phase 7, agent round.** ForceServe registered at :17 (Round 7). |
 | A read-only service principal for the serving puller (the keyword guard is defense in depth only) | **Phase 8.** |
 | Dashboard bundle is one 625 kB script (Vite warns above 500 kB) | **Phase 8: code-splitting.** |
+| `run.build_row` hard-codes `decided_by`; the deploy service overwrites it (give `build_row` a `decided_by` parameter) | **Phase 7, fix round.** |
+| `num_inserted_rows` from the MERGE not yet seen live | **Phase 7, Round 13a.** |
 
 ## Lessons (beyond this project)
 
