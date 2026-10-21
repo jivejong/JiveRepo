@@ -8,12 +8,23 @@ const MAX_RESPONSE_BYTES = 1_048_576;
 function invalidRequest(message = "Provider request is not allowed.") {
   const error = new TypeError(message);
   error.code = "INVALID_PROVIDER_REQUEST";
+  error.failure_details = { failure_phase: "validation", https_started: false };
   return error;
 }
 
+const SAFE_TRANSPORT_CODES = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH",
+  "EAI_AGAIN", "ENOTFOUND", "EPIPE", "RESPONSE_TOO_LARGE", "INVALID_PROVIDER_REQUEST"]);
+function transportFailure(error, phase, httpsStarted, timeoutSource = undefined, httpStatus = undefined) {
+  const code = SAFE_TRANSPORT_CODES.has(error?.code) ? error.code : undefined;
+  return Object.assign(new Error("Provider transport failed."), { ...(code ? { code } : {}), failure_details: {
+    failure_phase: phase, https_started: httpsStarted, ...(code ? { transport_error_code: code } : {}),
+    ...(Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? { http_status: httpStatus } : {}),
+    ...(timeoutSource ? { timeout: true, timeout_source: timeoutSource } : {}),
+  } });
+}
+
 function validateRequest(request) {
-  if (!request || typeof request !== "object" || request.method !== "GET" ||
-      request.body !== undefined && request.body !== null && request.body.length !== 0) {
+  if (!request || typeof request !== "object" || !["GET", "POST"].includes(request.method)) {
     throw invalidRequest();
   }
   let url;
@@ -35,6 +46,33 @@ function validateRequest(request) {
   const acousticOffsetNumber = typeof acousticOffset === "string" && /^\d+$/.test(acousticOffset)
     ? Number(acousticOffset) : NaN;
   const validatedSubmissionCount = request.acousticbrainzSubmissionCount;
+  const gemini = url.hostname === "generativelanguage.googleapis.com" && url.pathname === "/v1beta/interactions" &&
+    request.method === "POST" && entries.length === 0 && request.body !== undefined && request.body !== null;
+  if (request.method === "GET" && request.body !== undefined && request.body !== null && request.body.length !== 0 ||
+      request.method === "POST" && !gemini) throw invalidRequest();
+  if (gemini) {
+    const body = Buffer.isBuffer(request.body) ? request.body : request.body instanceof Uint8Array
+      ? Buffer.from(request.body) : typeof request.body === "string" ? Buffer.from(request.body, "utf8") : null;
+    if (!body || body.byteLength > 16_384) throw invalidRequest("Gemini request body is invalid or exceeds its byte limit.");
+    let parsed;
+    try { parsed = JSON.parse(body.toString("utf8")); } catch { throw invalidRequest("Gemini request body is invalid."); }
+    const expectedKeys = ["generation_config", "input", "model", "response_format", "store", "system_instruction"];
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+        Object.keys(parsed).sort().join(",") !== expectedKeys.join(",") || parsed.model !== "gemini-3.1-flash-lite" ||
+        typeof parsed.input !== "string" || typeof parsed.system_instruction !== "string" || parsed.store !== false ||
+        !parsed.generation_config || Object.keys(parsed.generation_config).length !== 1 ||
+        !Number.isSafeInteger(parsed.generation_config.max_output_tokens) || parsed.generation_config.max_output_tokens < 1 ||
+        parsed.generation_config.max_output_tokens > 1024 ||
+        !parsed.response_format || Object.keys(parsed.response_format).sort().join(",") !== "mime_type,schema,type" ||
+        parsed.response_format.type !== "text" || parsed.response_format.mime_type !== "application/json" ||
+        !parsed.response_format.schema || parsed.response_format.schema.type !== "object" ||
+        parsed.response_format.schema.additionalProperties !== false ||
+        !Array.isArray(parsed.response_format.schema.required) || parsed.response_format.schema.required.length !== 5 ||
+        !["release_year", "bpm", "original_key", "genres", "vibes"].every(field => parsed.response_format.schema.required.includes(field)) ||
+        !parsed.response_format.schema.properties || Object.keys(parsed.response_format.schema.properties).sort().join(",") !== "bpm,genres,original_key,release_year,vibes") {
+      throw invalidRequest("Gemini request does not match the approved structured-output contract.");
+    }
+  }
   const musicBrainz = url.hostname === "musicbrainz.org" &&
     !hasSubmissionCount && (url.pathname === "/ws/2/recording/" && request.method === "GET" &&
       searchParametersValid ||
@@ -45,21 +83,23 @@ function validateRequest(request) {
     (uuidPath[2] === "count" && entries.length === 0 && !hasSubmissionCount || uuidPath[2] === "low-level" &&
       entries.length === 1 && Number.isSafeInteger(acousticOffsetNumber) && Number.isSafeInteger(validatedSubmissionCount) &&
       validatedSubmissionCount > 0 && acousticOffsetNumber < validatedSubmissionCount);
-  if (!musicBrainz && !acoustic) throw invalidRequest();
+  if (!musicBrainz && !acoustic && !gemini) throw invalidRequest();
 
   const headers = request.headers;
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) throw invalidRequest();
   const cleanHeaders = {};
   for (const [name, value] of Object.entries(headers)) {
     const lower = name.toLowerCase();
-    if (!["accept", "user-agent"].includes(lower) || typeof value !== "string" || /[\r\n]/.test(value)) {
+    if (!["accept", "user-agent", "content-type", "x-goog-api-key"].includes(lower) || typeof value !== "string" || /[\r\n]/.test(value)) {
       throw invalidRequest();
     }
-    cleanHeaders[lower === "user-agent" ? "User-Agent" : "Accept"] = value;
+    cleanHeaders[lower === "user-agent" ? "User-Agent" : lower === "accept" ? "Accept" : lower === "content-type" ? "Content-Type" : "x-goog-api-key"] = value;
   }
   if (cleanHeaders.Accept !== "application/json" ||
       musicBrainz && (typeof cleanHeaders["User-Agent"] !== "string" || !cleanHeaders["User-Agent"].trim()) ||
-      acoustic && Object.hasOwn(cleanHeaders, "User-Agent")) throw invalidRequest();
+      acoustic && Object.hasOwn(cleanHeaders, "User-Agent") ||
+      gemini && (cleanHeaders["Content-Type"] !== "application/json" || typeof cleanHeaders["x-goog-api-key"] !== "string" || !cleanHeaders["x-goog-api-key"].trim() || Object.hasOwn(cleanHeaders, "User-Agent")) ||
+      !gemini && (Object.hasOwn(cleanHeaders, "Content-Type") || Object.hasOwn(cleanHeaders, "x-goog-api-key"))) throw invalidRequest();
   try {
     for (const [name, value] of Object.entries(cleanHeaders)) http.validateHeaderValue(name, value);
   } catch { throw invalidRequest("Provider request headers are invalid."); }
@@ -70,7 +110,8 @@ function validateRequest(request) {
       !Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0 ||
       !request.signal || typeof request.signal.addEventListener !== "function" ||
       typeof request.signal.aborted !== "boolean") throw invalidRequest();
-  return { url, headers: cleanHeaders, timeoutMs, maxResponseBytes, signal: request.signal };
+  return { url, headers: cleanHeaders, timeoutMs, maxResponseBytes, signal: request.signal,
+    method: request.method, body: gemini ? request.body : undefined };
 }
 
 function createSongEnrichmentTransport({ request: httpsRequest = https.request, setTimer = setTimeout,
@@ -79,8 +120,10 @@ function createSongEnrichmentTransport({ request: httpsRequest = https.request, 
     throw new TypeError("HTTPS transport dependencies must be functions.");
   }
   return async function songEnrichmentTransport(request) {
-    const validated = validateRequest(request);
-    const { url, headers, timeoutMs, maxResponseBytes, signal } = validated;
+    let validated;
+    try { validated = validateRequest(request); }
+    catch (error) { throw transportFailure(error, "validation", false); }
+    const { url, headers, timeoutMs, maxResponseBytes, signal, method, body } = validated;
     const responseByteLimit = Math.min(maxResponseBytes, MAX_RESPONSE_BYTES);
     if (signal.aborted) return Promise.reject(Object.assign(new Error("Provider request cancelled."), { name: "AbortError" }));
 
@@ -114,14 +157,14 @@ function createSongEnrichmentTransport({ request: httpsRequest = https.request, 
         finish(error);
         destroyResources();
       };
-      const onRequestError = () => {
+      const onRequestError = error => {
         if (settled) return;
-        finish(new Error("Provider HTTPS request failed."));
+        finish(transportFailure(error, "request", true));
         destroyResources();
       };
-      const onResponseError = () => {
+      const onResponseError = error => {
         if (settled) return;
-        finish(new Error("Provider HTTPS response failed."));
+        finish(transportFailure(error, "response", true, undefined, response?.statusCode));
         destroyResources();
       };
       const onResponseAborted = () => onResponseError();
@@ -145,7 +188,7 @@ function createSongEnrichmentTransport({ request: httpsRequest = https.request, 
         if (byteLength + bytes.byteLength > responseByteLimit) {
           const error = new Error("Provider response exceeded its byte limit.");
           error.code = "RESPONSE_TOO_LARGE";
-          finish(error);
+          finish(transportFailure(error, "response", true, undefined, response?.statusCode));
           destroyResources();
           return;
         }
@@ -160,13 +203,13 @@ function createSongEnrichmentTransport({ request: httpsRequest = https.request, 
 
       signal.addEventListener("abort", onAbort, { once: true });
       timer = setTimer(() => {
-        const error = new Error("Provider request timed out.");
-        error.code = "ETIMEDOUT";
-        finish(error);
+          const error = new Error("Provider request timed out.");
+          error.code = "ETIMEDOUT";
+          finish(transportFailure(error, "timeout", true, "transport", response?.statusCode));
         destroyResources();
       }, timeoutMs);
       try {
-        req = httpsRequest(url, { method: "GET", headers }, incoming => {
+        req = httpsRequest(url, { method, headers }, incoming => {
           response = incoming;
           if (settled) {
             // The request can race with timeout/cancellation and still deliver a response.
@@ -192,9 +235,9 @@ function createSongEnrichmentTransport({ request: httpsRequest = https.request, 
         });
         req.on("error", onRequestError);
         req.once("close", onRequestClose);
-        req.end();
-      } catch {
-        finish(new Error("Provider HTTPS request could not be started."));
+        if (body !== undefined) req.end(body); else req.end();
+      } catch (error) {
+        finish(transportFailure(error, "request_start", true));
         destroyResources();
       }
     });

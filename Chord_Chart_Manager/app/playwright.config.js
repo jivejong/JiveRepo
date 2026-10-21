@@ -17,7 +17,8 @@ export default defineConfig({
   use: {
     baseURL: process.env.E2E_BASE_URL,
     ...(process.env.E2E_SYSTEM_CHROME === '1' ? { channel: 'chrome' } : {}),
-    trace: 'on-first-retry',
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },

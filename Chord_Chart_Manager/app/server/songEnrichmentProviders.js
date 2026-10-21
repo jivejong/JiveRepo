@@ -18,17 +18,35 @@ const ACOUSTIC_KEY_NAMES = new Set(["A", "A#", "B", "C", "C#", "D", "D#", "E", "
 const MUSICBRAINZ_SEARCH_MAX_RESULTS = 100;
 const MUSICBRAINZ_SEARCH_LIMIT = MUSICBRAINZ_SEARCH_MAX_RESULTS;
 const MUSICBRAINZ_SEARCH_PARSER_VERSION = "musicbrainz-search-single-response-v1";
-const GEMINI_PROMPT_VERSION = "genre-vibe-candidate-v1";
-const GEMINI_SCHEMA_VERSION = "genre-vibe-schema-v1";
-const GEMINI_SCHEMA = Object.freeze({
-  type: "object",
-  properties: {
-    genres: { type: "array", items: { type: "string" } },
-    vibes: { type: "array", items: { type: "string" } },
-  },
-  required: ["genres", "vibes"],
-  additionalProperties: false,
-});
+const GEMINI_PROMPT_VERSION = "missing-metadata-fallback-v2";
+const GEMINI_SCHEMA_VERSION = "missing-metadata-schema-v2";
+const GEMINI_VALIDATION_REASONS = new Set(["interaction_envelope_invalid", "model_text_missing", "invalid_json",
+  "required_field_missing", "unexpected_field", "invalid_field_type_value", "unrequested_scalar",
+  "disallowed_genre_output", "unknown_label", "ambiguous_label", "label_outside_allowed_subset", "invalid_provenance"]);
+function buildGeminiSchema(requestedFields, allowedNames) {
+  const scalarSchemas = {
+    release_year: { type: ["integer", "null"] },
+    bpm: { type: ["number", "null"], minimum: 0 },
+    original_key: { type: ["object", "null"], properties: {
+      key_key: { type: "string", enum: ["C", "B#", "C#", "Db", "D", "D#", "Eb", "E", "Fb", "E#", "F", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B", "Cb"] },
+      key_scale: { type: "string", enum: ["major", "minor"] },
+    }, required: ["key_key", "key_scale"], additionalProperties: false },
+  };
+  const properties = {};
+  for (const field of ["release_year", "bpm", "original_key"]) {
+    properties[field] = requestedFields.includes(field) ? scalarSchemas[field] : { type: "null" };
+  }
+  properties.genres = { type: "array", items: { type: "string" }, maxItems: allowedNames.genres.length === 0 ? 0 : 3 };
+  properties.vibes = { type: "array", items: { type: "string" }, maxItems: allowedNames.vibes.length === 0 ? 0 : 3 };
+  return {
+    type: "object",
+    properties,
+    required: ["release_year", "bpm", "original_key", "genres", "vibes"],
+    additionalProperties: false,
+  };
+}
+
+const GEMINI_SCHEMA = Object.freeze(buildGeminiSchema(["release_year", "bpm", "original_key"], { genres: ["*"], vibes: ["*"] }));
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -282,49 +300,84 @@ function normalizeAcousticSubmission(document, mbid, offset, digest) {
 }
 
 function mapGeminiText(body) {
-  if (!isRecord(body) || body.status !== "completed" || !Array.isArray(body.steps)) return null;
+  const usage = safeInteractionsUsage(body?.usage);
+  if (!isRecord(body) || body.status !== "completed" || !Array.isArray(body.steps)) return { text: null, usage, validation_reason: "interaction_envelope_invalid" };
   const modelSteps = body.steps.filter(step => isRecord(step) && step.type === "model_output");
-  if (modelSteps.length !== 1 || !Array.isArray(modelSteps[0].content)) return null;
+  if (modelSteps.length !== 1 || !Array.isArray(modelSteps[0].content)) return { text: null, usage, validation_reason: "interaction_envelope_invalid" };
   const textParts = modelSteps[0].content.filter(part => isRecord(part) && part.type === "text" && typeof part.text === "string");
-  if (textParts.length !== 1) return null;
-  const usage = isRecord(body.usage) ? {
-    promptTokenCount: body.usage.total_input_tokens,
-    candidatesTokenCount: body.usage.total_output_tokens,
-    totalTokenCount: body.usage.total_tokens,
-  } : null;
+  if (textParts.length === 0) return { text: null, usage, validation_reason: "model_text_missing" };
+  if (textParts.length !== 1) return { text: null, usage, validation_reason: "interaction_envelope_invalid" };
   return { text: textParts[0].text, usage };
 }
 
-function resolveGeminiTags(jsonText, definitions, digest) {
-  const parsed = parseJson(Buffer.from(jsonText, "utf8"));
-  if (!isRecord(parsed) || Object.keys(parsed).sort().join(",") !== "genres,vibes" ||
-      !Array.isArray(parsed.genres) || !Array.isArray(parsed.vibes)) return null;
-  const output = { genres: [], vibes: [] };
+function resolveGeminiFallback(jsonText, definitions, allowedNames, digest, requestedFields) {
+  let parsed;
+  try { parsed = JSON.parse(jsonText); } catch { return validationFailure("invalid_json"); }
+  const fields = ["release_year", "bpm", "original_key", "genres", "vibes"];
+  if (!isRecord(parsed)) return validationFailure("invalid_field_type_value", { validation_field: "response" });
+  const keys = Object.keys(parsed);
+  const missingField = fields.find(field => !Object.hasOwn(parsed, field));
+  if (missingField) return validationFailure("required_field_missing", { validation_field: missingField });
+  if (keys.some(field => !fields.includes(field))) return validationFailure("unexpected_field", { validation_field: "response" });
+  for (const field of ["genres", "vibes"]) {
+    if (!Array.isArray(parsed[field]) || parsed[field].length > 3) return validationFailure("invalid_field_type_value", { validation_field: field });
+  }
+  const provenance = { source: "Gemini", response_digest: digest, model_id: DEFAULTS.model,
+    prompt_version: GEMINI_PROMPT_VERSION, schema_version: GEMINI_SCHEMA_VERSION };
+  const output = { scalars: { release_year: [], bpm: [], original_key: [] }, genres: [], vibes: [] };
+  const roots = new Set(["C", "B#", "C#", "Db", "D", "D#", "Eb", "E", "Fb", "E#", "F", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B", "Cb"]);
+  for (const field of ["release_year", "bpm", "original_key"]) {
+    const value = parsed[field];
+    if (!requestedFields.includes(field) && value !== null) return validationFailure("unrequested_scalar", { validation_field: field });
+    if (value === null) continue;
+    if (field === "release_year" && (!Number.isInteger(value) || value < 1 || value > 32767)) return validationFailure("invalid_field_type_value", { validation_field: field });
+    if (field === "bpm" && (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || Math.floor(value + 0.5) < 1 || Math.floor(value + 0.5) > 32767)) return validationFailure("invalid_field_type_value", { validation_field: field });
+    if (field === "original_key" && (!isRecord(value) || Object.keys(value).sort().join(",") !== "key_key,key_scale" ||
+      !roots.has(value.key_key) || !["major", "minor"].includes(value.key_scale))) return validationFailure("invalid_field_type_value", { validation_field: field });
+    output.scalars[field].push({ value, ...provenance });
+  }
+  if (parsed.genres.length > 0 && allowedNames.genres.length === 0) return validationFailure("disallowed_genre_output", { validation_category: "Genre" });
   for (const [category, field] of [["Genre", "genres"], ["Vibe", "vibes"]]) {
-    if (!Array.isArray(definitions[field])) return null;
+    if (!Array.isArray(definitions[field]) || !Array.isArray(allowedNames?.[field])) return validationFailure("invalid_field_type_value", { validation_category: category });
     const lookup = new Map();
     for (const row of definitions[field]) {
       const name = typeof row === "string" ? row : row?.name;
-      if (typeof name !== "string") return null;
+      if (typeof name !== "string") return validationFailure("invalid_field_type_value", { validation_category: category });
       let key;
-      try { key = definitionKey(normalizeDefinitionName(name, category)); } catch { return null; }
+      try { key = definitionKey(normalizeDefinitionName(name, category)); } catch { return validationFailure("invalid_field_type_value", { validation_category: category }); }
       if (!lookup.has(key)) lookup.set(key, []);
       lookup.get(key).push(name);
     }
+    const allowed = new Set();
+    for (const label of allowedNames[field]) {
+      if (typeof label !== "string") return validationFailure("invalid_field_type_value", { validation_category: category });
+      let key;
+      try { key = definitionKey(normalizeDefinitionName(label, category)); } catch { return validationFailure("invalid_field_type_value", { validation_category: category }); }
+      const matches = lookup.get(key) || [];
+      if (matches.length > 1) return validationFailure("ambiguous_label", { validation_category: category });
+      if (matches.length !== 1 || matches[0] !== label) return validationFailure("invalid_field_type_value", { validation_category: category });
+      allowed.add(key);
+    }
     const emitted = new Set();
     for (const label of parsed[field]) {
-      if (typeof label !== "string") return null;
+      if (typeof label !== "string") return validationFailure("invalid_field_type_value", { validation_category: category });
       let key;
-      try { key = definitionKey(normalizeDefinitionName(label, category)); } catch { return null; }
+      try { key = definitionKey(normalizeDefinitionName(label, category)); } catch { return validationFailure("invalid_field_type_value", { validation_category: category }); }
       const matches = lookup.get(key) || [];
-      if (matches.length !== 1) return null;
+      if (matches.length > 1) return validationFailure("ambiguous_label", { validation_category: category });
+      if (matches.length === 0) return validationFailure("unknown_label", { validation_category: category });
+      if (!allowed.has(key)) return validationFailure("label_outside_allowed_subset", { validation_category: category });
       if (!emitted.has(key)) {
-        output[field].push({ name: matches[0], source: "Gemini", response_digest: digest });
+        output[field].push({ name: matches[0], ...provenance });
         emitted.add(key);
       }
     }
   }
-  return output;
+  return { output };
+}
+
+function validationFailure(validation_reason, identifiers = {}) {
+  return { validation_reason, ...identifiers };
 }
 
 function safeTokenUsage(value) {
@@ -334,6 +387,14 @@ function safeTokenUsage(value) {
     if (Number.isSafeInteger(value[source]) && value[source] >= 0) output[target] = value[source];
   }
   return Object.keys(output).length ? output : null;
+}
+
+function safeInteractionsUsage(value) {
+  if (!isRecord(value) || !Number.isSafeInteger(value.total_input_tokens) || value.total_input_tokens < 0 ||
+      !Number.isSafeInteger(value.total_output_tokens) || value.total_output_tokens < 0 ||
+      !Number.isSafeInteger(value.total_tokens) || value.total_tokens < 0 ||
+      value.total_input_tokens + value.total_output_tokens !== value.total_tokens) return null;
+  return { input_tokens: value.total_input_tokens, output_tokens: value.total_output_tokens, total_tokens: value.total_tokens };
 }
 
 function readHeader(headers, name) {
@@ -385,6 +446,12 @@ function evidenceResult(status, mbid, scalars = {}, genres = [], vibes = [], ext
   return { status, mbid, scalars, genres, vibes, ...extra };
 }
 
+function invalidGeminiResult(mbid, validation_reason, identifiers = {}) {
+  return evidenceResult("invalid_response", mbid, {}, [], [], { failure_details: {
+    failure_phase: "validation", validation_reason, ...identifiers,
+  } });
+}
+
 async function networkDisabledTransport() {
   const error = new Error("Outbound provider transport is disabled.");
   error.code = "NETWORK_DISABLED";
@@ -407,22 +474,58 @@ function createSongEnrichmentProviderClient({
   let acousticNotBefore = 0;
   let mbQueue = Promise.resolve();
 
-  function record(provider, operation, attempt, status, tokenUsage = null) {
+  function record(provider, operation, attempt, status, tokenUsage = null, failureDetails = null) {
     const index = ledger.length;
-    ledger.push({ provider, operation, attempt, status, ...(tokenUsage ? { token_usage: tokenUsage } : {}) });
+    ledger.push({ provider, operation, attempt, status, ...(tokenUsage ? { token_usage: tokenUsage } : {}),
+      ...(failureDetails ? { failure_details: failureDetails } : {}) });
     return index;
   }
 
-  function updateFetchedStatus(fetched, status, tokenUsage = undefined) {
+  const safeTransportCodes = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH",
+    "EAI_AGAIN", "ENOTFOUND", "EPIPE", "RESPONSE_TOO_LARGE", "INVALID_PROVIDER_REQUEST"]);
+  function safeFailureDetails(details, defaults = {}) {
+    const source = details && typeof details === "object" ? details : {};
+    const code = safeTransportCodes.has(source.transport_error_code) ? source.transport_error_code : undefined;
+    const phase = ["validation", "request_start", "request", "response", "timeout", "http", "provider"].includes(source.failure_phase)
+      ? source.failure_phase : defaults.failure_phase;
+    const status = Number.isInteger(source.http_status) && source.http_status >= 100 && source.http_status <= 599
+      ? source.http_status : defaults.http_status;
+    const timeoutSource = ["provider_watchdog", "transport"].includes(source.timeout_source) ? source.timeout_source : defaults.timeout_source;
+    const validationReason = GEMINI_VALIDATION_REASONS.has(source.validation_reason) ? source.validation_reason
+      : GEMINI_VALIDATION_REASONS.has(defaults.validation_reason) ? defaults.validation_reason : undefined;
+    const validationField = ["response", "release_year", "bpm", "original_key", "genres", "vibes"].includes(source.validation_field) ? source.validation_field
+      : ["response", "release_year", "bpm", "original_key", "genres", "vibes"].includes(defaults.validation_field) ? defaults.validation_field : undefined;
+    const validationCategory = ["Genre", "Vibe"].includes(source.validation_category) ? source.validation_category
+      : ["Genre", "Vibe"].includes(defaults.validation_category) ? defaults.validation_category : undefined;
+    return { ...(phase ? { failure_phase: phase } : {}), ...(status ? { http_status: status } : {}),
+      ...(source.timeout === true || defaults.timeout === true ? { timeout: true } : {}),
+      ...(timeoutSource ? { timeout_source: timeoutSource } : {}), ...(code ? { transport_error_code: code } : {}),
+      ...(validationReason ? { validation_reason: validationReason } : {}), ...(validationField ? { validation_field: validationField } : {}),
+      ...(validationCategory ? { validation_category: validationCategory } : {}),
+      ...(source.https_started === true || defaults.https_started === true ? { https_started: true } :
+        source.https_started === false || defaults.https_started === false ? { https_started: false } : {}) };
+  }
+
+  function hasBudget(provider, gemini) {
+    return totalAttempts < settings.maxAttempts && !(gemini && geminiAttempts >= settings.maxGeminiAttempts);
+  }
+
+  function retryPermitted(retry, provider, gemini) {
+    return retry === 0 && hasBudget(provider, gemini);
+  }
+
+  function updateFetchedStatus(fetched, status, tokenUsage = undefined, validation = null) {
     if (!Number.isInteger(fetched?.ledger_index)) return;
     const item = ledger[fetched.ledger_index];
     if (!item) return;
     item.status = status;
     if (tokenUsage) item.token_usage = tokenUsage;
+    if (validation) item.failure_details = safeFailureDetails(null, validation);
   }
 
   function ledgerSnapshot() {
-    return ledger.map(item => ({ ...item, ...(item.token_usage ? { token_usage: { ...item.token_usage } } : {}) }));
+    return ledger.map(item => ({ ...item, ...(item.token_usage ? { token_usage: { ...item.token_usage } } : {}),
+      ...(item.failure_details ? { failure_details: { ...item.failure_details } } : {}) }));
   }
 
   async function cachedRequest(key) {
@@ -437,8 +540,10 @@ function createSongEnrichmentProviderClient({
 
   async function send(provider, operation, request, { signal, gemini = false, musicBrainz = false, onAttempt = null } = {}) {
     const run = async () => {
+      let retryFailure = null;
       for (let retry = 0; retry <= 1; retry += 1) {
         if (signal?.aborted) return { status: "cancelled" };
+        if (!hasBudget(provider, gemini)) return retryFailure || { status: "budget_exhausted" };
         if (transport === networkDisabledTransport) {
           record(provider, operation, 0, "network_disabled");
           return { status: "network_disabled" };
@@ -463,6 +568,7 @@ function createSongEnrichmentProviderClient({
           }
         }
         if (signal?.aborted) return { status: "cancelled" };
+        if (!hasBudget(provider, gemini)) return retryFailure || { status: "budget_exhausted" };
         let attempt = null;
         let timeoutController;
         let removeParentAbort = null;
@@ -508,8 +614,10 @@ function createSongEnrichmentProviderClient({
           }
           if (response === timeout) {
             timeoutController.abort();
-            record(provider, operation, attempt, "transient_error");
-            return { status: "transient_error", reason: "timeout" };
+            const failureDetails = safeFailureDetails(null, { failure_phase: "timeout", timeout: true,
+              timeout_source: "provider_watchdog" });
+            record(provider, operation, attempt, "transient_error", null, failureDetails);
+            return { status: "transient_error", reason: "timeout", failure_details: failureDetails };
           }
           timeoutController.abort();
           const statusCode = response?.status;
@@ -528,50 +636,67 @@ function createSongEnrichmentProviderClient({
             }
           }
           if (!Number.isInteger(statusCode)) {
-            record(provider, operation, attempt, "invalid_response");
-            return { status: "invalid_response" };
+            const invalid = provider === "Gemini" && operation === "missing_metadata_fallback"
+              ? safeFailureDetails(null, { failure_phase: "response", validation_reason: "interaction_envelope_invalid" }) : null;
+            record(provider, operation, attempt, "invalid_response", null, invalid);
+            return { status: "invalid_response", ...(invalid ? { failure_details: invalid } : {}) };
           }
+          const statusFailureDetails = safeFailureDetails(null, { failure_phase: "http", http_status: statusCode, https_started: true });
           if (statusCode === 401 || statusCode === 403) {
-            record(provider, operation, attempt, "authentication_error");
-            return { status: "authentication_error" };
+            record(provider, operation, attempt, "authentication_error", null, statusFailureDetails);
+            return { status: "authentication_error", failure_details: statusFailureDetails };
           }
           if (statusCode === 429 || statusCode >= 500 && statusCode <= 599) {
+            const failureDetails = safeFailureDetails(null, { failure_phase: "http", http_status: statusCode, https_started: true });
             const supplied = readHeader(response.headers, "retry-after");
             const wait = supplied != null ? retryAfterMs(supplied, Number(clock()))
               : statusCode === 429 && acousticResetWait !== null ? acousticResetWait
                 : settings.retryDelayMs;
             if (supplied != null && wait === null) {
-              record(provider, operation, attempt, "transient_error");
-              return { status: "transient_error", reason: "invalid_retry_after" };
+              record(provider, operation, attempt, "transient_error", null, failureDetails);
+              return { status: "transient_error", reason: "invalid_retry_after", failure_details: failureDetails };
             }
             if (wait !== null && wait > settings.maxRetryAfterMs) {
-              record(provider, operation, attempt, "transient_error");
-              return { status: "transient_error", reason: "retry_after_exceeds_cap" };
+              record(provider, operation, attempt, "transient_error", null, failureDetails);
+              return { status: "transient_error", reason: "retry_after_exceeds_cap", failure_details: failureDetails };
             }
-            if (retry === 0 && wait !== null && wait <= settings.maxRetryAfterMs) {
-              record(provider, operation, attempt, "transient_error");
+            if (wait !== null && wait <= settings.maxRetryAfterMs && retryPermitted(retry, provider, gemini)) {
+              record(provider, operation, attempt, "transient_error", null, failureDetails);
+              retryFailure = { status: "transient_error", failure_details: failureDetails };
               try { await delay(wait, { signal, kind: "retry_after" }); }
               catch { return { status: signal?.aborted ? "cancelled" : "transient_error" }; }
+              if (!hasBudget(provider, gemini)) return retryFailure;
               continue;
             }
-            record(provider, operation, attempt, "transient_error");
-            return { status: "transient_error", ...(supplied != null ? { reason: "retry_limit" } : {}) };
+            record(provider, operation, attempt, "transient_error", null, failureDetails);
+            return { status: "transient_error", failure_details: failureDetails,
+              ...(supplied != null ? { reason: "retry_limit" } : {}) };
           }
           if (statusCode < 200 || statusCode >= 300) {
-            record(provider, operation, attempt, "invalid_response");
-            return { status: "invalid_response" };
+            record(provider, operation, attempt, "invalid_response", null, statusFailureDetails);
+            return { status: "invalid_response", failure_details: statusFailureDetails };
           }
           const bytes = responseBytes(response.body);
           if (!bytes || bytes.byteLength > settings.maxResponseBytes) {
-            record(provider, operation, attempt, "invalid_response");
-            return { status: "invalid_response" };
+            const invalid = provider === "Gemini" && operation === "missing_metadata_fallback"
+              ? safeFailureDetails(statusFailureDetails, { validation_reason: "interaction_envelope_invalid" }) : statusFailureDetails;
+            record(provider, operation, attempt, "invalid_response", null, invalid);
+            return { status: "invalid_response", failure_details: invalid };
           }
-          const body = parseJson(bytes);
-          if (body === null) {
-            record(provider, operation, attempt, "invalid_response");
-            return { status: "invalid_response" };
+          let body;
+          let bodyJsonValid = true;
+          try { body = JSON.parse(bytes.toString("utf8")); } catch { bodyJsonValid = false; }
+          if (!bodyJsonValid || body === null && !(provider === "Gemini" && operation === "missing_metadata_fallback")) {
+            const invalid = provider === "Gemini" && operation === "missing_metadata_fallback"
+              ? safeFailureDetails(statusFailureDetails, { validation_reason: bodyJsonValid ? "interaction_envelope_invalid" : "invalid_json",
+                validation_field: "response" }) : statusFailureDetails;
+            record(provider, operation, attempt, "invalid_response", null, invalid);
+            return { status: "invalid_response", failure_details: invalid };
           }
-          const usage = safeTokenUsage(body.usageMetadata);
+          // The Gemini Interactions endpoint has its own usage contract. Do not
+          // interpret its response through generateContent's usageMetadata.
+          const usage = provider === "Gemini" && operation === "missing_metadata_fallback"
+            ? safeInteractionsUsage(body?.usage) : safeTokenUsage(body.usageMetadata);
           const ledger_index = record(provider, operation, attempt, "ok", usage);
           return { status: "ok", body, bytes, digest: responseDigest(bytes), usage, ledger_index };
         } catch (error) {
@@ -586,14 +711,17 @@ function createSongEnrichmentProviderClient({
             record(provider, operation, attempt, "network_disabled");
             return { status: "network_disabled" };
           }
-          if (retry === 0) {
-            record(provider, operation, attempt, "transient_error");
+          const failureDetails = safeFailureDetails(error?.failure_details);
+          if (retryPermitted(retry, provider, gemini)) {
+            record(provider, operation, attempt, "transient_error", null, failureDetails);
+            retryFailure = { status: "transient_error", failure_details: failureDetails };
             try { await delay(settings.retryDelayMs, { signal, kind: "retry" }); }
             catch { return { status: signal?.aborted ? "cancelled" : "transient_error" }; }
+            if (!hasBudget(provider, gemini)) return retryFailure;
             continue;
           }
-          record(provider, operation, attempt, "transient_error");
-          return { status: "transient_error" };
+          record(provider, operation, attempt, "transient_error", null, failureDetails);
+          return { status: "transient_error", failure_details: failureDetails };
         }
       }
       return { status: "transient_error" };
@@ -789,26 +917,83 @@ function createSongEnrichmentProviderClient({
     });
   }
 
-  function geminiPayload({ mbid, title, artist, context, definitions }) {
+function safeGeminiFactualEvidence(value) {
+  const keysAre = (item, allowed) => isRecord(item) && Object.keys(item).every(key => allowed.includes(key));
+  if (!isRecord(value)) return null;
+  if (value.context_version === 1 && keysAre(value, ["context_version", "target", "recording", "scalar_candidates", "submission_coverage", "conflicts"]) &&
+      keysAre(value.target, ["song_id", "title", "artist"]) && Number.isSafeInteger(value.target.song_id) &&
+      keysAre(value.recording, ["mbid", "title", "artist", "disambiguation", "validated", "response_digest"]) && UUID.test(value.recording.mbid || "") &&
+      isRecord(value.submission_coverage) && Number.isSafeInteger(value.submission_coverage.total_available) &&
+      Array.isArray(value.submission_coverage.sampled_offsets) && isRecord(value.scalar_candidates) && isRecord(value.conflicts)) {
+    const scalars = {};
+    for (const field of ["release_year", "original_key", "bpm"]) {
+      const group = value.scalar_candidates[field];
+      if (!keysAre(group, ["state", "evidence_status", "conflicting_evidence", "candidates"]) ||
+          !Array.isArray(group.candidates) || typeof group.conflicting_evidence !== "boolean") return null;
+      const source = field === "release_year" ? "MusicBrainz" : "AcousticBrainz";
+      const candidates = [];
+      for (const item of group.candidates) {
+        if (!keysAre(item, ["source", "value", "response_digest", "submission_reference"]) || item.source !== source ||
+            !/^[a-f0-9]{64}$/.test(item.response_digest || "") || typeof item.submission_reference !== "string") return null;
+        if (field === "original_key") {
+          if (!keysAre(item.value, ["key_key", "key_scale"]) || !["major", "minor"].includes(item.value.key_scale)) return null;
+          candidates.push({ ...item, value: { key_key: item.value.key_key, key_scale: item.value.key_scale } });
+        } else candidates.push({ ...item });
+      }
+      scalars[field] = { state: typeof group.state === "string" ? group.state : "unresolved",
+        conflicting_evidence: group.conflicting_evidence,
+        candidates };
+    }
+    const coverage = value.submission_coverage;
+    if (value.recording.validated !== true || !/^[a-f0-9]{64}$/.test(value.recording.response_digest || "") ||
+        !["title", "artist"].every(key => typeof value.target[key] === "string") ||
+        !["title", "artist", "disambiguation"].every(key => typeof value.recording[key] === "string") ||
+        coverage.source !== "AcousticBrainz" || !["complete", "partial"].includes(coverage.completeness) ||
+        !coverage.sampled_offsets.every((offset, index, all) => Number.isSafeInteger(offset) && offset >= 0 &&
+          offset < coverage.total_available && (index === 0 || all[index - 1] < offset)) ||
+        !["release_year", "original_key", "bpm"].every(field => typeof value.conflicts[field] === "boolean")) return null;
+    return { factual_context_version: 1, target: { song_id: value.target.song_id, title: value.target.title, artist: value.target.artist },
+      recording: { mbid: value.recording.mbid, title: value.recording.title, artist: value.recording.artist,
+        disambiguation: value.recording.disambiguation, validated: true, response_digest: value.recording.response_digest },
+      scalar_candidates: scalars, submission_coverage: { source: coverage.source, total_available: coverage.total_available,
+        sampled_offsets: [...coverage.sampled_offsets], completeness: coverage.completeness },
+      conflicts: Object.fromEntries(["release_year", "original_key", "bpm"].map(field => [field, value.conflicts[field]])) };
+  }
+  if (value.context_version === "b4-v1" && isRecord(value.scalar_candidates)) {
+    return { factual_context_version: "b4-v1", scalar_candidates: value.scalar_candidates,
+      genre_evidence: value.genre_evidence, vibe_evidence: value.vibe_evidence,
+      tag_diagnostics: value.tag_diagnostics, search_lookup_year_discrepancy: value.search_lookup_year_discrepancy };
+  }
+  return null;
+}
+
+function geminiPayload({ title, artist, context, allowedNames, requestedFields }) {
     const safeContext = {};
     if (isRecord(context)) {
-      if (context.release_year === null || Number.isInteger(context.release_year) && context.release_year >= 1 && context.release_year <= 32767) {
-        if (context.release_year !== undefined) safeContext.release_year = context.release_year;
-      }
-      if (typeof context.recording_type === "string") safeContext.recording_type = context.recording_type;
+      if (Number.isInteger(context.release_year) && context.release_year >= 1 && context.release_year <= 32767) safeContext.release_year = context.release_year;
+      if (["studio", "live", "remix", "acoustic", "demo", "unknown"].includes(context.recording_type)) safeContext.recording_type = context.recording_type;
     }
-    const genres = Array.isArray(definitions?.genres) ? definitions.genres.map(row => typeof row === "string" ? row : row?.name).filter(name => typeof name === "string") : [];
-    const vibes = Array.isArray(definitions?.vibes) ? definitions.vibes.map(row => typeof row === "string" ? row : row?.name).filter(name => typeof name === "string") : [];
+    const genres = Array.isArray(allowedNames?.genres) ? [...allowedNames.genres] : [];
+    const vibes = Array.isArray(allowedNames?.vibes) ? [...allowedNames.vibes] : [];
+    const factualEvidence = safeGeminiFactualEvidence(context?.factual_evidence);
     return {
-      recording: { mbid, title, artist, context: safeContext },
+      recording: { title, artist, context: safeContext },
+      requested_missing_fields: [...requestedFields],
       allowed_names: { genres, vibes },
+      ...(factualEvidence ? { factual_evidence: factualEvidence } : {}),
     };
   }
 
-  async function requestGeminiTags({ mbid, title, artist, context, definitions, apiKey, signal } = {}) {
-    if (typeof mbid !== "string" || !UUID.test(mbid) || typeof title !== "string" || !title.trim() ||
+  async function requestGeminiTags({ mbid = null, title, artist, context, factualEvidence = null, requestedFields = [], definitions,
+    allowedNames = definitions, apiKey, signal } = {}) {
+    if (mbid !== null && (typeof mbid !== "string" || !UUID.test(mbid)) || typeof title !== "string" || !title.trim() ||
         typeof artist !== "string" || !artist.trim() || !isRecord(definitions) ||
-        !Array.isArray(definitions.genres) || !Array.isArray(definitions.vibes)) return evidenceResult("invalid_response", null, {}, [], []);
+        !Array.isArray(definitions.genres) || !Array.isArray(definitions.vibes) || !Array.isArray(requestedFields) ||
+        requestedFields.some(field => !["release_year", "bpm", "original_key"].includes(field)) ||
+        new Set(requestedFields).size !== requestedFields.length || !isRecord(allowedNames) ||
+        !Array.isArray(allowedNames.genres) || !Array.isArray(allowedNames.vibes)) return invalidGeminiResult(null, "invalid_field_type_value", { validation_field: "response" });
+    if (typeof apiKey !== "string" || !apiKey.trim()) return evidenceResult("authentication_error", mbid, {}, [], []);
+    if (factualEvidence !== null && safeGeminiFactualEvidence(factualEvidence) === null) return invalidGeminiResult(mbid, "invalid_provenance", { validation_field: "response" });
     const canonicalDefinitions = { genres: [], vibes: [] };
     for (const [category, field] of [["Genre", "genres"], ["Vibe", "vibes"]]) {
       try {
@@ -817,27 +1002,54 @@ function createSongEnrichmentProviderClient({
           normalizeDefinitionName(name, category);
           return { name };
         });
-      } catch { return evidenceResult("invalid_response", mbid, {}, [], []); }
+      } catch { return invalidGeminiResult(mbid, "invalid_field_type_value", { validation_category: category }); }
     }
-    const payload = geminiPayload({ mbid: mbid.toLowerCase(), title, artist, context, definitions: canonicalDefinitions });
+    const safeAllowedNames = { genres: [], vibes: [] };
+    for (const [category, field] of [["Genre", "genres"], ["Vibe", "vibes"]]) {
+      const fullNames = canonicalDefinitions[field].map(row => row.name);
+      const groups = new Map();
+      for (const name of fullNames) {
+        const key = definitionKey(normalizeDefinitionName(name, category));
+        groups.set(key, (groups.get(key) || 0) + 1);
+      }
+      const seen = new Set();
+      for (const label of allowedNames[field]) {
+        const labelName = typeof label === "string" ? label : label?.name;
+        if (typeof labelName !== "string") return invalidGeminiResult(mbid, "invalid_field_type_value", { validation_category: category });
+        let key;
+        try { key = definitionKey(normalizeDefinitionName(labelName, category)); }
+        catch { return invalidGeminiResult(mbid, "invalid_field_type_value", { validation_category: category }); }
+        const matches = canonicalDefinitions[field].filter(row => definitionKey(normalizeDefinitionName(row.name, category)) === key);
+        if (matches.length > 1) return invalidGeminiResult(mbid, "ambiguous_label", { validation_category: category });
+        if (matches.length === 0) return invalidGeminiResult(mbid, "unknown_label", { validation_category: category });
+        if (matches[0].name !== labelName || seen.has(key)) return invalidGeminiResult(mbid, "label_outside_allowed_subset", { validation_category: category });
+        seen.add(key);
+        safeAllowedNames[field].push(matches[0].name);
+      }
+    }
+    const payload = geminiPayload({ title, artist, context: { ...(context || {}), factual_evidence: factualEvidence }, allowedNames: safeAllowedNames, requestedFields });
+    const instruction = "Suggest only missing scalar values listed in requested_missing_fields and Genre/Vibe labels from the matching supplied catalogs. Vibes describe subjective musical, listening, or performance character. Choose only appropriate supplied labels; return an empty array when none fit. Use null for scalar abstention or any scalar not requested, and empty arrays to abstain on labels. Do not return identifiers, citations, confidence, explanations, or fields outside the schema. Model suggestions are unverified candidates and must not resolve factual evidence conflicts.";
     const body = {
       model: settings.model,
-      input: [{ type: "text", text: `Suggest only directly supported Genre and Vibe labels from the supplied catalogs. Return empty arrays when unsure. Do not return scalars, identifiers, explanations, or other fields.\n${JSON.stringify(payload)}` }],
-      system_instruction: "Suggest only directly supported Genre and Vibe labels from the supplied catalogs. Return empty arrays when unsure. Do not return scalars, identifiers, explanations, or other fields.",
+      input: `${instruction}\n${JSON.stringify(payload)}`,
+      system_instruction: instruction,
       store: false,
-      response_format: { type: "text", mime_type: "application/json", schema: GEMINI_SCHEMA },
+      response_format: { type: "text", mime_type: "application/json", schema: buildGeminiSchema(requestedFields, payload.allowed_names) },
       generation_config: { max_output_tokens: settings.geminiMaxOutputTokens },
     };
     const bytes = jsonBytes(body);
-    if (bytes.byteLength > settings.geminiMaxInputBytes) return evidenceResult("invalid_response", mbid, {}, [], []);
-    if (!Array.isArray(payload.allowed_names.genres) || !Array.isArray(payload.allowed_names.vibes)) return evidenceResult("invalid_response", mbid, {}, [], []);
-    if (payload.allowed_names.genres.length === 0 && payload.allowed_names.vibes.length === 0) return evidenceResult("ok", mbid, {}, [], [], { skipped: "empty_definition_catalog" });
+    if (bytes.byteLength > settings.geminiMaxInputBytes) return invalidGeminiResult(mbid, "invalid_field_type_value", { validation_field: "response" });
+    if (!Array.isArray(payload.allowed_names.genres) || !Array.isArray(payload.allowed_names.vibes)) return invalidGeminiResult(mbid, "invalid_field_type_value", { validation_field: "response" });
+    if (requestedFields.length === 0 && payload.allowed_names.genres.length === 0 && payload.allowed_names.vibes.length === 0) return evidenceResult("ok", mbid, {}, [], [], { skipped: "no_missing_fields_or_unassigned_definitions" });
     const cacheRequest = {
-      provider: "Gemini", operation: "genre_vibe_candidates",
-      parameters: { mbid, title, artist, context: payload.recording.context },
-      parserVersion: "1", model: settings.model, promptVersion: GEMINI_PROMPT_VERSION,
+      provider: "Gemini", operation: "missing_metadata_fallback",
+      parameters: { title, artist, context: { ...payload.recording.context,
+        factual_evidence: payload.factual_evidence ?? null }, requestedFields },
+      parserVersion: "2", model: settings.model, promptVersion: GEMINI_PROMPT_VERSION,
       schemaVersion: GEMINI_SCHEMA_VERSION,
       definitionCatalog: { genres: payload.allowed_names.genres, vibes: payload.allowed_names.vibes },
+      validationCatalog: { genres: canonicalDefinitions.genres.map(row => row.name),
+        vibes: canonicalDefinitions.vibes.map(row => row.name) },
     };
     const request = {
       url: `https://generativelanguage.googleapis.com/v1beta/interactions`,
@@ -858,26 +1070,32 @@ function createSongEnrichmentProviderClient({
       fetched = null;
     }
     if (!fetched) {
-      if (typeof apiKey !== "string" || !apiKey.trim()) return evidenceResult("authentication_error", mbid, {}, [], []);
-      fetched = await send("Gemini", "genre_vibe_candidates", request, { signal, gemini: true });
+      fetched = await send("Gemini", "missing_metadata_fallback", request, { signal, gemini: true });
     }
-    if (fetched.status !== "ok") return evidenceResult(fetched.status, mbid, {}, [], [], fetched.reason ? { reason: fetched.reason } : {});
+    if (fetched.status !== "ok") return evidenceResult(fetched.status, mbid, {}, [], [], {
+      ...(fetched.reason ? { reason: fetched.reason } : {}),
+      ...(fetched.failure_details ? { failure_details: fetched.failure_details } : {}),
+    });
     const bodyResponse = fetched.body ?? parseJson(fetched.bytes);
     const text = mapGeminiText(bodyResponse);
-    if (!text) {
-      updateFetchedStatus(fetched, "invalid_response");
-      return evidenceResult("invalid_response", mbid, {}, [], []);
+    const usage = text.usage;
+    if (!text.text) {
+      const failureDetails = safeFailureDetails(null, { failure_phase: "response", validation_reason: text.validation_reason || "model_text_missing" });
+      updateFetchedStatus(fetched, "invalid_response", usage, failureDetails);
+      return evidenceResult("invalid_response", mbid, {}, [], [], { failure_details: failureDetails, ...(usage ? { token_usage: usage } : {}) });
     }
-    const parsed = resolveGeminiTags(text.text, canonicalDefinitions, fetched.digest);
-    if (!parsed) {
-      updateFetchedStatus(fetched, "invalid_response");
-      return evidenceResult("invalid_response", mbid, {}, [], []);
+    if (usage) updateFetchedStatus(fetched, fetched.status, usage);
+    const parsed = resolveGeminiFallback(text.text, canonicalDefinitions, safeAllowedNames, fetched.digest, requestedFields);
+    if (!parsed.output) {
+      const failureDetails = safeFailureDetails(null, { failure_phase: "response", ...parsed });
+      updateFetchedStatus(fetched, "invalid_response", usage, failureDetails);
+      return evidenceResult("invalid_response", mbid, {}, [], [], { failure_details: failureDetails, ...(usage ? { token_usage: usage } : {}) });
     }
     if (!fetched.cache_hit) await cacheResponse(cacheRequest, "ok", fetched.bytes);
-    const usage = safeTokenUsage(text.usage);
     updateFetchedStatus(fetched, "ok", usage);
-    return evidenceResult("ok", mbid, {}, parsed.genres, parsed.vibes, {
-      response_digest: fetched.digest, token_usage: usage, cache_hit: Boolean(fetched.cache_hit),
+    return evidenceResult("ok", mbid, parsed.output.scalars, parsed.output.genres, parsed.output.vibes, {
+      response_digest: fetched.digest, model_id: settings.model, prompt_version: GEMINI_PROMPT_VERSION,
+      schema_version: GEMINI_SCHEMA_VERSION, token_usage: usage, cache_hit: Boolean(fetched.cache_hit),
     });
   }
 
@@ -895,6 +1113,7 @@ module.exports = {
   DEFAULTS,
   GEMINI_PROMPT_VERSION,
   GEMINI_SCHEMA_VERSION,
+  buildGeminiSchema,
   createSongEnrichmentProviderClient,
   normalizeAcousticSubmission,
   normalizeMusicBrainzLookup,

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, request as apiRequest } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 
 test('Original key stays separate from transposition, capo, and setlist overrides', async ({ page, request, context }) => {
@@ -9,6 +9,7 @@ test('Original key stays separate from transposition, capo, and setlist override
   let missingId = null;
   let setlistId = null;
   let primaryError = null;
+  const cleanupRequest = await apiRequest.newContext({ baseURL: process.env.E2E_BASE_URL });
   const createSong = async (title, originalKey) => {
     const response = await request.post('/api/songs', { data: {
       title, artist: `T21 synthetic artist ${suffix}`, chart_written_key: 'C',
@@ -95,31 +96,32 @@ test('Original key stays separate from transposition, capo, and setlist override
     try { await context.setOffline(false); } catch (error) { errors.push(error); }
     if (setlistId !== null) {
       try {
-        const latest = await request.get(`/api/setlists/${setlistId}`);
+        const latest = await cleanupRequest.get(`/api/setlists/${setlistId}`);
         if (latest.status() !== 404) {
           if (!latest.ok()) throw new Error(`Could not inspect T21 setlist ${setlistId}`);
           const currentSetlist = await latest.json();
-          const deleted = await request.post('/api/setlists/mutations', { data: {
+          const deleted = await cleanupRequest.post('/api/setlists/mutations', { data: {
             operation_id: randomUUID(), type: 'delete', setlist_id: setlistId,
             base_updated_at: currentSetlist.updated_at, payload: {},
           } });
           if (!deleted.ok()) throw new Error(`Could not delete T21 setlist ${setlistId}: HTTP ${deleted.status()}`);
         }
-        if ((await request.get(`/api/setlists/${setlistId}`)).status() !== 404) throw new Error(`T21 setlist ${setlistId} remains`);
+        if ((await cleanupRequest.get(`/api/setlists/${setlistId}`)).status() !== 404) throw new Error(`T21 setlist ${setlistId} remains`);
       } catch (error) { errors.push(error); }
     }
     for (const id of [knownId, missingId].filter(value => value !== null)) {
       try {
-        const latest = await request.get(`/api/songs/${id}`);
+        const latest = await cleanupRequest.get(`/api/songs/${id}`);
         if (latest.status() !== 404) {
           if (!latest.ok()) throw new Error(`Could not inspect T21 song ${id}`);
           const song = await latest.json();
-          const deleted = await request.delete(`/api/songs/${id}`, { data: { base_updated_at: song.updated_at } });
+          const deleted = await cleanupRequest.delete(`/api/songs/${id}`, { data: { base_updated_at: song.updated_at } });
           if (!deleted.ok()) throw new Error(`Could not delete T21 song ${id}: HTTP ${deleted.status()}`);
         }
-        if ((await request.get(`/api/songs/${id}`)).status() !== 404) throw new Error(`T21 song ${id} remains`);
+        if ((await cleanupRequest.get(`/api/songs/${id}`)).status() !== 404) throw new Error(`T21 song ${id} remains`);
       } catch (error) { errors.push(error); }
     }
+    try { await cleanupRequest.dispose(); } catch (error) { errors.push(error); }
     if (primaryError && errors.length) throw new AggregateError([primaryError, ...errors], 'T21 test and cleanup failed');
     if (errors.length) throw new AggregateError(errors, 'T21 fixture cleanup failed');
   }

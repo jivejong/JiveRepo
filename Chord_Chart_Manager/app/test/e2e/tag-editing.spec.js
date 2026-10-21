@@ -38,6 +38,22 @@ async function cachedSongAndQueue(page, songId) {
   }, songId);
 }
 
+async function expectOfflineSaveCommitted(page, songId, title) {
+  const chart = page.locator('.chart-view');
+  await expect(chart).toBeVisible();
+  await expect(chart.locator('.chart-topbar-title')).toHaveText(title);
+  await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
+
+  const state = await cachedSongAndQueue(page, songId);
+  expect(state.song).toBeTruthy();
+  expect(state.song._sync?.operation).toBe('update');
+  expect(state.song._sync?.genres_unchanged).toBe(false);
+  expect(state.queue).toHaveLength(1);
+  expect(state.queue[0]).toMatchObject({ entity: 'song', id: songId });
+  expect(state.queue[0].local_revision).toBeGreaterThan(0);
+  return state;
+}
+
 const test = base.extend({
   t09Fixture: [async ({ request, context }, use) => {
     const initialArtistIds = new Set((await testDatabase.query('SELECT id FROM public.artists')).rows.map(row => row.id));
@@ -563,8 +579,7 @@ test('offline export ordering promotes the first name-ordered secondary and re-a
     await context.setOffline(true);
     await page.getByRole('button', { name: `Remove ${primary} from Genre` }).click();
     await page.getByRole('button', { name: 'Save changes' }).click();
-    await expect(page.getByText(/Saved on this device|saved locally/i)).toBeVisible();
-    const promoted = await cachedSongAndQueue(page, song.id);
+    const promoted = await expectOfflineSaveCommitted(page, song.id, title);
     expect(promoted.song.genres.map(tag => tag.name)).toEqual([alpha, zeta]);
     expect(promoted.song.genres.find(tag => tag.is_primary)?.name).toBe(alpha);
     await page.getByRole('button', { name: 'Edit' }).click();
@@ -572,10 +587,11 @@ test('offline export ordering promotes the first name-ordered secondary and re-a
     await input.fill(primary);
     await page.getByRole('option', { name: primary, exact: true }).click();
     await page.getByRole('button', { name: 'Save changes' }).click();
-    await expect(page.getByText(/changes saved locally until you sync/i)).toBeVisible();
-    const afterReadd = await cachedSongAndQueue(page, song.id);
+    const afterReadd = await expectOfflineSaveCommitted(page, song.id, title);
     expect(afterReadd.song.genres.find(tag => tag.is_primary)?.name).toBe(alpha);
     expect(afterReadd.song.genres.map(tag => tag.name)).toEqual([alpha, zeta, primary]);
+    expect(afterReadd.queue[0].local_revision).toBeGreaterThan(promoted.queue[0].local_revision);
+    expect(afterReadd.song._sync.genres_unchanged).toBe(false);
     await context.setOffline(false);
   });
 
@@ -613,7 +629,10 @@ test('two open editors keep a newer queued tag change when the stale editor save
     await firstGenre.fill(queuedGenre);
     await page.getByRole('option', { name: queuedGenre, exact: true }).click();
     await page.getByRole('button', { name: 'Save changes' }).click();
-    await expect(page.getByText(/changes saved locally until you sync/i)).toBeVisible();
+    const queued = await expectOfflineSaveCommitted(page, song.id, title);
+    expect(queued.song.genres.map(tag => tag.name)).toEqual([initialGenre, queuedGenre]);
+    expect(queued.song.genres.find(tag => tag.is_primary)?.name).toBe(initialGenre);
+    expect(queued.song._sync.genres_unchanged).toBe(false);
 
     let releaseDispatch;
     let dispatched;

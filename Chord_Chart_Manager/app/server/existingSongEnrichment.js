@@ -11,10 +11,13 @@ const KEYS = new Set([
 const SUPPORTED_KEYS = new Set([...KEYS, ...[...KEYS].map(key => `${key}m`)]);
 const SOURCES = new Set(["MusicBrainz", "AcousticBrainz", "Gemini"]);
 const SCALAR_SOURCES = {
-  release_year: new Set(["MusicBrainz"]),
-  original_key: new Set(["AcousticBrainz"]),
-  bpm: new Set(["AcousticBrainz"]),
+  release_year: new Set(["MusicBrainz", "Gemini"]),
+  original_key: new Set(["AcousticBrainz", "Gemini"]),
+  bpm: new Set(["AcousticBrainz", "Gemini"]),
 };
+const GEMINI_MODEL_ID = "gemini-3.1-flash-lite";
+const GEMINI_PROMPT_VERSIONS = new Set(["missing-metadata-fallback-v1", "missing-metadata-fallback-v2"]);
+const GEMINI_SCHEMA_VERSIONS = new Set(["missing-metadata-schema-v1", "missing-metadata-schema-v2"]);
 
 /*
  * Pure preview input contract:
@@ -298,7 +301,26 @@ function evidenceReference(item, allowedSources = SOURCES) {
   if (!item || typeof item.source !== "string" || !allowedSources.has(item.source) ||
       typeof item.response_digest !== "string" ||
       !/^[A-Za-z0-9._:-]{1,160}$/.test(item.response_digest)) return null;
-  return { source: item.source, response_digest: item.response_digest };
+  if (item.source === "Gemini") {
+    if (!/^[a-f0-9]{64}$/.test(item.response_digest) || item.model_id !== GEMINI_MODEL_ID ||
+        !GEMINI_PROMPT_VERSIONS.has(item.prompt_version) || !GEMINI_SCHEMA_VERSIONS.has(item.schema_version)) return null;
+    return { source: item.source, response_digest: item.response_digest, model_id: item.model_id,
+      prompt_version: item.prompt_version, schema_version: item.schema_version };
+  }
+  if (item.submission_id !== undefined && (typeof item.submission_id !== "string" ||
+      item.source === "AcousticBrainz" && !/^[0-9a-f-]{36}:\d+$/i.test(item.submission_id) ||
+      item.source === "MusicBrainz" && !/^recording:[0-9a-f-]{36}$/i.test(item.submission_id) || item.source === "Gemini")) return null;
+  return { source: item.source, response_digest: item.response_digest,
+    ...(item.source !== "Gemini" && item.submission_id ? { submission_id: item.submission_id.toLowerCase() } : {}) };
+}
+
+function geminiOnlyEvidence(evidence) {
+  const items = [
+    ...SCALAR_FIELDS.flatMap(field => Array.isArray(evidence?.scalars?.[field]) ? evidence.scalars[field] : []),
+    ...(Array.isArray(evidence?.genres) ? evidence.genres : []),
+    ...(Array.isArray(evidence?.vibes) ? evidence.vibes : []),
+  ];
+  return items.length > 0 && items.every(item => item?.source === "Gemini" && evidenceReference(item) !== null);
 }
 
 function normalizedScalarValue(field, value) {
@@ -399,9 +421,10 @@ function resolveScalar(field, song, evidence, reviewDecision, diagnostics) {
   }
 
   const selectedValue = normalizedScalarValue(field, selected.value);
-  const match = valid.find(item => sameRawValue(item.raw, selected.value) &&
-    item.reference.source === selected.source &&
-    item.reference.response_digest === selected.response_digest);
+  const match = valid.find(item => sameRawValue(item.raw, selected.value) && item.reference.source === selected.source &&
+    item.reference.response_digest === selected.response_digest &&
+    (item.reference.submission_id === undefined || selected.submission_id === item.reference.submission_id) &&
+    ["model_id", "prompt_version", "schema_version"].every(key => selected[key] === undefined || selected[key] === item.reference[key]));
   if (selectedValue === null || !match) {
     diagnostics.push(diagnostic("selection_not_in_evidence", null, field));
     return null;
@@ -410,7 +433,7 @@ function resolveScalar(field, song, evidence, reviewDecision, diagnostics) {
     field,
     before: song[field],
     after: selectedValue,
-    evidence: { source: match.reference.source, response_digest: match.reference.response_digest },
+    evidence: { ...match.reference },
   };
 }
 
@@ -564,8 +587,9 @@ function buildEnrichmentPreview(songSnapshot, evidence, reviewDecision, definiti
   }
   const evidenceMbid = evidence?.mbid;
   const approvedMbid = reviewDecision?.mbid;
-  if (typeof evidenceMbid !== "string" || !UUID.test(evidenceMbid) ||
-      typeof approvedMbid !== "string" || approvedMbid !== evidenceMbid) {
+  const hasRecordingIdentity = typeof evidenceMbid === "string" && UUID.test(evidenceMbid) && approvedMbid === evidenceMbid;
+  const geminiOnly = evidenceMbid === null && approvedMbid === null && geminiOnlyEvidence(evidence);
+  if (!hasRecordingIdentity && !geminiOnly) {
     throw codedError("EVIDENCE_NOT_APPROVED", "reviewDecision must approve the exact evidence MBID");
   }
 

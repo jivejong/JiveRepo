@@ -110,6 +110,55 @@ describe('bounded provider HTTPS transport', () => {
     expect(client.getRunLedger()).toEqual([{ provider: 'MusicBrainz', operation: 'recording_lookup', attempt: 1, status: 'ok' }]);
   });
 
+  it('dispatches the official bounded Gemini Interactions request through the strict transport allowlist', async () => {
+    const reply = { status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text',
+      text: JSON.stringify({ release_year: 1978, bpm: null, original_key: null, genres: ['Rock'], vibes: [] }) }] }],
+      usage: { total_input_tokens: 20, total_output_tokens: 6, total_tokens: 26 } };
+    const fake = fakeHttps({ chunks: [Buffer.from(JSON.stringify(reply))] });
+    let sentBody;
+    const transport = createSongEnrichmentTransport({ request: (url, options, callback) => {
+      const outgoing = fake.httpsRequest(url, options, callback);
+      const end = outgoing.end;
+      outgoing.end = body => { sentBody = Buffer.from(body); end(); };
+      return outgoing;
+    } });
+    const client = createSongEnrichmentProviderClient({ transport, config: {
+      maxAttempts: 1, maxGeminiAttempts: 1, timeoutMs: 10_000, maxResponseBytes: MAX_RESPONSE_BYTES,
+      geminiMaxInputBytes: 16_384, geminiMaxOutputTokens: 1_024, musicBrainzUserAgent: USER_AGENT,
+    }, cache: null });
+    const result = await client.requestGeminiTags({ title: 'Song', artist: 'Artist', requestedFields: ['release_year'],
+      definitions: { genres: [{ name: 'Rock' }], vibes: [] }, apiKey: 'synthetic-gemini-key' });
+    expect(result).toMatchObject({ status: 'ok', scalars: { release_year: [{ value: 1978, source: 'Gemini' }] },
+      genres: [{ name: 'Rock' }], vibes: [] });
+    expect(fake.captured.calls).toHaveLength(1);
+    expect(fake.captured.calls[0].url).toBe('https://generativelanguage.googleapis.com/v1beta/interactions');
+    expect(fake.captured.calls[0].options.method).toBe('POST');
+    expect(fake.captured.calls[0].options.headers['x-goog-api-key']).toBe('synthetic-gemini-key');
+    const sent = JSON.parse(sentBody.toString());
+    expect(sent).toMatchObject({ model: 'gemini-3.1-flash-lite', store: false,
+      generation_config: { max_output_tokens: 1_024 }, response_format: { type: 'text', mime_type: 'application/json' } });
+    expect(sent.input).not.toContain(MBID);
+  });
+
+  it('rejects malformed Gemini endpoint, headers and body before HTTPS dispatch', async () => {
+    const fake = fakeHttps();
+    const transport = createSongEnrichmentTransport({ request: fake.httpsRequest });
+    const body = Buffer.from(JSON.stringify({ model: 'gemini-3.1-flash-lite', input: 'x', system_instruction: 'x',
+      store: false, response_format: { type: 'text', mime_type: 'application/json', schema: { type: 'object',
+        required: ['release_year', 'bpm', 'original_key', 'genres', 'vibes'], properties: {
+          release_year: {}, bpm: {}, original_key: {}, genres: {}, vibes: {} }, additionalProperties: false } },
+      generation_config: { max_output_tokens: 1024 } }));
+    const base = request(new URL('https://generativelanguage.googleapis.com/v1beta/interactions'), { method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'x-goog-api-key': 'test-key' }, body });
+    for (const invalid of [
+      { ...base, url: 'https://generativelanguage.googleapis.com/v1beta/interactions?x=1' },
+      { ...base, headers: { ...base.headers, 'x-goog-api-key': 'bad\r\nInjected: yes' } },
+      { ...base, body: Buffer.alloc(16_385) },
+      { ...base, method: 'GET' },
+    ]) await expect(transport(invalid)).rejects.toMatchObject({ code: 'INVALID_PROVIDER_REQUEST' });
+    expect(fake.captured.calls).toHaveLength(0);
+  });
+
   it('rejects old and unexpected recording lookup includes before HTTPS dispatch', async () => {
     const fake = fakeHttps();
     const transport = createSongEnrichmentTransport({ request: fake.httpsRequest });
@@ -268,7 +317,8 @@ describe('bounded provider HTTPS transport', () => {
     const response = fake.captured.openResponse();
     response.emit('data', Buffer.from('partial'));
     response.emit('error', Object.assign(new Error('controlled stream failure'), { code: 'ECONNRESET' }));
-    await expect(pending).rejects.toMatchObject({ message: 'Provider HTTPS response failed.' });
+    await expect(pending).rejects.toMatchObject({ message: 'Provider transport failed.', code: 'ECONNRESET',
+      failure_details: { failure_phase: 'response', http_status: 200, https_started: true, transport_error_code: 'ECONNRESET' } });
     await new Promise(resolve => setImmediate(resolve));
     expect(fake.captured.requests[0].destroyed).toBe(true);
     expect(response.destroyed).toBe(true);
@@ -307,7 +357,8 @@ describe('bounded provider HTTPS transport', () => {
       return outgoing;
     };
     const transport = createSongEnrichmentTransport({ request: fake.httpsRequest });
-    await expect(transport(request(searchUrl()))).rejects.toMatchObject({ message: 'Provider HTTPS request could not be started.' });
+    await expect(transport(request(searchUrl()))).rejects.toMatchObject({ message: 'Provider transport failed.',
+      failure_details: { failure_phase: 'request_start', https_started: true } });
     await new Promise(resolve => setImmediate(resolve));
     expect(fake.captured.requests[0].destroyed).toBe(true);
     expect(fake.captured.requests[0].listenerCount('error')).toBe(0);

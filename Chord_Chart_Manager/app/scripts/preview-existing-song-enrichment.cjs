@@ -112,7 +112,7 @@ async function captureReadOnlyBaseline(pool, songIds) {
   try {
     beginAttempted = true;
     await client.query("BEGIN READ ONLY");
-    const songsResult = await client.query(`SELECT s.id,s.title,a.name AS artist_name,s.release_year,s.original_key,s.bpm,
+    const songsResult = await client.query(`SELECT s.id,s.title,s.artist_id,a.name AS artist_name,s.release_year,s.original_key,s.bpm,
         to_char(s.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS updated_at
       FROM public.songs s JOIN public.artists a ON a.id=s.artist_id
       WHERE s.id=ANY($1::int[]) ORDER BY s.id`, [songIds]);
@@ -120,14 +120,12 @@ async function captureReadOnlyBaseline(pool, songIds) {
         new Set(songsResult.rows.map(row => row.id)).size !== songIds.length) {
       throw cliError("One or more requested song IDs are absent from the captured database baseline.", "SONG_ID_SET_MISMATCH");
     }
-    const [genreAssignments, vibeAssignments, genreDefinitions, vibeDefinitions] = await Promise.all([
-      client.query(`SELECT sg.song_id,g.id,g.name,sg.is_primary FROM public.song_genres sg
-        JOIN public.genres g ON g.id=sg.genre_id WHERE sg.song_id=ANY($1::int[]) ORDER BY sg.song_id,g.id`, [songIds]),
-      client.query(`SELECT sv.song_id,v.id,v.name FROM public.song_vibes sv
-        JOIN public.vibes v ON v.id=sv.vibe_id WHERE sv.song_id=ANY($1::int[]) ORDER BY sv.song_id,v.id`, [songIds]),
-      client.query("SELECT id,name FROM public.genres ORDER BY id"),
-      client.query("SELECT id,name FROM public.vibes ORDER BY id"),
-    ]);
+    const genreAssignments = await client.query(`SELECT sg.song_id,g.id,g.name,sg.is_primary FROM public.song_genres sg
+        JOIN public.genres g ON g.id=sg.genre_id WHERE sg.song_id=ANY($1::int[]) ORDER BY sg.song_id,g.id`, [songIds]);
+    const vibeAssignments = await client.query(`SELECT sv.song_id,v.id,v.name FROM public.song_vibes sv
+        JOIN public.vibes v ON v.id=sv.vibe_id WHERE sv.song_id=ANY($1::int[]) ORDER BY sv.song_id,v.id`, [songIds]);
+    const genreDefinitions = await client.query("SELECT id,name FROM public.genres ORDER BY id");
+    const vibeDefinitions = await client.query("SELECT id,name FROM public.vibes ORDER BY id");
     await client.query("COMMIT");
     const genresBySong = new Map(songIds.map(id => [id, []]));
     for (const row of genreAssignments.rows) genresBySong.get(row.song_id)?.push({ id: row.id, name: row.name, is_primary: row.is_primary });
@@ -136,6 +134,7 @@ async function captureReadOnlyBaseline(pool, songIds) {
     return {
       songs: songsResult.rows.map(row => ({
         id: row.id,
+        artist_id: row.artist_id,
         title: row.title,
         artist: row.artist_name,
         updated_at: row.updated_at,

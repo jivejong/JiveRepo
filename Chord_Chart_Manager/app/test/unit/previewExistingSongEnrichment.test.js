@@ -174,12 +174,54 @@ describe('existing-song read-only enrichment preview', () => {
     expect(queries[0].sql).toBe('BEGIN READ ONLY');
     expect(queries.at(-1).sql).toBe('COMMIT');
     const songQuery = queries.find(item => item.sql.includes('FROM public.songs s JOIN public.artists'));
-    expect(songQuery.sql).toContain('s.id,s.title,a.name AS artist_name,s.release_year,s.original_key,s.bpm');
+    expect(songQuery.sql).toContain('s.id,s.title,s.artist_id,a.name AS artist_name,s.release_year,s.original_key,s.bpm');
     expect(songQuery.sql).toContain('SS.US');
     expect(songQuery.sql).not.toMatch(/chart_source|chart_content|lyrics|SELECT\s+s\.\*/i);
     expect(queries.some(item => /\b(INSERT|UPDATE|DELETE|LOCK)\b/i.test(item.sql))).toBe(false);
     expect(result.songs[0].base_version).toBe('2026-10-15T14:22:33.123456Z');
     expect(result.database_writes).toBe(false);
+  });
+
+  it('runs baseline queries sequentially and releases the client after a query failure', async () => {
+    const makePool = failOn => {
+      const events = [];
+      let active = 0;
+      let overlap = false;
+      const client = {
+        async query(sql) {
+          if (active !== 0) overlap = true;
+          active += 1;
+          events.push(sql.trim().split(/\s+/).slice(0, 3).join(' '));
+          try {
+            await Promise.resolve();
+            if (failOn && sql.includes(failOn)) throw new Error('synthetic query failure');
+            if (sql === 'BEGIN READ ONLY' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
+            if (sql.includes('FROM public.songs s JOIN public.artists')) return { rows: [{ id: 42, title: 'Lights',
+              artist_name: 'Journey', updated_at: song().updated_at, release_year: null, original_key: null, bpm: null }] };
+            if (sql.includes('FROM public.song_genres')) return { rows: [] };
+            if (sql.includes('FROM public.song_vibes')) return { rows: [] };
+            if (sql === 'SELECT id,name FROM public.genres ORDER BY id') return { rows: [{ id: 1, name: 'Rock' }] };
+            if (sql === 'SELECT id,name FROM public.vibes ORDER BY id') return { rows: [{ id: 2, name: 'Calm' }] };
+            throw new Error('unexpected query');
+          } finally { active -= 1; }
+        },
+        release() { events.push('released'); },
+      };
+      return { pool: { async connect() { return client; } }, events, hasOverlap: () => overlap };
+    };
+
+    const success = makePool(null);
+    const baseline = await preview.captureReadOnlyBaseline(success.pool, [42]);
+    expect(baseline.songs[0]).toMatchObject({ id: 42, title: 'Lights', artist: 'Journey' });
+    expect(success.hasOverlap()).toBe(false);
+    expect(success.events.at(-1)).toBe('released');
+    expect(success.events).toContain('COMMIT');
+
+    const failure = makePool('FROM public.song_vibes');
+    await expect(preview.captureReadOnlyBaseline(failure.pool, [42])).rejects.toMatchObject({ code: 'BASELINE_READ_FAILED' });
+    expect(failure.hasOverlap()).toBe(false);
+    expect(failure.events).toContain('ROLLBACK');
+    expect(failure.events.at(-1)).toBe('released');
   });
 
   it('releases after a missing requested ID and makes no provider request', async () => {

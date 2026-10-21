@@ -1,4 +1,5 @@
 const crypto = require("node:crypto");
+const { protectedSnapshotSha256, verifyRestoreProof } = require("./mainEnrichmentSafety.js");
 const { buildEnrichmentPreview } = require("./existingSongEnrichment");
 const { definitionKey, lockTagDefinitionNames, normalizeDefinitionName } = require("./tagDefinitionNames");
 
@@ -6,10 +7,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VERSION = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{6})Z$/;
 const SOURCES = new Set(["MusicBrainz", "AcousticBrainz", "Gemini"]);
 const FIELD_SOURCES = {
-  release_year: new Set(["MusicBrainz"]),
-  original_key: new Set(["AcousticBrainz"]),
-  bpm: new Set(["AcousticBrainz"]),
+  release_year: new Set(["MusicBrainz", "Gemini"]),
+  original_key: new Set(["AcousticBrainz", "Gemini"]),
+  bpm: new Set(["AcousticBrainz", "Gemini"]),
 };
+const GEMINI_PROVENANCE = Object.freeze({ model_id: "gemini-3.1-flash-lite",
+  prompt_version: "missing-metadata-fallback-v2", schema_version: "missing-metadata-schema-v2" });
+const LEGACY_GEMINI_PROMPT_VERSIONS = new Set(["missing-metadata-fallback-v1", GEMINI_PROVENANCE.prompt_version]);
+const SUPPORTED_GEMINI_SCHEMA_VERSIONS = new Set(["missing-metadata-schema-v1", GEMINI_PROVENANCE.schema_version]);
 const SCALAR_FIELDS = ["release_year", "original_key", "bpm"];
 const SCALAR_SQL_COLUMNS = Object.freeze({ release_year: "release_year", original_key: "original_key", bpm: "bpm" });
 const MAX_INTEGER_ID = 2_147_483_647;
@@ -86,8 +91,22 @@ function validateJsonTree(value, seen = new Set()) {
 }
 
 function validEvidenceRef(item, allowed = SOURCES) {
-  return exactKeys(item, ["source", "response_digest"]) && allowed.has(item.source) &&
-    typeof item.response_digest === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(item.response_digest);
+  if (!item || !allowed.has(item.source) || typeof item.response_digest !== "string" ||
+      !/^[A-Za-z0-9._:-]{1,160}$/.test(item.response_digest)) return false;
+  if (item.source === "Gemini") return exactKeys(item, ["source", "response_digest", ...Object.keys(GEMINI_PROVENANCE)]) &&
+    /^[a-f0-9]{64}$/.test(item.response_digest) && item.model_id === GEMINI_PROVENANCE.model_id &&
+    LEGACY_GEMINI_PROMPT_VERSIONS.has(item.prompt_version) && SUPPORTED_GEMINI_SCHEMA_VERSIONS.has(item.schema_version);
+  if (item.submission_id !== undefined && (typeof item.submission_id !== "string" ||
+      item.source === "AcousticBrainz" && !/^[0-9a-f-]{36}:\d+$/i.test(item.submission_id) ||
+      item.source === "MusicBrainz" && !/^recording:[0-9a-f-]{36}$/i.test(item.submission_id) || item.source === "Gemini")) return false;
+  return exactKeys(item, ["source", "response_digest"], ["submission_id"]);
+}
+
+function isGeminiOnlyEvidence(evidence) {
+  const items = [
+    ...Object.values(evidence.scalars).flat(), ...evidence.genres, ...evidence.vibes,
+  ];
+  return items.length > 0 && items.every(item => item.source === "Gemini");
 }
 
 function validCandidateValue(value) {
@@ -98,7 +117,8 @@ function validCandidateValue(value) {
 }
 
 function validateEvidence(evidence, songId) {
-  if (!exactKeys(evidence, ["mbid", "scalars", "genres", "vibes"]) || !UUID.test(evidence.mbid)) {
+  if (!exactKeys(evidence, ["mbid", "scalars", "genres", "vibes"]) ||
+      evidence.mbid !== null && (typeof evidence.mbid !== "string" || !UUID.test(evidence.mbid))) {
     throw fail("INVALID_MANIFEST", "Evidence shape is invalid.", songId);
   }
   {
@@ -107,12 +127,16 @@ function validateEvidence(evidence, songId) {
     }
     for (const [field, candidates] of Object.entries(evidence.scalars)) {
       if (!Array.isArray(candidates) || !candidates.every(item => {
-        if (!exactKeys(item, ["value", "source", "response_digest"], ["submission_id", "association"]) ||
+        if (!exactKeys(item, ["value", "source", "response_digest"], ["submission_id", "association", ...Object.keys(GEMINI_PROVENANCE)]) ||
             !validCandidateValue(item.value) || !SOURCES.has(item.source) ||
             typeof item.response_digest !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(item.response_digest)) return false;
         if (item.submission_id !== undefined && (typeof item.submission_id !== "string" || item.submission_id.length > 200)) return false;
         if (item.association !== undefined && !["genre", "tag"].includes(item.association)) return false;
-        return FIELD_SOURCES[field].has(item.source) && (field === "original_key"
+        return (item.source === "Gemini" ? exactKeys(item, ["value", "source", "response_digest", ...Object.keys(GEMINI_PROVENANCE)]) &&
+          validEvidenceRef({ source: item.source, response_digest: item.response_digest,
+            model_id: item.model_id, prompt_version: item.prompt_version, schema_version: item.schema_version }) :
+          !Object.keys(GEMINI_PROVENANCE).some(key => Object.hasOwn(item, key))) &&
+          FIELD_SOURCES[field].has(item.source) && (field === "original_key"
           ? typeof item.value === "string" || exactKeys(item.value, ["key_key", "key_scale"]) &&
             typeof item.value.key_key === "string" && typeof item.value.key_scale === "string"
           : typeof item.value === "number" && Number.isFinite(item.value));
@@ -122,9 +146,13 @@ function validateEvidence(evidence, songId) {
   for (const field of ["genres", "vibes"]) {
     const labels = evidence[field];
     if (!Array.isArray(labels) || !labels.every(item =>
-      exactKeys(item, ["name", "source", "response_digest"], ["association"]) &&
+      exactKeys(item, ["name", "source", "response_digest"], ["association", ...Object.keys(GEMINI_PROVENANCE)]) &&
       typeof item.name === "string" && SOURCES.has(item.source) &&
       typeof item.response_digest === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(item.response_digest) &&
+      (item.source === "Gemini" ? exactKeys(item, ["name", "source", "response_digest", ...Object.keys(GEMINI_PROVENANCE)]) &&
+        validEvidenceRef({ source: item.source, response_digest: item.response_digest,
+          model_id: item.model_id, prompt_version: item.prompt_version, schema_version: item.schema_version }) :
+        !Object.keys(GEMINI_PROVENANCE).some(key => Object.hasOwn(item, key))) &&
       (item.association === undefined || ["genre", "tag"].includes(item.association)))) {
       throw fail("INVALID_MANIFEST", "Tag evidence shape is invalid.", songId);
     }
@@ -136,7 +164,8 @@ function validateEvidence(evidence, songId) {
 }
 
 function validateDecision(decision, songId) {
-  if (!exactKeys(decision, ["mbid", "scalars", "genres", "vibes"], ["primaryGenre"]) || !UUID.test(decision.mbid)) {
+  if (!exactKeys(decision, ["mbid", "scalars", "genres", "vibes"], ["primaryGenre"]) ||
+      decision.mbid !== null && (typeof decision.mbid !== "string" || !UUID.test(decision.mbid))) {
     throw fail("INVALID_MANIFEST", "Review decision shape is invalid.", songId);
   }
   {
@@ -148,10 +177,21 @@ function validateDecision(decision, songId) {
         ? typeof selection?.value === "string" || exactKeys(selection?.value, ["key_key", "key_scale"]) &&
           typeof selection.value.key_key === "string" && typeof selection.value.key_scale === "string"
         : typeof selection?.value === "number" && Number.isFinite(selection.value);
-      if (!exactKeys(selection, ["value", "source", "response_digest"]) || !validValue ||
+      if (!exactKeys(selection, ["value", "source", "response_digest"], ["submission_id", "model_id", "prompt_version", "schema_version"]) || !validValue ||
           !SOURCES.has(selection.source) || typeof selection.response_digest !== "string" ||
           !/^[A-Za-z0-9._:-]{1,160}$/.test(selection.response_digest)) {
         throw fail("INVALID_MANIFEST", "Scalar review selection is invalid.", songId);
+      }
+      const selectedRef = { source: selection.source, response_digest: selection.response_digest,
+        ...(selection.submission_id !== undefined ? { submission_id: selection.submission_id } : {}),
+        ...(selection.model_id !== undefined ? { model_id: selection.model_id } : {}),
+        ...(selection.prompt_version !== undefined ? { prompt_version: selection.prompt_version } : {}),
+        ...(selection.schema_version !== undefined ? { schema_version: selection.schema_version } : {}) };
+      const suppliedGeminiProvenance=["model_id","prompt_version","schema_version"].some(key=>selection[key]!==undefined);
+      if (selection.source === "Gemini" && suppliedGeminiProvenance && !validEvidenceRef(selectedRef) ||
+          Object.keys(selection).some(key => !["value","source","response_digest","submission_id","model_id","prompt_version","schema_version"].includes(key)) ||
+          selection.submission_id !== undefined && !validEvidenceRef({source:selection.source,response_digest:selection.response_digest,submission_id:selection.submission_id})) {
+        throw fail("INVALID_MANIFEST", "Scalar review provenance is invalid.", songId);
       }
     }
   }
@@ -172,7 +212,8 @@ function validateDecision(decision, songId) {
 function validatePreview(preview, songId) {
   const top = ["format_version", "song_id", "base_version", "approved_mbid", "scalar_changes", "tag_additions", "primary_proposal", "diagnostics", "has_changes"];
   if (!exactKeys(preview, top) || preview.format_version !== 1 || preview.song_id !== songId ||
-      !validVersion(preview.base_version) || !UUID.test(preview.approved_mbid) ||
+      !validVersion(preview.base_version) || preview.approved_mbid !== null &&
+        (typeof preview.approved_mbid !== "string" || !UUID.test(preview.approved_mbid)) ||
       !Array.isArray(preview.scalar_changes) || !Array.isArray(preview.diagnostics) || typeof preview.has_changes !== "boolean" ||
       !exactKeys(preview.tag_additions, ["genres", "vibes"]) ||
       !Array.isArray(preview.tag_additions.genres) || !Array.isArray(preview.tag_additions.vibes)) {
@@ -180,7 +221,7 @@ function validatePreview(preview, songId) {
   }
   for (const change of preview.scalar_changes) {
     if (!exactKeys(change, ["field", "before", "after", "evidence"]) || !SCALAR_FIELDS.includes(change.field) ||
-        !validCandidateValue(change.before) || !validCandidateValue(change.after) || !validEvidenceRef(change.evidence, new Set(["MusicBrainz", "AcousticBrainz"]))) {
+        !validCandidateValue(change.before) || !validCandidateValue(change.after) || !validEvidenceRef(change.evidence)) {
       throw fail("INVALID_MANIFEST", "Reviewed scalar delta is invalid.", songId);
     }
   }
@@ -223,8 +264,16 @@ function validateManifest(manifest) {
     validateEvidence(item.evidence, item.song_id);
     validateDecision(item.review_decision, item.song_id);
     validatePreview(item.preview, item.song_id);
-    if (item.evidence.mbid !== item.review_decision.mbid || item.preview.approved_mbid !== item.evidence.mbid ||
-        item.preview.base_version !== item.base_version) throw fail("INVALID_MANIFEST", "Song evidence, decision and preview identity must agree.", item.song_id);
+    const geminiOnly = isGeminiOnlyEvidence(item.evidence);
+    if (item.evidence.mbid === null && !geminiOnly) {
+      throw fail("EVIDENCE_IDENTITY_REQUIRED", "Factual-provider evidence requires an approved recording MBID.", item.song_id);
+    }
+    if (item.evidence.mbid !== item.review_decision.mbid) {
+      throw fail("EVIDENCE_IDENTITY_MISMATCH", "Evidence and review decision recording identities must agree.", item.song_id);
+    }
+    if (item.preview.approved_mbid !== item.evidence.mbid || item.preview.base_version !== item.base_version) {
+      throw fail("PREVIEW_IDENTITY_MISMATCH", "Preview identity and version must match the reviewed evidence.", item.song_id);
+    }
   }
   return [...manifest.songs].sort((a, b) => a.song_id - b.song_id);
 }
@@ -470,7 +519,9 @@ async function verifyFinalTargetValues(client, items, response) {
   }
 }
 
-async function applySongEnrichment(pool, manifest) {
+async function applyEnrichmentTransaction(pool, manifest, authorizeConnection, {
+  authorizeInsideTransaction = true, authorizeBeforeLock = false, authorizeNewOperation = null,
+} = {}) {
   if (!pool || typeof pool.connect !== "function") throw fail("INVALID_POOL", "An explicit database pool is required.");
   if (!validateJsonTree(manifest)) throw fail("INVALID_MANIFEST", "Enrichment manifest must be plain JSON data.");
   const privateManifest = privateJsonCopy(manifest);
@@ -482,12 +533,16 @@ async function applySongEnrichment(pool, manifest) {
   let sessionOperationLock = false;
   try {
     client = await pool.connect();
-    await validateScratchOwnership(client);
-      await client.query("SELECT pg_advisory_lock(hashtext($1),hashtext($2))", ["ccm-song-enrichment-operation", operationId]);
+    if (authorizeBeforeLock) await authorizeConnection(client, privateManifest);
+    if (!authorizeInsideTransaction) await authorizeConnection(client, privateManifest);
+    await client.query("SELECT pg_advisory_lock(hashtext($1),hashtext($2))", ["ccm-song-enrichment-operation", operationId]);
     sessionOperationLock = true;
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
     inTransaction = true;
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))", ["ccm-song-enrichment-operation", operationId]);
+    // Check the scratch owner or main restore/snapshot gate inside the same
+    // serializable transaction as the apply, closing the preflight race window.
+    if (authorizeInsideTransaction) await authorizeConnection(client, privateManifest);
     const prior = await client.query("SELECT request_hash,response FROM public.song_enrichment_runs WHERE operation_id=$1", [operationId]);
     if (prior.rowCount) {
       if (prior.rows[0].request_hash !== hash) throw fail("OPERATION_ID_REUSED", "Operation ID was used for a different manifest.");
@@ -495,6 +550,7 @@ async function applySongEnrichment(pool, manifest) {
       inTransaction = false;
       return prior.rows[0].response;
     }
+    if (authorizeNewOperation) await authorizeNewOperation(client, privateManifest);
 
     const ids = orderedItems.map(item => item.song_id);
     const initialAssignments = await readAssignments(client, ids);
@@ -624,4 +680,64 @@ async function applySongEnrichment(pool, manifest) {
   }
 }
 
-module.exports = { applySongEnrichment, stableJson, validateManifest };
+async function applySongEnrichment(pool, manifest) {
+  return applyEnrichmentTransaction(pool, manifest, validateScratchOwnership, { authorizeInsideTransaction: false });
+}
+
+function validateMainApplyInputs(manifest, gate) {
+  if (!gate || gate.apply_main !== true || typeof gate.expected_database !== "string" ||
+      !/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(gate.expected_database) ||
+      typeof gate.manifest_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(gate.manifest_sha256) ||
+      !Array.isArray(gate.target_ids) || !gate.manifest_path ||
+      gate.restore_proof !== null && gate.restore_proof !== undefined && !isRecord(gate.restore_proof)) {
+    throw fail("MAIN_APPLY_GATE_REQUIRED", "Main enrichment requires explicit opt-in and reviewed backup proof.");
+  }
+  const ordered = validateManifest(manifest);
+  const ids = ordered.map(item => item.song_id);
+  if (ids.length > 25 || JSON.stringify(ids) !== JSON.stringify([...gate.target_ids].sort((a,b)=>a-b)) ||
+      requestHash(manifest) !== gate.manifest_sha256) {
+    throw fail("MAIN_APPLY_MANIFEST_MISMATCH", "Main apply target set or canonical manifest hash does not match the reviewed inputs.");
+  }
+  if (gate.restore_proof && (gate.restore_proof.target_database !== gate.expected_database ||
+      gate.restore_proof.manifest_sha256 !== gate.manifest_sha256)) {
+    throw fail("RESTORE_PROOF_MISMATCH", "Restore proof is not bound to this database and manifest.");
+  }
+  return ids;
+}
+
+async function authorizeMainConnection(client, gate) {
+  const identity = (await client.query(`SELECT current_database() AS database_name,current_user AS current_user_name,
+      owner.rolname AS owner_name FROM pg_database db JOIN pg_roles owner ON owner.oid=db.datdba
+    WHERE db.datname=current_database()`)).rows[0];
+  if (!identity || identity.database_name !== gate.expected_database) throw fail("DATABASE_IDENTITY_MISMATCH", "Connected database does not match the explicit expected database.");
+  const migration = await client.query("SELECT 1 FROM public.schema_migrations WHERE version='0004'");
+  if (migration.rowCount !== 1) throw fail("MIGRATION_REQUIRED", "Migration 0004 is absent; main apply stopped before writes.");
+}
+
+async function authorizeMainNewOperation(client, gate) {
+  if (!gate.restore_proof) throw fail("RESTORE_PROOF_REQUIRED", "A fresh signed backup and restore proof is required for a new main operation.");
+  if (gate.restore_proof.target_database !== gate.expected_database ||
+      gate.restore_proof.manifest_sha256 !== gate.manifest_sha256) {
+    throw fail("RESTORE_PROOF_MISMATCH", "Restore proof is not bound to this database and manifest.");
+  }
+  const currentSnapshot = await protectedSnapshotSha256(client);
+  if (currentSnapshot !== gate.restore_proof.live_snapshot_sha256) throw fail("MAIN_SNAPSHOT_CHANGED", "Complete protected database snapshot changed after restore verification.");
+}
+
+async function applyMainSongEnrichment(pool, manifest, gate) {
+  if (!validateJsonTree(manifest) || !validateJsonTree(gate)) throw fail("INVALID_MANIFEST", "Main apply inputs must be plain JSON data.");
+  const privateManifest = privateJsonCopy(manifest);
+  const privateGate = privateJsonCopy(gate);
+  validateMainApplyInputs(privateManifest, privateGate);
+  return applyEnrichmentTransaction(pool, privateManifest, client => authorizeMainConnection(client, privateGate), {
+    authorizeBeforeLock: true,
+    authorizeNewOperation: async client => {
+      try { await verifyRestoreProof(privateGate.restore_proof); }
+      catch { throw fail("RESTORE_PROOF_INVALID", "Fresh signed backup and restore verification is required."); }
+      return authorizeMainNewOperation(client, privateGate);
+    },
+  });
+}
+
+module.exports = { applyMainSongEnrichment, applySongEnrichment, authorizeMainConnection, stableJson,
+  validateMainApplyInputs, validateManifest };

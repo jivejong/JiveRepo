@@ -365,11 +365,11 @@ npm audit --omit=dev
 
 ## Import a `.docx` library
 
-The Python 3.10 pipeline converts Word chord charts to JSON, can enrich metadata,
-and loads PostgreSQL. Current code uses MusicBrainz and GetSongBPM. The approved
-replacement design is MusicBrainz → AcousticBrainz → Gemini fallback; it is not
-implemented or live-verified. T14 keeps enrichment off. Do not use proposed
-future configuration or commands until code supports them.
+The Python 3.10 pipeline converts Word chord charts to JSON and loads PostgreSQL.
+Its optional enrichment path still uses legacy MusicBrainz/GetSongBPM behavior.
+The separate Stage B existing-song MusicBrainz → AcousticBrainz → Gemini
+workflow was tested and used for bounded live enrichment; it is not wired into
+this loader. Keep pipeline enrichment off during the next ingestion stage.
 
 1. Put source `.docx` files in `pipeline/docs/`.
 2. From `app/`, build and run the parser:
@@ -396,13 +396,13 @@ future configuration or commands until code supports them.
      python load_songs.py parsed_out/songs.json
    ```
 
-The current optional implementation uses MusicBrainz and GetSongBPM; parsing and direct loading do not require enrichment. The approved MusicBrainz → AcousticBrainz → Gemini replacement is future design only. See the [pipeline guide](pipeline/README.md) for enrichment, caches, strict parsing,
+Parsing and direct loading do not require enrichment. See the [pipeline guide](pipeline/README.md) for the legacy optional enrichment path, caches, strict parsing,
 `--truncate`, and host-Python workflows.
 
 Source charts and generated JSON may contain copyrighted lyrics and are ignored
 by Git. Do not commit them or enrichment credentials.
 
-Current code uses [MusicBrainz](https://musicbrainz.org/) and [GetSongBPM](https://getsongbpm.com/). The approved future replacement is MusicBrainz → AcousticBrainz → Gemini fallback, and is not implemented or live-verified. Do not remove GetSongBPM attribution if previously sourced data may remain in use; verify data provenance first. T14 remains enrichment-off.
+Do not remove GetSongBPM attribution if previously sourced data may remain in use; verify data provenance first. Stage B's accepted results, remaining exceptions and the one-document C1 boundary are recorded in [the current handoff](docs/STAGE_B_CLOSEOUT_STAGE_C1_HANDOFF_2026-10-20.md).
 
 ## Troubleshooting
 
@@ -467,6 +467,101 @@ Restore requires an explicit confirmation because it replaces objects in the sel
 ```
 
 To schedule a backup, create a Windows Task Scheduler action using `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\path\to\Chord_Chart_Manager\scripts\backup.ps1"`, or add a Linux cron entry such as `0 2 * * * /path/to/Chord_Chart_Manager/scripts/backup.sh >> /path/to/backup.log 2>&1`. These are examples only; no scheduled job is created.
+
+## Existing-song enrichment operator workflow
+
+The bounded Stage B CLI consumes saved, validated evidence. Provider acquisition remains in the existing B4/Gemini
+preview commands; this workflow never calls providers. It has three explicit stages: `prepare` captures a fresh
+READ ONLY song/catalog baseline and writes a no-selection decision template; an operator edits that template;
+`preview` rechecks the exact baseline and evidence hashes, rebuilds the B1 preview and writes an exclusive,
+canonical B3 manifest. Outputs belong under ignored `backups/`. Chart bodies and raw provider responses are not
+inputs to this workflow.
+
+The accepted best-effort policy fills missing fields from factual evidence then attributed Gemini estimates,
+adds uniquely matched managed Genre/Vibe labels, and preserves populated values, assignments, primary Genre
+and chart/source. Minor positive BPM/key disagreements need not block an available valid estimate; absent or
+rejected evidence remains an exception. The reusable repository CLI still starts with empty decisions and does not run a
+general automatic library batch. Ignored private runners filled this session's decisions; they are not a
+reusable production batch command. Some repository source remains untracked pending the user's commit.
+Fresh backup/actual restore proof, exact versions, replay and
+transactional preservation remain mandatory for main writes.
+
+From `Chord_Chart_Manager/`, convert a saved explicit-recording trial. The converter validates the actual saved
+trial structure and refuses to overwrite an existing file:
+
+```powershell
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+node .\app\scripts\convert-factual-trial.cjs `
+  .\backups\missing-original-key-727-explicit-20261016T060723865Z-decf8925-8d99-4bb6-83c7-05c1d6fb8d79\trial-v1.json `
+  ".\backups\gemini-factual-context-727-$stamp.json"
+```
+
+The version 1 artifact binds target identity to a validated recording MBID/identity, preserves each scalar's
+source, value, response digest and submission reference, records total AcousticBrainz submissions and sampled
+offsets, and records conflict state. Historical provider provenance stays as recorded.
+
+Pass saved evidence to `prepare`; these concrete inputs include the song-727 factual context, successful scalar
+report, Vibe-only report, and Genre-only report:
+
+```powershell
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+$prepare = node .\app\scripts\operator-song-enrichment.cjs prepare `
+  --song-ids 727 `
+  --evidence "727=.\backups\gemini-factual-context-727-20261019-e24383eb9d854db2b84fb9d1240fed4a.json" `
+  --evidence "727=.\backups\gemini-manual-727-f95b438160024b4686d745f0447e4dd7\report-v1.json" `
+  --evidence "727=.\backups\gemini-vibe-only-727-2026-10-19T21-18-32-230Z-10213d05-77b1-4e53-8248-04e333d89044\report-v1.json" `
+  --evidence "727=.\backups\gemini-genre-only-727-2026-10-20T04-25-56-564Z-cc7084d6-5272-4b0f-bdea-7aa4549175a5\report-v1.json" `
+  --output-dir ".\backups\stage-b-prepare-727-$stamp" | ConvertFrom-Json
+code $prepare.decisionsPath
+```
+
+Open the returned `decisions-v1.json`. Every selection is empty by default. Select a scalar by copying its complete
+candidate object (value, source, digest, and submission reference or Gemini model/prompt/schema provenance); select
+tag additions by exact candidate name. A recording MBID also starts unselected; set `decision.mbid` to the exact
+validated `evidence.mbid` only after reviewing that recording/title equivalence (for song 727, the user-recorded
+review allows that explicit choice). Select only candidates supported by the chosen operating policy. The review report lists the exact
+song version, evidence hashes, source context, coverage/conflicts, and candidate provenance.
+
+Then create a new preview directory and review `changes.txt`, `preview-v1.json`, and the exact manifest/hash:
+
+```powershell
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+$preview = node .\app\scripts\operator-song-enrichment.cjs preview `
+  --prepared $prepare.preparedPath --decisions $prepare.decisionsPath `
+  --output-dir ".\backups\stage-b-preview-727-$stamp" | ConvertFrom-Json
+```
+
+Any evidence, definition, or song-version drift stops preview and requires a fresh prepare. A no-op is valid and
+does not advance a song version.
+
+Main application is separate and explicit; neither preparation nor preview applies changes. Coordinate pending
+offline edits first; existing stale offline edits continue to follow server-wins handling. No browser storage is
+inspected or changed. Main apply refuses when migration `0004` is absent; applying that migration is a separate,
+explicitly reviewed deployment operation. The restore proof covers all application tables, including
+`song_enrichment_runs`; PostgreSQL sequences and browser/external state are excluded. The proof command makes a
+fresh backup, restores to a new owner-marked scratch database, checks complete database-side row hashes, drops the
+owned database, and verifies its absence:
+
+```powershell
+$proof = node .\app\scripts\verify-main-enrichment-backup.cjs `
+  --expected-database chords `
+  --manifest $preview.manifestPath --manifest-sha256 $preview.manifestSha256 | ConvertFrom-Json
+```
+
+Only after separately reviewing the proof and unchanged complete snapshot, the main operator command is:
+
+```powershell
+node .\app\scripts\apply-main-song-enrichment.cjs `
+  --apply-main --expected-database chords `
+  --manifest $preview.manifestPath --manifest-sha256 $preview.manifestSha256 `
+  --target-ids 727 --restore-proof $proof.proofPath
+```
+
+It requires explicit opt-in, exact private manifest/proof paths and hashes, the exact target set, and no more than
+25 songs. It checks database identity and migration before receipt lookup. A matching committed receipt replays
+without the old proof archive; a new operation must pass fresh proof and complete snapshot checks inside the
+serializable transaction before writes. If the proof file is unavailable, the command can still attempt receipt
+replay, while a new operation is refused before writes. No main apply is authorized by this documentation.
 
 ## Current validation status
 

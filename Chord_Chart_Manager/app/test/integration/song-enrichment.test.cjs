@@ -1,13 +1,61 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createHash, randomUUID } = require('node:crypto');
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const { pool } = require('../../server/db.js');
 const { buildEnrichmentPreview } = require('../../server/existingSongEnrichment.js');
-const { applySongEnrichment, stableJson } = require('../../server/applySongEnrichment.js');
+const { applySongEnrichment, applyMainSongEnrichment, stableJson, validateManifest } = require('../../server/applySongEnrichment.js');
+const safety = require('../../server/mainEnrichmentSafety.js');
+const { prepare: prepareOperatorWorkflow, preview: previewOperatorWorkflow } = require('../../scripts/operator-song-enrichment.cjs');
 const { verifyHarnessIdentity } = require('../t11-guards.cjs');
 
 const MBID = 'b3b3b3b3-1111-4111-8111-b3b3b3b3b3b3';
 const DIGEST = 'b3fixture:';
+const GEMINI_DIGEST = 'f'.repeat(64);
+const GEMINI_PROVENANCE = { model_id: 'gemini-3.1-flash-lite', prompt_version: 'missing-metadata-fallback-v1', schema_version: 'missing-metadata-schema-v1' };
+
+test('B3 validates Gemini identity variants and rejects factual-null or mismatched identities specifically', () => {
+  const snapshot = { id: 42, updated_at: '2026-10-15T14:22:33.123456Z', release_year: null,
+    original_key: null, bpm: null, genres: [], vibes: [] };
+  const candidate = { value: { key_key: 'C', key_scale: 'minor' }, source: 'Gemini',
+    response_digest: GEMINI_DIGEST, ...GEMINI_PROVENANCE };
+  const evidence = { mbid: null, scalars: { original_key: [candidate] }, genres: [], vibes: [] };
+  const reviewDecision = { mbid: null, scalars: { original_key: { value: candidate.value, source: 'Gemini', response_digest: GEMINI_DIGEST } }, genres: [], vibes: [] };
+  const preview = buildEnrichmentPreview(snapshot, evidence, reviewDecision, { genres: [], vibes: [] });
+  const manifest = { format_version: 1, operation_id: randomUUID(), songs: [{ song_id: 42,
+    base_version: snapshot.updated_at, identity: { title: 'Synthetic', artist_id: 1, artist_name: 'Synthetic Artist' },
+    evidence, review_decision: reviewDecision, preview }] };
+  assert.equal(validateManifest(manifest)[0].preview.scalar_changes[0].evidence.model_id, 'gemini-3.1-flash-lite');
+
+  const matchingExistingMbid = structuredClone(manifest);
+  matchingExistingMbid.songs[0].evidence.mbid = MBID;
+  matchingExistingMbid.songs[0].review_decision.mbid = MBID;
+  matchingExistingMbid.songs[0].preview.approved_mbid = MBID;
+  assert.equal(validateManifest(matchingExistingMbid).length, 1);
+
+  const mismatchedIdentity = structuredClone(matchingExistingMbid);
+  mismatchedIdentity.songs[0].review_decision.mbid = 'a3b3b3b3-1111-4111-8111-b3b3b3b3b3b3';
+  assert.throws(() => validateManifest(mismatchedIdentity), { code: 'EVIDENCE_IDENTITY_MISMATCH' });
+
+  const unexpectedGeminiProvenance = structuredClone(manifest);
+  unexpectedGeminiProvenance.songs[0].evidence.scalars.original_key[0].submission_id = `${MBID}:0`;
+  assert.throws(() => validateManifest(unexpectedGeminiProvenance), { code: 'INVALID_MANIFEST' });
+
+  const factualWithoutIdentity = structuredClone(manifest);
+  factualWithoutIdentity.songs[0].evidence.scalars.original_key[0].source = 'AcousticBrainz';
+  factualWithoutIdentity.songs[0].evidence.scalars.original_key[0].response_digest = 'synthetic-factual';
+  factualWithoutIdentity.songs[0].evidence.scalars.original_key[0].value = 'Cm';
+  for (const key of Object.keys(GEMINI_PROVENANCE)) delete factualWithoutIdentity.songs[0].evidence.scalars.original_key[0][key];
+  factualWithoutIdentity.songs[0].review_decision.scalars.original_key = { value: 'Cm', source: 'AcousticBrainz', response_digest: 'synthetic-factual' };
+  factualWithoutIdentity.songs[0].evidence.mbid = MBID;
+  factualWithoutIdentity.songs[0].review_decision.mbid = MBID;
+  factualWithoutIdentity.songs[0].preview = buildEnrichmentPreview(snapshot,
+    factualWithoutIdentity.songs[0].evidence, factualWithoutIdentity.songs[0].review_decision, { genres: [], vibes: [] });
+  factualWithoutIdentity.songs[0].evidence.mbid = null;
+  factualWithoutIdentity.songs[0].review_decision.mbid = null;
+  assert.throws(() => validateManifest(factualWithoutIdentity), { code: 'EVIDENCE_IDENTITY_REQUIRED' });
+});
 
 function newFixture() {
   return { suffix: randomUUID(), artistIds: [], definitions: { genres: new Map(), vibes: new Map() }, ids: [], songs: {},
@@ -41,6 +89,8 @@ async function createFixture(fixture) {
     return result.rows[0].id;
   };
   songs.empty = await addSong('empty');
+  songs.geminiMatchedMbid = await addSong('gemini-matched-mbid');
+  songs.geminiNullMbid = await addSong('gemini-null-mbid');
   songs.private = await addSong('private-input');
   songs.preserved = await addSong('preserved', { release_year: 1988, original_key: 'G', bpm: 120 });
   songs.primaryless = await addSong('primaryless');
@@ -70,7 +120,8 @@ function newOperation(fixture) {
 }
 
 async function makeManifest(fixture, songId, options = {}) {
-  const { operationId = newOperation(fixture), year, key, bpm, genres = [], vibes = [], primaryGenre } = options;
+  const { operationId = newOperation(fixture), year, key, bpm, genres = [], vibes = [], primaryGenre,
+    gemini = false, mbid = MBID } = options;
   const songResult = await pool.query(`SELECT s.id,s.title,s.artist_id,a.name AS artist_name,s.release_year,s.original_key,s.bpm,
       to_char(s.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
     FROM public.songs s JOIN public.artists a ON a.id=s.artist_id WHERE s.id=$1`, [songId]);
@@ -82,17 +133,22 @@ async function makeManifest(fixture, songId, options = {}) {
     pool.query('SELECT v.id,v.name FROM public.song_vibes sv JOIN public.vibes v ON v.id=sv.vibe_id WHERE sv.song_id=$1 ORDER BY v.id', [songId]),
   ]);
   const row = songResult.rows[0];
-  const evidence = { mbid: MBID, scalars: {}, genres: [], vibes: [] };
-  const review = { mbid: MBID, scalars: {}, genres: [...genres], vibes: [...vibes], ...(primaryGenre ? { primaryGenre } : {}) };
+  const provenance = gemini ? { model_id: GEMINI_PROVENANCE.model_id, prompt_version: GEMINI_PROVENANCE.prompt_version,
+    schema_version: GEMINI_PROVENANCE.schema_version } : {};
+  const evidence = { mbid, scalars: {}, genres: [], vibes: [] };
+  const review = { mbid, scalars: {}, genres: [...genres], vibes: [...vibes], ...(primaryGenre ? { primaryGenre } : {}) };
   for (const [field, value, source] of [['release_year', year, 'MusicBrainz'], ['original_key', key, 'AcousticBrainz'], ['bpm', bpm, 'AcousticBrainz']]) {
     if (value !== undefined) {
-      const item = { value, source, response_digest: `${DIGEST}${field}_scalar` };
+      const actualSource = gemini ? 'Gemini' : source;
+      const item = { value, source: actualSource,
+        response_digest: gemini ? GEMINI_DIGEST : `${DIGEST}${field}_scalar`, ...provenance };
       evidence.scalars[field] = [item];
-      review.scalars[field] = { ...item };
+      review.scalars[field] = { value: item.value, source: item.source, response_digest: item.response_digest };
     }
   }
   for (const [field, labels] of [['genres', genres], ['vibes', vibes]]) {
-    evidence[field] = labels.map((name, index) => ({ name, source: 'MusicBrainz', response_digest: `${DIGEST}${field}_${index}` }));
+    evidence[field] = labels.map((name, index) => ({ name, source: gemini ? 'Gemini' : 'MusicBrainz',
+      response_digest: gemini ? GEMINI_DIGEST : `${DIGEST}${field}_${index}`, ...provenance }));
   }
   const snapshot = { id: row.id, updated_at: row.updated_at, release_year: row.release_year, original_key: row.original_key,
     bpm: row.bpm, genres: genreAssignments.rows, vibes: vibeAssignments.rows };
@@ -261,6 +317,54 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       }
     });
 
+    await t.test('Gemini provenance applies and replays for existing and null MBID identities', async () => {
+      const yearGenre = await makeManifest(fixture, fixture.songs.geminiMatchedMbid, {
+        gemini: true, year: 1978, genres: [fixture.definitions.genres.get('Country').name],
+      });
+      const nullIdentityKey = await makeManifest(fixture, fixture.songs.geminiNullMbid, {
+        operationId: yearGenre.operation_id, gemini: true, mbid: null, key: { key_key: 'A', key_scale: 'minor' },
+      });
+      const manifest = { ...yearGenre, songs: [...yearGenre.songs, ...nullIdentityKey.songs] };
+      const beforeVersions = await Promise.all(manifest.songs.map(item => version(item.song_id)));
+      const beforeCharts = await pool.query('SELECT id,chart_content,chart_source,performance_key FROM public.songs WHERE id=ANY($1::int[]) ORDER BY id',
+        [manifest.songs.map(item => item.song_id)]);
+
+      const first = await applySongEnrichment(pool, manifest);
+      assert.deepEqual(first.songs.map(item => item.status), ['applied', 'applied']);
+      assert.equal(first.songs[0].delta.scalar_changes[0].evidence.source, 'Gemini');
+      assert.equal(first.songs[0].delta.scalar_changes[0].evidence.model_id, GEMINI_PROVENANCE.model_id);
+      assert.deepEqual(first.songs[0].delta.scalar_changes[0].evidence, {
+        source: 'Gemini', response_digest: GEMINI_DIGEST, ...GEMINI_PROVENANCE,
+      });
+      assert.equal(first.songs[0].delta.tag_additions.genres[0].evidence[0].schema_version, GEMINI_PROVENANCE.schema_version);
+      assert.equal(first.songs[1].delta.scalar_changes[0].evidence.prompt_version, GEMINI_PROVENANCE.prompt_version);
+
+      const afterVersions = await Promise.all(manifest.songs.map(item => version(item.song_id)));
+      assert.ok(afterVersions.every((value, index) => value !== beforeVersions[index]));
+      const beforeChartById = new Map(beforeCharts.rows.map(row => [row.id, row]));
+      const afterCharts = await pool.query('SELECT id,chart_content,chart_source,performance_key FROM public.songs WHERE id=ANY($1::int[]) ORDER BY id',
+        [manifest.songs.map(item => item.song_id)]);
+      for (const row of afterCharts.rows) assert.deepEqual(row, beforeChartById.get(row.id));
+      assert.deepEqual((await pool.query('SELECT release_year,original_key,bpm FROM public.songs WHERE id=$1', [fixture.songs.geminiMatchedMbid])).rows[0],
+        { release_year: 1978, original_key: null, bpm: null });
+      assert.deepEqual((await pool.query('SELECT release_year,original_key,bpm FROM public.songs WHERE id=$1', [fixture.songs.geminiNullMbid])).rows[0],
+        { release_year: null, original_key: 'Am', bpm: null });
+      assert.equal((await pool.query('SELECT is_primary FROM public.song_genres WHERE song_id=$1 AND genre_id=$2',
+        [fixture.songs.geminiMatchedMbid, fixture.definitions.genres.get('Country').id])).rows[0].is_primary, false);
+
+      const receipt = await pool.query('SELECT manifest,response FROM public.song_enrichment_runs WHERE operation_id=$1', [manifest.operation_id]);
+      assert.equal(receipt.rowCount, 1);
+      assert.deepEqual(receipt.rows[0].manifest, manifest);
+      assert.deepEqual(receipt.rows[0].response, first);
+      const replay = await applySongEnrichment(pool, manifest);
+      assert.deepEqual(replay, first);
+      assert.deepEqual(await Promise.all(manifest.songs.map(item => version(item.song_id))), afterVersions);
+      assert.equal((await pool.query('SELECT count(*)::int AS n FROM public.song_genres WHERE song_id=$1 AND genre_id=$2',
+        [fixture.songs.geminiMatchedMbid, fixture.definitions.genres.get('Country').id])).rows[0].n, 1);
+      assert.equal((await pool.query('SELECT count(*)::int AS n FROM public.song_enrichment_runs WHERE operation_id=$1', [manifest.operation_id])).rows[0].n, 1);
+      fixture.operations.add(manifest.operation_id);
+    });
+
     await t.test('mixed changed/no-op batch uses exact scalars, adds multiple category-scoped tags, and preserves no-op versions', async () => {
       const genres = [fixture.definitions.genres.get('Country').name, fixture.definitions.genres.get('Pop').name];
       const vibes = [fixture.definitions.vibes.get('Mellow').name, fixture.definitions.vibes.get('Dreamy').name];
@@ -397,13 +501,61 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       await pool.query('DELETE FROM public.songs WHERE id=$1', [fixture.songs.missing]);
       await assert.rejects(applySongEnrichment(pool, missing), hasCode('SONG_NOT_FOUND'));
       const renamed = await makeManifest(fixture, fixture.songs.rename, { genres: [fixture.definitions.genres.get('Country').name] });
-      await pool.query('UPDATE public.genres SET name=$1 WHERE id=$2', [`Renamed ${fixture.suffix}`, fixture.definitions.genres.get('Country').id]);
-      await assert.rejects(applySongEnrichment(pool, renamed), hasCode('PREVIEW_MISMATCH'));
-      const popName = fixture.definitions.genres.get('Pop').name;
+      const countryDefinition = fixture.definitions.genres.get('Country');
+      const originalCountryName = countryDefinition.name;
+      await pool.query('UPDATE public.genres SET name=$1 WHERE id=$2', [`Renamed ${fixture.suffix}`, countryDefinition.id]);
+      let renameAssertionError, renameRestoreError;
+      try {
+        await assert.rejects(applySongEnrichment(pool, renamed), hasCode('PREVIEW_MISMATCH'));
+      } catch (error) {
+        renameAssertionError = error;
+      } finally {
+        try {
+          await pool.query('UPDATE public.genres SET name=$1 WHERE id=$2', [originalCountryName, countryDefinition.id]);
+          const restored = await pool.query('SELECT id,name FROM public.genres WHERE id=$1', [countryDefinition.id]);
+          assert.deepEqual(restored.rows, [{ id: countryDefinition.id, name: originalCountryName }],
+            'Country definition restoration must succeed before later cases use the shared catalog');
+          assert.equal(countryDefinition.name, originalCountryName,
+            'Country fixture definition must match the restored shared catalog row');
+        } catch (error) {
+          renameRestoreError = error;
+        }
+      }
+      if (renameAssertionError && renameRestoreError) {
+        throw new AggregateError([renameAssertionError, renameRestoreError],
+          'Country rename assertion failed and the shared definition could not be restored.');
+      }
+      if (renameAssertionError) throw renameAssertionError;
+      if (renameRestoreError) throw renameRestoreError;
+      const popDefinition = fixture.definitions.genres.get('Pop');
+      const popName = popDefinition.name;
       const ambiguous = await makeManifest(fixture, fixture.songs.ambiguous, { genres: [popName] });
       const duplicate = await pool.query('INSERT INTO public.genres(name) VALUES($1) RETURNING id', [` ${popName} `]);
-      fixture.extraDefinitionIds.genres.push(duplicate.rows[0].id);
-      await assert.rejects(applySongEnrichment(pool, ambiguous), hasCode('PREVIEW_MISMATCH'));
+      const duplicateId = duplicate.rows[0].id;
+      fixture.extraDefinitionIds.genres.push(duplicateId);
+      let ambiguityAssertionError, duplicateCleanupError;
+      try {
+        await assert.rejects(applySongEnrichment(pool, ambiguous), hasCode('PREVIEW_MISMATCH'));
+      } catch (error) {
+        ambiguityAssertionError = error;
+      } finally {
+        try {
+          await pool.query('DELETE FROM public.genres WHERE id=$1', [duplicateId]);
+          const remaining = await pool.query(`SELECT id,name FROM public.genres
+            WHERE lower(regexp_replace(btrim(name), '[[:space:]]+', ' ', 'g')) = lower($1) ORDER BY id`, [popName]);
+          assert.deepEqual(remaining.rows, [{ id: popDefinition.id, name: popName }],
+            'Pop catalog must return to its single original definition before later cases');
+          fixture.extraDefinitionIds.genres = fixture.extraDefinitionIds.genres.filter(id => id !== duplicateId);
+        } catch (error) {
+          duplicateCleanupError = error;
+        }
+      }
+      if (ambiguityAssertionError && duplicateCleanupError) {
+        throw new AggregateError([ambiguityAssertionError, duplicateCleanupError],
+          'Ambiguous-label assertion failed and the duplicate definition could not be removed.');
+      }
+      if (ambiguityAssertionError) throw ambiguityAssertionError;
+      if (duplicateCleanupError) throw duplicateCleanupError;
     });
 
     await t.test('forged preview fields, evidence references and unknown keys cannot create changes', async () => {
@@ -443,6 +595,124 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       assert.equal(receipt.rowCount, 1);
       assert.equal(receipt.rows[0].request_hash, first.request_hash);
       assert.deepEqual(receipt.rows[0].response, first);
+    });
+
+    await t.test('actual prepare and preview workflow applies its scalar, factual Genre and Gemini Vibe in owned scratch', async () => {
+      const inserted=await pool.query(`INSERT INTO public.songs(title,artist_id,chart_content,chart_source,source_document)
+        VALUES($1,$2,'{"fixture":"operator workflow chart"}'::jsonb,'operator workflow source','operator workflow fixture') RETURNING id`,
+        [`B3 operator workflow ${fixture.suffix}`,fixture.artistIds[0]]);
+      const songId=inserted.rows[0].id;fixture.ids.push(songId);
+      const baseline=(await pool.query(`SELECT s.id,s.title,a.name AS artist_name,s.updated_at,
+          s.release_year,s.original_key,s.bpm,s.chart_content::text AS chart_content,s.chart_source,s.source_document
+        FROM public.songs s JOIN public.artists a ON a.id=s.artist_id WHERE s.id=$1`,[songId])).rows[0];
+      const genreName=fixture.definitions.genres.get('Country').name,vibeName=fixture.definitions.vibes.get('Mellow').name;
+      const evidenceDir=path.join(safety.PRIVATE_BACKUPS,`.t11-operator-evidence-${randomUUID()}`);await fs.mkdir(evidenceDir,{mode:0o700});
+      const contextDigest='a'.repeat(64),geminiDigest='b'.repeat(64),genreDigest='c'.repeat(64),vibeDigest='d'.repeat(64);
+      const factual={factual_context_version:1,target:{song_id:songId,title:baseline.title,artist:baseline.artist_name},
+        recording:{mbid:MBID,title:baseline.title,artist:baseline.artist_name,disambiguation:'T11 scratch fixture',validated:true,response_digest:contextDigest},
+        scalar_candidates:{release_year:{status:'unresolved',candidates:[]},original_key:{status:'unresolved',candidates:[]},bpm:{status:'unresolved',candidates:[]}},
+        submission_coverage:{source:'AcousticBrainz',total_available:0,sampled_offsets:[],completeness:'partial'},
+        conflicts:{release_year:false,original_key:false,bpm:false}};
+      const fallback={format_version:1,mode:'explicit_gemini_missing_metadata_fallback',database_writes:false,selected_song_id:songId,
+        baseline:{id:songId,title:baseline.title,artist:baseline.artist_name},requested_missing_fields:['original_key'],
+        factual_evidence:null,gemini_suggestions:{status:'ok',response_digest:geminiDigest,model_id:'gemini-3.1-flash-lite',
+          prompt_version:'missing-metadata-fallback-v1',schema_version:'missing-metadata-schema-v1',
+          scalars:{release_year:[],original_key:[{value:{key_key:'C',key_scale:'minor'},source:'Gemini',response_digest:geminiDigest,
+            model_id:'gemini-3.1-flash-lite',prompt_version:'missing-metadata-fallback-v1',schema_version:'missing-metadata-schema-v1'}],bpm:[]},genres:[],vibes:[]},
+        human_review_required:true,approved_apply_manifest:null};
+      const b4={report_version:1,report_type:'existing_song_enrichment_read_only_preview',selected_song_ids:[songId],database_writes:false,
+        approved_apply_manifest:null,songs:[{song_id:songId,identity:{title:baseline.title,artist:baseline.artist_name},
+          recording:{match:{matched:true,mbid:MBID}},evidence:{mbid:MBID,scalars:{release_year:[],original_key:[],bpm:[]},
+            genres:[{name:genreName,source:'MusicBrainz',response_digest:genreDigest}],vibes:[]},approved_preview:null,human_review_required:true}]};
+      const vibes={report_version:1,report_type:'gemini_vibe_only_preview',database_writes:false,approval_or_apply_manifest:null,
+        song:{id:songId,title:baseline.title,artist:baseline.artist_name},limits:{model:'gemini-3.1-flash-lite'},result:{status:'ok',vibes:[{name:vibeName,
+          source:'Gemini',response_digest:vibeDigest,model_id:'gemini-3.1-flash-lite',prompt_version:'missing-metadata-fallback-v2',
+          schema_version:'missing-metadata-schema-v2'}]}};
+      const inputs=[['factual.json',factual],['gemini.json',fallback],['b4-genre.json',b4],['vibes.json',vibes]],evidence=[];
+      let operationId;
+      try{
+        for(const[name,document]of inputs){const file=path.join(evidenceDir,name);await fs.writeFile(file,JSON.stringify(document),{flag:'wx',mode:0o600});evidence.push(`${songId}=${file}`);}
+        const PoolClass=class{constructor(){return{connect:()=>pool.connect(),end:async()=>{}};}};
+        const prepared=await prepareOperatorWorkflow({ids:[songId],evidence,outputDir:path.join(evidenceDir,'prepare')},
+          {databaseUrl:'postgresql://test@127.0.0.1/ccm_test',PoolClass});
+        const preparedEvidence=JSON.parse(await fs.readFile(prepared.preparedPath,'utf8')).evidence[songId];
+        const evidencedGenre=preparedEvidence.genres.find(item=>item.name===genreName);
+        const evidencedVibe=preparedEvidence.vibes.find(item=>item.name===vibeName);
+        assert.deepEqual(evidencedGenre,{name:genreName,source:'MusicBrainz',response_digest:genreDigest});
+        assert.deepEqual(evidencedVibe,{name:vibeName,source:'Gemini',response_digest:vibeDigest,model_id:'gemini-3.1-flash-lite',
+          prompt_version:'missing-metadata-fallback-v2',schema_version:'missing-metadata-schema-v2'});
+        const decisions=JSON.parse(await fs.readFile(prepared.decisionsPath,'utf8')),selection=decisions.targets[0].decision;
+        assert.deepEqual(selection,{mbid:null,scalars:{},genres:[],vibes:[]});
+        selection.mbid=MBID;selection.scalars.original_key=decisions.targets[0].evidence.scalars.original_key.find(item=>item.source==='Gemini');
+        selection.genres=[evidencedGenre.name];selection.vibes=[evidencedVibe.name];
+        assert(selection.genres.every(label=>preparedEvidence.genres.some(item=>item.name===label)));
+        assert(selection.vibes.every(label=>preparedEvidence.vibes.some(item=>item.name===label)));
+        await fs.writeFile(prepared.decisionsPath,JSON.stringify(decisions,null,2));
+        operationId=randomUUID();fixture.operations.add(operationId);
+        const result=await previewOperatorWorkflow({prepared:prepared.preparedPath,decisions:prepared.decisionsPath,outputDir:path.join(evidenceDir,'preview')},
+          {databaseUrl:'postgresql://test@127.0.0.1/ccm_test',PoolClass,operationId});
+        const manifest=JSON.parse(await fs.readFile(result.manifestPath,'utf8'));
+        assert.deepEqual(validateManifest(manifest).map(item=>item.song_id),[songId]);
+        const first=await applySongEnrichment(pool,manifest);assert.equal(first.songs[0].status,'applied');
+        const delta=first.songs[0].delta;
+        assert.deepEqual(delta.scalar_changes.map(item=>[item.field,item.after]),[['original_key','Cm']]);
+        assert.deepEqual(delta.scalar_changes[0].evidence,{source:'Gemini',response_digest:geminiDigest,model_id:'gemini-3.1-flash-lite',
+          prompt_version:'missing-metadata-fallback-v1',schema_version:'missing-metadata-schema-v1'});
+        assert.deepEqual(delta.tag_additions.genres.map(item=>item.name),[genreName]);
+        assert.deepEqual(delta.tag_additions.genres[0].evidence,[{source:'MusicBrainz',response_digest:genreDigest}]);
+        assert.deepEqual(delta.tag_additions.vibes.map(item=>item.name),[vibeName]);
+        assert.deepEqual(delta.tag_additions.vibes[0].evidence,[{source:'Gemini',response_digest:vibeDigest,model_id:'gemini-3.1-flash-lite',
+          prompt_version:'missing-metadata-fallback-v2',schema_version:'missing-metadata-schema-v2'}]);
+        const after=(await pool.query(`SELECT s.title,a.name AS artist_name,s.updated_at,s.release_year,s.original_key,s.bpm,
+            s.chart_content::text AS chart_content,s.chart_source,s.source_document FROM public.songs s
+          JOIN public.artists a ON a.id=s.artist_id WHERE s.id=$1`,[songId])).rows[0];
+        assert.equal(after.title,baseline.title);assert.equal(after.artist_name,baseline.artist_name);
+        assert.equal(after.release_year,baseline.release_year);assert.equal(after.original_key,'Cm');assert.equal(after.bpm,baseline.bpm);
+        assert.notEqual(after.updated_at,baseline.updated_at);
+        assert.deepEqual({chart_content:after.chart_content,chart_source:after.chart_source,source_document:after.source_document},
+          {chart_content:baseline.chart_content,chart_source:baseline.chart_source,source_document:baseline.source_document});
+        const joins=await pool.query(`SELECT g.name FROM public.song_genres sg JOIN public.genres g ON g.id=sg.genre_id WHERE sg.song_id=$1
+          UNION ALL SELECT v.name FROM public.song_vibes sv JOIN public.vibes v ON v.id=sv.vibe_id WHERE sv.song_id=$1`,[songId]);
+        assert.deepEqual(joins.rows.map(row=>row.name).sort(),[genreName,vibeName].sort());
+        const versionAfter=await version(songId);assert.equal(first.songs[0].resulting_version,versionAfter);
+        const replay=await applySongEnrichment(pool,manifest);assert.deepEqual(replay,first);assert.equal(await version(songId),versionAfter);
+        const replayJoins=await pool.query(`SELECT (SELECT count(*)::int FROM public.song_genres WHERE song_id=$1 AND genre_id=$2) genres,
+          (SELECT count(*)::int FROM public.song_vibes WHERE song_id=$1 AND vibe_id=$3) vibes`,[songId,fixture.definitions.genres.get('Country').id,fixture.definitions.vibes.get('Mellow').id]);
+        assert.deepEqual(replayJoins.rows[0],{genres:1,vibes:1});
+      }finally{await fs.rm(evidenceDir,{recursive:true,force:true});}
+    });
+
+    await t.test('main wrapper applies in owned scratch, replays after target/snapshot drift, and rejects changed content', async () => {
+      const inserted=await pool.query(`INSERT INTO public.songs(title,artist_id,chart_content,chart_source)
+        VALUES($1,$2,'{"fixture":"main-wrapper test chart"}'::jsonb,'main-wrapper test source') RETURNING id`,
+      [`B3 main wrapper ${fixture.suffix}`,fixture.artistIds[0]]);
+      const songId=inserted.rows[0].id;fixture.ids.push(songId);
+      const manifest=await makeManifest(fixture,songId,{year:1981});
+      const manifestHash=createHash('sha256').update(stableJson(manifest)).digest('hex');
+      const keyExisted=await fs.access(safety.KEY_FILE).then(()=>true,()=>false);
+      const backupPath=path.join(safety.PRIVATE_BACKUPS,`.t11-main-wrapper-${randomUUID()}.dump`);
+      let createdKey=false;
+      try {
+        if(!keyExisted){await fs.writeFile(safety.KEY_FILE,require('node:crypto').randomBytes(32),{flag:'wx',mode:0o600});createdKey=true;}
+        const backupBytes=Buffer.from('synthetic archive bytes for ccm_test main-wrapper gate test');await fs.writeFile(backupPath,backupBytes,{flag:'wx',mode:0o600});
+        const snapshotClient=await pool.connect();let snapshot;
+        try{snapshot=await safety.protectedSnapshotSha256(snapshotClient);}finally{snapshotClient.release();}
+        const runId=randomUUID(),payload={proof_version:1,run_id:runId,target_database:'ccm_test',manifest_sha256:manifestHash,
+          backup:{path:backupPath,sha256:createHash('sha256').update(backupBytes).digest('hex')},live_snapshot_sha256:snapshot,restored_snapshot_sha256:snapshot,
+          restore:{run_id:runId,scratch_database:`ccm_restore_${runId.replaceAll('-','')}`,owner_marker:`CCM main apply restore verification run ${runId}`,cleanup_absence:true},created_at:new Date().toISOString()};
+        const proof=await safety.signRestoreProof(payload);
+        const gate={apply_main:true,expected_database:'ccm_test',manifest_sha256:manifestHash,target_ids:[songId],manifest_path:'synthetic-test-manifest.json',restore_proof:proof};
+        const first=await applyMainSongEnrichment(pool,manifest,gate);assert.equal(first.songs[0].status,'applied');
+        await pool.query('UPDATE public.songs SET title=title || \' changed\' WHERE id=$1',[songId]);
+        assert.deepEqual(await applyMainSongEnrichment(pool,manifest,gate),first);
+        const changed=await makeManifest(fixture,songId,{year:1982,operationId:manifest.operation_id});
+        const changedHash=createHash('sha256').update(stableJson(changed)).digest('hex');
+        const changedGate={...gate,manifest_sha256:changedHash,restore_proof:{...proof,manifest_sha256:changedHash}};
+        await assert.rejects(applyMainSongEnrichment(pool,changed,changedGate),hasCode('OPERATION_ID_REUSED'));
+      } finally {
+        await fs.unlink(backupPath).catch(()=>{});
+        if(createdKey)await fs.unlink(safety.KEY_FILE).catch(()=>{});
+      }
     });
 
     await t.test('diagnostics survive a valid apply and an all-no-op operation is recorded and replayed exactly', async () => {

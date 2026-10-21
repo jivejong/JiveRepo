@@ -1,0 +1,60 @@
+{
+  "report_version": 1,
+  "report_type": "gemini_genre_only_preview",
+  "song": {
+    "id": 727,
+    "title": "Beer Drinkers and Hell Raisers",
+    "artist": "ZZ Top",
+    "baseline_version": "2026-10-20T04:11:45.892061Z"
+  },
+  "request": {
+    "requested_scalars": [],
+    "allowed_genres": ["Blues Rock", "Hard Rock", "Southern Rock"],
+    "allowed_vibes": []
+  },
+  "limits": {
+    "model": "gemini-3.1-flash-lite",
+    "store": false,
+    "attempts_allowed": 1,
+    "retries_allowed": 0,
+    "cache": false,
+    "max_input_bytes": 16384,
+    "max_output_tokens": 1024,
+    "timeout_ms": 10000,
+    "max_response_bytes": 1048576
+  },
+  "result": {
+    "status": "ok",
+    "genres": [
+      {
+        "name": "Blues Rock",
+        "source": "Gemini",
+        "response_digest": "c99ec0be034da08c0df1b8ac8025f8c8985bc666a7d9910568729174af1e028b",
+        "model_id": "gemini-3.1-flash-lite",
+        "prompt_version": "missing-metadata-fallback-v2",
+        "schema_version": "missing-metadata-schema-v2"
+      },
+      {
+        "name": "Hard Rock",
+        "source": "Gemini",
+        "response_digest": "c99ec0be034da08c0df1b8ac8025f8c8985bc666a7d9910568729174af1e028b",
+        "model_id": "gemini-3.1-flash-lite",
+        "prompt_version": "missing-metadata-fallback-v2",
+        "schema_version": "missing-metadata-schema-v2"
+      },
+      {
+        "name": "Southern Rock",
+        "source": "Gemini",
+        "response_digest": "c99ec0be034da08c0df1b8ac8025f8c8985bc666a7d9910568729174af1e028b",
+        "model_id": "gemini-3.1-flash-lite",
+        "prompt_version": "missing-metadata-fallback-v2",
+        "schema_version": "missing-metadata-schema-v2"
+      }
+    ],
+    "response_digest": "c99ec0be034da08c0df1b8ac8025f8c8985bc666a7d9910568729174af1e028b",
+    "token_usage": { "input_tokens": 367, "output_tokens": 62, "total_tokens": 429 },
+    "attempts": { "total": 1, "gemini": 1 }
+  },
+  "database_writes": false,
+  "approval_or_apply_manifest": null
+}

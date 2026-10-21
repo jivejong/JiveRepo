@@ -1,8 +1,10 @@
 ﻿import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
 
 const require = createRequire(import.meta.url);
 const { resolveRecordingCandidate, buildEnrichmentPreview } = require('../../server/existingSongEnrichment.js');
+const { createSongEnrichmentTransport } = require('../../server/songEnrichmentTransport.js');
 const {
   createSongEnrichmentProviderClient,
   normalizeMusicBrainzLookup,
@@ -58,8 +60,10 @@ function recordingRows(start, length, { matchFirst = false, ids = null } = {}) {
   }));
 }
 
-function geminiResponse(json, usage = {}) {
-  return response({ status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text: JSON.stringify(json) }] }], usage });
+function geminiResponse(json, usage = {}, usageMetadata = undefined) {
+  return response({ status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text: JSON.stringify({
+    release_year: null, bpm: null, original_key: null, genres: [], vibes: [], ...json,
+  }) }] }], usage, ...(usageMetadata ? { usageMetadata } : {}) });
 }
 
 function acousticDocument(mbid, offset, fields = {}) {
@@ -207,7 +211,7 @@ describe('song enrichment provider adapters', () => {
   it('keeps the single request within shared retry, budget and cancellation safeguards', async () => {
     const exhausted = harness({ config: { maxAttempts: 1, maxGeminiAttempts: 1 }, route: () => response({}, 503) });
     expect(await exhausted.client.searchRecordings({ title: 'Song', artist: 'Artist' }))
-      .toMatchObject({ status: 'budget_exhausted', candidates: [],
+      .toMatchObject({ status: 'transient_error', candidates: [],
         pagination: { expected_total: null, attempted_pages: 1, validated_pages: 0, collected_count: 0, complete: false } });
     expect(exhausted.calls).toHaveLength(1);
 
@@ -435,6 +439,140 @@ describe('song enrichment provider adapters', () => {
     }
   });
 
+  it.each([429, 503])('preserves one-attempt Gemini HTTP %i without retry delay', async status => {
+    const delays = [];
+    const h = harness({ config: { maxAttempts: 1, maxGeminiAttempts: 1 }, delayImpl: async (_ms, opts) => { delays.push(opts.kind); },
+      route: () => response({}, status) });
+    const result = await h.client.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'fake-secret' });
+    expect(result).toMatchObject({ status: 'transient_error', failure_details: { failure_phase: 'http', http_status: status, https_started: true } });
+    expect(h.calls).toHaveLength(1);
+    expect(delays).not.toContain('retry_after');
+    expect(h.client.getRunLedger()[0]).toMatchObject({ failure_details: { http_status: status } });
+  });
+
+  it('retries Gemini only when total and provider budgets permit another attempt', async () => {
+    const h = harness({ config: { maxAttempts: 2, maxGeminiAttempts: 2 }, route: (_request, count) =>
+      count === 1 ? response({}, 503) : geminiResponse({ genres: [], vibes: [] }) });
+    const result = await h.client.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'fake-secret' });
+    expect(result.status).toBe('ok');
+    expect(h.calls).toHaveLength(2);
+    expect(h.client.getAttemptCounts()).toEqual({ total: 2, gemini: 2 });
+    const totalExhausted = harness({ config: { maxAttempts: 1, maxGeminiAttempts: 1 }, route: () => response({}, 503) });
+    expect(await totalExhausted.client.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'fake-secret' }))
+      .toMatchObject({ status: 'transient_error', failure_details: { http_status: 503 } });
+    const providerExhausted = harness({ config: { maxAttempts: 2, maxGeminiAttempts: 1 }, route: () => response({}, 429) });
+    expect(await providerExhausted.client.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'fake-secret' }))
+      .toMatchObject({ status: 'transient_error', failure_details: { http_status: 429 } });
+    expect(providerExhausted.calls).toHaveLength(1);
+  });
+
+  it('keeps the first terminal failure if another call spends the retry slot during delay', async () => {
+    let releaseRetry;
+    let retryWaiting;
+    const waiting = new Promise(resolve => { retryWaiting = resolve; });
+    const h = harness({ config: { maxAttempts: 2, maxGeminiAttempts: 2 }, route: (_request, count) =>
+      count === 1 ? response({}, 503) : response(searchBody()),
+    delayImpl: (_ms, { kind }) => kind === 'retry_after'
+      ? new Promise(resolve => { releaseRetry = resolve; retryWaiting(); }) : Promise.resolve() });
+    const first = h.client.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'fake-secret' });
+    await waiting;
+    await h.client.searchRecordings({ title: 'Other', artist: 'Artist' });
+    releaseRetry();
+    expect(await first).toMatchObject({ status: 'transient_error' });
+    expect(h.client.getRunLedger()[0]).toMatchObject({ status: 'transient_error',
+      failure_details: { failure_phase: 'http', http_status: 503, https_started: true } });
+    expect(h.calls).toHaveLength(2);
+  });
+
+  it('preserves terminal HTTP failure if a provider spacing wait consumes the retry budget', async () => {
+    let releaseSpacing;
+    let spacingWaiting;
+    const waiting = new Promise(resolve => { spacingWaiting = resolve; });
+    const h = harness({ config: { maxAttempts: 2, maxGeminiAttempts: 2 }, route: request => {
+      if (request.url.includes('/count')) return response({ mbid: MBID, count: 0 });
+      return response({}, 503, { 'Retry-After': '0' });
+    }, delayImpl: (_ms, { kind }) => kind === 'musicbrainz_spacing'
+      ? new Promise(resolve => { releaseSpacing = resolve; spacingWaiting(); }) : Promise.resolve() });
+    const first = h.client.searchRecordings({ title: 'Song', artist: 'Artist' });
+    await waiting;
+    await h.client.getAcousticBrainzEvidence({ mbid: MBID });
+    releaseSpacing();
+    expect(await first).toMatchObject({ status: 'transient_error' });
+    expect(h.client.getRunLedger()[0]).toMatchObject({ status: 'transient_error',
+      failure_details: { failure_phase: 'http', http_status: 503, https_started: true } });
+    expect(h.client.getAttemptCounts().total).toBe(2);
+  });
+
+  it('keeps safe transport codes, validation phase and timeout source without leaking error properties', async () => {
+    const thrown = Object.assign(new Error('secret=DO_NOT_LEAK https://user:pass@example.invalid'), { code: 'ECONNRESET', token: 'PRIVATE',
+      failure_details: { failure_phase: 'request', https_started: true, transport_error_code: 'ECONNRESET' } });
+    const h = harness({ config: { maxAttempts: 1, maxGeminiAttempts: 1 }, route: () => { throw thrown; } });
+    const result = await h.client.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'fake-secret' });
+    expect(result).toMatchObject({ status: 'transient_error', failure_details: { transport_error_code: 'ECONNRESET' } });
+    expect(JSON.stringify({ result, ledger: h.client.getRunLedger() })).not.toMatch(/DO_NOT_LEAK|PRIVATE|user:pass/);
+    const validationTransport = createSongEnrichmentTransport({ request: () => { throw new Error('must not reach https'); } });
+    let actualCalls = 0;
+    const invalid = harness({ config: { maxAttempts: 1, maxGeminiAttempts: 1 }, route: request => {
+      actualCalls += 1;
+      return validationTransport({ ...request, url: 'http://invalid.example/', timeoutMs: 10000,
+        maxResponseBytes: 1000000, signal: new AbortController().signal });
+    } });
+    const invalidResult = await invalid.client.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'fake-secret' });
+    expect(invalidResult.failure_details).toMatchObject({ failure_phase: 'validation', https_started: false,
+      transport_error_code: 'INVALID_PROVIDER_REQUEST' });
+    expect(actualCalls).toBe(1);
+  });
+
+  it('preserves native HTTPS error codes and classifies the transport deadline', async () => {
+    let httpsStarts = 0;
+    const transport = createSongEnrichmentTransport({ request: () => {
+      httpsStarts += 1;
+      const req = new EventEmitter();
+      req.end = () => queueMicrotask(() => req.emit('error', Object.assign(new Error('private'), { code: 'ECONNRESET' })));
+      req.destroy = () => {};
+      return req;
+    }, setTimer: () => 1, clearTimer: () => {} });
+    const client = createSongEnrichmentProviderClient({ transport, delay: async (_ms, { kind }) => {
+      if (kind === 'timeout') return new Promise(() => {});
+    }, config: { ...REQUIRED_BOUNDS, maxAttempts: 1, maxGeminiAttempts: 1, musicBrainzUserAgent: USER_AGENT } });
+    const failed = await client.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'synthetic' });
+    expect(httpsStarts).toBe(1);
+    expect(failed).toMatchObject({ status: 'transient_error', failure_details: { failure_phase: 'request',
+      transport_error_code: 'ECONNRESET', https_started: true } });
+    expect(JSON.stringify(client.getRunLedger())).not.toContain('private');
+
+    let timeoutStarted = false;
+    const timedTransport = createSongEnrichmentTransport({ request: () => {
+      timeoutStarted = true;
+      const req = new EventEmitter(); req.end = () => {}; req.destroy = () => {}; return req;
+    }, setTimer: callback => { queueMicrotask(callback); return 2; }, clearTimer: () => {} });
+    const timeoutClient = createSongEnrichmentProviderClient({ transport: timedTransport, delay: async (_ms, { kind }) => {
+      if (kind === 'timeout') return new Promise(() => {});
+    }, config: { ...REQUIRED_BOUNDS, maxAttempts: 1, maxGeminiAttempts: 1, musicBrainzUserAgent: USER_AGENT } });
+    const timed = await timeoutClient.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'synthetic' });
+    expect(timeoutStarted).toBe(true);
+    expect(timed).toMatchObject({ status: 'transient_error', failure_details: { failure_phase: 'timeout',
+      timeout: true, timeout_source: 'transport', transport_error_code: 'ETIMEDOUT', https_started: true } });
+
+    const oversizedTransport = createSongEnrichmentTransport({ request: (_url, _options, callback) => {
+      const req = new EventEmitter();
+      req.end = () => {
+        const res = new EventEmitter(); res.statusCode = 200; res.headers = {};
+        callback(res);
+        queueMicrotask(() => res.emit('data', Buffer.from('too large')));
+      };
+      req.destroy = () => {};
+      return req;
+    }, setTimer: () => 3, clearTimer: () => {} });
+    const oversizedClient = createSongEnrichmentProviderClient({ transport: oversizedTransport,
+      delay: async (_ms, { kind }) => kind === 'timeout' ? new Promise(() => {}) : Promise.resolve(),
+      config: { ...REQUIRED_BOUNDS, maxAttempts: 1, maxGeminiAttempts: 1, maxResponseBytes: 5,
+        musicBrainzUserAgent: USER_AGENT } });
+    expect(await oversizedClient.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'synthetic' }))
+      .toMatchObject({ status: 'transient_error', failure_details: { failure_phase: 'response',
+        transport_error_code: 'RESPONSE_TOO_LARGE', https_started: true } });
+  });
+
   it('bounds response bytes and classifies malformed JSON as invalid response', async () => {
     const large = harness({ config: { maxResponseBytes: 12 }, route: () => response(searchBody()) });
     expect((await large.client.searchRecordings({ title: 'Song', artist: 'Artist' })).status).toBe('invalid_response');
@@ -473,7 +611,7 @@ describe('song enrichment provider adapters', () => {
     expect((await cancelled.client.searchRecordings({ title: 'Song', artist: 'Artist', signal: controller.signal })).status).toBe('cancelled');
     expect(cancelled.calls).toHaveLength(0);
     const limited = harness({ config: { maxAttempts: 1, maxGeminiAttempts: 1 }, route: () => response({}, 503) });
-    expect((await limited.client.searchRecordings({ title: 'One', artist: 'Artist' })).status).toBe('budget_exhausted');
+    expect((await limited.client.searchRecordings({ title: 'One', artist: 'Artist' })).status).toBe('transient_error');
     expect((await limited.client.searchRecordings({ title: 'Two', artist: 'Artist' })).status).toBe('budget_exhausted');
     expect(limited.calls).toHaveLength(1);
   });
@@ -728,20 +866,40 @@ describe('song enrichment provider adapters', () => {
     });
     expect(result.status).toBe('ok');
     expect(result.mbid).toBe(MBID);
-    expect(result.scalars).toEqual({});
+    expect(result.scalars).toEqual({ release_year: [], bpm: [], original_key: [] });
     expect(result.genres.map(item => item.name)).toEqual(['  Hard   Rock  ', 'Country']);
     expect(result.vibes.map(item => item.name)).toEqual(['Upbeat']);
     expect(result.token_usage).toEqual({ input_tokens: 54, output_tokens: 8, total_tokens: 62 });
     const sent = Buffer.isBuffer(captured.body) ? captured.body.toString('utf8') : String(captured.body);
     expect(sent).not.toContain('PRIVATE-');
     expect(sent).not.toContain('lyrics');
+    expect(sent).not.toContain(MBID);
     expect(captured.headers['x-goog-api-key']).toBe('synthetic-api-key');
     expect(captured.url).toBe('https://generativelanguage.googleapis.com/v1beta/interactions');
     expect(h.client.getRunLedger().some(item => JSON.stringify(item).includes('synthetic-api-key'))).toBe(false);
     expect(h.client.getRunLedger()).toContainEqual(expect.objectContaining({
-      provider: 'Gemini', operation: 'genre_vibe_candidates', status: 'ok',
+      provider: 'Gemini', operation: 'missing_metadata_fallback', status: 'ok',
       token_usage: { input_tokens: 54, output_tokens: 8, total_tokens: 62 },
     }));
+  });
+
+  it('keys cached fallback responses by their normalized factual evidence', async () => {
+    const entries = new Map();
+    const cache = { async get(request) { return entries.get(JSON.stringify(request)) || null; },
+      async set(request, entry) { entries.set(JSON.stringify(request), entry); } };
+    const h = harness({ cache, route: () => geminiResponse({}) });
+    const factual = year => ({ context_version: 1, target: { song_id: 727, title: 'Song', artist: 'Artist' },
+      recording: { mbid: MBID, title: 'Song', artist: 'Artist', disambiguation: '', validated: true, response_digest: 'a'.repeat(64) },
+      scalar_candidates: { release_year: { state: 'unapproved_candidates', conflicting_evidence: false, candidates: [
+        { source: 'MusicBrainz', value: year, response_digest: 'a'.repeat(64), submission_reference: `recording:${MBID}` }] },
+      original_key: { state: 'partial_unapproved_candidates', conflicting_evidence: true, candidates: [] },
+      bpm: { state: 'partial_unapproved_candidates', conflicting_evidence: true, candidates: [] } },
+      submission_coverage: { source: 'AcousticBrainz', total_available: 0, sampled_offsets: [], completeness: 'complete' },
+      conflicts: { release_year: false, original_key: true, bpm: true } });
+    for (const year of [1973, 1974]) await h.client.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions,
+      factualEvidence: factual(year), requestedFields: ['original_key', 'bpm'], apiKey: 'key' });
+    expect(h.calls).toHaveLength(2);
+    expect(entries.size).toBe(2);
   });
 
   it('rejects Gemini unknown, ambiguous, malformed, scalar, or extra-property outputs', async () => {
@@ -760,6 +918,62 @@ describe('song enrichment provider adapters', () => {
     }
   });
 
+  it('rejects uniquely catalogued Genre and Vibe labels omitted from their supplied allowed subsets', async () => {
+    const h = harness({ route: () => geminiResponse({ genres: ['Country'], vibes: ['Country'] }) });
+    const result = await h.client.requestGeminiTags({ mbid: MBID, title: 'Song', artist: 'Artist', definitions,
+      allowedNames: { genres: [definitions.genres[0].name], vibes: ['Upbeat'] }, apiKey: 'key' });
+    expect(result).toMatchObject({ status: 'invalid_response', genres: [], vibes: [] });
+    expect(h.client.getRunLedger()).toContainEqual(expect.objectContaining({
+      provider: 'Gemini', operation: 'missing_metadata_fallback', status: 'invalid_response',
+    }));
+
+    const categoryOverlap = harness({ route: () => geminiResponse({ genres: ['Country'], vibes: ['Country'] }) });
+    const overlap = await categoryOverlap.client.requestGeminiTags({ mbid: MBID, title: 'Song', artist: 'Artist', definitions,
+      allowedNames: { genres: ['Country'], vibes: ['Upbeat'] }, apiKey: 'key' });
+    expect(overlap.status).toBe('invalid_response');
+
+    const ambiguousAllowed = harness();
+    const ambiguous = await ambiguousAllowed.client.requestGeminiTags({ mbid: MBID, title: 'Song', artist: 'Artist',
+      definitions: { genres: [], vibes: [{ name: 'Country' }, { name: ' country ' }] },
+      allowedNames: { genres: [], vibes: ['Country'] }, apiKey: 'key' });
+    expect(ambiguous.status).toBe('invalid_response');
+    expect(ambiguousAllowed.calls).toHaveLength(0);
+  });
+
+  it('uses only Interactions usage in results and ledgers, even when legacy usageMetadata conflicts', async () => {
+    const rejected = harness({ route: () => geminiResponse({ genres: ['Unknown'] },
+      { total_input_tokens: 21, total_output_tokens: 9, total_tokens: 30 },
+      { promptTokenCount: 700, candidatesTokenCount: 800, totalTokenCount: 1500 }) });
+    const invalid = await rejected.client.requestGeminiTags({ mbid: MBID, title: 'Song', artist: 'Artist', definitions, apiKey: 'key' });
+    expect(invalid).toMatchObject({ status: 'invalid_response', token_usage: { input_tokens: 21, output_tokens: 9, total_tokens: 30 } });
+    expect(invalid.genres).toEqual([]);
+    expect(rejected.client.getRunLedger()).toContainEqual(expect.objectContaining({ status: 'invalid_response',
+      token_usage: { input_tokens: 21, output_tokens: 9, total_tokens: 30 } }));
+
+    const absent = harness({ route: () => geminiResponse({ genres: ['Unknown'] }, {},
+      { promptTokenCount: 700, candidatesTokenCount: 800, totalTokenCount: 1500 }) });
+    const absentResult = await absent.client.requestGeminiTags({ mbid: MBID, title: 'Song', artist: 'Artist', definitions, apiKey: 'key' });
+    expect(absentResult).not.toHaveProperty('token_usage');
+    expect(absent.client.getRunLedger()[0]).not.toHaveProperty('token_usage');
+
+    const malformed = harness({ route: () => geminiResponse({ genres: ['Unknown'] },
+      { total_input_tokens: 21, total_output_tokens: -9, total_tokens: 12 },
+      { promptTokenCount: 700, candidatesTokenCount: 800, totalTokenCount: 1500 }) });
+    const malformedResult = await malformed.client.requestGeminiTags({ mbid: MBID, title: 'Song', artist: 'Artist', definitions, apiKey: 'key' });
+    expect(malformedResult).not.toHaveProperty('token_usage');
+    expect(malformed.client.getRunLedger()[0]).not.toHaveProperty('token_usage');
+  });
+
+  it('keeps legacy usageMetadata accounting for non-Interactions providers', async () => {
+    const h = harness({ route: () => response({ ...searchBody(), usageMetadata: {
+      promptTokenCount: 7, candidatesTokenCount: 3, totalTokenCount: 10,
+    } }) });
+    expect((await h.client.searchRecordings({ title: 'Song', artist: 'Artist' })).status).toBe('ok');
+    expect(h.client.getRunLedger()).toContainEqual(expect.objectContaining({ provider: 'MusicBrainz',
+      operation: 'recording_search', status: 'ok',
+      token_usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } }));
+  });
+
   it('accepts Gemini empty output arrays as abstention and keeps same-named categories separate', async () => {
     const abstain = harness({ route: () => geminiResponse({ genres: [], vibes: [] }) });
     expect(await abstain.client.requestGeminiTags({ mbid: MBID, title: 'Song', artist: 'Artist', definitions, apiKey: 'key' }))
@@ -769,13 +983,167 @@ describe('song enrichment provider adapters', () => {
       .toMatchObject({ status: 'ok', genres: [{ name: 'Country' }], vibes: [] });
   });
 
+  it('constructs subjective Vibe-only requests and rejects every suggestion outside the supplied Vibe subset', async () => {
+    const vibeDefinitions = { genres: [{ id: 1, name: 'Rock' }], vibes: [{ id: 2, name: 'Warm' }, { id: 3, name: 'Energetic' }] };
+    const allowedNames = { genres: [], vibes: ['Warm'] };
+    let captured;
+    const accepted = harness({ config: { maxAttempts: 1, maxGeminiAttempts: 1, geminiMaxInputBytes: 16_384,
+      geminiMaxOutputTokens: 1_024 }, route: request => {
+      captured = request;
+      return geminiResponse({ vibes: ['Warm'] });
+    } });
+    const result = await accepted.client.requestGeminiTags({ title: 'Beer Drinkers and Hell Raisers', artist: 'ZZ Top',
+      requestedFields: [], definitions: vibeDefinitions, allowedNames, apiKey: 'private-test-key' });
+    expect(accepted.calls).toHaveLength(1);
+    expect(accepted.client.getAttemptCounts()).toEqual({ total: 1, gemini: 1 });
+    expect(result).toMatchObject({ status: 'ok', scalars: { release_year: [], bpm: [], original_key: [] }, genres: [],
+      vibes: [{ name: 'Warm' }] });
+    const body = JSON.parse(captured.body.toString('utf8'));
+    expect(body.system_instruction).toContain('Vibes describe subjective musical, listening, or performance character.');
+    expect(body.system_instruction).toContain('Choose only appropriate supplied labels; return an empty array when none fit.');
+    expect(body.input).toContain(body.system_instruction);
+    expect(body.store).toBe(false);
+    expect(body.generation_config.max_output_tokens).toBe(1_024);
+    const schema = body.response_format.schema;
+    for (const field of ['release_year', 'bpm', 'original_key']) expect(schema.properties[field]).toEqual({ type: 'null' });
+    expect(schema.required).toEqual(['release_year', 'bpm', 'original_key', 'genres', 'vibes']);
+    expect(schema.properties.genres.maxItems).toBe(0);
+    expect(schema.properties.vibes.maxItems).toBe(3);
+    const payload = JSON.parse(body.input.slice(body.input.indexOf('\n') + 1));
+    expect(payload).toEqual({ recording: { title: 'Beer Drinkers and Hell Raisers', artist: 'ZZ Top', context: {} },
+      requested_missing_fields: [], allowed_names: { genres: [], vibes: ['Warm'] } });
+    expect(captured.body.toString('utf8')).not.toContain('private-test-key');
+
+    for (const invalid of [
+      { bpm: 134, vibes: [] },
+      { genres: ['Rock'], vibes: [] },
+      { vibes: ['Energetic'] },
+      { vibes: ['Unknown'] },
+    ]) {
+      const rejected = harness({ route: () => geminiResponse(invalid) });
+      expect((await rejected.client.requestGeminiTags({ title: 'Song', artist: 'Artist', requestedFields: [],
+        definitions: vibeDefinitions, allowedNames, apiKey: 'test-key' })).status).toBe('invalid_response');
+    }
+
+    const ambiguous = harness();
+    expect((await ambiguous.client.requestGeminiTags({ title: 'Song', artist: 'Artist', requestedFields: [],
+      definitions: { genres: [], vibes: [{ name: 'Warm' }, { name: ' warm ' }] },
+      allowedNames: { genres: [], vibes: ['Warm'] }, apiKey: 'test-key' })).status).toBe('invalid_response');
+    expect(ambiguous.calls).toHaveLength(0);
+  });
+
+  it('builds scalar response constraints from the requested field set', async () => {
+    let captured;
+    const h = harness({ route: request => { captured = request; return geminiResponse({ original_key: { key_key: 'C', key_scale: 'minor' },
+      bpm: 128, vibes: ['Upbeat'] }); } });
+    const result = await h.client.requestGeminiTags({ title: 'Song', artist: 'Artist', requestedFields: ['bpm', 'original_key'],
+      definitions: { genres: [], vibes: [{ name: 'Upbeat' }] }, allowedNames: { genres: [], vibes: ['Upbeat'] }, apiKey: 'test-key' });
+    expect(result.status).toBe('ok');
+    const schema = JSON.parse(captured.body.toString('utf8')).response_format.schema;
+    expect(schema.properties.release_year).toEqual({ type: 'null' });
+    expect(schema.properties.bpm).toEqual({ type: ['number', 'null'], minimum: 0 });
+    expect(schema.properties.original_key).toMatchObject({ type: ['object', 'null'], required: ['key_key', 'key_scale'],
+      additionalProperties: false });
+    expect(schema.properties.genres).toEqual({ type: 'array', items: { type: 'string' }, maxItems: 0 });
+    expect(schema.properties.vibes).toEqual({ type: 'array', items: { type: 'string' }, maxItems: 3 });
+
+    const rejected = harness({ route: () => geminiResponse({ release_year: 1978, bpm: null, original_key: null }) });
+    expect(await rejected.client.requestGeminiTags({ title: 'Song', artist: 'Artist', requestedFields: ['bpm'],
+      definitions: { genres: [], vibes: [] }, allowedNames: { genres: [], vibes: [] }, apiKey: 'test-key' }))
+      .toMatchObject({ status: 'invalid_response', failure_details: { validation_reason: 'unrequested_scalar', validation_field: 'release_year' } });
+  });
+
+  it('returns stable safe validation reasons through the Gemini result and ledger', async () => {
+    const validOutput = { release_year: null, bpm: null, original_key: null, genres: [], vibes: ['Upbeat'] };
+    const usage = { total_input_tokens: 21, total_output_tokens: 9, total_tokens: 30 };
+    const envelope = text => response({ status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text }] }], usage });
+    const cases = [
+      { reason: 'interaction_envelope_invalid', response: () => response({ status: 'in_progress', steps: [], usage }) },
+      { reason: 'model_text_missing', response: () => response({ status: 'completed', steps: [{ type: 'model_output', content: [] }], usage }) },
+      { reason: 'invalid_json', response: () => envelope('RAW_RESPONSE_SECRET invalid json') },
+      { reason: 'required_field_missing', response: () => envelope(JSON.stringify({ release_year: null, bpm: null, genres: [], vibes: ['Upbeat'] })) },
+      { reason: 'unexpected_field', response: () => envelope(JSON.stringify({ ...validOutput, explanation: 'RAW_RESPONSE_SECRET' })) },
+      { reason: 'invalid_field_type_value', response: () => envelope(JSON.stringify({ ...validOutput, bpm: null, vibes: 'Upbeat' })) },
+      { reason: 'unrequested_scalar', response: () => geminiResponse({ ...validOutput, bpm: 120 }, usage) },
+      { reason: 'disallowed_genre_output', response: () => geminiResponse({ ...validOutput, genres: ['Country'] }, usage), allowedNames: { genres: [], vibes: ['Upbeat'] }, category: 'Genre' },
+      { reason: 'unknown_label', response: () => geminiResponse({ ...validOutput, vibes: ['Unknown'] }, usage), category: 'Vibe' },
+      { reason: 'ambiguous_label', response: () => geminiResponse({ ...validOutput, vibes: ['Warm'] }, usage),
+        definitions: { genres: [], vibes: [{ name: 'Warm' }, { name: ' warm ' }, { name: 'Upbeat' }] },
+        allowedNames: { genres: [], vibes: ['Upbeat'] }, category: 'Vibe' },
+      { reason: 'label_outside_allowed_subset', response: () => geminiResponse({ ...validOutput, vibes: ['Country'] }, usage),
+        allowedNames: { genres: [], vibes: ['Upbeat'] }, category: 'Vibe' },
+    ];
+    for (const scenario of cases) {
+      const h = harness({ route: scenario.response });
+      const result = await h.client.requestGeminiTags({ title: 'Song', artist: 'Artist', requestedFields: [],
+        definitions: scenario.definitions || definitions, allowedNames: scenario.allowedNames || { genres: [], vibes: ['Upbeat'] }, apiKey: 'synthetic-key' });
+      expect(result.status, scenario.reason).toBe('invalid_response');
+      expect(result.failure_details.validation_reason, scenario.reason).toBe(scenario.reason);
+      if (scenario.category) expect(result.failure_details.validation_category).toBe(scenario.category);
+      else if (scenario.reason === 'required_field_missing' || scenario.reason === 'unrequested_scalar') {
+        expect(result.failure_details.validation_field).toBe(scenario.reason === 'required_field_missing' ? 'original_key' : 'bpm');
+      }
+      expect(result.token_usage).toEqual({ input_tokens: 21, output_tokens: 9, total_tokens: 30 });
+      expect(h.client.getRunLedger()[0]).toMatchObject({ status: 'invalid_response', token_usage: result.token_usage,
+        failure_details: result.failure_details });
+      expect(JSON.stringify({ result, ledger: h.client.getRunLedger() })).not.toMatch(/RAW_RESPONSE_SECRET|synthetic-key/);
+    }
+
+    const invalidFactual = harness();
+    const result = await invalidFactual.client.requestGeminiTags({ title: 'Song', artist: 'Artist', requestedFields: [], definitions,
+      factualEvidence: { unexpected_secret: 'PRIVATE' }, apiKey: 'synthetic-key' });
+    expect(result).toMatchObject({ status: 'invalid_response', failure_details: { validation_reason: 'invalid_provenance' } });
+    expect(invalidFactual.calls).toHaveLength(0);
+
+    const accepted = harness({ route: () => geminiResponse({ ...validOutput, vibes: ['Upbeat'] }, usage) });
+    expect(await accepted.client.requestGeminiTags({ title: 'Song', artist: 'Artist', requestedFields: [], definitions,
+      allowedNames: { genres: [], vibes: ['Upbeat'] }, apiKey: 'synthetic-key' })).toMatchObject({ status: 'ok', vibes: [{ name: 'Upbeat' }] });
+  });
+
+  it('validates requested missing scalars and tags with model/schema/digest provenance', async () => {
+    const h = harness({ route: () => geminiResponse({ release_year: 1978, bpm: 104.2,
+      original_key: { key_key: 'G', key_scale: 'major' }, genres: ['Hard Rock'], vibes: ['Upbeat'] }) });
+    const result = await h.client.requestGeminiTags({ mbid: null, title: 'Song', artist: 'Artist', definitions,
+      requestedFields: ['release_year', 'bpm', 'original_key'], apiKey: 'synthetic-api-key' });
+    expect(result.status).toBe('ok');
+    expect(result.scalars.release_year[0]).toMatchObject({ value: 1978, source: 'Gemini', model_id: 'gemini-3.1-flash-lite' });
+    expect(result.scalars.bpm[0]).toMatchObject({ value: 104.2, source: 'Gemini', prompt_version: 'missing-metadata-fallback-v2' });
+    expect(result.scalars.original_key[0]).toMatchObject({ value: { key_key: 'G', key_scale: 'major' }, schema_version: 'missing-metadata-schema-v2' });
+    expect(result.genres[0].name).toBe('  Hard   Rock  ');
+    expect(result.genres[0].response_digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.vibes[0]).toMatchObject({ name: 'Upbeat', source: 'Gemini',
+      model_id: 'gemini-3.1-flash-lite', prompt_version: 'missing-metadata-fallback-v2', schema_version: 'missing-metadata-schema-v2' });
+    const body = JSON.parse(h.calls[0].body.toString());
+    expect(body.input).not.toContain('mbid');
+    expect(body.input).toContain('requested_missing_fields');
+    expect(body.generation_config.max_output_tokens).toBe(1000);
+    expect(body.response_format.schema.properties.release_year).toEqual({ type: ['integer', 'null'] });
+    expect(body.response_format.schema.properties.bpm).toEqual({ type: ['number', 'null'], minimum: 0 });
+    expect(body.response_format.schema.properties.original_key).toMatchObject({ type: ['object', 'null'],
+      required: ['key_key', 'key_scale'], additionalProperties: false });
+  });
+
+  it('rejects scalar suggestions for populated or unrequested fields and malformed key/value output', async () => {
+    for (const output of [
+      { release_year: 1978 },
+      { release_year: null, bpm: -1 },
+      { release_year: null, original_key: { key_key: 'H', key_scale: 'major' } },
+      { release_year: 1978, bpm: null, original_key: null },
+    ]) {
+      const h = harness({ route: () => geminiResponse(output) });
+      const result = await h.client.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions,
+        requestedFields: ['bpm', 'original_key'], apiKey: 'key' });
+      expect(result).toMatchObject({ status: 'invalid_response', scalars: {} });
+    }
+  });
+
   it('enforces Gemini API input/output limits and does not dispatch for missing key or empty catalog', async () => {
     const missing = harness();
     expect((await missing.client.requestGeminiTags({ mbid: MBID, title: 'Song', artist: 'Artist', definitions })).status).toBe('authentication_error');
     expect(missing.calls).toHaveLength(0);
     const empty = harness();
     expect(await empty.client.requestGeminiTags({ mbid: MBID, title: 'Song', artist: 'Artist', definitions: { genres: [], vibes: [] }, apiKey: 'key' }))
-      .toMatchObject({ status: 'ok', skipped: 'empty_definition_catalog' });
+      .toMatchObject({ status: 'ok', skipped: 'no_missing_fields_or_unassigned_definitions' });
     expect(empty.calls).toHaveLength(0);
     const tooLarge = harness({ config: { geminiMaxInputBytes: 50 } });
     expect((await tooLarge.client.requestGeminiTags({ mbid: MBID, title: 'Song', artist: 'Artist', definitions, apiKey: 'key' })).status).toBe('invalid_response');

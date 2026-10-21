@@ -40,14 +40,19 @@ describe('song enrichment response cache', () => {
     expect(cacheKey(lookup)).toBe(cacheKey({ ...lookup, parameters: { mbid: MBID.toUpperCase() } }));
     expect(() => cacheKey({ ...lookup, parameters: { mbid: 'bad' } })).toThrow(/MBID/);
     const gemini = {
-      provider: 'Gemini', operation: 'genre_vibe_candidates', parameters: { title: 'Song', artist: 'Artist', mbid: MBID },
-      model: 'gemini-3.1-flash-lite', promptVersion: 'p1', schemaVersion: 's1',
+      provider: 'Gemini', operation: 'missing_metadata_fallback', parameters: { title: 'Song', artist: 'Artist', requestedFields: ['bpm'], context: {} },
+      parserVersion: '2', model: 'gemini-3.1-flash-lite', promptVersion: 'p1', schemaVersion: 's1',
       definitionCatalog: { genres: ['Rock', 'Pop'], vibes: ['Upbeat'] },
+      validationCatalog: { genres: ['Rock', 'Pop', 'Assigned'], vibes: ['Upbeat'] },
     };
     expect(cacheKey(gemini)).toBe(cacheKey({ ...gemini, definitionCatalog: { genres: ['Pop', 'Rock'], vibes: ['Upbeat'] } }));
     expect(cacheKey(gemini)).not.toBe(cacheKey({ ...gemini, model: 'other-model' }));
     expect(cacheKey(gemini)).not.toBe(cacheKey({ ...gemini, promptVersion: 'p2' }));
+    expect(cacheKey(gemini)).not.toBe(cacheKey({ ...gemini, schemaVersion: 'schema-v2' }));
+    expect(cacheKey(gemini)).not.toBe(cacheKey({ ...gemini,
+      parameters: { ...gemini.parameters, requestedFields: ['original_key', 'bpm'] } }));
     expect(cacheKey(gemini)).not.toBe(cacheKey({ ...gemini, definitionCatalog: { genres: ['Rock'], vibes: ['Upbeat'] } }));
+    expect(cacheKey(gemini)).not.toBe(cacheKey({ ...gemini, validationCatalog: { genres: ['Rock', 'Pop', 'Assigned', 'Duplicate'], vibes: ['Upbeat'] } }));
     expect(JSON.stringify(gemini)).not.toContain('credential');
   });
 
@@ -242,18 +247,19 @@ describe('song enrichment response cache', () => {
         pagination: { expected_total: 1, validated_pages: 1, collected_count: 1, complete: false } });
   });
 
-  it('serves Gemini tag evidence from cache without an API key or attempt budget', async () => {
+  it('serves Gemini structured candidates from cache without spending provider attempt budget', async () => {
     const cache = await createSongEnrichmentCache({ directory: root });
     const definitions = { genres: [{ name: 'Rock' }], vibes: [{ name: 'Upbeat' }] };
     const request = {
-      provider: 'Gemini', operation: 'genre_vibe_candidates',
-      parameters: { mbid: MBID, title: 'Song', artist: 'Artist', context: {} },
-      parserVersion: '1', model: 'gemini-3.1-flash-lite',
+      provider: 'Gemini', operation: 'missing_metadata_fallback',
+      parameters: { title: 'Song', artist: 'Artist', context: { factual_evidence: null }, requestedFields: [] },
+      parserVersion: '2', model: 'gemini-3.1-flash-lite',
       promptVersion: GEMINI_PROMPT_VERSION, schemaVersion: GEMINI_SCHEMA_VERSION,
       definitionCatalog: { genres: ['Rock'], vibes: ['Upbeat'] },
+      validationCatalog: { genres: ['Rock'], vibes: ['Upbeat'] },
     };
     await cache.set(request, { status: 'ok', response: JSON.stringify({
-      status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text: '{"genres":["Rock"],"vibes":["Upbeat"]}' }] }],
+      status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text: '{"release_year":null,"bpm":null,"original_key":null,"genres":["Rock"],"vibes":["Upbeat"]}' }] }],
     }) });
     let dispatches = 0;
     const client = createSongEnrichmentProviderClient({
@@ -261,7 +267,8 @@ describe('song enrichment response cache', () => {
       config: { ...REQUIRED_BOUNDS, musicBrainzUserAgent: 'ChordChartManager/1.0.0 (contact@example.test)' },
       transport: async () => { dispatches += 1; return { status: 500, body: '{}' }; },
     });
-    const result = await client.requestGeminiTags({ mbid: MBID, title: 'Song', artist: 'Artist', definitions });
+    const result = await client.requestGeminiTags({ mbid: null, title: 'Song', artist: 'Artist', definitions,
+      apiKey: 'synthetic-key' });
     expect(result).toMatchObject({ status: 'ok', cache_hit: true, genres: [{ name: 'Rock' }], vibes: [{ name: 'Upbeat' }] });
     expect(client.getAttemptCounts()).toEqual({ total: 0, gemini: 0 });
     expect(dispatches).toBe(0);
@@ -272,7 +279,7 @@ describe('song enrichment response cache', () => {
     const client = createSongEnrichmentProviderClient({ cache,
       config: { ...REQUIRED_BOUNDS, musicBrainzUserAgent: 'ChordChartManager/1.0.0 (contact@example.test)' },
       transport: async () => ({ status: 200, headers: {}, body: JSON.stringify({
-        status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text: '{"genres":["Rock"],"vibes":[]}' }] }],
+        status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text: '{"release_year":null,"bpm":null,"original_key":null,"genres":["Rock"],"vibes":[]}' }] }],
       }) }) });
     await client.requestGeminiTags({ mbid: MBID, title: 'Synthetic Song', artist: 'Synthetic Artist',
       context: { chart_content: 'PRIVATE_CHART_CONTENT', lyrics: 'PRIVATE_LYRICS' },

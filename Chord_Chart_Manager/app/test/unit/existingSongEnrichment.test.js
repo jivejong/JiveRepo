@@ -39,11 +39,17 @@ function decision(overrides = {}) {
 }
 
 function reference(source, response_digest, value) {
-  return { source, response_digest, value };
+  return { ...(source === 'Gemini' ? geminiProvenance(response_digest) : { source, response_digest }), value };
 }
 
 function tagReference(source, response_digest, name) {
-  return { source, response_digest, name };
+  return { ...(source === 'Gemini' ? geminiProvenance(response_digest) : { source, response_digest }), name };
+}
+
+function geminiProvenance(response_digest) {
+  const digest = /^[a-f0-9]{64}$/.test(response_digest) ? response_digest : Buffer.from(String(response_digest)).toString('hex').padEnd(64, '0').slice(0, 64);
+  return { source: 'Gemini', response_digest: digest,
+    model_id: 'gemini-3.1-flash-lite', prompt_version: 'missing-metadata-fallback-v1', schema_version: 'missing-metadata-schema-v1' };
 }
 
 function definitions(overrides = {}) {
@@ -257,7 +263,7 @@ describe('buildEnrichmentPreview', () => {
       { id: 2, name: 'Hard Rock', evidence: [{ source: 'MusicBrainz', response_digest: 'digest-hard' }] },
     ]);
     expect(result.tag_additions.vibes).toEqual([
-      { id: 11, name: 'Country', evidence: [{ source: 'Gemini', response_digest: 'digest-country-vibe' }] },
+      { id: 11, name: 'Country', evidence: [geminiProvenance('digest-country-vibe')] },
     ]);
     expect(result.diagnostics).toContainEqual({ code: 'unknown_tag_definition', category: 'Genre', field: null, label: 'Post-punk' });
     expect(result.primary_proposal).toBeNull();
@@ -366,7 +372,7 @@ describe('buildEnrichmentPreview', () => {
       vibes: [{ id: 41, name: 'Country' }],
     }));
     expect(result.tag_additions.genres).toEqual([{ id: 31, name: ' Country ', evidence: [{ source: 'MusicBrainz', response_digest: 'genre-country' }] }]);
-    expect(result.tag_additions.vibes).toEqual([{ id: 41, name: 'Country', evidence: [{ source: 'Gemini', response_digest: 'vibe-country' }] }]);
+    expect(result.tag_additions.vibes).toEqual([{ id: 41, name: 'Country', evidence: [geminiProvenance('vibe-country')] }]);
   });
 
   it('reports normalized definition ambiguity and never creates a definition', () => {
@@ -474,20 +480,59 @@ describe('buildEnrichmentPreview', () => {
     expect(first.tag_additions.genres[0].evidence.map(item => item.response_digest)).toEqual(['a-digest', 'z-digest']);
   });
 
-  it('rejects Gemini scalar evidence independently while allowing Gemini tags', () => {
+  it('accepts Gemini suggestions for each allowed missing scalar and tags while preserving populated scalars', () => {
     for (const [field, value] of [['release_year', 2000], ['original_key', 'C'], ['bpm', 120]]) {
       const item = reference('Gemini', `gemini-${field}`, value);
       const result = buildEnrichmentPreview(snapshot(), evidence({ scalars: { [field]: [item] } }),
         decision({ scalars: { [field]: item } }), definitions());
-      expect(result.scalar_changes).toEqual([]);
-      expect(result.diagnostics).toContainEqual({ code: 'invalid_candidate', category: null, field, label: null });
+      expect(result.scalar_changes).toHaveLength(1);
+      expect(result.scalar_changes[0]).toMatchObject({ field, after: value,
+        evidence: expect.objectContaining({ source: 'Gemini', model_id: 'gemini-3.1-flash-lite',
+          prompt_version: 'missing-metadata-fallback-v1', schema_version: 'missing-metadata-schema-v1' }) });
     }
+    const populated = snapshot({ release_year: 1999, original_key: 'D', bpm: 90 });
+    const selections = {
+      release_year: reference('Gemini', 'year', 2000),
+      original_key: reference('Gemini', 'key', 'C'),
+      bpm: reference('Gemini', 'bpm', 120),
+    };
+    const preserved = buildEnrichmentPreview(populated, evidence({ scalars: Object.fromEntries(
+      Object.entries(selections).map(([field, item]) => [field, [item]])) }),
+    decision({ scalars: selections }), definitions());
+    expect(preserved.scalar_changes).toEqual([]);
     const tags = buildEnrichmentPreview(snapshot(), evidence({
       genres: [tagReference('Gemini', 'gemini-genre', 'Hard Rock')],
       vibes: [tagReference('Gemini', 'gemini-vibe', 'Upbeat')],
     }), decision({ genres: ['Hard Rock'], vibes: ['Upbeat'] }), definitions());
     expect(tags.tag_additions.genres).toHaveLength(1);
     expect(tags.tag_additions.vibes).toHaveLength(1);
+  });
+
+  it('continues to accept historical schema v1 and current schema v2 Gemini evidence', () => {
+    for (const schemaVersion of ['missing-metadata-schema-v1', 'missing-metadata-schema-v2']) {
+      const item = reference('Gemini', `schema-${schemaVersion}`, 2000);
+      item.schema_version = schemaVersion;
+      const result = buildEnrichmentPreview(snapshot(), evidence({ scalars: { release_year: [item] } }),
+        decision({ scalars: { release_year: { value: item.value, source: item.source, response_digest: item.response_digest } } }), definitions());
+      expect(result.scalar_changes).toMatchObject([{ field: 'release_year', after: 2000,
+        evidence: { schema_version: schemaVersion } }]);
+    }
+    const unsupported = reference('Gemini', 'unsupported-schema', 2000);
+    unsupported.schema_version = 'missing-metadata-schema-v3';
+    const rejected = buildEnrichmentPreview(snapshot(), evidence({ scalars: { release_year: [unsupported] } }),
+      decision({ scalars: { release_year: { value: unsupported.value, source: unsupported.source, response_digest: unsupported.response_digest } } }), definitions());
+    expect(rejected.scalar_changes).toEqual([]);
+    expect(rejected.diagnostics).toContainEqual(expect.objectContaining({ code: 'invalid_candidate', field: 'release_year' }));
+  });
+
+  it('allows Gemini-only null MBID evidence but rejects factual evidence without a real approved MBID', () => {
+    const item = reference('Gemini', 'gemini-year', 1978);
+    const ev = evidence({ mbid: null, scalars: { release_year: [item] } });
+    const reviewed = decision({ mbid: null, scalars: { release_year: item } });
+    expect(buildEnrichmentPreview(snapshot(), ev, reviewed, definitions()).scalar_changes)
+      .toMatchObject([{ field: 'release_year', after: 1978, evidence: { source: 'Gemini' } }]);
+    expect(() => buildEnrichmentPreview(snapshot(), { ...ev, scalars: { release_year: [reference('MusicBrainz', 'factual', 1978)] } }, reviewed, definitions()))
+      .toThrow(/exact evidence MBID/);
   });
 
   it('requires explicit selection for conflicting BPM and key evidence and rejects absent selections', () => {

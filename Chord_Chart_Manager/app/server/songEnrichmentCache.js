@@ -58,17 +58,19 @@ function normalizeCacheRequest(request) {
       if (!Number.isSafeInteger(parameters.offset) || parameters.offset < 0) throw new TypeError("A valid submission offset is required.");
       normalizedParameters.offset = parameters.offset;
     }
-  } else if (provider === "Gemini" && operation === "genre_vibe_candidates") {
+  } else if (provider === "Gemini" && operation === "missing_metadata_fallback") {
     if (typeof model !== "string" || !model || typeof promptVersion !== "string" || !promptVersion ||
         typeof schemaVersion !== "string" || !schemaVersion || !definitionCatalog ||
-        !Array.isArray(definitionCatalog.genres) || !Array.isArray(definitionCatalog.vibes)) {
+        !Array.isArray(definitionCatalog.genres) || !Array.isArray(definitionCatalog.vibes) ||
+        !request.validationCatalog || !Array.isArray(request.validationCatalog.genres) || !Array.isArray(request.validationCatalog.vibes) ||
+        !Array.isArray(parameters.requestedFields) || parameters.requestedFields.some(field =>
+          !["release_year", "original_key", "bpm"].includes(field)) || new Set(parameters.requestedFields).size !== parameters.requestedFields.length) {
       throw new TypeError("Gemini cache version and definition catalog are required.");
     }
-    if (typeof parameters.mbid !== "string" || !UUID.test(parameters.mbid)) throw new TypeError("A valid recording MBID is required.");
     normalizedParameters = {
       artist: normalizeIdentity(parameters.artist),
       context: parameters.context ?? null,
-      mbid: parameters.mbid.toLowerCase(),
+      requestedFields: [...parameters.requestedFields].sort(compareStableStrings),
       title: normalizeIdentity(parameters.title),
     };
   } else {
@@ -85,6 +87,10 @@ function normalizeCacheRequest(request) {
     normalized.definitionCatalog = {
       genres: definitionCatalog.genres.map(name => name).sort(compareStableStrings),
       vibes: definitionCatalog.vibes.map(name => name).sort(compareStableStrings),
+    };
+    normalized.validationCatalog = {
+      genres: request.validationCatalog.genres.map(name => name).sort(compareStableStrings),
+      vibes: request.validationCatalog.vibes.map(name => name).sort(compareStableStrings),
     };
   }
   return normalized;

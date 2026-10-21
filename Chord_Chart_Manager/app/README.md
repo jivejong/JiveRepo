@@ -199,8 +199,9 @@ Open <http://localhost:5173>. Vite proxies `/api` to the server on port 3001.
 separate `server/songEnrichmentProviders.js` module exposes
 `createSongEnrichmentProviderClient({ transport, clock, delay, config, cache })`
 with `searchRecordings`, `lookupRecording`, `getAcousticBrainzEvidence`, and
-`requestGeminiTags`. These modules are not wired into an app route, command,
-database write, or ingestion flow. The default transport always returns
+`requestGeminiTags`. These modules are not wired into an app route, database
+write, or ingestion flow. A separate explicit fallback preview command is
+described below. The default transport always returns
 `network_disabled`; provider requests require an injected transport.
 
 The transport receives `{url, method, headers, body, signal, timeoutMs,
@@ -316,6 +317,7 @@ search](https://musicbrainz.org/doc/MusicBrainz_API/Search),
 [AcousticBrainz API](https://acousticbrainz.readthedocs.io/api.html), and
 [Gemini 3.1 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite)
 and [structured output](https://ai.google.dev/gemini-api/docs/structured-output)
+and the official [Interactions API](https://ai.google.dev/api/interactions-api)
 documentation. The AcousticBrainz feature paths are cross-checked against its
 API server's direct field mapping and the upstream Essentia output types.
 
@@ -344,6 +346,13 @@ committed response without a song foreign key, so exact operation replay still
 works after a song changes or is deleted. A repeated operation ID with a
 different canonical manifest is rejected.
 
+That exported scratch entry remains restricted to the current T11-owned database.
+The separate `scripts/apply-main-song-enrichment.cjs` entry is an explicit bounded
+main path for a saved operator manifest. It requires the matching target set,
+canonical manifest hash, database identity, and a fresh actual restore/snapshot
+proof for a new operation. A matching committed receipt may replay without the
+old proof archive. It never dispatches providers or migrates implicitly.
+
 The apply transaction locks the operation, then normalized Genre/Vibe names
 and relevant definition rows, then target songs in ascending ID order. It
 rebuilds each B1 preview from the locked current snapshot and requires exact
@@ -364,8 +373,9 @@ guarded harness prerequisites. It creates a fresh owner-marked `ccm_test`,
 applies migrations there, runs unit/API/enrichment/E2E checks, drops only that
 owned database, and verifies absence. Its protection check fingerprints the
 imported `Sample.docx` rows plus aggregate counts and health; it is not a full
-snapshot of every row in the main database. B3 remains scratch-only; any live
-apply path requires later review and explicit authorization.
+snapshot of every row in the main database. The separately guarded main path
+was used for the accepted Stage B live operations; see the dated
+`docs/STAGE_B_CLOSEOUT_STAGE_C1_HANDOFF_2026-10-20.md` for scope and limits.
 
 ## Read-only provider preview (B4)
 
@@ -389,7 +399,8 @@ of 1,048,576 bytes applies to both provider configuration and streamed body
 enforcement. At most three explicitly selected songs are handled in ID order;
 recording abstention prevents recording-specific requests. A captured baseline
 can become stale. The report never creates a review decision or approved
-apply manifest, and it performs no database writes.
+apply manifest, and it performs no database writes. This B4 command does not
+dispatch Gemini and does not fall back to it after provider failures.
 
 The output directory must be a new path already covered by this repository's
 ignore rules. The command exclusively creates the directory and versioned JSON
@@ -407,6 +418,92 @@ uses synthetic database and HTTP fixtures; no live preview, database, or
 provider call was run. The command has no automatic startup hook. Review and
 explicit authorization are required before executing the `--live-read-only`
 mode against real services.
+
+## Explicit Gemini missing-metadata fallback preview
+
+`scripts/preview-gemini-fallback.cjs` is a separate one-song, read-only command.
+It requires `--gemini-opt-in`, one positive `--song-id`, a new ignored
+`--output-dir`, and `GEMINI_API_KEY` from the process environment or private
+`app/.env`. The key is validated as an HTTP header and sent in `x-goog-api-key`;
+it is not included in the request body, output, ledger or errors. This mode is
+never an automatic fallback from B4 or from a factual provider failure.
+
+It reads the same allowlisted song baseline and current Genre/Vibe definitions
+in a read-only transaction, releases the query client, then makes at most one
+Gemini request. Cache and retries are disabled. The payload contains title,
+credited artist, requested missing scalar fields and currently unassigned
+managed Genre/Vibe names. Without factual context it contains no MBID; when
+factual context is supplied, only its separately allowlisted validated
+recording identity and evidence are included. Neither form includes lyrics or
+chart/source content.
+Vibes describe subjective musical, listening, or performance character; the
+model selects only appropriate supplied labels and may abstain with an empty
+array.
+The one-attempt mode returns a completed request's terminal failure directly;
+it does not sleep or replace that result with `budget_exhausted`. Failure
+reports and ledgers retain only allowlisted phase, HTTP status, timeout
+flag/source, native transport code and whether HTTPS request creation started. They omit
+error messages and request/response contents.
+An optional `--factual-report` accepts either a saved version 1 B4 report or
+the explicit `factual_context_version: 1` format. The latter has only a target
+song identity, a validated recording MBID/identity, allowlisted scalar
+candidates with source/digest/submission references, AcousticBrainz submission
+coverage and per-field conflict flags. The local converter reads the saved
+trial's actual `target`, `explicit_recording_choice`, `lookup`, and
+`acousticbrainz` sections; it does not invent B4 execution history:
+
+```powershell
+node scripts/convert-factual-trial.cjs `
+  "../backups/missing-original-key-727-explicit-20261016T060723865Z-decf8925-8d99-4bb6-83c7-05c1d6fb8d79/trial-v1.json" `
+  "../backups/<new-ignored-context>.json"
+node scripts/preview-gemini-fallback.cjs --gemini-opt-in --song-id 727 `
+  --factual-report "../backups/<new-ignored-context>.json" `
+  --output-dir "../backups/<new-ignored-run-directory>"
+```
+
+The CLI validates the context before reading runtime credentials, captures the
+song/catalog baseline read-only, checks factual target identity against it,
+then classifies fields before constructing the request. A single valid,
+unconflicted factual scalar candidate is retained for human review and omitted
+from Gemini's requested fields. Missing or conflicting factual scalars may be
+suggested separately; the factual evidence and partial coverage remain in the
+payload and report. Provider output is checked against the exact requested
+scalar subset, so an unrequested scalar is rejected. Factual candidates are
+never approved or overwritten by model output. B4 reports retain their
+existing sanitized support.
+
+Structured response validation is independent of the model: exact fields and
+types are required; scalar suggestions must be requested and use accepted year,
+BPM and key representations; Genre/Vibe labels must uniquely resolve in their
+own current catalog. Each label list is limited to three. Null scalar values
+and empty label arrays are abstentions. Populated scalars and existing
+assignments are reported as preserved. No confidence or reliability score is
+used. Suggestions remain unapproved, and the report contains no B3 apply
+manifest or review decision.
+
+The adapter sends this request to Google's `POST
+https://generativelanguage.googleapis.com/v1beta/interactions` endpoint with
+`store: false` and a structured JSON response format.
+This disables Interaction storage for this request. It does not define or
+override Google's broader data-use or retention terms and account controls.
+
+Limits are 16,384 UTF-8 input bytes, 1,024 output tokens, 1,048,576 response
+bytes and a 10-second timeout. These controls do not impose a monetary cap;
+Google account quotas and pricing vary. Token counts are reported only when
+returned by the provider. Output JSON and `summary.txt` use exclusive creation
+under the ignored directory and contain only an explicit report allowlist.
+
+Example from `app/` (replace the placeholder with a new ignored path):
+
+```powershell
+node scripts/preview-gemini-fallback.cjs --gemini-opt-in --song-id 733 --output-dir "../backups/<new-ignored-run-directory>"
+```
+
+The focused tests use synthetic Gemini and database fixtures and make no live
+Gemini calls. The guarded T11 verification uses a fresh owner-marked `ccm_test`
+scratch database and read-only main-database health/count/fingerprint checks;
+those fingerprints cover eight Sample rows, not a complete main snapshot.
+Separate review and explicit authorization are required before a real preview.
 ## Automated tests
 
 Client tests are in `test/unit/`; Playwright tests are in `test/e2e/`. The client
@@ -712,6 +809,12 @@ the crash; TCP, health, and endpoints were repeated after restart.
 T02 did not validate full offline workflows, real corpus import, or live
 enrichment. Earlier feature checks in project history are historical and were
 not part of T02.
+
+The later normal user-run T11 passed the current build, 362 unit, 3 API,
+21 enrichment and 51 browser tests. Its owned scratch database was removed
+and absence verified; eight Sample fingerprints plus main health/counts
+were preserved. This harness result is separate from the accepted live
+applications' fresh backup, actual restore proof and postchecks.
 
 ## Deployment
 
