@@ -2033,6 +2033,28 @@ Derived: the median run time stepped up by roughly 10 to 15 percent around 10-13
 
 **Found.** `rejects` returned 0 rows (no reject since 2026-10-13), so it has no watermark and every run backfills it again, 8 pages instead of 1: a steady run is expected to cost 14 statements, not 7, until the first reject lands. Candidate fix for the next round: set the watermark to the window end (or the run time) when a backfill finds nothing.
 
+**Commits:** P (docs and log) `2d642aa`.
+
+### Round 8 (2026-10-20): rejects watermark and read API
+
+**Scheduled runs.** The `serve.log` lines supplied at the start of the round hold only the manual publish (31 statements) and the registration's catch-up skip (0 statements); no scheduled run had happened yet (the first one is due at 05:17Z), so the live steady-run statement count is still unmeasured. ForceServe was disabled before the first edit under `serving/` (so it could not run half-edited code) and is enabled again at the end.
+
+**Built.**
+- `serving/pull.py`: an empty backfill of `probe_reading` or `rejects` now sets that source's watermark to the run's `now` in the same transaction, so the next run is one statement for it instead of `backfill_days + 1` (the Round 7 finding: prod has had no reject since 10-13). `sector_reading` is unchanged, because its watermark is warehouse time.
+- `serving/api_queries.py`: one SQL constant per endpoint, parameters only, reading the serving views and tables.
+- `serving/server.py`: `python -m serving.server [--database NAME] [--port 8081]`, stdlib `ThreadingHTTPServer` on 127.0.0.1 only. GET and HEAD only (405 otherwise); the Host header must be `127.0.0.1:<port>` or `localhost:<port>` (403). Every API request opens its own connection whose first statement is `SET TRANSACTION READ ONLY`, and closes it; a failure is `500 {"error": "internal"}` with the scrubbed detail in `logs\dashboard.log`. Endpoints: `/api/health`, `meta`, `galaxy`, `planet/<id>`, `signatures`, `source-health`, `ingest-lag`, `rejections`, `incidents?status=&limit=`, `deployments?limit=`; an unknown `/api` path is 404. Static files come from `dashboard/dist`.
+
+**Decisions taken in code.**
+- Static files: the allow-list is built at start from every file under `dashboard/dist` whose extension has a MIME type (so a `.txt` is never served); the request path is looked up as is, never normalised or joined to a folder; a path with `..`, a backslash or `%` is 400, an unlisted path is 404, and a missing build gives 503 "dashboard not built" on `/`. Files under `/assets/` are cached as immutable; `index.html`, other files and every API answer are `no-store`.
+- Headers on every response, errors included: the Content-Security-Policy (`default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`), `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. `intake/intake_server.py` sets no further security header (it sets `Cache-Control: no-store`, which is covered above).
+- Query strings are strict: an unknown or repeated parameter is 400, `limit` must be digits from 1 to 200, `status` one of open, decided or historical. A planet id must match `[a-z0-9_]{1,64}`.
+- `/api/planet/<id>` returns the sector row, the baseline bands, the readings (probe and report rows, with `source_type`) from the 72 hours before the planet's newest reading, ascending, and its incidents newest first.
+- The logger closes its previous handler when reconfigured.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 no watermark on an empty backfill FAIL (first run was an ERROR from a missing key; the tests now compare with `.get`); M2 bind on 0.0.0.0 FAIL; M3 Host check removed FAIL; M4 `normpath` on static paths FAIL; M5 the `..` rejection removed FAIL (the tests expect 400 for such paths, not only "not 200"); M6 READ ONLY removed FAIL; M7 limit cap removed FAIL; M8 CSP missing on errors FAIL (also an ERROR first, same fix); M9 uppercase allowed in the planet regex FAIL.
+
+**Tests.** `serving` 102 to 123 (3 in `test_pull.py`, 18 in `test_server.py`). Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green.
+
 **Commits:** listed in the next round.
 
 ## Open items
