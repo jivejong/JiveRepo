@@ -1,0 +1,96 @@
+/* Styles of the dashboard (doc 07 Phase 7). One stylesheet file: the backend's CSP allows no inline style. Colours are custom
+   properties; dark mode follows the system. */
+:root {
+  --bg: #f6f6f3;
+  --panel: #ffffff;
+  --text: #1c1c1a;
+  --muted: #62625c;
+  --line: #d9d9d2;
+  --normal: #cfe3d4;
+  --anomaly: #f2c14e;
+  --emergency: #d9534f;
+  --no-data: #c8c8c4;
+  --accent: #2a6f97;
+  --band1: rgba(42, 111, 151, 0.28);
+  --band2: rgba(42, 111, 151, 0.12);
+  --open: #d9534f;
+  --decided: #2a6f97;
+  --other: #9a9a94;
+  --ok: #3f8f5b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141412;
+    --panel: #1e1e1b;
+    --text: #ecece6;
+    --muted: #a3a39b;
+    --line: #34342f;
+    --normal: #2f4a38;
+    --anomaly: #b8892a;
+    --emergency: #b0403c;
+    --no-data: #46463f;
+    --accent: #6cb4de;
+    --band1: rgba(108, 180, 222, 0.30);
+    --band2: rgba(108, 180, 222, 0.13);
+    --open: #e0716d;
+    --decided: #6cb4de;
+    --other: #7d7d75;
+    --ok: #5fb37c;
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+.page { max-width: 1200px; margin: 0 auto; padding: 16px; }
+h1 { margin: 0 0 4px; font-size: 22px; }
+h2 { margin: 0 0 8px; font-size: 17px; }
+h3 { margin: 12px 0 6px; font-size: 14px; color: var(--muted); }
+.asof { margin: 0; color: var(--muted); }
+.error { color: var(--emergency); }
+.banner { margin: 10px 0; padding: 8px 12px; background: var(--anomaly); color: #1c1c1a; font-weight: 700; letter-spacing: 0.06em; text-align: center; }
+.panels { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.galaxy, .planet { grid-column: 1 / -1; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; }
+button { font: inherit; color: inherit; cursor: pointer; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 8px; padding: 0; list-style: none; color: var(--muted); }
+.swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; }
+.band-normal { background: var(--normal); }
+.band-anomaly { background: var(--anomaly); }
+.band-emergency { background: var(--emergency); color: #fff; }
+.band-no-data { background: var(--no-data); }
+.tiles { display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
+.tile { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; border: 2px solid transparent; border-radius: 6px; text-align: left; }
+.tile.selected { border-color: var(--accent); }
+.tile .name { font-weight: 600; overflow-wrap: anywhere; }
+.tile .score { font-variant-numeric: tabular-nums; }
+.tile .marker { font-size: 11px; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; }
+
+.meta-line { color: var(--muted); margin: 0 0 6px; }
+.history { color: var(--muted); }
+.chart { margin: 12px 0 0; }
+.chart figcaption { font-weight: 600; margin-bottom: 2px; }
+.grid line { stroke: var(--line); }
+.band-1sigma { fill: var(--band1); }
+.band-2sigma { fill: var(--band2); }
+.band-mean line { stroke: var(--muted); }
+.series-line { stroke: var(--accent); }
+.replay-dot { fill: var(--anomaly); stroke: var(--text); }
+.bar-open { fill: var(--open); }
+.bar-decided { fill: var(--decided); }
+.bar-other { fill: var(--other); }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+.badge { padding: 0 6px; border: 1px solid var(--accent); border-radius: 3px; color: var(--accent); font-size: 12px; }
+
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 8px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; }
+.strip-title, .legend-line { margin: 6px 0 2px; color: var(--muted); }
+.strip { display: flex; flex-wrap: wrap; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.scan { width: 8px; height: 18px; border-radius: 2px; }
+.scan.complete { background: var(--ok); }
+.scan.incomplete { background: var(--anomaly); }
+.scan.disconnected { background: var(--other); }
