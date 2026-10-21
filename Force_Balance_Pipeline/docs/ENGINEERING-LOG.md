@@ -2055,6 +2055,48 @@ Derived: the median run time stepped up by roughly 10 to 15 percent around 10-13
 
 **Tests.** `serving` 102 to 123 (3 in `test_pull.py`, 18 in `test_server.py`). Edge 553 (1 skipped), ingest 373, intake 384 and agent 502 unchanged and green.
 
+**Commits:** Q `0ab2f71`, R `fd0d748`.
+
+### Round 9 (2026-10-20): dashboard app, first four panels
+
+**Packages** (exact, from `npm install --save-exact`): react 19.3.1, react-dom 19.3.1, recharts 3.10.1; dev: vite 8.3.4, @vitejs/plugin-react 6.1.2 (Node 24.19.0, npm 11.17.0). `npm audit`: 0 vulnerabilities. `package-lock.json` is committed; `dashboard/node_modules/` and `dashboard/dist/` are in `.gitignore`.
+
+**Built** (`dashboard/`, new). `package.json` (type module, private, scripts build, dev and test), `vite.config.js` (plugin-react; `dist/` with `assets/` and hashed names; `assetsInlineLimit` 0; `modulePreload.polyfill` false so no inline script is added; the `/api` dev proxy to 127.0.0.1:8081), `index.html` (one module script by `src`, no inline script or style). Pure modules in `src/lib/`: `format.js`, `regions.js`, `bands.js`, `planet.js`, `health.js`, `poll.js`. Components in `src/`: `api.js` (the only `fetch(`), `usePoll.js` (a hook that loads now and every 60 s, backing off to 600 s on errors and keeping the last good data), `App.jsx` (the data-as-of header, the FIXTURE DATA banner, an error line), `GalaxyView.jsx`, `PlanetDetail.jsx` (three Recharts line charts with 1 and 2 sigma bands and the mean, replayed points marked), `SignatureBreakdown.jsx` (a stacked horizontal bar chart and a table), `SourceHealth.jsx` (mode, last seen, last scan complete, buffer depth "n/a" with a tooltip, a strip of the last 96 scans) and `styles.css` (custom properties, light and dark by system setting, no inline styles).
+
+**Decisions taken in code.**
+- The UI uses the server's `band` field and never recomputes a threshold; the legend text names 4.0 and 5.75 for the reader only.
+- `nextDelay(failures)` is `min(60 s * 2^failures, 600 s)`: 60, 120, 240, 480, then 600 s.
+- Every server string is rendered as React text; no raw HTML, `eval` or `new Function` anywhere (a test scans `src/`).
+- `npm test` runs `node --test tests/*.test.js`: Node 24 does not accept a bare directory argument, so the script differs from the plain `tests/` of the prompt.
+- Recharts styling (band fills, line colour) is set with class names in `styles.css`; whether the built charts draw correctly under the strict style CSP is not checked here, because there is no browser in this round.
+- The production bundle is one 625 kB script (Vite warns above 500 kB); code-splitting is left for a later round.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 Colonies and Inner Rim swapped FAIL (2 tests); M2 `formatAgo` at 59 s FAIL; M3 `groupByRegion` drops unknown regions FAIL; M4 a component with `dangerouslySetInnerHTML` FAIL; M5 the kyber mapping to `dark_side_activity` FAIL; M6 `nextDelay` uncapped FAIL; M7 `bufferDepth` a number FAIL. None came back as an error only.
+
+**Tests.** `dashboard` 17 (`node --test`, no browser): format, regions, bands, planet, health, poll, the region-order parity with `agent/distance.py`, the source scans and the build check (index.html has no inline script or style and every referenced asset exists). Serving 123, edge 553 (1 skipped), ingest 373, intake 384, agent 502 and the intake node suite 205 unchanged and green.
+
+**Served locally** (`python -m serving.server --database force_serving_fixture`, then stopped): `/` 200 `text/html; charset=utf-8`, `no-store`; `/assets/index-Bi4fEAzW.js` 200 `text/javascript`, immutable; `/assets/style-DG_KJl7B.css` 200 `text/css`, immutable; `/api/meta` 200 (`kind` fixture); `/api/galaxy` 200 with 60 planets. Every response had the Content-Security-Policy and `nosniff`. The page itself was not opened in a browser.
+
+Browser check by Jong (2026-10-20): the page renders under the CSP; the scan strip shows the last 24 h, so the fixture outage (29-30 h back) shows in the ingest-lag panel instead.
+
+**Commits:** S `9757c48`.
+
+### Round 10 (2026-10-20): last four panels
+
+**Built** (`dashboard/src`, no new packages). Pure modules in `src/lib/`: `countdown.js` ("in N min" rounded up under an hour, "in N h M min" under 48 h, "in N d" beyond, "done" at or after the time, "-" for null or invalid), `overrides.js` (reads the agent's `[{"proposal": {...} or null, "reasons": [...]}]` shape and never throws), `incidents.js` (`badgesFor`: report, the status, severity rose, cooldown conflict, in that order; and `truncate`), `histogram.js` (the ten bins in order, normal = rows minus replayed, throws on a missing bin) and `rejections.js` (the pivot by hour with 0 for an absent reason, and the sorted reasons). Components: `IngestLag.jsx`, `RejectionRate.jsx` (a plain "No rejects in the last 7 days" when there are none), `IncidentFeed.jsx` (tabs All, Open, Decided and Historical, each its own `/api/incidents` query), `DeploymentLog.jsx` (agent and user rows with Yoda or User badges, decision, planet, party and ship, arrival and release countdowns, the rationale as plain text, the model and latency for agent rows, orphaned and fleet-at-capacity badges, and a `<details>` list of the guardrail overrides) and the four panels added to `App.jsx` on the same poll and backoff; badge and reason-bar styles in `styles.css`.
+
+**Decisions taken in code.**
+- The countdown rounds minutes up, so 59 seconds left reads "in 1 min", never "in 0 min"; exactly now reads "done".
+- The rationale, the report description and every other server string are React text, so the fixture rationale `Council asked me to act. <b>not bold</b>` shows its tags literally.
+- The build check for raw HTML could not be "the built JavaScript does not contain `dangerouslySetInnerHTML`": React DOM (13 times) and Recharts (as a property they read or filter) contain the word themselves, so the bundle always has it (18 occurrences). The test instead fails on an object literal with the key (`dangerouslySetInnerHTML:`) or with `__html:` in the built files; the source scan of `src/` still bans the word outright.
+- The bundle grew to 632 kB in one script (see the open item).
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 countdown at exactly now gives "in 0 min" FAIL; M2 `summarizeOverrides` throws on null FAIL (first run was an error only; the test now uses `doesNotThrow`); M3 the "severity rose" badge missing FAIL; M4 histogram normal = rows FAIL; M5 the pivot omits zero keys FAIL; M6 badge order changed FAIL.
+
+**Tests.** `dashboard` 17 to 32 (14 in `panels.test.js`, 1 in the build check). Serving 123, edge 553 (1 skipped), ingest 373, intake 384, agent 502 and the intake node suite 205 unchanged and green.
+
+**Served locally** (`python -m serving.server --database force_serving_fixture`, then stopped): `/` and both assets 200 (632,440-byte script); `/api/incidents` 200 with 5 incidents; `/api/incidents?status=open` 200 with 1; `/api/deployments` 200 with 4; `/api/ingest-lag` 200 with 10 bins; `/api/rejections` 200. Every response carried the Content-Security-Policy.
+
 **Commits:** listed in the next round.
 
 ## Open items
@@ -2120,6 +2162,7 @@ Derived: the median run time stepped up by roughly 10 to 15 percent around 10-13
 | Port 5432 is published by another project's container and by the dbt `local` target | **Phase 7 uses 5433.** |
 | Warehouse-on time: the agent's :15 cycle extends the warehouse about 6 min an hour (Round 5a, derived); candidate fix: start the agent after Job 1 and lower auto-stop | **Phase 7, agent round.** ForceServe registered at :17 (Round 7). |
 | A read-only service principal for the serving puller (the keyword guard is defense in depth only) | **Phase 8.** |
+| Dashboard bundle is one 625 kB script (Vite warns above 500 kB) | **Phase 8: code-splitting.** |
 
 ## Lessons (beyond this project)
 

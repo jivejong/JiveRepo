@@ -728,6 +728,7 @@ That's a deliberate property: someone reading the repo sees the actual productio
 - Results larger than one chunk are fetched through the Statement API's result-chunk endpoint, through `files_api.http_request`; `agent/dbsql.py` is not changed.
 - Postgres: Docker container `force-postgres`, pinned major version, bound to 127.0.0.1:5433 (5432 is published by another project's stopped container and claimed by the dbt `local` target, which Phase 7 does not use), database `force_serving`, schema `serving`, credentials in `.env.serving` (gitignored).
 - Dashboard backend: `python -m serving.server` on 127.0.0.1:8081, read-only GET API over the serving views (it never queries the lakehouse); `--database force_serving_fixture` for UI work against fixtures.
+- Dashboard frontend: `dashboard/` (React, Vite, Recharts; exact versions in package-lock.json). Build with `npm run build` in dashboard/; the backend serves dashboard/dist. `npm run dev` proxies /api to 127.0.0.1:8081 for development (no CSP there; the CSP applies to the built app).
 - Cost: the first live pull (2026-10-20, the 7-day backfill with the dims due) took 31 statements and 58 seconds and wrote 83,024 rows; a steady run is 7 statements (10 when the dims are due), measured by the tests. The live steady number comes after the next scheduled run.
 
 ---
