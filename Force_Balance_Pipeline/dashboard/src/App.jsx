@@ -32,13 +32,13 @@ export default function App() {
       </header>
       {publish && publish.kind === "fixture" ? <div className="banner" role="status">FIXTURE DATA</div> : null}
       <main className="panels">
-        <GalaxyView onSelect={setPlanet} selected={planet} />
+        <GalaxyView onSelect={setPlanet} selected={planet} meta={meta.data} />
         {planet ? <PlanetDetail sectorId={planet} onClose={() => setPlanet(null)} /> : null}
         <SignatureBreakdown />
         <SourceHealth />
         <IngestLag />
         <RejectionRate />
-        <IncidentFeed />
+        <IncidentFeed meta={meta.data} />
         <DeploymentLog />
       </main>
     </div>

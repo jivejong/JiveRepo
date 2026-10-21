@@ -168,6 +168,8 @@ def deploy(request, *, env, now, client, jobs, pg_conn, lock_path=AGENT_LOCK, sl
         result["ok"], result["deployment_id"] = True, row["deployment_id"]
 
         warnings = []
+        if inserted is None:                                       # the MERGE result has no num_inserted_rows: not verified live yet
+            warnings.append("merge_result_unverified")
         try:
             client.write(*queries.mark(TARGET, clean["disturbance_id"]))
         except Exception:

@@ -34,3 +34,15 @@ REJECTS_BY_REASON = "SELECT * FROM serving.v_rejects_by_reason ORDER BY hour, re
 INCIDENTS = ("SELECT * FROM serving.v_incidents WHERE (%(status)s::text IS NULL OR status = %(status)s) "
              "ORDER BY detected_at DESC, disturbance_id LIMIT %(limit)s")
 DEPLOYMENTS = "SELECT * FROM serving.v_deployment_log ORDER BY decided_at DESC, deployment_id LIMIT %s"
+
+# ---- the deploy form (doc 06 "Manual deployment path"): hints only, the authoritative check is at submit
+FIXTURE_ROWS = "SELECT count(*) AS n FROM serving.publish_log WHERE kind = 'fixture'"
+OPTIONS_INCIDENT = ("SELECT sector_name, region, signature, severity, detected_at FROM serving.v_incidents "
+                    "WHERE disturbance_id = %s AND status = 'open'")
+OPTIONS_JEDI = ("SELECT j.jedi_id, j.jedi_name, j.rank, j.primary_specialty, j.secondary_specialty, "
+                "(SELECT max(d.released_at) FROM serving.deployment d WHERE d.decision = 'deploy' AND d.released_at > %(now)s "
+                "AND d.jedi_ids ? j.jedi_id) AS unavailable_until FROM serving.dim_jedi j ORDER BY j.jedi_id")
+OPTIONS_STARSHIPS = ("SELECT s.starship_id, s.starship_name, s.crew, s.passengers, s.hyperdrive_rating, "
+                     "(SELECT max(d.released_at) FROM serving.deployment d WHERE d.decision = 'deploy' AND d.released_at > %(now)s "
+                     "AND d.starship_id = s.starship_id) AS unavailable_until FROM serving.dim_starship s ORDER BY s.starship_id")
+OPEN_DEPLOYMENTS = "SELECT count(*) AS n FROM serving.deployment WHERE decision = 'deploy' AND released_at > %s"

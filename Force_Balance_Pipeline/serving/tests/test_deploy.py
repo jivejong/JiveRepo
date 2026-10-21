@@ -309,6 +309,25 @@ class Accepted(DeployTest):
         self.assertEqual(self.client.kinds, ["context", "jedi", "ships", "merge"])
         self.assertEqual(self.count("deployment"), 4)
 
+    def test_a_merge_result_without_num_inserted_rows_goes_on_with_a_warning(self):
+        client = FakeAgentClient()
+        plain = client._do
+
+        def merge_without_count(sql, params):
+            rows = plain(sql, params)
+            return [{}] if sql.startswith("MERGE") else rows
+        client.read = client.write = merge_without_count
+        self.client = client
+        result = self.go()
+        self.assertTrue(result["ok"])
+        self.assertIn("warnings", result)
+        self.assertEqual(result["warnings"], ["merge_result_unverified"])
+        self.assertEqual(client.kinds[-2:], ["merge", "mark"])
+
+    def test_a_merge_with_a_count_has_no_warning(self):
+        result = self.go()
+        self.assertNotIn("warnings", result)
+
     def test_a_failed_mark_still_counts_as_deployed_with_a_warning(self):
         self.client = FakeAgentClient(fail_on="mark")
         result = self.go()

@@ -1,4 +1,5 @@
 // Panel 1 (doc 07 Phase 7): the galaxy by region, each planet a tile coloured by the server's band.
+import { DeployControl } from "./DeployForm.jsx";
 import { bandClass, bandLabel } from "./lib/bands.js";
 import { formatNumber } from "./lib/format.js";
 import { groupByRegion } from "./lib/regions.js";
@@ -11,7 +12,7 @@ const LEGEND = [
   ["no_data", "no data"],
 ];
 
-export default function GalaxyView({ onSelect, selected }) {
+export default function GalaxyView({ onSelect, selected, meta }) {
   const { data, error } = usePoll("/api/galaxy");
   return (
     <section className="panel galaxy" aria-labelledby="galaxy-h">
@@ -29,9 +30,9 @@ export default function GalaxyView({ onSelect, selected }) {
           <h3>{region}</h3>
           <div className="tiles">
             {planets.map((p) => (
+              <div className="tile-wrap" key={p.sector_id}>
               <button
                 type="button"
-                key={p.sector_id}
                 className={`tile ${bandClass(p.band)}${selected === p.sector_id ? " selected" : ""}`}
                 aria-label={`${p.sector_name}, ${bandLabel(p.band)}, score ${formatNumber(p.imbalance_score, 2)}`}
                 onClick={() => onSelect(p.sector_id)}
@@ -40,6 +41,8 @@ export default function GalaxyView({ onSelect, selected }) {
                 <span className="score">{formatNumber(p.imbalance_score, 2)}</span>
                 {p.open_disturbance_id ? <span className="marker" title="open incident">open incident</span> : null}
               </button>
+              {p.open_disturbance_id ? <DeployControl disturbanceId={p.open_disturbance_id} meta={meta} /> : null}
+              </div>
             ))}
           </div>
         </div>

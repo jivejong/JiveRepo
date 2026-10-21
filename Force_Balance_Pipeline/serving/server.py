@@ -10,19 +10,24 @@ folder. Errors give {"error": ...}; the detail of a 500 goes to logs\\dashboard.
 intake/intake_server.py (Content-Security-Policy, X-Content-Type-Options, Referrer-Policy) on every response.
 """
 import argparse
+import hmac
 import json
 import logging
 import math
 import re
+import secrets
 import sys
+import threading
+import time
 import urllib.parse
 from datetime import datetime, timezone
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from agent.seen import SeenStore
 from serving import api_queries as q
-from serving import config
+from serving import config, deploy
 from serving.publish import scrub
 
 BIND_HOST = "127.0.0.1"
@@ -37,6 +42,10 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' 
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
         ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2", ".map": "application/json"}
 LOGGER = logging.getLogger("force-dashboard")
+CREDENTIAL_KEYS = ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_WAREHOUSE_ID")
+MAX_DEPLOY_BODY = 8192
+DEPLOY_KEYS = {"disturbance_id", "jedi_ids", "starship_id", "rationale"}
+SEEN_PROD = config.ROOT / "logs" / "agent_seen_prod.json"
 
 
 class ApiError(Exception):
@@ -148,6 +157,63 @@ ROUTES = {"/api/health": ep_health, "/api/meta": ep_meta, "/api/galaxy": ep_gala
           "/api/incidents": ep_incidents, "/api/deployments": ep_deployments}
 
 
+def default_deps(env, database, connect):
+    """The real dependencies of one deploy: the agent's writing client, the read-only serving client, the agent's Job 1 check and a Postgres
+    connection that may write."""
+    agent_client, serving_client = deploy.default_clients(env)
+    return {"client": agent_client, "serving_client": serving_client, "jobs": deploy.default_job1_check(env),
+            "pg_conn": connect(env, database)}
+
+
+class DeployService:
+    """The state of the deploy endpoints: the per-process CSRF token, the one-at-a-time lock and the enabled check (doc 06)."""
+
+    def __init__(self, env, database, connect, *, live_database, deploy_fn, deps_factory, clock, seen_path):
+        self.env, self.database, self.connect = env, database, connect
+        self.live_database, self.deploy_fn, self.deps_factory = live_database, deploy_fn, deps_factory
+        self.clock, self.seen_path = clock, seen_path
+        self.token = secrets.token_urlsafe(32)
+        self.busy = threading.Lock()
+
+    def disabled_why(self, conn):
+        """None when deploy is enabled, else fixture_database, fixture_rows or no_credentials. `conn` is a read-only session."""
+        if self.database != self.live_database:
+            return "fixture_database"
+        if conn.execute(q.FIXTURE_ROWS).fetchone()[0]:
+            return "fixture_rows"
+        if any(not self.env.get(k) for k in CREDENTIAL_KEYS):
+            return "no_credentials"
+        return None
+
+    def current_why(self):
+        conn = open_session(self.env, self.database, self.connect)
+        try:
+            return self.disabled_why(conn)
+        finally:
+            conn.close()
+
+    def options(self, conn, disturbance_id):
+        incident = rows(conn, q.OPTIONS_INCIDENT, (disturbance_id,))
+        if not incident:
+            raise ApiError(404, "not_open")
+        now = self.clock()
+        return {"incident": incident[0], "jedi": rows(conn, q.OPTIONS_JEDI, {"now": now}),
+                "starships": rows(conn, q.OPTIONS_STARSHIPS, {"now": now}),
+                "open_deployments": rows(conn, q.OPEN_DEPLOYMENTS, (now,))[0]["n"],
+                "agent_first_seen": SeenStore(self.seen_path).load().get(disturbance_id)}
+
+    def run(self, request):
+        """Call the deploy service with its real (or injected) dependencies; the writable connection is closed afterwards."""
+        deps = self.deps_factory(self.env, self.database, self.connect)
+        try:
+            return self.deploy_fn(request, env=self.env, now=self.clock(), lock_path=deploy.AGENT_LOCK, sleep=time.sleep,
+                                  log=deploy.default_log, **deps)
+        finally:
+            conn = deps.get("pg_conn")
+            if conn is not None:
+                conn.close()
+
+
 def build_allow_list(dist):
     """{relative POSIX path: (file, MIME type)} for every file under dist whose extension has a MIME type."""
     allowed = {}
@@ -159,7 +225,7 @@ def build_allow_list(dist):
     return allowed
 
 
-def make_handler(env, database, allowed, connect):
+def make_handler(env, database, allowed, connect, service):
     class Handler(BaseHTTPRequestHandler):
         server_version = "ForceDashboard/0.1"
         sys_version = ""
@@ -196,9 +262,11 @@ def make_handler(env, database, allowed, connect):
         def _dispatch(self):
             if not self._host_ok():
                 return self._error(403, "bad_host")
+            path, _, query = self.path.partition("?")
+            if self.command == "POST" and path == "/api/deploy":
+                return self._deploy_post()
             if self.command not in ("GET", "HEAD"):
                 return self._error(405, "method_not_allowed", {"Allow": "GET, HEAD"})
-            path, _, query = self.path.partition("?")
             if path == "/api" or path.startswith("/api/"):
                 return self._api(path, query)
             return self._static(path)
@@ -208,14 +276,29 @@ def make_handler(env, database, allowed, connect):
             try:
                 params = urllib.parse.parse_qs(query, keep_blank_values=True, max_num_fields=10)
                 planet = path[len("/api/planet/"):] if path.startswith("/api/planet/") else None
-                if planet is None and path not in ROUTES:
+                if path == "/api/deploy/token":
+                    only(params, ())
+                    return self._json(200, {"token": service.token})
+                if planet is None and path not in ROUTES and path != "/api/deploy/options":
                     raise ApiError(404, "not_found")
                 if planet is not None:
                     only(params, ())
                     if not SECTOR_RE.fullmatch(planet):
                         raise ApiError(400, "bad_sector")
                 conn = open_session(env, database, connect)
-                data = ep_planet(conn, planet) if planet is not None else ROUTES[path](conn, database, params)
+                if path == "/api/deploy/options":
+                    only(params, ("disturbance_id",))
+                    wanted = params.get("disturbance_id", [""])[0]
+                    if not deploy.DISTURBANCE_ID.fullmatch(wanted):
+                        raise ApiError(400, "bad_disturbance_id")
+                    data = service.options(conn, wanted)
+                elif planet is not None:
+                    data = ep_planet(conn, planet)
+                else:
+                    data = ROUTES[path](conn, database, params)
+                    if path == "/api/meta":
+                        why = service.disabled_why(conn)
+                        data["deploy_enabled"], data["deploy_disabled_why"] = why is None, why
                 self._json(200, {"data": clean(data)})
             except ApiError as e:
                 self._error(e.status, e.code)
@@ -225,6 +308,47 @@ def make_handler(env, database, allowed, connect):
             finally:
                 if conn is not None:
                     conn.close()
+
+        def _deploy_post(self):
+            """POST /api/deploy (doc 06 "Manual deployment path"): Origin, Content-Type, token, enabled, size, body, one at a time."""
+            self.close_connection = True                 # an early refusal leaves the body unread, so the connection must not be reused
+            port = self.server.server_port
+            if self.headers.get("Origin") not in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}:
+                return self._error(403, "bad_origin")
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+                return self._error(415, "unsupported_media_type")
+            token = (self.headers.get("X-Deploy-Token") or "").encode("utf-8")
+            if not hmac.compare_digest(token, service.token.encode("utf-8")):
+                return self._error(403, "bad_token")
+            try:
+                why = service.current_why()
+            except Exception as e:
+                LOGGER.error("POST /api/deploy: %s", scrub(f"{type(e).__name__}: {e}"))
+                return self._error(500, "internal")
+            if why:
+                return self._json(503, {"error": "deploy_disabled", "why": why})
+            length = self.headers.get("Content-Length") or ""
+            if not length.isascii() or not length.isdigit():
+                return self._error(400, "bad_body")
+            if int(length) > MAX_DEPLOY_BODY:
+                return self._error(413, "body_too_large")
+            raw = self.rfile.read(int(length))
+            try:
+                request = json.loads(raw.decode("utf-8"))
+            except ValueError:
+                return self._error(400, "bad_body")
+            if not isinstance(request, dict) or set(request) != DEPLOY_KEYS:
+                return self._error(400, "bad_body")
+            if not service.busy.acquire(blocking=False):
+                return self._error(409, "deploy_in_progress")
+            try:
+                result = service.run(request)
+                self._json(200, clean(result))
+            except Exception as e:
+                LOGGER.error("POST /api/deploy: %s", scrub(f"{type(e).__name__}: {e}"))
+                self._error(500, "internal")
+            finally:
+                service.busy.release()
 
         def _static(self, path):
             if path == "/":
@@ -254,9 +378,15 @@ class DashboardServer(ThreadingHTTPServer):
     allow_reuse_address = False
 
 
-def make_server(database, port, dist=DIST_DIR, env=None, connect=config.connect):
+def make_server(database, port, dist=DIST_DIR, env=None, connect=config.connect, *, deploy_fn=None, deps_factory=None,
+                live_database=None, clock=None, seen_path=None):
     env = env or config.load_env()
-    return DashboardServer((BIND_HOST, port), make_handler(env, database, build_allow_list(dist), connect))
+    service = DeployService(env, database, connect, live_database=live_database or config.PG["dbname"],
+                            deploy_fn=deploy_fn or deploy.deploy, deps_factory=deps_factory or default_deps,
+                            clock=clock or (lambda: datetime.now(timezone.utc)), seen_path=seen_path or SEEN_PROD)
+    server = DashboardServer((BIND_HOST, port), make_handler(env, database, build_allow_list(dist), connect, service))
+    server.deploy_service = service
+    return server
 
 
 def configure_logging(path=LOG_PATH):

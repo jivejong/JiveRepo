@@ -5,6 +5,13 @@ import { useEffect, useState } from "react";
 import { getJson } from "./api.js";
 import { nextDelay } from "./lib/poll.js";
 
+const listeners = new Set();
+
+/** Reload every polling hook at once (after a deployment is accepted). */
+export function refreshAll() {
+  for (const fn of listeners) fn();
+}
+
 /** {data, error} for `path`; a null path loads nothing. */
 export function usePoll(path) {
   const [state, setState] = useState({ data: null, error: null });
@@ -31,7 +38,13 @@ export function usePoll(path) {
       if (!cancelled) timer = setTimeout(load, nextDelay(failures));
     };
     load();
+    const now = () => {
+      if (timer) clearTimeout(timer);
+      load();
+    };
+    listeners.add(now);
     return () => {
+      listeners.delete(now);
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
