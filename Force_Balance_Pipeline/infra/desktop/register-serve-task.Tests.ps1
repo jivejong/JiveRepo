@@ -82,7 +82,7 @@ Describe "New-ServeTaskDefinition" {
     Mock Set-ScheduledTask {}
 
     $user = 'CONTOSO\tester'
-    $def = New-ServeTaskDefinition -RepoPath 'C:\repo' -User $user -At ([datetime]'2026-10-14T00:17:00')
+    $def = New-ServeTaskDefinition -RepoPath 'C:\repo' -User $user -At ([datetime]'2026-10-14T00:12:00')
 
     It "runs the windowless pythonw.exe with -m serving.publish, from the repo folder" {
         $def.Action.Execute | Should Be 'C:\repo\serving\.venv\Scripts\pythonw.exe'
@@ -100,13 +100,13 @@ Describe "New-ServeTaskDefinition" {
         $def.Triggers[0].CimClass.CimClassName | Should Be 'MSFT_TaskDailyTrigger'
     }
 
-    It "starts at 00:17 local time" {
-        ([datetime]$def.Triggers[0].StartBoundary).ToString('HH:mm') | Should Be '00:17'
+    It "starts at 00:12 local time" {
+        ([datetime]$def.Triggers[0].StartBoundary).ToString('HH:mm') | Should Be '00:12'
     }
 
-    It "defaults the trigger to minute 17" {
+    It "defaults the trigger to minute 12" {
         $default = New-ServeTaskDefinition -RepoPath 'C:\repo' -User $user
-        ([datetime]$default.Triggers[0].StartBoundary).Minute | Should Be 17
+        ([datetime]$default.Triggers[0].StartBoundary).Minute | Should Be 12
     }
 
     It "repeats every hour" {

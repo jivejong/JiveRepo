@@ -71,7 +71,7 @@ Describe "New-AgentTaskDefinition" {
     Mock Set-ScheduledTask {}
 
     $user = 'CONTOSO\tester'
-    $def = New-AgentTaskDefinition -RepoPath 'C:\repo' -User $user -At ([datetime]'2026-10-14T00:15:00')
+    $def = New-AgentTaskDefinition -RepoPath 'C:\repo' -User $user -At ([datetime]'2026-10-14T00:11:00')
 
     It "runs the windowless pythonw.exe with -m agent.run --target prod, from the repo folder" {
         $def.Action.Execute | Should Be 'C:\repo\edge\.venv\Scripts\pythonw.exe'
@@ -89,8 +89,13 @@ Describe "New-AgentTaskDefinition" {
         $def.Triggers[0].CimClass.CimClassName | Should Be 'MSFT_TaskDailyTrigger'
     }
 
-    It "starts at 00:15 local time" {
-        ([datetime]$def.Triggers[0].StartBoundary).ToString('HH:mm') | Should Be '00:15'
+    It "starts at 00:11 local time" {
+        ([datetime]$def.Triggers[0].StartBoundary).ToString('HH:mm') | Should Be '00:11'
+    }
+
+    It "defaults the trigger to minute 11" {
+        $default = New-AgentTaskDefinition -RepoPath 'C:epo' -User $user
+        ([datetime]$default.Triggers[0].StartBoundary).Minute | Should Be 11
     }
 
     It "repeats every hour" {

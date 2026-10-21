@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
 Registers the Windows Scheduled Task "ForceServe", which runs one serving pull to the local Postgres (serving/publish.py, doc 05
-"Serving (Phase 7)") every hour at :17, without a console window.
+"Serving (Phase 7)") every hour at :12, without a console window.
 
 .DESCRIPTION
 Creates (or replaces) a Scheduled Task that runs "pythonw.exe -m serving.publish" from the repo folder, under the serving venv
-(serving\.venv). One daily trigger at 00:17 local time that repeats every hour with no end, so the pull starts at :17 past every hour.
+(serving\.venv). One daily trigger at 00:12 local time that repeats every hour with no end, so the pull starts at :12 past every hour.
 The task's MultipleInstances setting is IgnoreNew, and serving.publish also holds its own single-instance lock (logs/serve.lock) and
 logs to logs/serve.log. ExecutionTimeLimit is 30 minutes. The pull itself skips the 03:xx UTC hour, waits up to 10 minutes for the
 agent's cycle (logs/agent.lock) to finish, and pings the S5 check (doc 05, "Monitoring").
@@ -89,14 +89,14 @@ function New-ServeTaskDefinition {
         [Parameter(Mandatory)][string]$RepoPath,
         [string]$VenvPath,
         [Parameter(Mandatory)][string]$User,
-        [datetime]$At = ([datetime]'00:17')
+        [datetime]$At = ([datetime]'00:12')
     )
 
     $paths = Get-ServePaths -RepoPath $RepoPath -VenvPath $VenvPath
     $action = New-ScheduledTaskAction -Execute $paths.PythonwExe -Argument "-m serving.publish" `
         -WorkingDirectory $RepoPath -ErrorAction Stop
 
-    # A daily trigger at 00:17 local time that repeats every hour with no end. -RepetitionDuration is deliberately
+    # A daily trigger at 00:12 local time that repeats every hour with no end. -RepetitionDuration is deliberately
     # omitted so the duration is empty, which means "indefinitely" ([TimeSpan]::MaxValue produces a value some Windows
     # builds reject). A -Daily trigger takes no repetition parameters, so the repetition is copied from a -Once trigger.
     $trigger = New-ScheduledTaskTrigger -Daily -At $At -ErrorAction Stop
@@ -145,7 +145,7 @@ Register-ScheduledTask -TaskName $TaskName -Action $definition.Action -Trigger $
     -Description "Force Balance Pipeline: hourly serving pull to local Postgres (doc 05, Serving)" `
     -Force -ErrorAction Stop | Out-Null
 
-Write-Host "Registered scheduled task '$TaskName' for $User. It runs a pull every hour at :17."
+Write-Host "Registered scheduled task '$TaskName' for $User. It runs a pull every hour at :12."
 
 if ($StartNow) {
     $existing = Get-RunningServeProcesses

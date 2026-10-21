@@ -105,6 +105,7 @@ class Harness:
         self.monotonic = monotonic or StepClock(0.1)
         self.limit = limit
         self.epoch = run.AGENT_EPOCH
+        self.sleeps = []
         self.seen_path = self.dir / "agent_seen_dev.json"
         self.seen = SeenStore(self.seen_path)
         if preseed:                                  # most tests are about the cycle itself, so their ids were polled in an earlier cycle
@@ -114,6 +115,11 @@ class Harness:
     def _default_decide(self, context, gemini, budget, *, monotonic):
         self.decide_calls.append(context)
         return fake_decision()
+
+    def _sleep(self, seconds):
+        self.sleeps.append(seconds)
+        if len(self.sleeps) > 100:                   # a wait with no upper bound fails the test instead of hanging it
+            raise AssertionError("the Job 1 wait has no upper bound")
 
     def job1_check(self):
         """job1 is one (active, reason) pair, or a list of pairs consumed one per call (the last repeats)."""
@@ -127,7 +133,7 @@ class Harness:
             target="dev", limit=self.limit, lock_path=self.lock_path, db=self.db, gemini=object(), budget=self.budget,
             job1_check=self.job1_check, ping=self.pings.append, clock=lambda: NOW.replace(hour=self.hour),
             monotonic=self.monotonic, log=self.logs.append, decisions_path=self.decisions_path,
-            decide_fn=self.decide_fn, ulid_fn=lambda: next(self.ulids), epoch=self.epoch, seen=self.seen)
+            decide_fn=self.decide_fn, ulid_fn=lambda: next(self.ulids), epoch=self.epoch, seen=self.seen, sleep=self._sleep)
         if self.held:
             self.held.release()
         return code
@@ -521,6 +527,61 @@ class Limit(unittest.TestCase):
         h = harness()
         h.go()
         self.assertEqual(h.db.params("poll")[0]["epoch"], (datetime(2026, 10, 12, tzinfo=timezone.utc), "TIMESTAMP"))
+
+
+class Job1Wait(unittest.TestCase):
+    """The start-of-cycle Job 1 check waits for a running Job 1 (30 s polls, up to 10 minutes) before it skips."""
+
+    def test_an_idle_job_1_means_no_wait(self):
+        h = harness()
+        h.go()
+        self.assertEqual(h.sleeps, [])
+        self.assertTrue(any("waited_s=0" in line for line in h.logs))
+        self.assertEqual(h.pings, ["success"])
+
+    def test_a_job_1_that_finishes_after_two_polls_lets_the_cycle_go_on(self):
+        h = harness(job1=[(True, "job1_running"), (True, "job1_running"), (False, "idle")])
+        self.assertEqual(h.go(), 0)
+        self.assertEqual(h.sleeps, [30, 30])
+        self.assertEqual(h.db.kinds, ["repair_needed", "poll"])
+        self.assertTrue(any("waited_s=60" in line for line in h.logs))
+        self.assertEqual(h.pings, ["success"])
+
+    def test_a_job_1_that_runs_throughout_skips_after_ten_minutes(self):
+        h = harness(ids=["a"], job1=(True, "job1_running"))
+        self.assertEqual(h.go(), 0)
+        self.assertEqual(h.sleeps, [30] * 20)
+        self.assertEqual(h.db.kinds, [])
+        self.assertEqual(h.pings, ["success"])
+        self.assertTrue(any("job1_running" in line and "waited 600 s" in line for line in h.logs))
+
+    def test_an_api_error_during_the_wait_is_a_jobs_api_error(self):
+        h = harness(job1=[(True, "job1_running"), (True, "jobs_api_error")])
+        self.assertEqual(h.go(), 0)
+        self.assertEqual(h.sleeps, [30])
+        self.assertEqual(h.db.kinds, [])
+        self.assertEqual(h.pings, ["fail"])
+        self.assertTrue(any("jobs_api_error" in line for line in h.logs))
+
+    def test_an_api_error_at_once_does_not_wait(self):
+        h = harness(job1=(True, "jobs_api_error"))
+        h.go()
+        self.assertEqual(h.sleeps, [])
+        self.assertEqual(h.pings, ["fail"])
+
+    def test_the_recheck_before_a_write_does_not_wait(self):
+        h = harness(ids=["a", "b"], job1=[(False, "idle"), (True, "job1_running")])
+        h.go()
+        self.assertEqual(h.sleeps, [])
+        self.assertNotIn("write", h.db.kinds)
+
+    def test_the_quota_hour_skips_before_any_wait(self):
+        h = harness(hour=3, job1=(True, "job1_running"))
+        h.go()
+        self.assertEqual(h.sleeps, [])
+
+    def test_the_wait_constants(self):
+        self.assertEqual((run.JOB1_WAIT_SECONDS, run.JOB1_POLL_SECONDS), (600, 30))
 
 
 class HumanFirst(unittest.TestCase):

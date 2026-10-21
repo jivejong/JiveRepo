@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-Registers the Windows Scheduled Task "ForceAgent", which runs one Yoda agent cycle (agent/run.py, doc 06) every hour at :15,
+Registers the Windows Scheduled Task "ForceAgent", which runs one Yoda agent cycle (agent/run.py, doc 06) every hour at :11,
 without a console window.
 
 .DESCRIPTION
 Creates (or replaces) a Scheduled Task that runs "pythonw.exe -m agent.run --target prod" from the repo folder, under the
-given Python venv. One daily trigger at 00:15 local time that repeats every hour with no end, so the cycle starts at :15 past
+given Python venv. One daily trigger at 00:11 local time that repeats every hour with no end, so the cycle starts at :11 past
 every hour. The task's MultipleInstances setting is IgnoreNew, and the agent also holds its own single-instance lock
 (logs/agent.lock) and logs to logs/agent.log. ExecutionTimeLimit is 45 minutes (a cycle stops starting new incidents after 30).
 The cycle itself skips the 03:xx UTC hour and any run in which Job 1 is active, and pings the S4 check (doc 05, "Monitoring").
@@ -89,14 +89,14 @@ function New-AgentTaskDefinition {
         [Parameter(Mandatory)][string]$RepoPath,
         [string]$VenvPath,
         [Parameter(Mandatory)][string]$User,
-        [datetime]$At = ([datetime]'00:15')
+        [datetime]$At = ([datetime]'00:11')
     )
 
     $paths = Get-AgentPaths -RepoPath $RepoPath -VenvPath $VenvPath
     $action = New-ScheduledTaskAction -Execute $paths.PythonwExe -Argument "-m agent.run --target prod" `
         -WorkingDirectory $RepoPath -ErrorAction Stop
 
-    # A daily trigger at 00:15 local time that repeats every hour with no end. -RepetitionDuration is deliberately
+    # A daily trigger at 00:11 local time that repeats every hour with no end. -RepetitionDuration is deliberately
     # omitted so the duration is empty, which means "indefinitely" ([TimeSpan]::MaxValue produces a value some Windows
     # builds reject). A -Daily trigger takes no repetition parameters, so the repetition is copied from a -Once trigger.
     $trigger = New-ScheduledTaskTrigger -Daily -At $At -ErrorAction Stop
@@ -142,11 +142,11 @@ $definition = New-AgentTaskDefinition -RepoPath $RepoPath -VenvPath $VenvPath -U
 
 Register-ScheduledTask -TaskName $TaskName -Action $definition.Action -Trigger $definition.Triggers `
     -Principal $definition.Principal -Settings $definition.Settings `
-    -Description ("Runs one Yoda agent cycle (agent/run.py, doc 06) every hour at :15 with no console window. " +
+    -Description ("Runs one Yoda agent cycle (agent/run.py, doc 06) every hour at :11 with no console window. " +
                   "Registered by register-agent-task.ps1.") `
     -Force -ErrorAction Stop | Out-Null
 
-Write-Host "Registered scheduled task '$TaskName' for $User. It runs a cycle every hour at :15."
+Write-Host "Registered scheduled task '$TaskName' for $User. It runs a cycle every hour at :11."
 
 if ($StartNow) {
     $existing = Get-RunningAgentProcesses

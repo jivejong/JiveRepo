@@ -40,6 +40,8 @@ LOCK_PATH = ROOT / "logs" / "agent.lock"
 DECISIONS_PATH = ROOT / "logs" / "agent_decisions.ndjson"
 QUOTA_WINDOW_HOUR_UTC = 3
 CYCLE_SECONDS = 30 * 60
+JOB1_WAIT_SECONDS = 10 * 60          # how long a cycle waits for a running Job 1 before it skips (doc 06 "Runtime")
+JOB1_POLL_SECONDS = 30
 PING_TIMEOUT_SECONDS = 10
 LOG_MAX_BYTES, LOG_BACKUPS = 1_000_000, 3
 
@@ -106,7 +108,7 @@ def first_seen(stored, disturbance_id):
 
 
 def run_cycle(*, target, limit, db, gemini, budget, job1_check, clock, monotonic, log, decisions_path, seen, decide_fn=decide,
-              ulid_fn=ulid_now, epoch=AGENT_EPOCH):
+              ulid_fn=ulid_now, epoch=AGENT_EPOCH, waited_s=0):
     """Steps d to f of the cycle. Returns the summary dict (it is also logged). summary["stop_reason"] is "job1_running" or
     "jobs_api_error" when the Job 1 re-check before a write stopped the cycle; summary["degraded"] is True after a permanent model
     error. Both make the caller's ping differ (see run_guarded)."""
@@ -188,12 +190,12 @@ def run_cycle(*, target, limit, db, gemini, budget, job1_check, clock, monotonic
         "left": len(ids) - decided, "new": len(new), "deferred": len(ids) - len(to_decide), "statements": db.statements - statements_before, "model_calls": totals["model_calls"],
         "http_attempts": budget.used, "prompt_tokens": totals["prompt"], "output_tokens": totals["output"],
         "thought_tokens": totals["thought"], "cost_usd": totals["cost"], "duration_s": round(monotonic() - started, 1),
-        "degraded": "true" if degraded else "false", "stop_reason": stop_reason,
+        "degraded": "true" if degraded else "false", "stop_reason": stop_reason, "waited_s": waited_s,
     }
     log("agent: cycle target={target} polled={polled} decided={decided} (deploy={deploy} stand_down={stand_down}) left={left} "
         "new={new} deferred={deferred} statements={statements} model_calls={model_calls} http_attempts={http_attempts} "
         "tokens={prompt_tokens}/{output_tokens}/{thought_tokens} cost_usd={cost_usd:.6f} duration_s={duration_s} "
-        "degraded={degraded}".format(**summary))
+        "degraded={degraded} waited_s={waited_s}".format(**summary))
     return summary
 
 
@@ -202,10 +204,24 @@ def cycle_ping_kind(summary):
     return "fail" if summary["degraded"] == "true" or summary["stop_reason"] == "jobs_api_error" else "success"
 
 
+def wait_for_job1(job1_check, *, sleep, wait_seconds, poll_seconds):
+    """(active, reason, waited_s): the start-of-cycle Job 1 check, repeated every poll_seconds for up to wait_seconds while Job 1 is running.
+    A Jobs API error ends the wait at once (reason jobs_api_error), exactly as it ends an ordinary check."""
+    active, reason = job1_check()
+    waited = 0
+    while active and reason == "job1_running" and waited < wait_seconds:
+        sleep(poll_seconds)
+        waited += poll_seconds
+        active, reason = job1_check()
+    return active, reason, waited
+
+
 def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, ping, clock, monotonic, log, decisions_path, seen,
-                decide_fn=decide, ulid_fn=ulid_now, epoch=AGENT_EPOCH):
-    """Steps a to c and g: the lock, the quota window, the Job 1 check, and the S4 ping. Returns the exit code.
-    S4: success, or /fail after a Jobs API error, a permanent model error or a crash."""
+                decide_fn=decide, ulid_fn=ulid_now, epoch=AGENT_EPOCH, sleep=time.sleep, job1_wait=JOB1_WAIT_SECONDS,
+                job1_poll=JOB1_POLL_SECONDS):
+    """Steps a to c and g: the lock, the quota window, the Job 1 check (waiting for a running Job 1 for up to job1_wait seconds, polling
+    every job1_poll), and the S4 ping. Returns the exit code. S4: success, or /fail after a Jobs API error, a permanent model error or a
+    crash."""
     lock = InstanceLock(lock_path)
     try:
         lock.acquire()
@@ -217,14 +233,14 @@ def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, pin
             log("agent: quota window (03:xx UTC); skipping the cycle")
             ping("success")
             return 0
-        active, reason = job1_check()
+        active, reason, waited = wait_for_job1(job1_check, sleep=sleep, wait_seconds=job1_wait, poll_seconds=job1_poll)
         if active:
-            log(f"agent: skipping the cycle: {reason}")
+            log(f"agent: skipping the cycle: {reason}" + (f" (waited {waited} s)" if waited else ""))
             ping("fail" if reason == "jobs_api_error" else "success")
             return 0
         summary = run_cycle(target=target, limit=limit, db=db, gemini=gemini, budget=budget, job1_check=job1_check, clock=clock,
                             monotonic=monotonic, log=log, decisions_path=decisions_path, seen=seen, decide_fn=decide_fn,
-                            ulid_fn=ulid_fn, epoch=epoch)
+                            ulid_fn=ulid_fn, epoch=epoch, waited_s=waited)
         ping(cycle_ping_kind(summary))
         return 0
     except Exception:
