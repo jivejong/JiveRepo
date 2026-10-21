@@ -192,6 +192,24 @@ def run_pulls(client, conn, now, backfill_days=DEFAULT_BACKFILL_DAYS):
     return {"statements": client.statements - before, "rows": counts}
 
 
+def refresh_source(client, conn, name):
+    """One full-mode source: read it from the warehouse and replace its Postgres table, in one transaction. Nothing else is touched (no other
+    table, no watermark). Raises ValueError for any source that is not in full mode. Returns the number of rows."""
+    spec = SPECS[name]
+    if spec["mode"] != "full":
+        raise ValueError(f"{name} is not a full-mode source")
+    rows = client.read(*build_select(spec), expected_types=spec["types"])
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM serving.{spec['table']}")
+            _insert(cur, spec, rows)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return len(rows)
+
+
 def _put_watermark(cur, source, value):
     cur.execute("INSERT INTO serving.watermark (source, value) VALUES (%s, %s) "
                 "ON CONFLICT (source) DO UPDATE SET value = EXCLUDED.value", (source, value))

@@ -172,6 +172,35 @@ class EmptyBackfill(PullTest):
         self.assertNotIn("sector_reading", dict(self.q("SELECT source, value FROM serving.watermark")))
 
 
+class RefreshSource(PullTest):
+    def test_it_replaces_the_deployment_table_and_nothing_else(self):
+        self.warm({"disturbance": [[disturbance("D1")]], "deployment": [[deployment("X1", "D1")]]})
+        before = self.state()
+        n = pull.refresh_source(FakeClient({"deployment": [[deployment("X2", "D1"), deployment("X3", "D1")]]}), self.conn, "deployment")
+        after = self.state()
+        self.assertEqual(n, 2)
+        self.assertEqual(sorted(r[0] for r in after.pop("deployment")), ["X2", "X3"])
+        before.pop("deployment")
+        self.assertEqual(after, before)                                    # every other table and every watermark unchanged
+
+    def test_only_full_mode_sources_can_be_refreshed(self):
+        for name in ("sector_reading", "probe_reading", "rejects", "dim_sector", "source_health"):
+            with self.assertRaises(ValueError, msg=name):
+                pull.refresh_source(FakeClient(), self.conn, name)
+
+    def test_a_failed_read_leaves_the_table(self):
+        self.warm({"deployment": [[deployment("X1", "D1")]]})
+        before = self.state()
+        with self.assertRaises(Boom):
+            pull.refresh_source(FakeClient(fail_on=1), self.conn, "deployment")
+        self.assertEqual(self.state(), before)
+
+    def warm(self, extra=None):
+        script = {"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]], "rejects": [[reject(1, NOW - HOUR)]]}
+        script.update(extra or {})
+        self.first_run(script)
+
+
 class FullTables(PullTest):
     def test_a_vanished_disturbance_goes_and_an_orphan_deployment_stays(self):
         self.first_run({"disturbance": [[disturbance("D1"), disturbance("D2")]], "deployment": [[deployment("X1", "D1")]]})
