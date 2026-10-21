@@ -2097,6 +2097,45 @@ Browser check by Jong (2026-10-20): the page renders under the CSP; the scan str
 
 **Served locally** (`python -m serving.server --database force_serving_fixture`, then stopped): `/` and both assets 200 (632,440-byte script); `/api/incidents` 200 with 5 incidents; `/api/incidents?status=open` 200 with 1; `/api/deployments` 200 with 4; `/api/ingest-lag` 200 with 10 bins; `/api/rejections` 200. Every response carried the Content-Security-Policy.
 
+Browser check by Jong (2026-10-20): all eight panels render correctly on the fixture data.
+
+**Commits:** T (last four panels) `525ba52`, U (docs and log) `554e9d1`.
+
+### Round 11a (2026-10-21): human-first window, shared ETA, error body
+
+**Built.**
+- `agent/distance.py`: `party_eta_hours(homeworld_regions, incident_region, hyperdrive_rating)`, the slowest member's ETA, raising `ValueError` for an empty party. `agent/loop.py` and `serving/fixtures.py` now call it instead of their own `max(...)`; behaviour is unchanged and no existing test was touched for this.
+- `agent/dbsql.py`: a non-2xx answer now puts `error_code` and `message` from the JSON body in the exception text (`HTTP_400: HTTP 400: BAD_REQUEST: The request could not be processed by the warehouse.`), with every URL replaced by `<url>`, the Databricks host by `<host>` and the whole detail cut to 300 characters; a non-JSON body gives the status only. The exception classes and the retry rules are unchanged (429 and 5xx still transient, the transient message carries the detail too).
+- Human-first window (doc 06): `agent/seen.py` (`SeenStore`, a JSON object of id to first-seen time, one file per target `logs\agent_seen_<target>.json`; a missing file is empty, a file that is not an object of strings is empty with one warning, `save` writes a temp file in the same folder and `os.replace`s it); `POLL_LIMIT = 50` in `agent/config.py`; in `agent/run.py` the poll reads up to 50 undecided incidents, records every unseen id with the cycle's start time, decides only ids first seen before this cycle (oldest first, at most 5 or `--limit` if smaller), prunes the store of ids not in the poll when the poll was not full (a full poll prunes nothing and logs "poll full"), and saves the store before the first decision. The cycle summary gained `new=<n> deferred=<n>`; the statement count is unchanged.
+
+**Decisions taken in code.**
+- `run_cycle` and `run_guarded` take the store as a required argument, so production code has no switch that turns the window off; `main` builds it from the target. The test harness pre-seeds its ids as seen an hour earlier, so the existing cycle tests still describe a cycle that decides; the window has its own test class.
+- The cycle start used for the comparison is the clock truncated to milliseconds (the precision of the stored text), so an id first seen in this cycle is never "earlier than" it.
+- An unreadable stored time is treated as unseen and restamped. A failed save stops the cycle (the window could not be enforced); the S4 `/fail` ping reports it.
+- Three existing `Limit` tests and the summary-line test changed on purpose: `--limit` now caps the decisions, not the poll, and the summary line has two more fields. Doc 06's earlier path `logs\agent_seen.json` was corrected to `logs\agent_seen_<target>.json`.
+
+**Timing data** (Job 1 `runs/list` since 2026-10-13 with tasks, 164 successful runs; the agent log; `serve.log`).
+
+| Measure | Value |
+|---|---|
+| Hourly runs whose end is at or before :11, :12, :13, :14 | 99.4% at each (one run ended at :25.4) |
+| `transform` task end offset | p50 :09.8, p90 :10.4, max :25.4 (start p50 :04.4) |
+| Agent cycle duration (116 prod summaries) | p50 3.2 s, p90 4.2 s, max 33.1 s |
+| ForceServe steady run (21 runs) | median 10.7 s |
+| **Derived** warehouse-on minutes per hour, median (mean, max) | |
+| A: today (agent :15, serve :17, auto-stop 10) | 22.8 (22.8, 25.9) |
+| B: agent at :12 with a wait of up to 10 min for Job 1, serve chained, auto-stop 10 | 17.9 (17.9, 26.2) |
+| C: as B with auto-stop 5 | 12.9 (12.9, 21.2) |
+| Reference: Job 1 alone, auto-stop 10 | 15.6 (15.5) |
+
+The derived rows assume the warehouse is on from the `transform` task's start until the auto-stop time after the last statement, count only the transform, the agent cycle and the serve run, and ignore Job 2 and manual use. They are a model, not a measurement.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts; the copy has four environment errors in the gitignore tests that are not in the real suite): M1 `min` instead of `max` FAIL; M2 an empty party returns 0 FAIL; M3 the error body dropped FAIL; M4 the URL and host scrub removed FAIL; M5 first-seen `<=` the cycle start (no wait) FAIL; M6 first-seen overwritten every cycle FAIL; M7 pruning on a full poll FAIL; M8 the poll still uses `MAX_INCIDENTS_PER_RUN` FAIL; M9 a non-atomic save FAIL.
+
+**Tests.** `agent` 502 to 532 (4 for the party ETA, 5 for the error body, 5 for the store, 16 for the run changes, including the replaced `Limit` tests). Serving 123, edge 553 (1 skipped), ingest 373, intake 384, intake node 205, dashboard 32 and Pester 23 + 22 + 26 unchanged and green.
+
+**Finish.** ForceAgent and ForceServe were disabled from 01:45Z to 01:57Z, while the code changed. At 01:57Z ForceServe was enabled first: `2026-10-21T01:57:25Z decision=skip_no_new_run status=skipped statements=0`. ForceAgent was enabled next and its catch-up cycle failed on its first statement, as the 01:15Z cycle had (before this round started): the warehouse refuses statements again (`HTTP_400: HTTP 400: BAD_REQUEST: The request could not be processed by the warehouse.`, the first time the new error detail was seen in a log). Job 1's last run is the 00:03Z one; the 01:03Z run was not created. This is the same quota-style block as 2026-10-18/19. Warehouse statements used: 1 (the rejected first statement of that cycle, no further statement could be sent); Gemini attempts: 0. `logs\agent_seen_prod.json` was not created, because the cycle died before the poll; the first successful cycle will create it, and the live behaviour of the window is not yet observed.
+
 **Commits:** listed in the next round.
 
 ## Open items
@@ -2155,8 +2194,8 @@ Browser check by Jong (2026-10-20): the page renders under the CSP; the scan str
 | ForceAgent runs `agent/` from the working tree | **Open, soon.** An uncommitted edit, stash or checkout goes live at the next :15; the remedy is the same as the bridge's: a pinned checkout. |
 | Residual race between the agent and Job 1 | **Watch.** Job 1 can start seconds after the per-incident check; a Delta conflict could fail one Job 1 run (S2 alerts). |
 | `capacity_reached` stand-downs are permanent | **Phase 7.** An incident that arrives while the fleet cap is full is stood down for good and is not retried when a slot frees up. Phase 7: badge only, not retried. |
-| Quota block 2026-10-18/19 outlasted the inferred 03:00Z reset | **Open.** The reset time is unknown; see Phase 7 Round 1. Job 1 resumed with its 2026-10-19 16:03Z run after 22 missed hourly slots (last run before: 10-18 17:03Z), so the block lasted about 22 hours; Job 2 missed its 10-19 03:40Z run (Round 4). |
-| `agent/dbsql.py` discards the Statement API's error body | **Phase 7, agent round.** Log `error_code` and `message` on a non-2xx status. |
+| Quota block 2026-10-18/19 outlasted the inferred 03:00Z reset | **Open.** The reset time is unknown; see Phase 7 Round 1. Job 1 resumed with its 2026-10-19 16:03Z run after 22 missed hourly slots (last run before: 10-18 17:03Z), so the block lasted about 22 hours; Job 2 missed its 10-19 03:40Z run (Round 4). The block recurred from the 2026-10-21 01:03Z Job 1 run (Round 11a); the agent's error now shows the API body. |
+| `agent/dbsql.py` discards the Statement API's error body | **Resolved, Round 11a.** A non-2xx answer carries its `error_code` and `message` (scrubbed, 300 characters) in the exception text and so in the failure log. |
 | `silver_source_health.buffer_depth` is always NULL | **Open.** The dashboard shows n/a. |
 | `silver_source_health` can pick a housekeeping row and counts duplicates toward the 60 | **Watch.** |
 | Port 5432 is published by another project's container and by the dbt `local` target | **Phase 7 uses 5433.** |
