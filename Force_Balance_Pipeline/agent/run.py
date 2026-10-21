@@ -22,13 +22,14 @@ from urllib.parse import urlparse
 
 from agent import jobs, queries
 from agent.budget import BudgetExhausted, CallBudget
-from agent.config import AGENT_EPOCH, ENV_KEYS, MAX_INCIDENTS_PER_RUN, PING_KEY, ROOT, RUN_ENV_KEYS, load_env
+from agent.config import AGENT_EPOCH, ENV_KEYS, MAX_INCIDENTS_PER_RUN, PING_KEY, POLL_LIMIT, ROOT, RUN_ENV_KEYS, load_env
 from agent.context import build_context
-from agent.dbsql import StatementClient, StatementError, iso_z
+from agent.dbsql import StatementClient, StatementError, iso_z, parse_timestamp
 from agent.distance import released_at
 from agent.gemini import GeminiClient, GeminiPermanent, GeminiUnavailable
 from agent.lock import AlreadyRunning, InstanceLock
 from agent.loop import decide
+from agent.seen import SeenStore
 from agent.ulid import ulid_now
 sys.path.insert(0, str(ROOT / "ingest" / "bridge"))      # files_api: the one outbound HTTP path
 
@@ -96,22 +97,44 @@ def append_ndjson(path, record):
         f.write((json.dumps(record, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii"))
 
 
-def run_cycle(*, target, limit, db, gemini, budget, job1_check, clock, monotonic, log, decisions_path, decide_fn=decide,
+def first_seen(stored, disturbance_id):
+    """The recorded first-seen time of an id as a datetime, or None if it has none (or an unreadable one)."""
+    try:
+        return parse_timestamp(stored[disturbance_id])
+    except (KeyError, ValueError, AttributeError):
+        return None
+
+
+def run_cycle(*, target, limit, db, gemini, budget, job1_check, clock, monotonic, log, decisions_path, seen, decide_fn=decide,
               ulid_fn=ulid_now, epoch=AGENT_EPOCH):
     """Steps d to f of the cycle. Returns the summary dict (it is also logged). summary["stop_reason"] is "job1_running" or
     "jobs_api_error" when the Job 1 re-check before a write stopped the cycle; summary["degraded"] is True after a permanent model
     error. Both make the caller's ping differ (see run_guarded)."""
     started = monotonic()
+    cycle_start = parse_timestamp(iso_z(clock()))       # the cycle's start, to the millisecond (the precision of the store)
     statements_before = db.statements
     needed = db.read(*queries.repair_needed(target))
     if needed and int(needed[0]["n"]) > 0:
         db.write(*queries.repair(target))
-    polled = db.read(*queries.poll(target, epoch, min(limit or MAX_INCIDENTS_PER_RUN, MAX_INCIDENTS_PER_RUN)))
+    polled = db.read(*queries.poll(target, epoch, POLL_LIMIT))
     ids = [r["disturbance_id"] for r in polled]
+
+    # Human-first window (doc 06): an id is decided only in a cycle after the one that first polled it.
+    stored = seen.load(log)
+    new = [i for i in ids if first_seen(stored, i) is None]
+    for i in new:
+        stored[i] = iso_z(cycle_start)
+    eligible = [i for i in ids if first_seen(stored, i) < cycle_start]
+    to_decide = eligible[:min(limit or MAX_INCIDENTS_PER_RUN, MAX_INCIDENTS_PER_RUN)]
+    if len(ids) < POLL_LIMIT:
+        stored = {k: v for k, v in stored.items() if k in set(ids)}
+    else:
+        log(f"agent: poll full ({POLL_LIMIT} incidents); the first-seen store is not pruned")
+    seen.save(stored)
     totals = {"deploy": 0, "stand_down": 0, "model_calls": 0, "prompt": 0, "output": 0, "thought": 0, "cost": 0.0}
     degraded, stop_reason = False, None
 
-    for disturbance_id in ids:
+    for disturbance_id in to_decide:
         if monotonic() - started >= CYCLE_SECONDS:
             log(f"agent: the cycle has run {CYCLE_SECONDS // 60} minutes; no new incident is started")
             break
@@ -162,13 +185,13 @@ def run_cycle(*, target, limit, db, gemini, budget, job1_check, clock, monotonic
     decided = totals["deploy"] + totals["stand_down"]
     summary = {
         "target": target, "polled": len(ids), "decided": decided, "deploy": totals["deploy"], "stand_down": totals["stand_down"],
-        "left": len(ids) - decided, "statements": db.statements - statements_before, "model_calls": totals["model_calls"],
+        "left": len(ids) - decided, "new": len(new), "deferred": len(ids) - len(to_decide), "statements": db.statements - statements_before, "model_calls": totals["model_calls"],
         "http_attempts": budget.used, "prompt_tokens": totals["prompt"], "output_tokens": totals["output"],
         "thought_tokens": totals["thought"], "cost_usd": totals["cost"], "duration_s": round(monotonic() - started, 1),
         "degraded": "true" if degraded else "false", "stop_reason": stop_reason,
     }
     log("agent: cycle target={target} polled={polled} decided={decided} (deploy={deploy} stand_down={stand_down}) left={left} "
-        "statements={statements} model_calls={model_calls} http_attempts={http_attempts} "
+        "new={new} deferred={deferred} statements={statements} model_calls={model_calls} http_attempts={http_attempts} "
         "tokens={prompt_tokens}/{output_tokens}/{thought_tokens} cost_usd={cost_usd:.6f} duration_s={duration_s} "
         "degraded={degraded}".format(**summary))
     return summary
@@ -179,7 +202,7 @@ def cycle_ping_kind(summary):
     return "fail" if summary["degraded"] == "true" or summary["stop_reason"] == "jobs_api_error" else "success"
 
 
-def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, ping, clock, monotonic, log, decisions_path,
+def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, ping, clock, monotonic, log, decisions_path, seen,
                 decide_fn=decide, ulid_fn=ulid_now, epoch=AGENT_EPOCH):
     """Steps a to c and g: the lock, the quota window, the Job 1 check, and the S4 ping. Returns the exit code.
     S4: success, or /fail after a Jobs API error, a permanent model error or a crash."""
@@ -200,8 +223,8 @@ def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, pin
             ping("fail" if reason == "jobs_api_error" else "success")
             return 0
         summary = run_cycle(target=target, limit=limit, db=db, gemini=gemini, budget=budget, job1_check=job1_check, clock=clock,
-                            monotonic=monotonic, log=log, decisions_path=decisions_path, decide_fn=decide_fn, ulid_fn=ulid_fn,
-                            epoch=epoch)
+                            monotonic=monotonic, log=log, decisions_path=decisions_path, seen=seen, decide_fn=decide_fn,
+                            ulid_fn=ulid_fn, epoch=epoch)
         ping(cycle_ping_kind(summary))
         return 0
     except Exception:
@@ -277,7 +300,7 @@ def main(argv=None):
             target=args.target, limit=args.limit, lock_path=LOCK_PATH, db=db, gemini=gemini, budget=budget,
             job1_check=lambda: jobs.job1_active(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], opener=opener),
             ping=ping, clock=lambda: datetime.now(timezone.utc), monotonic=time.monotonic,
-            log=log, decisions_path=DECISIONS_PATH, epoch=epoch)
+            log=log, decisions_path=DECISIONS_PATH, seen=SeenStore(ROOT / "logs" / f"agent_seen_{args.target}.json"), epoch=epoch)
     except Exception:
         log("agent: the run failed:\n" + traceback.format_exc())
         ping("fail")

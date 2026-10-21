@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from agent.budget import BudgetExhausted, CallBudget  # noqa: F401  (re-exported)
 from agent.constraints import check_deploy, forced_stand_down
 from agent.context import constraint_inputs
-from agent.distance import distance_units, eta_hours
+from agent.distance import party_eta_hours
 from agent.gemini import ModelBlocked
 from agent.prompt import build_user_message
 from agent.tools import MAX_RATIONALE_CHARS
@@ -161,8 +161,8 @@ def decide(context, client, budget, *, monotonic):
             kind, jedi_ids, starship_id, rationale = accepted
             if kind == "stand_down":
                 return finish("stand_down", rationale=rationale)
-            eta = max(eta_hours(distance_units(jedi_by_id[j].homeworld_region, incident.region),
-                                ships_by_id[starship_id].hyperdrive_rating) for j in jedi_ids)
+            eta = party_eta_hours([jedi_by_id[j].homeworld_region for j in jedi_ids], incident.region,
+                                  ships_by_id[starship_id].hyperdrive_rating)
             return finish("deploy", rationale=rationale, jedi_ids=jedi_ids, starship_id=starship_id, eta=eta)
         if rejections > MAX_RETRIES:
             return finish("stand_down", reason="agent_exhausted_retries")

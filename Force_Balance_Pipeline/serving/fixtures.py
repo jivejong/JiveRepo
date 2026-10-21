@@ -17,7 +17,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
-from agent.distance import distance_units, eta_hours, released_at
+from agent.distance import party_eta_hours, released_at
 from serving import config, schema
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -165,7 +165,7 @@ def build(now):
         region = by_sector[sector_id]["region"]
         home = {j["jedi_id"]: by_sector.get(j["homeworld_sector_id"], {}).get("region") for j in jedi}
         rating = {s["starship_id"]: s["hyperdrive_rating"] for s in ships}[ship_id]
-        return max(eta_hours(distance_units(home[j], region), rating) for j in jedi_ids)
+        return party_eta_hours([home[j] for j in jedi_ids], region, rating)
 
     deps = []
     t1 = ago(hours=5.5)

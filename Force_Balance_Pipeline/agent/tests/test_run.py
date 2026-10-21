@@ -12,10 +12,11 @@ import _support as S
 from _fixtures import JEDI, SHIPS, StepClock, row
 from agent import run
 from agent.budget import BudgetExhausted, CallBudget
-from agent.dbsql import StatementFailed, StatementTimeout
+from agent.dbsql import StatementFailed, StatementTimeout, iso_z
 from agent.gemini import GeminiPermanent, GeminiTransient, GeminiUnavailable
 from agent.lock import InstanceLock
 from agent.loop import Decision, decide
+from agent.seen import SeenStore
 
 NOW = datetime(2026, 10, 14, 12, 15, 0, tzinfo=timezone.utc)
 TOKEN_MARKER = "dapi-NOT-A-REAL-TOKEN-5521"
@@ -89,7 +90,7 @@ def fake_decision(kind="deploy", **overrides):
 
 class Harness:
     def __init__(self, directory, ids=(), hour=12, job1=(False, "idle"), decide_fn=None, fail=None, monotonic=None, limit=None,
-                 context_overrides=None, hold_lock=False, repair_n=0):
+                 context_overrides=None, hold_lock=False, repair_n=0, preseed=True):
         self.dir = Path(directory)
         self.db = FakeDb(ids, fail, context_overrides, repair_n=repair_n)
         self.pings, self.logs, self.decide_calls = [], [], []
@@ -104,6 +105,10 @@ class Harness:
         self.monotonic = monotonic or StepClock(0.1)
         self.limit = limit
         self.epoch = run.AGENT_EPOCH
+        self.seen_path = self.dir / "agent_seen_dev.json"
+        self.seen = SeenStore(self.seen_path)
+        if preseed:                                  # most tests are about the cycle itself, so their ids were polled in an earlier cycle
+            self.seen.save({i: iso_z(NOW - timedelta(hours=1)) for i in ids})
         self.ulids = iter(f"01ULID{i:020d}" for i in range(100))
 
     def _default_decide(self, context, gemini, budget, *, monotonic):
@@ -122,7 +127,7 @@ class Harness:
             target="dev", limit=self.limit, lock_path=self.lock_path, db=self.db, gemini=object(), budget=self.budget,
             job1_check=self.job1_check, ping=self.pings.append, clock=lambda: NOW.replace(hour=self.hour),
             monotonic=self.monotonic, log=self.logs.append, decisions_path=self.decisions_path,
-            decide_fn=self.decide_fn, ulid_fn=lambda: next(self.ulids), epoch=self.epoch)
+            decide_fn=self.decide_fn, ulid_fn=lambda: next(self.ulids), epoch=self.epoch, seen=self.seen)
         if self.held:
             self.held.release()
         return code
@@ -490,24 +495,147 @@ class MainHandler(unittest.TestCase):
 
 
 class Limit(unittest.TestCase):
-    def poll_limit(self, limit):
-        h = harness(limit=limit)
-        h.go()
-        return h.db.params("poll")[0]["limit"]
+    IDS = [f"inc-{n}" for n in range(8)]
 
-    def test_no_limit_means_the_maximum(self):
-        self.assertEqual(self.poll_limit(None), (5, "INT"))
+    def decided(self, limit):
+        h = harness(ids=self.IDS, limit=limit)
+        h.go()
+        return len(h.db.params("write"))
+
+    def test_the_poll_always_reads_the_poll_limit(self):
+        for limit in (None, 2, 50):
+            h = harness(limit=limit)
+            h.go()
+            self.assertEqual(h.db.params("poll")[0]["limit"], (50, "INT"), limit)
+
+    def test_no_limit_means_the_maximum_decided(self):
+        self.assertEqual(self.decided(None), 5)
 
     def test_a_limit_above_the_maximum_is_capped(self):
-        self.assertEqual(self.poll_limit(50), (5, "INT"))
+        self.assertEqual(self.decided(50), 5)
 
-    def test_a_smaller_limit_is_used(self):
-        self.assertEqual(self.poll_limit(2), (2, "INT"))
+    def test_a_smaller_limit_caps_the_decisions(self):
+        self.assertEqual(self.decided(2), 2)
 
     def test_the_poll_uses_the_agent_epoch(self):
         h = harness()
         h.go()
         self.assertEqual(h.db.params("poll")[0]["epoch"], (datetime(2026, 10, 12, tzinfo=timezone.utc), "TIMESTAMP"))
+
+
+class HumanFirst(unittest.TestCase):
+    """doc 06 "Human-first window": an incident is decided only in a cycle after the one that first polled it."""
+
+    def test_a_new_id_is_recorded_and_not_decided(self):
+        h = harness(ids=["inc-1"], preseed=False)
+        self.assertEqual(h.go(), 0)
+        self.assertEqual(h.db.kinds, ["repair_needed", "poll"])
+        self.assertEqual(h.decide_calls, [])
+        self.assertEqual(h.seen.load(), {"inc-1": iso_z(NOW)})
+        self.assertTrue(any("new=1 deferred=1" in line for line in h.logs))
+
+    def test_the_next_cycle_decides_it_and_keeps_the_first_seen_time(self):
+        h = harness(ids=["inc-1"], preseed=False)
+        h.go()
+        first = h.seen.load()["inc-1"]
+        later = NOW + timedelta(hours=1)
+        h.hour = later.hour
+        h.go()
+        self.assertEqual(h.db.kinds.count("write"), 1)
+        self.assertEqual(h.seen.load()["inc-1"], first)
+
+    def test_first_seen_is_never_overwritten(self):
+        h = harness(ids=["inc-1"], preseed=False, decide_fn=lambda c, g, b, *, monotonic: (_ for _ in ()).throw(GeminiUnavailable("down")))
+        h.go()
+        first = h.seen.load()["inc-1"]
+        for hour in (13, 14, 15):
+            h.hour = hour
+            h.go()
+            self.assertEqual(h.seen.load()["inc-1"], first)
+
+    def test_a_decided_id_is_pruned_on_the_next_cycle(self):
+        h = harness(ids=["inc-1", "inc-2"])
+        h.go()                                           # both decided
+        h.db.ids = []                                    # the next poll no longer returns them
+        h.go()
+        self.assertEqual(h.seen.load(), {})
+
+    def test_an_id_that_stays_undecided_stays_in_the_store(self):
+        h = harness(ids=["inc-1", "inc-2"], preseed=False)
+        h.go()
+        h.db.ids = ["inc-2"]
+        h.go()
+        self.assertEqual(sorted(h.seen.load()), ["inc-2"])
+
+    def test_a_full_poll_prunes_nothing_and_warns(self):
+        ids = [f"inc-{n:02d}" for n in range(50)]
+        h = harness(ids=ids, preseed=False)
+        h.seen.save({"old-gone": iso_z(NOW - timedelta(days=2))})
+        h.go()
+        self.assertIn("old-gone", h.seen.load())
+        self.assertEqual(sum("poll full" in line for line in h.logs), 1)
+        self.assertEqual(len(h.seen.load()), 51)
+
+    def test_fewer_than_a_full_poll_prunes_the_ids_not_polled(self):
+        h = harness(ids=["a"], preseed=False)
+        h.seen.save({"old-gone": iso_z(NOW - timedelta(days=2))})
+        h.go()
+        self.assertEqual(sorted(h.seen.load()), ["a"])
+        self.assertFalse(any("poll full" in line for line in h.logs))
+
+    def test_a_corrupt_file_is_empty_with_one_warning(self):
+        h = harness(ids=["inc-1"], preseed=False)
+        h.seen_path.write_text("[1, 2, 3]", encoding="utf-8")
+        h.go()
+        self.assertEqual(h.decide_calls, [])
+        self.assertEqual(sum("treated as empty" in line for line in h.logs), 1)
+        self.assertEqual(list(h.seen.load()), ["inc-1"])
+
+    def test_dev_and_prod_use_different_files(self):
+        self.assertNotEqual(run.SeenStore(run.ROOT / "logs" / "agent_seen_dev.json").path, run.SeenStore(run.ROOT / "logs" / "agent_seen_prod.json").path)
+        text = Path(run.__file__).read_text(encoding="utf-8")
+        self.assertIn('f"agent_seen_{args.target}.json"', text)
+
+    def test_the_limit_still_caps_the_decisions(self):
+        h = harness(ids=[f"inc-{n}" for n in range(8)], limit=3)
+        h.go()
+        self.assertEqual(len(h.db.params("write")), 3)
+        self.assertTrue(any("deferred=5" in line for line in h.logs))
+
+    def test_the_oldest_eligible_ids_are_decided_in_poll_order(self):
+        h = harness(ids=[f"inc-{n}" for n in range(8)], limit=None)
+        h.go()
+        self.assertEqual([p["disturbance_id"][0] for p in h.db.params("mark")], [f"inc-{n}" for n in range(5)])
+
+    def test_new_ids_do_not_use_up_the_limit_of_older_ones(self):
+        h = harness(ids=["old-1", "new-1", "old-2"], preseed=False)
+        h.seen.save({"old-1": iso_z(NOW - timedelta(hours=1)), "old-2": iso_z(NOW - timedelta(hours=1))})
+        h.go()
+        self.assertEqual([p["disturbance_id"][0] for p in h.db.params("mark")], ["old-1", "old-2"])
+
+    def test_a_forced_stand_down_also_waits_one_cycle(self):
+        h = harness(ids=["inc-1"], preseed=False, decide_fn=decide, context_overrides={"severity": 4.0})
+        h.go()
+        self.assertNotIn("write", h.db.kinds)
+        h.hour = 13
+        h.go()
+        self.assertIn("write", h.db.kinds)
+
+    def test_the_store_is_saved_before_the_first_decision(self):
+        h = harness(ids=["inc-1"])
+        seen_at_decision = []
+        h.decide_fn = lambda c, g, b, *, monotonic: (seen_at_decision.append(h.seen_path.exists()), fake_decision())[1]
+        h.go()
+        self.assertEqual(seen_at_decision, [True])
+
+    def test_a_save_that_fails_halfway_leaves_the_old_file(self):
+        h = harness(ids=["a"], preseed=False)
+        h.seen.save({"keep": iso_z(NOW)})
+        with mock.patch("agent.seen.os.replace", side_effect=OSError("disk")):
+            with self.assertRaises(OSError):
+                h.seen.save({"other": iso_z(NOW)})
+        self.assertEqual(h.seen.load(), {"keep": iso_z(NOW)})
+        self.assertEqual([p.name for p in h.dir.glob("*.tmp")], [])
 
 
 class Epoch(unittest.TestCase):
@@ -573,7 +701,7 @@ class Records(unittest.TestCase):
         h = harness(ids=["inc-1", "inc-2"], decide_fn=lambda c, g, b, *, monotonic: fake_decision())
         h.go()
         line = next(x for x in h.logs if x.startswith("agent: cycle "))
-        self.assertIn("target=dev polled=2 decided=2 (deploy=2 stand_down=0) left=0 statements=12 model_calls=2", line)
+        self.assertIn("target=dev polled=2 decided=2 (deploy=2 stand_down=0) left=0 new=0 deferred=0 statements=12 model_calls=2", line)
         self.assertIn("tokens=2000/200/100 cost_usd=0.002000", line)
         self.assertRegex(line, r"duration_s=\d")
 

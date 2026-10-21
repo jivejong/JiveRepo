@@ -33,6 +33,14 @@ def eta_hours(units, hyperdrive_rating):
     return units * hyperdrive_rating / 10.0
 
 
+def party_eta_hours(homeworld_regions, incident_region, hyperdrive_rating):
+    """The party's ETA: the slowest member's (doc 06 "ETA"). Raises ValueError for an empty party."""
+    regions = list(homeworld_regions)
+    if not regions:
+        raise ValueError("a party needs at least one Jedi")
+    return max(eta_hours(distance_units(region, incident_region), hyperdrive_rating) for region in regions)
+
+
 def released_at(decided_at, eta):
     """When the Jedi and the starship of a deploy decision become available again."""
     return decided_at + timedelta(hours=eta + MISSION_HOURS)

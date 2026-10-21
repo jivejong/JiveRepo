@@ -109,6 +109,7 @@ def _parameter(name, value, type_name):
 class StatementClient:
     def __init__(self, host, token, warehouse_id, *, opener, sleep, monotonic):
         self._host = files_api.normalise_host(host)
+        self._hosts = sorted({self._host, host.strip().rstrip("/"), re.sub(r"^https?://", "", self._host)}, key=len, reverse=True)
         self._token = token
         self._warehouse_id = warehouse_id
         self._opener = opener
@@ -128,9 +129,9 @@ class StatementClient:
         except files_api.TransportError as e:
             raise TransientHTTPError(f"transport error: {e}") from None
         if status == 429 or status >= 500:
-            raise TransientHTTPError(f"HTTP {status}")
+            raise TransientHTTPError(f"HTTP {status}{self._error_detail(body)}")
         if not 200 <= status < 300:
-            raise StatementFailed(f"HTTP_{status}", f"HTTP {status}", False)
+            raise StatementFailed(f"HTTP_{status}", f"HTTP {status}{self._error_detail(body)}", False)
         try:
             parsed = json.loads(body)
         except ValueError:
@@ -138,6 +139,22 @@ class StatementClient:
         if not isinstance(parsed, dict):
             raise StatementFailed("BAD_RESPONSE", "the response is not a JSON object", False)
         return parsed
+
+    def _error_detail(self, body):
+        """": <error_code>: <message>" from a JSON error body (empty when there is none), with the host and every URL replaced and the
+        text cut to 300 characters. The request body and the token are never part of it."""
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        text = ": ".join(str(data[k]) for k in ("error_code", "message") if isinstance(data.get(k), (str, int)) and str(data[k]))
+        for host in self._hosts:
+            if host:
+                text = text.replace(host, "<host>")
+        text = re.sub(r"https?://\S+", "<url>", text)[:300]
+        return f": {text}" if text else ""
 
     def execute(self, sql, params=None):
         """Run one statement; the rows as a list of dicts. Raises a StatementError subclass on any failure."""

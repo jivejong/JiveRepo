@@ -23,6 +23,7 @@ class Constants(unittest.TestCase):
     def test_values(self):
         self.assertEqual(config.AGENT_EPOCH, datetime(2026, 10, 12, 0, 0, tzinfo=timezone.utc))
         self.assertEqual(config.MAX_INCIDENTS_PER_RUN, 5)
+        self.assertEqual(config.POLL_LIMIT, 50)
         self.assertEqual(config.JOB1_ID, 692051683030737)
 
     def test_the_default_env_file_is_env_agent_at_the_project_root(self):

@@ -251,6 +251,47 @@ class Failures(unittest.TestCase):
             client.execute(SQL)
         self.assertFalse(caught.exception.retryable)
 
+    def test_a_400_carries_the_error_code_and_message_of_the_body(self):
+        body = {"error_code": "BAD_REQUEST", "message": "The request could not be processed by the warehouse."}
+        client, _, _ = make([(400, body)])
+        with self.assertRaises(dbsql.StatementFailed) as caught:
+            client.execute(SQL)
+        self.assertIn("HTTP_400", str(caught.exception))
+        self.assertIn("BAD_REQUEST", str(caught.exception))
+        self.assertIn("The request could not be processed by the warehouse.", str(caught.exception))
+        self.assertFalse(caught.exception.retryable)
+
+    def test_a_transient_error_carries_the_detail_too(self):
+        client, _, _ = make([(503, {"error_code": "TEMPORARILY_UNAVAILABLE", "message": "try later"})])
+        with self.assertRaises(dbsql.TransientHTTPError) as caught:
+            client.execute(SQL)
+        self.assertIn("TEMPORARILY_UNAVAILABLE", str(caught.exception))
+
+    def test_urls_and_the_host_in_the_body_are_replaced(self):
+        message = f"see https://docs.example.invalid/err?q=1 and {S.HOST}/api/2.0/x on example.invalid"
+        client, _, _ = make([(400, {"error_code": "BAD_REQUEST", "message": message})])
+        with self.assertRaises(dbsql.StatementFailed) as caught:
+            client.execute(SQL)
+        text = str(caught.exception)
+        self.assertIn("<url>", text)
+        self.assertIn("<host>", text)
+        self.assertNotIn("example.invalid", text)
+        self.assertNotIn("http", text.replace("HTTP", ""))
+
+    def test_a_long_message_is_cut_to_300_characters(self):
+        client, _, _ = make([(400, {"error_code": "X", "message": "m" * 1000})])
+        with self.assertRaises(dbsql.StatementFailed) as caught:
+            client.execute(SQL)
+        self.assertLessEqual(len(caught.exception.message), len("HTTP 400: ") + 300)
+        self.assertGreater(len(caught.exception.message), 100)
+
+    def test_a_non_json_body_gives_the_status_only(self):
+        for body in ("<html>nope</html>", "[1, 2]", {"other": "key"}):
+            client, _, _ = make([(400, body)])
+            with self.assertRaises(dbsql.StatementFailed) as caught:
+                client.execute(SQL)
+            self.assertEqual(str(caught.exception), "HTTP_400: HTTP 400", body)
+
     def test_a_transport_error_is_transient(self):
         client, _, _ = make([S.url_error()])
         with self.assertRaises(dbsql.TransientHTTPError):

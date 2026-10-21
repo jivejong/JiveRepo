@@ -71,5 +71,21 @@ class Eta(unittest.TestCase):
         self.assertEqual(d.released_at(decided, 0.5), datetime(2026, 10, 15, 0, 30, tzinfo=timezone.utc))
 
 
+class PartyEta(unittest.TestCase):
+    def test_the_slowest_member_wins(self):
+        self.assertAlmostEqual(d.party_eta_hours(["Core Worlds", "Outer Rim", "Colonies"], "Core Worlds", 1.0), 0.5)
+        self.assertAlmostEqual(d.party_eta_hours(["Outer Rim", "Core Worlds"], "Core Worlds", 2.0), 1.0)
+
+    def test_a_single_member(self):
+        self.assertAlmostEqual(d.party_eta_hours(["Mid Rim"], "Mid Rim", 1.0), 0.1)
+
+    def test_an_unknown_region_counts_as_the_outermost_ring(self):
+        self.assertAlmostEqual(d.party_eta_hours([None], "Core Worlds", 1.0), 0.6)
+
+    def test_an_empty_party_raises(self):
+        with self.assertRaises(ValueError):
+            d.party_eta_hours([], "Core Worlds", 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
