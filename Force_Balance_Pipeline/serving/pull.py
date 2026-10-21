@@ -178,6 +178,10 @@ def run_pulls(client, conn, now, backfill_days=DEFAULT_BACKFILL_DAYS):
                 _insert(cur, spec, results[key], conflict=spec["conflict"])
                 if results[key]:
                     _put_watermark(cur, key, max(r[spec["wm_col"]] for r in results[key]))
+                elif key != "sector_reading" and key not in wms:
+                    # An empty backfill: without a watermark every run would backfill this source again, so it starts at the
+                    # run's time (arrival_ts is a landing time, so rows that land later are newer, with the 1-hour overlap).
+                    _put_watermark(cur, key, now)
             for table, column in RETENTION_COLUMNS:
                 cur.execute(f"DELETE FROM serving.{table} WHERE {column} < %s", (now - RETENTION,))
         conn.commit()

@@ -148,6 +148,30 @@ class Incremental(PullTest):
         self.assertEqual(self.q("SELECT value FROM serving.watermark WHERE source = 'rejects'"), before)
 
 
+class EmptyBackfill(PullTest):
+    def test_an_empty_backfill_sets_the_watermark_to_now_and_the_next_run_is_one_statement(self):
+        self.first_run({"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]]})     # rejects: nothing
+        wm = dict(self.q("SELECT source, value FROM serving.watermark"))
+        self.assertEqual(wm.get("rejects"), NOW)
+        self.assertEqual(wm["probe_reading"], NOW - HOUR)                            # a non-empty backfill keeps the pulled maximum
+        client = FakeClient()
+        pull.run_pulls(client, self.conn, NOW + HOUR)
+        self.assertEqual(len(client.calls_for("rejects")), 1)
+        self.assertIn("arrival_ts > :wm", client.calls_for("rejects")[0][0])
+
+    def test_a_later_reject_inside_the_overlap_is_pulled(self):
+        self.first_run({"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]]})
+        late = reject(1, NOW - timedelta(minutes=30))                                 # arrival_ts > watermark - 1 h
+        client = FakeClient({"rejects": [[late]]})
+        pull.run_pulls(client, self.conn, NOW + HOUR)
+        self.assertEqual((client.calls_for("rejects")[0][1] or {}).get("wm", (None,))[0], NOW - HOUR)
+        self.assertEqual(self.q("SELECT event_id FROM serving.rejects"), [("J1",)])
+
+    def test_sector_reading_keeps_no_watermark_when_empty(self):
+        self.first_run({"probe_reading": [[probe(1, NOW - HOUR)]]})
+        self.assertNotIn("sector_reading", dict(self.q("SELECT source, value FROM serving.watermark")))
+
+
 class FullTables(PullTest):
     def test_a_vanished_disturbance_goes_and_an_orphan_deployment_stays(self):
         self.first_run({"disturbance": [[disturbance("D1"), disturbance("D2")]], "deployment": [[deployment("X1", "D1")]]})
