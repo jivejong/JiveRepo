@@ -2221,6 +2221,35 @@ Built with no warehouse use: the deploy call is a fake in every test, and the on
 
 **Tests.** `serving` 148 to 175 (new `test_deploy_api.py` and two in `test_deploy.py`), dashboard 32 to 47 (`deploy.test.js`). Warehouse statements used: 0. Gemini: 0.
 
+**Commits:** AB `34f3720`, AC `caae6d0`.
+
+### Round 13a (2026-10-21): checkpoint prep
+
+**Step 1, live verification (local files and the free Jobs API).**
+
+| Cycle (agent) | Result |
+|---|---|
+| 00:15:04Z | ran: polled 0, decided 0, statements 2 (the old :15 schedule) |
+| 01:15:01Z, 01:57:26Z, 02:15:01Z, 02:35:30Z | `the cycle failed`: `StatementFailed HTTP_400 BAD_REQUEST: The request could not be processed by the warehouse` (the quota block) |
+| 03:11:00Z | `quota window (03:xx UTC); skipping the cycle` |
+| 04:11:03Z | ran: polled 0, new 0, deferred 0, decided 0, statements 2, waited_s 0 |
+
+- `logs\agent_seen_prod.json`: 0 keys (nothing has been polled since the human-first window went in, so there is no first_seen to list).
+- `logs\serve.log` since 00:00Z: 00:17:11 publish ok (7 statements, 12,494 rows); skip_no_new_run at 01:17:01, 01:57:25, 02:17:01 and 02:35:28; skip_quota_hour at 03:12:01 and 03:48:50; 04:28:30 publish ok (7 statements, 13,934 rows, the catch-up after ForceServe was enabled again).
+- Job 1 runs (Jobs API, from 2026-10-20T20:00Z), all TERMINATED SUCCESS: 20:03, 21:03, 22:03, 23:03, 00:03 (ended 00:10:43), then **no runs at 01:03 and 02:03**, then 03:03 (ended 03:09:52) and 04:03 (ended 04:09:19).
+- **The 10-21 block:** it began between 00:17Z (the last good publish; Job 1's 00:03 run had succeeded) and the missed 01:03 slot, and the agent's 01:15 cycle was the first to fail. It was still on at 02:35Z (the last failing agent cycle) and lifted before 03:03Z, when Job 1 ran and succeeded: about 2 h in all, two Job 1 slots missed.
+- The :11 cycles: the first at :11 was 03:11:00Z (skipped, the quota hour) and the first to run was 04:11:03Z, started 3 s after :11 with `waited_s=0`; no cycle has waited for Job 1 yet (the 04:03 run ended at 04:09).
+
+**Step 2, the MERGE result field (dev only, zero writes).** At 05:13Z, 2 statements: a read of `force.dev_jivejong.deployment` (`LIMIT 1`) returned one existing `disturbance_id`; `agent.queries.write_decision('dev', row)` with a test-marked row (rationale "P7 merge-result check, inserts nothing") for that same id went through the agent's `StatementClient`. The result manifest columns were `num_affected_rows`, `num_updated_rows`, `num_deleted_rows` and `num_inserted_rows`, all type LONG, with the single row `["0", "0", "0", "0"]`. `num_inserted_rows` is present and 0 (the field name `serving/deploy.py` reads is right), and the MERGE reports 0 affected and 0 inserted, so the dev table is unchanged; no third statement was used. The `merge_result_unverified` warning therefore fires only if the field goes missing.
+
+**Fix, `nextAgentDecision`.** Round 12b returned the :11 of the hour after the first-seen hour. The agent's first cycle after the first sighting is the first HH:11:00Z strictly after `firstSeen`; the form now returns that, and steps forward an hour at a time until it is after now (a missed cycle). Tests: 02:10 gives 02:11; 02:11:00 gives 03:11; 02:11:01 gives 03:11; 23:30 gives 00:11 the next day; a past result steps forward to the next :11 after now. Mutation M1 (the old hour-after rule) FAIL.
+
+**The checkpoint SQL and runbook.** `ingest/phase7_checkpoint.sql` has p7-1 to p7-5 (both incidents; A decided by `yoda_agent` as a deploy including `<jedi_x>` at least one cycle after detection; no user row on B naming `<jedi_x>`; B's later decision; every deployment row since T0), read-only, with `<sector_a>`, `<sector_b>`, `<t0_utc>` and `<jedi_x>` documented at the top. Doc 05 has "Runbook: Phase 7 checkpoint" with the exact `probe_ctl.py` commands (A: `inject geonosis sith_presence` at T0 between :15 and :25; B: `inject kamino force_drain` an hour later), the UTC timeline from T0 = H:20 (A in gold (H+1):03, recorded (H+1):11, on the dashboard (H+1):12; decided and B recorded (H+2):11; manual-reject window (H+2):13 to (H+3):10), what to record, the fallback and the verification. **Qualifying windows:** the probe's schedule cannot be listed from the code: `ModeSchedule` is seeded randomly at each probe start (the Pi's unit passes no `--mode-schedule-seed`) and neither the seed nor the future windows are logged, and a window can fall anywhere in its half of the UTC day. The runbook instead has the operator send `mode CONNECTED --for-seconds 15000` before T0 (an override outranks the schedule and expires by itself) and gives T0 hours 04 to 23 UTC so no step is in the 03:xx hour.
+
+**Mutation check** (copies outside the repo, only an assertion FAIL counts): M1 the hour-after rule FAIL; M2 a DELETE added to the checkpoint SQL FAIL (the first run only ERRORed because the harness copy lacked `edge/forcesim` and the seeds, and was re-run with them); M3 an undocumented placeholder FAIL.
+
+**Tests.** ingest 373 to 384 (11 in `test_phase7_checkpoint.py`), dashboard 47 to 46 (the three decision-time tests replaced by new ones). serving 175, agent 540, edge 553 (1 skipped), intake 384, intake node 205 and Pester 23 + 23 + 26 unchanged. Warehouse statements used: 2 of 2. Gemini: 0.
+
 **Commits:** listed in the next round.
 
 ## Open items
@@ -2288,7 +2317,7 @@ Built with no warehouse use: the deploy call is a fake in every test, and the on
 | A read-only service principal for the serving puller (the keyword guard is defense in depth only) | **Phase 8.** |
 | Dashboard bundle is one 625 kB script (Vite warns above 500 kB) | **Phase 8: code-splitting.** |
 | `run.build_row` hard-codes `decided_by`; the deploy service overwrites it (give `build_row` a `decided_by` parameter) | **Phase 7, fix round.** |
-| `num_inserted_rows` from the MERGE not yet seen live | **Phase 7, Round 13a.** |
+| `num_inserted_rows` from the MERGE not yet seen live | **Resolved, Phase 7 Round 13a (2026-10-21).** A zero-write dev MERGE returned `num_affected_rows`, `num_updated_rows`, `num_deleted_rows` and `num_inserted_rows`, all LONG, values 0, 0, 0, 0. |
 
 ## Lessons (beyond this project)
 

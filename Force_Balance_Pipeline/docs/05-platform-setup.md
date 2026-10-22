@@ -1682,6 +1682,60 @@ the hourly `:03` schedule isn't precise enough to tell by wall clock alone, and 
 
 ---
 
+### Runbook: Phase 7 checkpoint
+
+The checkpoint (doc 07, Phase 7): the agent decides a real incident A after the human-first window; while A is deployed, a manual deploy of the same Jedi to a second incident B is rejected with `jedi_unavailable` and writes nothing. It takes about four hours from T0 and needs two injected planets in different regions. Commands are `probe_ctl.py`'s own documented syntax (`edge/probe_ctl.py`) and `python -m serving.server` (doc 05, "Serving (Phase 7)"); `<DESKTOP_IP>` is the broker host, as in the C3/C4 runbook. It prompts for the `operator` password (or reads `OPERATOR_MQTT_PASSWORD`); neither is ever stored or printed.
+
+**1. Preconditions.**
+- No quota block in the last 24 h: the last three Job 1 runs and the last ForceServe line in `logs\serve.log` are successes, and `logs\agent.log` has no `the cycle failed` after the last success.
+- `ForceAgent` and `ForceServe` are Ready (`Get-ScheduledTask -TaskName ForceAgent, ForceServe`). Neither task is touched by this runbook.
+- The dashboard backend is running on `force_serving` and deploy is enabled: `python -m serving.server` (no `--database`), then `GET /api/meta` shows `deploy_enabled` true. If it says `fixture_database`, `fixture_rows` or `no_credentials`, fix that first (doc 06, "Manual deployment path").
+- The probe is CONNECTED from T0 to T0 + 4 h and no scheduled window falls in that span. **The scheduled windows cannot be listed from the code.** `ModeSchedule` (`edge/probe/modes.py`) places one DISCONNECTED window of 1 to 3 hours in each half of the UTC day (00-12Z and 12-24Z) from a seed, and the Pi's unit (`infra/pi/force-probe.service`, `--mode-schedule` with no `--mode-schedule-seed`) draws a new random seed each time the probe starts and logs neither the seed nor the future windows. Past windows are in the Pi's `mode_transitions.jsonl` (`reason: schedule`), and a window can fall anywhere in its half, so no start time is guaranteed clear. Make it independent of the schedule instead: an operator override outranks the schedule, so a few minutes before T0 send
+  ```bash
+  python edge/probe_ctl.py --host <DESKTOP_IP> mode CONNECTED --for-seconds 15000
+  ```
+  (4 h 10 min; it expires by itself and the schedule resumes, so never use `--indefinite`). If a scheduled window was already running, the override ends it and the buffered scans drain through BURST. If the seed of the running probe is ever known (a probe started with `--mode-schedule-seed N`), its windows for a UTC day number `D` (days since the epoch) are `ModeSchedule(seed=N).windows_for_day(D)`, as epoch-second `(start, end, mode)` triples.
+- T0 must not put any step in the 03:xx UTC hour (the agent and ForceServe skip it): T0 between :15 and :25 past hour H with H from 04 to 23 UTC, so that H+1, H+2 and H+3 are never 03 (H = 00 to 03 is out).
+
+**2. T0 (between :15 and :25 past hour H): planet A.** Pick a sector that is not Mustafar or Dathomir (doc 04); the example is `geonosis` (Outer Rim):
+
+```bash
+python edge/probe_ctl.py --host <DESKTOP_IP> inject geonosis sith_presence
+```
+
+Default episode (`ramp=2, hold=4, decay=3` scans). Note the time you sent it as T0.
+
+**3. T0 + 60 min: planet B.** A different signature on a planet in another region; the example is `kamino` (Wild Space):
+
+```bash
+python edge/probe_ctl.py --host <DESKTOP_IP> inject kamino force_drain
+```
+
+**4. Expected timeline** (UTC; T0 = H:20; all times are the cycles the schedule gives: Job 1 :03, agent :11, ForceServe :12):
+
+| When | What |
+|---|---|
+| (H+1):03 | A's incident is in gold (Job 1 builds it from the :30 and :45 scans) |
+| (H+1):11 | the agent records A (first seen; `logs\agent_seen_prod.json` gets its key; no decision yet) |
+| (H+1):12 | A is on the dashboard (tile at emergency, incident open) |
+| (H+1):20 | inject B |
+| (H+2):03 | B is in gold |
+| (H+2):11 | the agent decides A (a deploy, `decided_by` `yoda_agent`) and records B |
+| (H+2):12 | A's deployment and B's incident are on the dashboard |
+| (H+2):13 to (H+3):10 | **the manual-reject window**: A's Jedi are deployed and B is open and undecided |
+| (H+3):11 | the agent decides B |
+
+The form's "Yoda decides at HH:MM UTC" for B (from `agent_first_seen`) shows (H+3):11 during the window.
+
+**5. What to record in the GIF, and when.** (a) At (H+1):12: A's tile turning emergency and its incident in the feed. (b) At (H+2):12: the deployment log showing Yoda's deploy to A, and the Jedi it chose (`<jedi_x>`). (c) In the manual-reject window: open "Deploy..." on B, tick `<jedi_x>`, choose any starship, write a rationale, submit; the form shows "Rejected by the constraint layer:" with the `jedi_unavailable` reason. Optionally (d) a valid manual deploy to B with other Jedi and a free starship, so a user row sits next to the agent's row; if you do, B's later agent decision does not happen (the incident is decided).
+
+**6. Fallback.** If the agent stands down on A, record that (the stand-down reason is in the deployment log), let both incidents finish, and rerun the next day with another planet.
+
+**7. Verification.**
+- `ingest/phase7_checkpoint.sql` p7-1 to p7-5, with `<sector_a>`, `<sector_b>`, `<t0_utc>` (the full date and time of T0) and `<jedi_x>` filled in (`python run_sql_file.py ingest/phase7_checkpoint.sql p7-1 p7-2 ...`); expectations are in each heading.
+- `logs\deploy.log`: one line for the rejected attempt, `ok=false reasons=...jedi_unavailable...`, `statements=3`, and no rationale text.
+- `serving.v_deployment_log` in the local Postgres (the dashboard's deployment log) shows A's agent row, and B's row once decided.
+
 ## Local development stack
 
 **Deferred to Phase 8** (doc 07 deviation note: `dbt build` is proven on `prod` only in Phase 4; `extract_payload`'s Postgres
