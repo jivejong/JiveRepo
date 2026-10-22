@@ -1,11 +1,10 @@
 # Chord Chart Manager data pipeline
 
-The pipeline converts Word chord-chart documents into JSON and loads them into
-PostgreSQL. Current enrichment code uses MusicBrainz and GetSongBPM. The
-approved replacement design is MusicBrainz → AcousticBrainz → Gemini fallback;
-it has not been implemented or live-verified. T14 keeps enrichment off. Do not
-use future configuration or commands operationally until the code supports them.
-The recommended workflow uses the Python 3.10 Compose service.
+The pipeline converts Word chord-chart documents into JSON. The loader is
+insert-only and enrichment stays a separate, later operation. The current
+legacy enrichment code uses MusicBrainz and GetSongBPM; it is not the approved
+Stage B workflow and must remain off for C1 chart import. The recommended
+workflow uses the Python 3.10 Compose service.
 
 ## Requirements
 
@@ -191,63 +190,74 @@ older enriched JSON) lack the marker and are intentionally rejected; rerun
 enrichment while preserving the added fields. Ordinary low-confidence lines
 remain review warnings and do not by themselves block loading.
 
-## 3. Enrich metadata (optional; current implementation only)
+## 3. Keep enrichment separate
 
-The current `enrich_songs.py` code uses MusicBrainz and GetSongBPM. Its existing
-command and settings describe that implementation only. The approved replacement
-is MusicBrainz → AcousticBrainz → Gemini fallback; it is not implemented or
-live-verified, and no settings or command for that future design are available.
-T14 keeps enrichment off. Do not use this legacy path for T14.
+`enrich_songs.py` remains legacy MusicBrainz/GetSongBPM code. Do not run it as
+part of C1 or treat its output as a chart-import requirement. Any enrichment
+must happen after the inserted charts are reviewed and accepted, under its own
+explicit task and current approved workflow. This loader does not call
+providers, infer missing metadata, or consume provider caches.
 
-If the current implementation is being tested in a separate authorized task,
-start with a small trial:
+## 4. Preview and insert PostgreSQL rows
 
-```bash
-docker compose run --rm pipeline \
-  python enrich_songs.py parsed_out/songs.json \
-  -o parsed_out/songs.enriched.json \
-  --cache parsed_out/enrich_cache.json \
-  --limit 20
-```
-
-The current code expects its existing MusicBrainz/GetSongBPM configuration in
-`app/.env`; preserve any existing file and do not infer future settings from
-this guide. Check cache provenance before reuse. If data may have come from
-GetSongBPM, retain the visible backlink requirement until its source is checked;
-do not remove attribution blindly.
-
-## 4. Load PostgreSQL
-
-From `app/`, dry-run the load into the Compose database:
+From `app/`, produce a read-only plan against the selected database:
 
 ```bash
 docker compose run --rm pipeline \
-  python load_songs.py parsed_out/songs.enriched.json --dry-run
+  python load_songs.py parsed_out/songs.json --dry-run
 ```
 
-`--dry-run` performs the same parse, connection, and database work inside one
-transaction, then rolls everything back. This also applies when combined with
-`--truncate`.
+The preview reports proposed inserts, exact skips, blocking identity
+collisions, unresolved categories, and parser/validation failures. It prints
+identities and category labels only, never chart bodies. Planning runs in a
+repeatable-read, read-only transaction and does not advance sequences.
+The locked planner reports an exact title/artist/source match as a skip before
+artist resolution or Genre/Vibe assignment resolution. Apply may take
+protective normalized-name and matching definition-row locks before that
+planner check to preserve the app's lock order; these locks do not change
+catalog definitions or song rows. Repeated normalized title/artist inputs
+with different source documents block the entire batch before SQL writes,
+even when no matching database song exists.
+Title and artist comparisons are case-insensitive using the existing lower()
+semantics; `source_document` must match exactly, with NULL matching NULL. A
+same-title/artist record from another source or multiple matches blocks the
+whole batch for a bounded decision. There is no fuzzy matching or aliasing.
 
-Run without `--dry-run` after reviewing the summary:
+Only after the exact document and target scope have a fresh backup/actual
+restore proof and explicit load authorization, run apply:
 
 ```bash
 docker compose run --rm pipeline \
-  python load_songs.py parsed_out/songs.enriched.json
+  python load_songs.py parsed_out/songs.json
 ```
 
-If enrichment was skipped, substitute `parsed_out/songs.json` in both loader
-commands.
+The normal load inserts new songs only. Existing matches are never updated;
+rerunning a committed batch inserts zero rows for them. It does not create or
+rename Genre/Vibe definitions. Explicit categories resolve by the app's
+category-specific normalization (trim and collapse whitespace, then
+case-insensitive exact comparison). Missing or ambiguous labels are reported
+and left unassigned; resolved Genre assignments are non-primary. A Genre from
+the source filename is retained as provenance in parsed JSON but is not
+assigned. No primary Genre is inferred.
+Parsed JSON with a nonempty primary Genre and missing/invalid
+`primary_genre_source` is rejected before database access with an instruction
+to reparse using the current parser; the loader does not infer provenance or
+discard that category.
 
-Other loader options:
-
-- `--database-url URL`: use a URL instead of `DATABASE_URL`.
-- `--truncate`: clear song-related tables before loading. This is destructive
-  unless paired with `--dry-run`.
-
-The loader is idempotent for its natural song key and preserves existing song
-IDs on updates. Each song uses a savepoint so one malformed record does not
-roll back successful records in a normal load.
+Apply first takes the app's sorted normalized-name advisory locks for Genre
+labels, then Vibe labels. For each normalized category/name key, it locks all
+matching definition rows in ascending ID order with `FOR SHARE`, then takes
+locks on the artist, song, and assignment tables in that order. It does not
+table-lock the definition catalogs. The planner rechecks catalog resolution
+after acquiring these locks, so concurrent app definition
+create/rename/delete and assignment operations using the same name locks
+cannot introduce a normalized-name ambiguity between lookup and insert.
+Apply reruns the same identity and category planner under those locks.
+The complete batch commits together or all inserted rows roll back. A
+preflight/collision or SQL failure stops the batch; there are no per-song
+savepoints or partial commits. There is intentionally no `--truncate` or
+update mode. `--database-url URL` can select a database instead of
+`DATABASE_URL`; confirm the target before any separately authorized apply.
 
 All inputs and outputs that must follow the project folder are bind-mounted:
 
@@ -262,7 +272,7 @@ pipeline image after changing a pipeline script or `requirements.txt`.
 The pipeline image installs the small test-only dependency set from
 `requirements-test.txt` (currently pytest); these tools are not app
 dependencies. For each run, choose a unique database name matching
-`ccm_tabguard_t13_<suffix>`, verify that exact name is absent, create it under
+`ccm_loader_c1_<suffix>`, verify that exact name is absent, create it under
 the active Compose database role, and record a task-specific database comment
 before proceeding. Initialize only that database with the T06 app migration
 runner:
@@ -273,11 +283,11 @@ docker compose run --rm --no-deps -e PIPELINE_TEST_DATABASE="$PIPELINE_TEST_DATA
 ```
 
 The parser test builds a synthetic `.docx` in a temporary directory using
-invented text. The loader test checks all eight application tables around a
-dry-run rollback and unresolved-batch rejection, then exercises an accepted
-version-1 synthetic load with an ordinary low-confidence warning. It refuses
-any database name outside the task prefix. Drop only the database created for
-this run, verify its absence afterward, and never point the test at `chords`.
+invented text. The loader integration verifies all application tables and
+sequences across read-only preview, insert/skip, collision, atomic rollback,
+and concurrent loads. The guard refuses names outside the task prefix. Drop
+only the database created for the run, verify its owner marker first and its
+absence afterward, and never point the test at `chords`.
 
 ## Current validation status
 

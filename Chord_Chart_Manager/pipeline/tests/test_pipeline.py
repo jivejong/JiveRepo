@@ -6,10 +6,13 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
+import uuid
 import zipfile
 from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
+from psycopg import sql
 import pytest
 from psycopg.types.json import Jsonb
 
@@ -639,6 +642,9 @@ def test_batch_report_surfaces_tab_diagnostic_without_lyrics(tmp_path: Path) -> 
     }]
     assert "invented lyric for tab guard" not in json.dumps(report)
     assert songs[0]["parser_diagnostics_version"] == 1
+    assert songs[0]["primary_genre"] == "invented"
+    assert songs[0]["primary_genre_source"] == "filename_fallback"
+    assert loader._explicit_categories(songs[0])[0] == []
 
 
 def _write_tab_guard_docx(path: Path) -> None:
@@ -846,15 +852,18 @@ APP_TABLES = (
     "song_genres",
     "setlists",
     "setlist_songs",
+    "mutation_receipts",
+    "song_enrichment_runs",
+    "schema_migrations",
 )
 
 
 def _scratch_database_url() -> str:
     database = os.environ.get("PIPELINE_TEST_DATABASE", "")
-    if not re.fullmatch(r"ccm_tabguard_t13_[a-z0-9_]{1,32}", database):
+    if not re.fullmatch(r"ccm_loader_c1_[a-z0-9_]{1,32}", database):
         raise RuntimeError(
             "Set PIPELINE_TEST_DATABASE to this run's unique "
-            "ccm_tabguard_t13_<suffix> database after initializing it "
+            "ccm_loader_c1_<suffix> database after initializing it "
             "with the app migration runner."
         )
     base = os.environ.get("DATABASE_URL")
@@ -942,76 +951,344 @@ def _table_contents(conn: psycopg.Connection) -> dict[str, list[str]]:
     return snapshot
 
 
-def test_loader_dry_run_preserves_scratch_table_contents() -> None:
+def _sequence_contents(conn: psycopg.Connection) -> dict[str, tuple[int, bool]]:
+    state = {}
+    with conn.cursor() as cur:
+        cur.execute("""SELECT c.relname FROM pg_class c
+                       JOIN pg_namespace n ON n.oid=c.relnamespace
+                       WHERE n.nspname='public' AND c.relkind='S' ORDER BY c.relname""")
+        names = [row[0] for row in cur.fetchall()]
+        for name in names:
+            cur.execute(sql.SQL("SELECT last_value,is_called FROM public.{}")
+                        .format(sql.Identifier(name)))
+            state[name] = cur.fetchone()
+    return state
+
+
+def _valid_insert(title: str, artist: str, source: str | None, **metadata) -> dict:
+    source_text = "[Verse]\n"
+    return {
+        "title": title, "artist": artist,
+        "source_document": source,
+        "chart_source": source_text,
+        "chart_content": chart_parser.parse_ordinary_chart_source(source_text),
+        "parser_diagnostics_version": 1, "warnings": [], **metadata,
+    }
+
+
+def test_insert_only_loader_preview_skip_collisions_atomicity_and_concurrency() -> None:
     with psycopg.connect(_scratch_database_url(), autocommit=False) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT current_database()")
             assert cur.fetchone()[0] == os.environ["PIPELINE_TEST_DATABASE"]
         _ensure_seed_rows(conn)
-        before = _table_contents(conn)
-        batch = [
-            {
-                "title": "T13 pytest existing song",
-                "artist": "T13 pytest seed artist",
-                "performance_key": "D",
-                "primary_genre": "T13 pytest seed genre",
-                "additional_genres": ["T13 pytest temporary secondary genre"],
-                "vibes": ["T13 pytest replacement vibe"],
-                "source_document": "t13-pytest-seed.docx",
-                "parser_diagnostics_version": 1,
-                "warnings": [],
-                "chart_content": {"sections": [{"label": "changed", "lines": []}]},
-            },
-            {
-                "title": "T13 pytest new song",
-                "artist": "T13 pytest new artist",
-                "performance_key": "G",
-                "primary_genre": "T13 pytest new genre",
-                "source_document": "t13-pytest-new.docx",
-                "parser_diagnostics_version": 1,
-                "warnings": [],
-                "chart_content": {"sections": [{"label": "new", "lines": []}]},
-            },
-        ]
-
-        result = load(conn, batch, truncate=False, dry_run=True)
-        after = _table_contents(conn)
-
-        accepted = {
-            "title": "T13 tab guard accepted low-confidence song",
-            "artist": "T13 tab guard synthetic artist",
-            "performance_key": "C",
-            "primary_genre": "T13 tab guard synthetic genre",
-            "source_document": "t13-tabguard-synthetic.docx",
-            "chart_source": "[Verse]\nC   G\ninvented phrase\n",
-            "parser_diagnostics_version": 1,
-            "warnings": [{"code": "space_alignment_low_confidence"}],
-            "chart_content": chart_parser.parse_ordinary_chart_source(
-                "[Verse]\nC   G\ninvented phrase\n"),
-        }
-        assert accepted["chart_content"] == chart_parser.parse_ordinary_chart_source(
-            accepted["chart_source"])
-        accepted_result = load(conn, [accepted], truncate=False, dry_run=False)
         with conn.cursor() as cur:
-            cur.execute("SELECT count(*), min(chart_source) FROM songs WHERE title=%s",
-                        (accepted["title"],))
-            count, stored_source = cur.fetchone()
-            assert count == 1
-            assert stored_source == accepted["chart_source"]
-        accepted_snapshot = _table_contents(conn)
+            cur.execute("""SELECT s.id FROM songs s JOIN artists a ON a.id=s.artist_id
+                           WHERE s.title=%s AND a.name=%s AND s.source_document=%s""",
+                        ("T13 pytest existing song", "T13 pytest seed artist", "t13-pytest-seed.docx"))
+            existing_id = cur.fetchone()[0]
+            cur.execute("INSERT INTO genres(name) VALUES (%s) RETURNING id", ("T13 manual extra genre",))
+            manual_genre_id = cur.fetchone()[0]
+            cur.execute("INSERT INTO vibes(name) VALUES (%s) RETURNING id", ("T13 manual extra vibe",))
+            manual_vibe_id = cur.fetchone()[0]
+            cur.execute("""UPDATE songs SET original_key='F#m', performance_key='E',
+                           preferred_key='A', alt_key='G', capo_fret=4, bpm=111,
+                           release_year=1999, bb_structure='Intro-V-C',
+                           chart_source='[Verse]\\nmanual edit\\n',
+                           chart_content=%s
+                           WHERE id=%s""",
+                        (Jsonb({"sections": [{"label": "Manual", "lines": []}]}), existing_id))
+            cur.execute("INSERT INTO song_genres(song_id,genre_id,is_primary) VALUES (%s,%s,false)",
+                        (existing_id, manual_genre_id))
+            cur.execute("INSERT INTO song_vibes(song_id,vibe_id) VALUES (%s,%s)",
+                        (existing_id, manual_vibe_id))
+            cur.execute("""INSERT INTO mutation_receipts
+                           (operation_id,request_hash,entity_type,resource_id,response)
+                           VALUES (%s,%s,'song',%s,%s)""",
+                        ("00000000-0000-4000-8000-000000000001", "a" * 64,
+                         str(existing_id), Jsonb({"song_id": existing_id, "synthetic": True})))
+            cur.execute("""INSERT INTO song_enrichment_runs
+                           (operation_id,request_hash,manifest,response)
+                           VALUES (%s,%s,%s,%s)""",
+                        ("00000000-0000-4000-8000-000000000002", "b" * 64,
+                         Jsonb({"song_id": existing_id, "synthetic": True}),
+                         Jsonb({"status": "complete", "synthetic": True})))
+        conn.commit()
 
-        blocked = [dict(batch[1], warnings=[{
-            "code": "word_tab_placement_unresolved", "section": 1,
-            "line": 4, "reason": "word_tab_semantics_not_modeled",
-        }])]
-        with pytest.raises(ValueError, match="section 1 line 4"):
-            load(conn, blocked, truncate=False, dry_run=False)
-        after_rejection = _table_contents(conn)
+        # The same natural identity with altered manual/source data is an exact
+        # skip. It does not rename the case-insensitive artist or touch tags.
+        skip_input = _valid_insert(
+            "t13 PYTEST existing song", "t13 pytest SEED artist", "t13-pytest-seed.docx",
+            original_key="C", performance_key="C", preferred_key="C", capo_fret=0,
+            bpm=120, release_year=2020, bb_structure="replace", primary_genre="Missing Genre",
+            primary_genre_source="cover_page", vibes=["Missing Vibe"],
+        )
+        # The committed exact-skip path must preserve every protected app row,
+        # exact song version, assignment/reference and sequence value.
+        exact_skip_before = _table_contents(conn)
+        exact_skip_sequences = _sequence_contents(conn)
+        conn.commit()
+        exact_skip = load(conn, [skip_input])
+        assert exact_skip["counts"]["exact_skips"] == 1
+        assert exact_skip["inserted"] == []
+        assert _table_contents(conn) == exact_skip_before
+        assert _sequence_contents(conn) == exact_skip_sequences
+        conn.commit()
+        before = _table_contents(conn)
+        before_sequences = _sequence_contents(conn)
+        conn.commit()
+        dry_insert = _valid_insert("T13 C1 dry only", "T13 dry only artist", "dry-only.docx")
+        preview_report = load(conn, [skip_input, dry_insert], dry_run=True)
+        assert preview_report["counts"]["exact_skips"] == 1
+        assert preview_report["counts"]["proposed_inserts"] == 1
+        assert "manual edit" not in json.dumps(preview_report)
+        assert "[Verse]" not in json.dumps(preview_report)
+        assert _table_contents(conn) == before
+        assert _sequence_contents(conn) == before_sequences
+        conn.commit()
 
-    assert result == {"inserted": 1, "updated": 1, "errors": []}
-    assert accepted_result == {"inserted": 1, "updated": 0, "errors": []}
-    assert after == before
-    assert after_rejection == accepted_snapshot
+        # A new row carries only explicit metadata; managed definitions are
+        # referenced by canonical IDs and all assignments stay non-primary.
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO genres(name) VALUES (%s),(%s),(%s)",
+                        ("T13 Ambiguous  Genre", "T13 Ambiguous Genre", "T13 Genre Only"))
+            cur.execute("INSERT INTO vibes(name) VALUES (%s)", ("T13 Vibe Only",))
+        conn.commit()
+        new_input = _valid_insert(
+            "T13 C1 new song", "T13 C1 new artist", "C1-source.docx",
+            performance_key="D", preferred_key="G", original_key=None, alt_key=None,
+            capo_fret=2, bb_structure="Verse-Chorus", primary_genre="T13 pytest seed genre",
+            primary_genre_source="cover_page",
+            additional_genres=["T13 Ambiguous Genre", "T13 Unknown Genre", "T13 Vibe Only"],
+            vibes=["T13 Vibe Only", "T13 Genre Only"],
+        )
+        defs_before = {name: _table_contents(conn)[name] for name in ("artists", "genres", "vibes")}
+        conn.commit()
+        inserted = load(conn, [new_input])
+        assert inserted["counts"]["proposed_inserts"] == 1
+        assert inserted["counts"]["unresolved_categories"] == 4
+        assert inserted["inserted"][0]["song_id"]
+        with conn.cursor() as cur:
+            new_id = inserted["inserted"][0]["song_id"]
+            cur.execute("""SELECT title,original_key,performance_key,preferred_key,alt_key,
+                           capo_fret,bpm,release_year,bb_structure,chart_source,chart_content
+                           FROM songs WHERE id=%s""", (new_id,))
+            row = cur.fetchone()
+            assert row == ("T13 C1 new song", None, "D", "G", None, 2, None, None,
+                           "Verse-Chorus", "[Verse]\n", {"sections": [{"label": "Verse", "lines": []}]})
+            cur.execute("SELECT g.name,sg.is_primary FROM song_genres sg JOIN genres g ON g.id=sg.genre_id WHERE sg.song_id=%s ORDER BY g.name", (new_id,))
+            assert cur.fetchall() == [("T13 pytest seed genre", False)]
+            cur.execute("SELECT v.name FROM song_vibes sv JOIN vibes v ON v.id=sv.vibe_id WHERE sv.song_id=%s", (new_id,))
+            assert cur.fetchall() == [("T13 Vibe Only",)]
+        conn.commit()
+        assert {name: _table_contents(conn)[name] for name in ("artists", "genres", "vibes")} != defs_before
+        # Only the new artist row changed; no tag definitions were created or renamed.
+        assert _table_contents(conn)["genres"] == defs_before["genres"]
+        assert _table_contents(conn)["vibes"] == defs_before["vibes"]
+        conn.commit()
+
+        fallback_input = _valid_insert(
+            "T13 C1 filename fallback", "T13 C1 fallback artist", "fallback.docx",
+            primary_genre="T13 pytest seed genre", primary_genre_source="filename_fallback",
+        )
+        fallback_result = load(conn, [fallback_input])
+        fallback_id = fallback_result["inserted"][0]["song_id"]
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM song_genres WHERE song_id=%s", (fallback_id,))
+            assert cur.fetchone()[0] == 0
+        conn.commit()
+
+        rerun_before = _table_contents(conn)
+        rerun_sequences = _sequence_contents(conn)
+        conn.commit()
+        rerun = load(conn, [new_input])
+        assert rerun["inserted"] == []
+        assert rerun["counts"]["exact_skips"] == 1
+        assert _table_contents(conn) == rerun_before
+        assert _sequence_contents(conn) == rerun_sequences
+        conn.commit()
+
+        # Repeated input identities, multiple exact rows, and a different-source
+        # row each refuse the entire operation without writes.
+        duplicated = _valid_insert("T13 duplicate", "T13 dup artist", "dup.docx")
+        blocked_before = _table_contents(conn)
+        conn.commit()
+        with pytest.raises(loader.LoadPreflightError, match="duplicate_input_identity"):
+            load(conn, [duplicated, dict(duplicated)])
+        with pytest.raises(loader.LoadPreflightError, match="cross_source_input_collision"):
+            load(conn, [duplicated, _valid_insert("T13 duplicate", "T13 dup artist", "other.docx")])
+        assert _table_contents(conn) == blocked_before
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO artists(name) VALUES (%s) RETURNING id", ("T13 multi artist",))
+            multi_artist_id = cur.fetchone()[0]
+            cur.execute("INSERT INTO songs(title,artist_id,source_document,chart_content) VALUES (%s,%s,%s,%s),(%s,%s,%s,%s)",
+                        ("T13 multiple", multi_artist_id, "same.docx", Jsonb({"sections": []}),
+                         "T13 multiple", multi_artist_id, "same.docx", Jsonb({"sections": []})))
+            cur.execute("INSERT INTO artists(name) VALUES (%s) RETURNING id", ("T13 cross artist",))
+            cross_artist_id = cur.fetchone()[0]
+            cur.execute("INSERT INTO songs(title,artist_id,source_document,chart_content) VALUES (%s,%s,%s,%s)",
+                        ("T13 cross", cross_artist_id, "old.docx", Jsonb({"sections": []})))
+        conn.commit()
+        blocked_before = _table_contents(conn)
+        conn.commit()
+        with pytest.raises(loader.LoadPreflightError, match="multiple_exact_database_matches"):
+            load(conn, [_valid_insert("T13 multiple", "T13 multi artist", "same.docx")])
+        with pytest.raises(loader.LoadPreflightError, match="same_title_artist_other_source"):
+            load(conn, [_valid_insert("T13 cross", "T13 cross artist", "new.docx")])
+        assert _table_contents(conn) == blocked_before
+
+        # A DB failure after the first insert rolls back every row from the batch.
+        with conn.cursor() as cur:
+            cur.execute("""CREATE FUNCTION public.ccm_c1_test_fail_insert() RETURNS trigger
+                           LANGUAGE plpgsql AS $$ BEGIN
+                             IF NEW.title='T13 C1 fail second' THEN RAISE EXCEPTION 'test failure'; END IF;
+                             RETURN NEW;
+                           END $$""")
+            cur.execute("CREATE TRIGGER ccm_c1_test_fail_insert BEFORE INSERT ON songs FOR EACH ROW EXECUTE FUNCTION public.ccm_c1_test_fail_insert()")
+        conn.commit()
+        atomic_before = _table_contents(conn)
+        conn.commit()
+        with pytest.raises(psycopg.Error, match="test failure"):
+            load(conn, [_valid_insert("T13 C1 first", "T13 C1 atomic artist", "atomic.docx"),
+                        _valid_insert("T13 C1 fail second", "T13 C1 atomic artist", "atomic.docx")])
+        with conn.cursor() as cur:
+            cur.execute("DROP TRIGGER ccm_c1_test_fail_insert ON songs")
+            cur.execute("DROP FUNCTION public.ccm_c1_test_fail_insert()")
+        conn.commit()
+        assert _table_contents(conn) == atomic_before
+
+    # Two simultaneous loader transactions serialize at the protected table
+    # locks; one inserts and the other observes and skips that committed row.
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    item = _valid_insert("T13 C1 concurrent", "T13 C1 concurrent artist", "concurrent.docx")
+    barrier = Barrier(2)
+    def concurrent_load():
+        with psycopg.connect(_scratch_database_url(), autocommit=False) as concurrent_conn:
+            barrier.wait(timeout=10)
+            return load(concurrent_conn, [item])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: concurrent_load(), range(2)))
+    assert sum(len(result["inserted"]) for result in results) == 1
+    assert sum(result["counts"]["exact_skips"] for result in results) == 1
+
+
+def test_concurrent_app_definition_create_uses_loader_name_key_and_resolution() -> None:
+    """A create between catalog reads must serialize and expose normalized ambiguity."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    database_url = _scratch_database_url()
+    suffix = uuid.uuid4().hex
+    label = f"T13 concurrent normalized genre {suffix}"
+    item = _valid_insert(f"T13 concurrent catalog song {suffix}", f"T13 concurrent catalog artist {suffix}",
+                         f"concurrent-catalog-{suffix}.docx", primary_genre=label,
+                         primary_genre_source="cover_page")
+    with psycopg.connect(database_url, autocommit=False) as seed:
+        with seed.cursor() as cur:
+            cur.execute("INSERT INTO genres(name) VALUES (%s)", (label.replace(" ", "  ", 1),))
+        seed.commit()
+
+    definition_inserted = Event()
+    loader_started = Event()
+    loader_lock_attempted = Event()
+    release_definition = Event()
+    app_pid: dict[str, int] = {}
+    loader_pid: dict[str, int] = {}
+    attempted_lock_params: list[tuple[str, str]] = []
+
+    def app_create_definition():
+        with psycopg.connect(database_url, autocommit=False) as app_conn:
+            with app_conn.transaction():
+                with app_conn.cursor() as cur:
+                    # Exact lock namespace/key and ordering used by
+                    # tagDefinitionNames.lockTagDefinitionNames + createTagDefinition.
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                        ("ccm-tag-definition:Genre", label.lower()),
+                    )
+                    cur.execute("SELECT pg_backend_pid()")
+                    app_pid["pid"] = cur.fetchone()[0]
+                    cur.execute("INSERT INTO genres(name) VALUES (%s)", (label,))
+                definition_inserted.set()
+                if not release_definition.wait(timeout=30):
+                    raise TimeoutError("test coordinator did not release app definition transaction")
+
+    def concurrent_loader():
+        with psycopg.connect(database_url, autocommit=False) as loader_conn:
+            prepared, failures = loader._validate_batch([item])
+            assert not failures and prepared[0]["genres"] == [label]
+            with loader_conn.cursor() as cur:
+                cur.execute("SELECT pg_backend_pid()")
+                loader_pid["pid"] = cur.fetchone()[0]
+            loader_conn.commit()
+            loader_started.set()
+            with loader_conn.transaction():
+                with loader_conn.cursor() as raw_cur:
+                    class CoordinatedCursor:
+                        def execute(self, query, params=None):
+                            if "pg_advisory_xact_lock" in query:
+                                attempted_lock_params.append(tuple(params))
+                                loader_lock_attempted.set()
+                            return raw_cur.execute(query, params)
+
+                        def __getattr__(self, name):
+                            return getattr(raw_cur, name)
+
+                    cur = CoordinatedCursor()
+                    cur.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+                    return loader._locked_apply_plan(cur, prepared, failures)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        app_future = workers.submit(app_create_definition)
+        assert definition_inserted.wait(timeout=10)
+        loader_future = workers.submit(concurrent_loader)
+        assert loader_started.wait(timeout=10)
+        try:
+            assert loader_lock_attempted.wait(timeout=10), "loader never attempted its definition-name lock"
+            deadline = time.monotonic() + 10
+            observed_wait = False
+            last_activity = None
+            with psycopg.connect(database_url, autocommit=True) as observer:
+                with observer.cursor() as cur:
+                    cur.execute("SET statement_timeout = '1s'")
+                    while time.monotonic() < deadline:
+                        cur.execute(
+                            "SELECT wait_event_type, wait_event, pg_blocking_pids(pid) "
+                            "FROM pg_stat_activity WHERE pid=%s",
+                            (loader_pid["pid"],),
+                        )
+                        last_activity = cur.fetchone()
+                        if (last_activity and last_activity[0] == "Lock" and last_activity[1] == "advisory"
+                                and app_pid["pid"] in last_activity[2]):
+                            observed_wait = True
+                            break
+                        if loader_future.done():
+                            break
+            assert observed_wait, (
+                "loader did not wait on the app create's normalized-name advisory lock; "
+                f"activity={last_activity!r}; loader_done={loader_future.done()}; "
+                f"keys={attempted_lock_params!r}"
+            )
+        finally:
+            release_definition.set()
+        app_future.result(timeout=10)
+        result = loader_future.result(timeout=10)
+
+    assert attempted_lock_params == [("ccm-tag-definition:Genre", label.lower())]
+    assert observed_wait, (
+        "loader did not wait on the app create's normalized-name advisory lock; "
+        f"last activity={last_activity!r}"
+    )
+
+    assert len(result["proposed_inserts"]) == 1
+    assert len(result["unresolved_categories"]) == 1
+    assert result["unresolved_categories"][0]["reason"] == "ambiguous"
+    with psycopg.connect(database_url, autocommit=True) as verify:
+        with verify.cursor() as cur:
+            cur.execute("SELECT count(*) FROM song_genres sg JOIN songs s ON s.id=sg.song_id "
+                        "WHERE s.title=%s", (item["title"],))
+            assert cur.fetchone()[0] == 0
 
 
 def test_legacy_loader_artifact_fails_closed_before_database_access() -> None:
@@ -1020,8 +1297,75 @@ def test_legacy_loader_artifact_fails_closed_before_database_access() -> None:
             raise AssertionError("preflight must reject before database access")
 
     with pytest.raises(ValueError, match="parser_diagnostics_version"):
-        load(NoSqlConnection(), [{"title": "Legacy artifact"}],
-             truncate=True, dry_run=False)
+        load(NoSqlConnection(), [{"title": "Legacy artifact"}], dry_run=False)
+
+
+def test_nonempty_primary_genre_without_provenance_rejects_before_database_access() -> None:
+    class NoSqlConnection:
+        def cursor(self):
+            raise AssertionError("missing Genre provenance must reject before database access")
+
+    song = _valid_insert("Older parsed song", "Old Artist", "older.docx",
+                         primary_genre="Rock")
+    with pytest.raises(loader.ParserValidationError) as error:
+        load(NoSqlConnection(), [song])
+    message = str(error.value)
+    assert "older.docx / Older parsed song / Old Artist" in message
+    assert "reparse with the current parser" in message
+
+
+def test_cli_jsonb_failure_suppresses_chart_content_context(tmp_path: Path, monkeypatch, capsys) -> None:
+    sentinel = "PRIVATE_CHART_CONTEXT_SENTINEL"
+    database_url = _scratch_database_url()
+
+    # Confirm this PostgreSQL version includes JSONB context in its raw error;
+    # the CLI must still print only the SQLSTATE and fixed rollback wording.
+    with psycopg.connect(database_url, autocommit=False) as probe:
+        with pytest.raises(psycopg.Error) as raw_error:
+            with probe.transaction():
+                with probe.cursor() as cur:
+                    cur.execute("SELECT %s::jsonb", (Jsonb({"chart": sentinel + "\x00"}),))
+    assert sentinel in str(raw_error.value)
+
+    artifact = _valid_insert("T13 SQL error privacy song", "T13 SQL error privacy artist",
+                             "sql-error-privacy.docx")
+    artifact["chart_source"] = None
+    artifact["chart_content"] = {"sections": [], "chart": sentinel + "\x00"}
+    path = tmp_path / "sql-error-songs.json"
+    path.write_text(json.dumps([artifact]), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["load_songs.py", str(path), "--database-url", database_url])
+
+    assert loader.main() == 1
+    captured = capsys.readouterr()
+    error = captured.err
+    assert "SQLSTATE 22P05" in error, f"stdout={captured.out!r}; stderr={error!r}"
+    assert "details suppressed" in error
+    assert sentinel not in error
+
+
+@pytest.mark.parametrize("source", ["cover_page", "filename_fallback"])
+def test_primary_genre_provenance_is_explicit(source: str) -> None:
+    song = _valid_insert("Explicit genre origin", "Origin Artist", "origin.docx",
+                         primary_genre="Rock", primary_genre_source=source)
+    prepared, failures = loader._validate_batch([song])
+    assert not failures
+    assert prepared[0]["genres"] == (["Rock"] if source == "cover_page" else [])
+
+
+def test_ambiguous_artist_resolution_is_explicit() -> None:
+    class MultipleArtists:
+        def execute(self, query, params):
+            assert "lower(name)=lower(%s)" in query
+            assert params == ("Ambiguous Artist",)
+
+        def fetchall(self):
+            return [(1, "Ambiguous Artist"), (2, "ambiguous artist")]
+
+    result = loader._resolve_artist(MultipleArtists(), " Ambiguous Artist ")
+    assert result == {"status": "ambiguous", "matches": [
+        {"id": 1, "name": "Ambiguous Artist"},
+        {"id": 2, "name": "ambiguous artist"},
+    ]}
 
 
 @pytest.mark.parametrize("bad_version", [None, True, 1.0, "1", 0, 2, -1])
@@ -1078,7 +1422,7 @@ def test_direct_loader_rejects_source_content_mismatch_before_sql() -> None:
     artifact["chart_content"]["sections"][0]["lines"][0]["confidence"] = "high"
     for dry_run in (False, True):
         with pytest.raises(ValueError, match="chart_source_content_mismatch"):
-            load(NoSqlConnection(), [artifact], truncate=True, dry_run=dry_run)
+            load(NoSqlConnection(), [artifact], dry_run=dry_run)
 
 
 def test_ordinary_source_content_exact_match_and_legacy_ccm_are_accepted() -> None:
@@ -1130,7 +1474,7 @@ def test_direct_loader_rejects_missing_or_malformed_warnings_before_sql(warnings
     artifact = {"title": "Synthetic warnings contract",
                 "parser_diagnostics_version": 1, **warnings_field}
     with pytest.raises(ValueError, match="malformed parser warnings"):
-        load(NoSqlConnection(), [artifact], truncate=True, dry_run=False)
+        load(NoSqlConnection(), [artifact], dry_run=False)
 
 
 @pytest.mark.parametrize("artifact", [
@@ -1164,4 +1508,4 @@ def test_cli_preflight_rejects_before_database_connection(
     error = capsys.readouterr().err
     assert error
     if dry_run:
-        assert "database was not opened" in error
+        assert "database connection: not opened" in error

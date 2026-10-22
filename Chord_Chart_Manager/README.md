@@ -365,11 +365,13 @@ npm audit --omit=dev
 
 ## Import a `.docx` library
 
-The Python 3.10 pipeline converts Word chord charts to JSON and loads PostgreSQL.
-Its optional enrichment path still uses legacy MusicBrainz/GetSongBPM behavior.
-The separate Stage B existing-song MusicBrainz → AcousticBrainz → Gemini
-workflow was tested and used for bounded live enrichment; it is not wired into
-this loader. Keep pipeline enrichment off during the next ingestion stage.
+The Python 3.10 pipeline converts Word chord charts to JSON. Its loader is
+insert-only: an exact existing title/artist/source match is reported and
+skipped, while duplicate identities and same-title/artist entries from another
+source stop the batch for review. A rerun does not refresh charts or metadata.
+Genre/Vibe definitions must already exist; unresolved labels are reported and
+left unassigned. Filename-derived Genres are never assigned. Keep enrichment
+separate and off during C1 chart import.
 
 1. Put source `.docx` files in `pipeline/docs/`.
 2. From `app/`, build and run the parser:
@@ -389,15 +391,23 @@ this loader. Keep pipeline enrichment off during the next ingestion stage.
      python load_songs.py parsed_out/songs.json --dry-run
    ```
 
-5. Load the reviewed data:
+5. Review the complete preview. Only after the separate document-level backup,
+   restore proof, and exact load authorization, insert the reviewed data:
 
    ```bash
    docker compose run --rm pipeline \
      python load_songs.py parsed_out/songs.json
    ```
 
-Parsing and direct loading do not require enrichment. See the [pipeline guide](pipeline/README.md) for the legacy optional enrichment path, caches, strict parsing,
-`--truncate`, and host-Python workflows.
+Preview is read-only and reports proposed inserts, exact skips, identity
+collisions, unresolved categories, and parser/validation failures without
+printing chart bodies. Apply takes transaction locks, rechecks the same plan,
+and commits the whole batch or rolls back every inserted row. An exact rerun
+inserts zero songs. Do not use legacy enrichment as part of this workflow.
+Parsed JSON with a nonempty primary Genre but no explicit Genre provenance is
+rejected before connecting to the database; reparse it with the current parser.
+See the [pipeline guide](pipeline/README.md) for identity and category rules,
+the isolated test harness, and host-Python workflows.
 
 Source charts and generated JSON may contain copyrighted lyrics and are ignored
 by Git. Do not commit them or enrichment credentials.

@@ -9,7 +9,9 @@ What it does:
   * Parses each doc into songs. Genre resolution, in priority order:
         1. cover-page genre found inside the doc (parser captures it), else
         2. the filename stem  ("Classic Rock.docx" -> "Classic Rock").
-    The resolved genre becomes each song's primary_genre.
+    The resolved genre is retained as primary_genre for compatibility, with
+    primary_genre_source distinguishing cover-page evidence from the filename
+    fallback. The loader only assigns an explicit cover-page Genre.
   * Writes one combined songs.json (array of song dicts). With --per-doc it
     also writes one JSON per source doc.
   * Writes report.json + prints a human-readable summary flagging anything
@@ -113,12 +115,18 @@ def run(input_dir: str, output_dir: str, per_doc: bool, strict: bool) -> int:
             continue
 
         genre = resolve_genre(path, songs)
-        # Stamp resolved genre onto every song (fills the filename fallback case).
+        # Keep the historical display/report value while retaining whether it
+        # came from the document or only from its filename.
+        doc_song_dicts = []
         for s in songs:
-            if not s.primary_genre:
+            explicit_genre = bool(s.primary_genre)
+            if not explicit_genre:
                 s.primary_genre = genre
-
-        doc_song_dicts = [cp.song_to_dict(s) for s in songs]
+            item = cp.song_to_dict(s)
+            item["primary_genre_source"] = (
+                "cover_page" if explicit_genre else "filename_fallback" if genre else None
+            )
+            doc_song_dicts.append(item)
         all_songs.extend(doc_song_dicts)
 
         if per_doc:
