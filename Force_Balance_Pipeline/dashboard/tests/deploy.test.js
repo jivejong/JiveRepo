@@ -77,19 +77,17 @@ describe("reasonLabel", () => {
 
 describe("nextAgentDecision", () => {
   const at = (s) => Date.parse(s);
-  it("is the :11 of the hour after the first-seen hour", () => {
-    const now = at("2026-10-21T02:20:00Z");
-    assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", now), "2026-10-21T03:11:00.000Z");
-    assert.equal(nextAgentDecision("2026-10-21T02:11:00Z", now), "2026-10-21T03:11:00.000Z");
-    assert.equal(nextAgentDecision("2026-10-21T02:11:01Z", now), "2026-10-21T03:11:00.000Z");
+  const early = at("2026-10-20T00:00:00Z");                   // a clock before every first-seen time below: no stepping
+  it("is the first :11 strictly after the first-seen time", () => {
+    assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", early), "2026-10-21T02:11:00.000Z");
+    assert.equal(nextAgentDecision("2026-10-21T02:11:00Z", early), "2026-10-21T03:11:00.000Z");
+    assert.equal(nextAgentDecision("2026-10-21T02:11:01Z", early), "2026-10-21T03:11:00.000Z");
+    assert.equal(nextAgentDecision("2026-10-21T23:30:00Z", early), "2026-10-22T00:11:00.000Z");
   });
-  it("is the next hour's :11 even when asked before this hour's :11", () => {
-    assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", at("2026-10-21T02:10:30Z")), "2026-10-21T03:11:00.000Z");
-    assert.equal(nextAgentDecision("2026-10-21T02:11:30Z", at("2026-10-21T02:12:00Z")), "2026-10-21T03:11:00.000Z");
-  });
-  it("moves forward an hour at a time once the time has passed", () => {
+  it("steps forward an hour at a time when that time has passed", () => {
     assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", at("2026-10-21T05:30:00Z")), "2026-10-21T06:11:00.000Z");
-    assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", at("2026-10-21T03:11:00Z")), "2026-10-21T04:11:00.000Z");
+    assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", at("2026-10-21T04:11:00Z")), "2026-10-21T05:11:00.000Z");
+    assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", at("2026-10-21T02:10:59Z")), "2026-10-21T02:11:00.000Z");
   });
   it("is null when the incident has not been seen or the input is bad", () => {
     assert.equal(nextAgentDecision(null, 0), null);

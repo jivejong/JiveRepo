@@ -92,14 +92,15 @@ export function reasonLabel(code) {
 /** The label table's codes (for the parity test). */
 export const KNOWN_CODES = Object.keys(LABELS);
 
-/** When Yoda decides an incident first seen at `firstSeenIso`: the agent runs at :11 and decides one cycle after it first sees an incident,
- *  so the time is the :11 of the hour after the first-seen hour, moved forward an hour at a time until it is strictly after `nowMs`.
- *  Returns an ISO string, or null when the incident has not been seen or the input is invalid. */
+/** When the agent next looks at an incident first seen at `firstSeenIso`: the first HH:11:00Z strictly after that time. If that is not after
+ *  `nowMs` (the agent missed a cycle), it steps forward an hour at a time until it is. Returns an ISO string, or null when the incident has not
+ *  been seen or the input is invalid. The agent records an incident at that cycle and decides it one cycle later (doc 06 "Human-first window"). */
 export function nextAgentDecision(firstSeenIso, nowMs) {
   if (typeof firstSeenIso !== "string" || typeof nowMs !== "number") return null;
   const seen = new Date(firstSeenIso).getTime();
   if (Number.isNaN(seen)) return null;
-  let slot = Math.floor(seen / HOUR_MS) * HOUR_MS + AGENT_MINUTE * 60000 + HOUR_MS;
+  const offset = AGENT_MINUTE * 60000;
+  let slot = Math.floor((seen - offset) / HOUR_MS) * HOUR_MS + offset + HOUR_MS;
   while (slot <= nowMs) slot += HOUR_MS;
   return new Date(slot).toISOString();
 }
