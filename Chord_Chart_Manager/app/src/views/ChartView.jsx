@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ArrowLeft, EditIcon, ChevronLeft, ChevronRight } from '../components/Icons';
 import { renderChart } from '../lib/chartRenderer';
 import { transposeDecoratedRawLines } from '../lib/chartParser';
+import { shouldIgnoreChartRowSwipe } from '../lib/chartSwipe';
 import { transposeChart, transposeChord, soundingKey, keyDelta, keyAfter } from '../../transpose';
 import { useSong, useSwipe } from '../hooks';
 import * as api from '../lib/api';
@@ -9,7 +10,7 @@ import * as cache from '../lib/cache';
 import { buildPerformanceSaveTarget, resolveStartingPerformance } from '../setlistOverrides';
 import { setlistWriteError } from '../setlistMutations';
 import { AUTO_SCROLL_DEFAULT_SPEED, AUTO_SCROLL_MAX_SPEED, AUTO_SCROLL_MIN_SPEED,
-  AUTO_SCROLL_STEP, createAutoScrollController, isVerticalScrollKey } from '../lib/autoScroll';
+  AUTO_SCROLL_STEP, createAutoScrollController } from '../lib/autoScroll';
 
 /**
  * ChartView — displays a single chart with:
@@ -47,8 +48,6 @@ export default function ChartView({
   const [atBottom, setAtBottom] = useState(false);
   const scrollRef = useRef(null);
   const autoScrollRef = useRef(null);
-  const touchStartRef = useRef(null);
-  const pointerStartRef = useRef(null);
 
   useEffect(() => {
     const controller = createAutoScrollController({
@@ -59,23 +58,9 @@ export default function ChartView({
     const onVisibilityChange = () => {
       if (document.hidden) controller.pause();
     };
-    const onWindowPointerMove = event => {
-      const start = pointerStartRef.current;
-      if (!start || (start.pointerId != null && start.pointerId !== event.pointerId)) return;
-      const dx = event.clientX - start.x;
-      const dy = event.clientY - start.y;
-      if (Math.abs(dy) > 4 && Math.abs(dy) > Math.abs(dx)) controller.pause();
-    };
-    const clearPointerStart = () => { pointerStartRef.current = null; };
     document.addEventListener('visibilitychange', onVisibilityChange);
-    window.addEventListener('pointermove', onWindowPointerMove, true);
-    window.addEventListener('pointerup', clearPointerStart, true);
-    window.addEventListener('pointercancel', clearPointerStart, true);
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
-      window.removeEventListener('pointermove', onWindowPointerMove, true);
-      window.removeEventListener('pointerup', clearPointerStart, true);
-      window.removeEventListener('pointercancel', clearPointerStart, true);
       controller.stop();
       autoScrollRef.current = null;
     };
@@ -115,42 +100,10 @@ export default function ChartView({
   }, [prevSong, onNavigateSong]);
 
   const ignoreScrollableRowSwipe = useCallback(target => {
-    const row = target?.closest?.('.chart-line');
-    return Boolean(row && row.scrollWidth > row.clientWidth + 1);
+    return shouldIgnoreChartRowSwipe(target);
   }, []);
   const swipeHandlers = useSwipe(goNext, goPrev, 60, ignoreScrollableRowSwipe);
 
-  const pauseForVerticalInput = () => autoScrollRef.current?.pause();
-  const onWheel = event => {
-    if (Math.abs(event.deltaY) > 0 && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) {
-      pauseForVerticalInput();
-    }
-  };
-  const onTouchStart = event => {
-    const touch = event.touches[0];
-    touchStartRef.current = { x: touch.clientX, y: touch.clientY };
-  };
-  const onTouchMove = event => {
-    const start = touchStartRef.current;
-    if (!start || !event.touches[0]) return;
-    const dx = event.touches[0].clientX - start.x;
-    const dy = event.touches[0].clientY - start.y;
-    if (Math.abs(dy) > 6 && Math.abs(dy) > Math.abs(dx)) pauseForVerticalInput();
-  };
-  const onPointerDown = event => {
-    if (event.pointerType === 'touch') return;
-    const element = scrollRef.current;
-    if (!element || event.target !== element) return;
-    const rect = element.getBoundingClientRect();
-    const scrollbarWidth = Math.max(16, element.offsetWidth - element.clientWidth);
-    if (event.clientX < rect.right - scrollbarWidth) return;
-    pointerStartRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
-  };
-  const onChartKeyDown = event => {
-    if (!isVerticalScrollKey(event)) return;
-    if (event.target.closest?.('input, textarea, select, button, [contenteditable="true"]')) return;
-    pauseForVerticalInput();
-  };
   const onChartScroll = () => {
     const element = scrollRef.current;
     if (!element) return;
@@ -281,12 +234,7 @@ export default function ChartView({
   return (
     <div className="chart-view" style={{ '--chart-font-scale': chartScale }}>
     <div className="screen chart-scroll" ref={scrollRef} tabIndex={0} aria-label="Chart content"
-      {...swipeHandlers} onWheel={onWheel} onTouchStart={event => {
-        onTouchStart(event); swipeHandlers.onTouchStart(event);
-      }} onTouchMove={onTouchMove} onTouchEnd={event => {
-        touchStartRef.current = null; swipeHandlers.onTouchEnd(event);
-      }} onPointerDown={onPointerDown}
-      onKeyDown={onChartKeyDown} onScroll={onChartScroll}>
+      {...swipeHandlers} onScroll={onChartScroll}>
       {/* Top bar */}
       <div className="chart-topbar">
         <button className="icon-btn" onClick={onBack} aria-label="Back">
@@ -368,7 +316,7 @@ export default function ChartView({
       </div>
 
       {/* Chart content */}
-      {renderChart(transposedContent)}
+      {renderChart(transposedContent, displayContent)}
 
       {/* Swipe navigation hint */}
       {(prevSong || nextSong) && (

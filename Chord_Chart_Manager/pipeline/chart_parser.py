@@ -4,8 +4,8 @@ chart_parser.py — Parse chord-chart .docx files into structured song JSON.
 Design goals (from the schema + normalization decisions):
   * One doc = one genre binder. An optional cover page names the genre;
     it becomes each song's PRIMARY genre.
-  * Titles are detected by CONTENT pattern ("Title – Key ... Artist"),
-    not by paragraph style, because some titles are Normal-styled.
+  * Only effective Word outline headings (levels 0–8) start songs.
+    Heading text supplies the title and any available metadata.
   * Three source chord notations are normalized into TWO line types:
         - "lyric"       : text + chords with character positions
         - "progression" : bare chord sequence, optional repeat count
@@ -38,7 +38,6 @@ from typing import Optional
 #   - text     : visible text, with <w:tab/> expanded to a sentinel we can
 #                find again, and runs concatenated in order
 #   - style    : pStyle val (Heading1, NoSpacing, ...) or None
-#   - is_bold  : whether the paragraph's runs are bold (weak title signal)
 # We keep tabs as a private sentinel char first, then expand to spaces for
 # column math — but only AFTER we've used tab structure to split title fields.
 
@@ -54,11 +53,16 @@ _DEFAULT_TAB_TWIPS = 720
 class Paragraph:
     text: str                 # tabs as _TAB sentinel, runs joined
     style: Optional[str]
-    is_bold: bool
     normalized_text: Optional[str] = None
     tab_layout_error: Optional[str] = None
     cell_twips: Optional[float] = None
     physical_positions: Optional[dict[int, float]] = None
+    outline_level: Optional[int] = None
+    page_break_before: bool = False
+    explicit_page_break_offsets: tuple[int, ...] = ()
+    rendered_page_break_count: int = 0
+    source_index: Optional[int] = None
+    source_span_index: Optional[int] = None
 
     @property
     def text_spaces(self) -> str:
@@ -311,11 +315,57 @@ def load_paragraphs(docx_path: str) -> list[Paragraph]:
     if styles_root is not None:
         doc_default_rpr = styles_root.find(_W + "docDefaults/" + _W + "rPrDefault/" + _W + "rPr")
     out: list[Paragraph] = []
-    for paragraph in root.iter(_W + "p"):
+
+    def paragraph_structure(paragraph: ET.Element, style: Optional[str]) -> tuple[Optional[int], bool]:
+        """Resolve paragraph properties by nearest direct/style override."""
+        direct = paragraph.find(_W + "pPr")
+        level: Optional[int] = None
+        page_before: Optional[bool] = None
+
+        def read_outline(ppr: Optional[ET.Element]) -> Optional[int]:
+            item = ppr.find(_W + "outlineLvl") if ppr is not None else None
+            if item is None:
+                return None
+            try:
+                return int(item.attrib.get(_W + "val", ""))
+            except ValueError:
+                return None
+
+        def read_on_off(ppr: Optional[ET.Element], name: str) -> Optional[bool]:
+            item = ppr.find(_W + name) if ppr is not None else None
+            if item is None:
+                return None
+            value = item.attrib.get(_W + "val", "1").strip().lower()
+            return value not in {"0", "false", "off", "no"}
+
+        level = read_outline(direct)
+        page_before = read_on_off(direct, "pageBreakBefore")
+        seen = set()
+        current = style
+        while current and current not in seen:
+            seen.add(current)
+            definition = styles.get(current)
+            if definition is None:
+                break
+            inherited = definition.find(_W + "pPr")
+            if level is None:
+                level = read_outline(inherited)
+            if page_before is None:
+                page_before = read_on_off(inherited, "pageBreakBefore")
+            based_on = definition.find(_W + "basedOn")
+            current = based_on.attrib.get(_W + "val") if based_on is not None else None
+        return level, bool(page_before)
+
+    for source_index, paragraph in enumerate(root.iter(_W + "p"), 1):
         p_style = paragraph.find(_W + "pPr/" + _W + "pStyle")
         style = p_style.attrib.get(_W + "val") if p_style is not None else None
-        is_bold = any(node.tag == _W + "b" for node in paragraph.iter())
+        paragraph_styles, _ = _paragraph_style_chain(paragraph, styles)
+        effective_style_ids = [item.attrib.get(_W + "styleId")
+                               for item in paragraph_styles]
+        effective_style = style or (effective_style_ids[-1] if effective_style_ids else None)
+        outline_level, page_break_before = paragraph_structure(paragraph, effective_style)
         parts: list[str] = []
+        page_break_offsets: list[int] = []
 
         def append_inline(node: ET.Element, in_run: bool = False) -> None:
             # Walk nested run containers (hyperlink, insertion, smartTag, etc.)
@@ -334,6 +384,9 @@ def load_paragraphs(docx_path: str) -> list[Paragraph]:
                 kind = node.attrib.get(_W + "type")
                 if kind in (None, "textWrapping"):
                     parts.append("\n")
+                elif kind == "page":
+                    page_break_offsets.append(sum(len(part) for part in parts))
+                    parts.append("\n")
                 return
             if in_run and node.tag == _W + "cr":
                 parts.append("\n")
@@ -343,6 +396,7 @@ def load_paragraphs(docx_path: str) -> list[Paragraph]:
 
         append_inline(paragraph)
         text = "".join(parts)
+        rendered_breaks = sum(1 for node in paragraph.iter(_W + "lastRenderedPageBreak"))
         style_chain, style_error = _paragraph_style_chain(paragraph, styles)
         cell_twips, _ = _paragraph_cell_width(
             paragraph, style_chain, doc_default_rpr, styles)
@@ -351,9 +405,14 @@ def load_paragraphs(docx_path: str) -> list[Paragraph]:
         if _TAB not in text and style_error:
             # Pairing metadata only: an unrelated tab-free paragraph stays usable.
             layout_error = "unsupported_tabbed_paragraph_style"
-        out.append(Paragraph(text, style, is_bold, normalized, layout_error,
-                             tab_cell_twips if tab_cell_twips is not None else cell_twips,
-                             physical_positions))
+        out.append(Paragraph(
+            text=text, style=style, normalized_text=normalized,
+            tab_layout_error=layout_error,
+            cell_twips=tab_cell_twips if tab_cell_twips is not None else cell_twips,
+            physical_positions=physical_positions, outline_level=outline_level,
+            page_break_before=page_break_before,
+            explicit_page_break_offsets=tuple(page_break_offsets),
+            rendered_page_break_count=rendered_breaks, source_index=source_index))
     return out
 
 
@@ -369,43 +428,42 @@ def clean_text(s: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# 3. Title-line detection & field parsing
+# 3. Heading field parsing
 # --------------------------------------------------------------------------
-# Shape: Title – Key [(AltKey)] <tabs> Artist [<tabs> OriginalKey]
+# Common heading shape: Title – Key [(AltKey)] <tabs> Artist [<tabs> OriginalKey]
 # The em-dash (–) separates title from the metadata tail. Fields in the tail
 # are tab-separated but the tab COUNT is inconsistent, so we split on runs of
-# tabs and classify each token as key-like or name-like.
+# tabs and classify each token as key-like or name-like. This grammar parses
+# headings only; it never discovers song boundaries from paragraph text.
 
 _EMDASH = "\u2013"   # –
 # A chord/key token: root note, optional accidental, optional quality/min.
 _KEY_TOKEN_RE = re.compile(r"^[A-G][#b]?(m|min|maj|sus|dim|aug|add)?\d*$")
-# Alt key parenthetical, e.g. "(E)" or "(B)"
+# Parenthesized sounding key with capo, e.g. written D and sounding (E).
 _ALTKEY_RE = re.compile(r"\(([A-G][#b]?m?)\)")
+_SIMPLE_KEY_RE = re.compile(r"^([A-G])([#b]?)(m?)$")
+_KEY_PITCH = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 
 
-def looks_like_title(p: Paragraph) -> bool:
-    """
-    Content heuristic (works whether or not the paragraph is Heading1):
-    a single line containing an em-dash, whose pre-dash part is short-ish
-    text and whose post-dash tail begins with a key-like token.
-    """
-    txt = p.stripped
-    if _EMDASH not in txt:
-        return False
-    left, right = txt.split(_EMDASH, 1)
-    left = left.strip()
-    right = right.strip()
-    if not left or not right:
-        return False
-    # Left side (the actual title) shouldn't look like a lyric sentence —
-    # titles here are short. Guard against a lyric that happens to contain "–".
-    if len(left) > 60:
-        return False
-    # First token after the dash should be key-like (strip any "(Alt)" first).
-    first = _ALTKEY_RE.sub("", right).strip().split()
-    if not first:
-        return False
-    return bool(_KEY_TOKEN_RE.match(first[0]))
+def _capo_for_keys(written: str, sounding: str) -> Optional[int]:
+    """Return the fret offset for two keys of the same major/minor quality."""
+    first, second = _SIMPLE_KEY_RE.fullmatch(written), _SIMPLE_KEY_RE.fullmatch(sounding)
+    if not first or not second or first.group(3) != second.group(3):
+        return None
+
+    def pitch(match: re.Match[str]) -> int:
+        accidental = {"#": 1, "b": -1, "": 0}[match.group(2)]
+        return (_KEY_PITCH[match.group(1)] + accidental) % 12
+
+    return (pitch(second) - pitch(first)) % 12
+
+
+_ROUND_TRIP_TITLE = "Plain Source Check"
+
+
+def _round_trip_heading() -> Paragraph:
+    """Internal source-parser sentinel; public DOCX boundaries remain Word-only."""
+    return Paragraph(_ROUND_TRIP_TITLE, None, outline_level=0)
 
 
 @dataclass
@@ -415,12 +473,15 @@ class TitleInfo:
     alt_key: Optional[str]
     artist: Optional[str]
     original_key: Optional[str]
+    unresolved_reason: Optional[str] = None
+    candidate_key_field: Optional[str] = None
+    capo_fret: Optional[int] = None
 
 
 def parse_title(p: Paragraph) -> TitleInfo:
     """
     Split on the em-dash, then split the tail on tab-runs into fields.
-    Classify: first field = perf key (+ optional (alt)); a trailing
+    Classify: first field = written key (+ optional sounding key); a trailing
     key-like field = original key; the remaining name-like field = artist.
     """
     # Use the tab-preserving text so we can split the tail on tab runs.
@@ -436,12 +497,18 @@ def parse_title(p: Paragraph) -> TitleInfo:
     perf_key = alt_key = artist = orig_key = None
 
     if fields:
-        # First field holds the performance key and possibly "(AltKey)".
+        # The parenthesized sounding key may share the written-key field or
+        # occupy the next tab field. It is metadata, never part of the artist.
         head = fields[0]
         am = _ALTKEY_RE.search(head)
         if am:
             alt_key = am.group(1)
             head = _ALTKEY_RE.sub("", head).strip()
+        elif len(fields) > 1:
+            separate_key = _ALTKEY_RE.fullmatch(fields[1])
+            if separate_key:
+                alt_key = separate_key.group(1)
+                del fields[1]
         toks = head.split()
         if toks and _KEY_TOKEN_RE.match(toks[0]):
             perf_key = toks[0]
@@ -462,13 +529,83 @@ def parse_title(p: Paragraph) -> TitleInfo:
         rest = []
     artist = " ".join(rest).strip() or None
 
+    capo_fret = _capo_for_keys(perf_key, alt_key) if perf_key and alt_key else None
     return TitleInfo(
         title=clean_text(title),
         performance_key=perf_key,
         alt_key=alt_key,
         artist=clean_text(artist) if artist else None,
         original_key=orig_key,
+        unresolved_reason="heading_capo_key_relation_unresolved" if alt_key and capo_fret is None else None,
+        capo_fret=capo_fret,
     )
+
+
+_STRUCTURAL_TITLE_SEPARATOR = re.compile(r"\s+(?:--|[\u2013\u2014-])\s+")
+
+
+def _parse_structural_title(p: Paragraph) -> TitleInfo:
+    """Parse a Word heading's fields without using its text to infer a boundary."""
+    if _EMDASH in p.text:
+        parsed = parse_title(p)
+        fields = [field.strip() for field in re.split(f"{_TAB}+", p.text.partition(_EMDASH)[2]) if field.strip()]
+        first_field = fields[0].split()[0] if fields else None
+        normalized_key_field = _ALTKEY_RE.sub("", first_field or "").strip()
+        unknown_key = bool(first_field and not _KEY_TOKEN_RE.match(normalized_key_field))
+        slash_parts = normalized_key_field.split("/")
+        unsupported_slash_key = (len(slash_parts) == 2 and
+                                 all(_KEY_TOKEN_RE.match(part) for part in slash_parts))
+        if unknown_key and (len(fields) > 1 or unsupported_slash_key):
+            return TitleInfo(parsed.title, None, parsed.alt_key, parsed.artist,
+                             parsed.original_key, "unrecognized_heading_key_field",
+                             first_field, parsed.capo_fret)
+        return parsed
+
+    text = p.stripped
+    raw = p.text.strip()
+    match = _STRUCTURAL_TITLE_SEPARATOR.search(text)
+    if match:
+        title = text[:match.start()].strip()
+        tail = text[match.end():].strip()
+        raw_with_tabs = raw.replace(_TAB, "\t")
+        raw_match = _STRUCTURAL_TITLE_SEPARATOR.search(raw_with_tabs)
+        raw_tail = raw_with_tabs[raw_match.end():] if raw_match else tail
+        fields = [field.strip() for field in re.split(r"\t+", raw_tail) if field.strip()]
+        if len(fields) > 1:
+            key_token = fields[0].split()[0]
+            artist = " ".join(fields[1:])
+            return TitleInfo(clean_text(title), None, None, clean_text(artist), None,
+                             "unrecognized_heading_key_field" if not _KEY_TOKEN_RE.match(key_token) else None,
+                             key_token if not _KEY_TOKEN_RE.match(key_token) else None)
+        tokens = tail.split()
+        if tokens and _KEY_TOKEN_RE.match(tokens[0]):
+            return TitleInfo(clean_text(title), tokens[0], None,
+                             clean_text(" ".join(tokens[1:])) or None, None,
+                             None if len(tokens) > 1 else "heading_artist_missing")
+        return TitleInfo(clean_text(title), None, None, clean_text(tail) or None,
+                         None, None)
+    if _TAB in p.text:
+        fields = [field.strip() for field in p.text.split(_TAB) if field.strip()]
+        if fields:
+            return TitleInfo(clean_text(fields[0]), None, None,
+                             clean_text(" ".join(fields[1:])) or None, None)
+    return TitleInfo(clean_text(text), None, None, None, None)
+
+
+def _is_meaningful_preheading_chart(paragraph: Paragraph) -> bool:
+    text = paragraph.stripped
+    return bool(text and (
+        _TAB in paragraph.text or _BB_RE.match(text) or _BRACKET_SECTION_RE.match(text)
+        or _BARE_SECTION_COLON_RE.match(text) or _BARE_SECTION_RE.match(text)
+        or is_tab_line(text) or is_decorated_chord_line(text)
+        or _INLINE_BRACE_RE.search(text) or is_chord_only_line(text)
+    ))
+
+
+def _is_song_boundary_candidate(p: Paragraph) -> bool:
+    """Only a nonempty effective Word outline heading starts a song."""
+    return bool(p.stripped and p.outline_level is not None
+                and 0 <= p.outline_level <= 8)
 
 
 # --------------------------------------------------------------------------
@@ -513,9 +650,189 @@ _CHORD_RE = re.compile(
     r"(/[A-G][#b]?)?$"
 )
 
+_ORDERED_ROW_SEPARATORS = "-\u2013\u2014/\\*|,;:"
+_CHORD_LIKE_TOKEN_RE = re.compile(
+    r"^[A-G][#b]?(?:m|min|maj|sus|dim|aug|add|M)?\d*"
+    r"(?:[#b].*|/(?:[A-G][#b]?(?:\d.*|[#b].*)))$"
+)
+_OPENING_METADATA_PATTERNS = (
+    ("capo", re.compile(r"(?i)(?<!\w)capo\s*(\d+)(?!\w)")),
+    ("key_bpm", re.compile(r"(?i)(?<!\w)([A-G][#b]?m?)\s*[-\u2013]\s*(\d{2,3})(?!\w)")),
+    ("original_key", re.compile(r"(?i)(?<!\w)orig(?:inal)?\s+([A-G][#b]?m?)(?!\w)")),
+)
+
 
 def is_chord_token(tok: str) -> bool:
     return bool(_CHORD_RE.match(tok))
+
+
+def _is_fully_parenthesized(text: str) -> bool:
+    """Whether one balanced outer annotation encloses the complete line."""
+    start = len(text) - len(text.lstrip())
+    end = len(text.rstrip()) - 1
+    if start > end or text[start] != "(":
+        return False
+    depth = 0
+    for index in range(start, end + 1):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth < 0 or (depth == 0 and index != end):
+                return False
+    return depth == 0
+
+
+def ordered_chord_analysis(text: str) -> dict:
+    """Return chord spans and whether literal ordering carries information.
+
+    Parenthesized/bracketed annotations are opaque. Unknown tokens make the
+    row ambiguous for transposition, while the source text remains literal.
+    """
+    if re.search(r"\d+%", text):
+        return {"spans": [], "ambiguous": False, "unresolved_tokens": [],
+                "prose_tokens": [], "partial_transposition": False, "literal": False}
+    spans: list[dict] = []
+    opaque = 0
+    unresolved_tokens: list[dict] = []
+    prose_tokens: list[dict] = []
+    visible = 0
+    literal_syntax = False
+    repeated_space = False
+    opaque_only = _is_fully_parenthesized(text)
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char.isspace():
+            end = index + 1
+            while end < len(text) and text[end].isspace():
+                end += 1
+            if end - index > 1:
+                repeated_space = True
+            index = end
+            continue
+        if char in "([":
+            closing = ")" if char == "(" else "]"
+            depth = 1
+            index += 1
+            literal_syntax = True
+            while index < len(text) and depth:
+                if text[index] == char:
+                    depth += 1
+                elif text[index] == closing:
+                    depth -= 1
+                index += 1
+            continue
+        separators_without_slash = _ORDERED_ROW_SEPARATORS.replace("/", "")
+        if char in separators_without_slash or char in ")]":
+            literal_syntax = True
+            index += 1
+            continue
+        if char == "%":
+            before = text[:index].rstrip()
+            after = text[index + 1:].lstrip()
+            if before.endswith("|") and after.startswith("|"):
+                literal_syntax = True
+                index += 1
+                continue
+        if char == "/":
+            literal_syntax = True
+            index += 1
+            continue
+        end = index + 1
+        while (end < len(text) and not text[end].isspace()
+               and text[end] not in separators_without_slash + "()[]"):
+            end += 1
+        token = text[index:end]
+        if is_chord_token(token):
+            spans.append({"start": index, "end": end, "symbol": token})
+        elif re.fullmatch(r"(?:\d+[xX]?|[xX]\d+)", token):
+            literal_syntax = True
+        else:
+            opaque += 1
+            item = {"start": index, "end": end, "text": token}
+            if _CHORD_LIKE_TOKEN_RE.fullmatch(token):
+                unresolved_tokens.append(item)
+            else:
+                prose_tokens.append(item)
+        visible += 1
+        index = end
+
+    eligible = len(spans) >= 2 and len(spans) >= (visible + 1) // 2
+    partial = eligible and bool(unresolved_tokens) and not prose_tokens and not opaque_only
+    return {
+        "spans": spans if eligible else [],
+        "ambiguous": opaque > 0 or opaque_only,
+        "unresolved_tokens": unresolved_tokens,
+        "prose_tokens": prose_tokens,
+        "partial_transposition": partial,
+        "literal": opaque_only or (eligible and (literal_syntax or repeated_space)),
+    }
+
+
+def _link_literal_chord_rows(chart: dict) -> None:
+    """Retain chord spans and their following lyric association without changing source text."""
+    for section in chart.get("sections", []):
+        lines = section.get("lines", [])
+        for index, line in enumerate(lines[:-1]):
+            if (line.get("type") != "raw" or lines[index + 1].get("type") != "lyric"
+                    or is_tab_line(line.get("text", ""))):
+                continue
+            analysis = ordered_chord_analysis(line.get("text", ""))
+            if analysis["spans"] and not analysis["prose_tokens"]:
+                line["paired_to_next"] = True
+                line["chord_spans"] = [
+                    {"symbol": span["symbol"], "start": span["start"], "end": span["end"]}
+                    for span in analysis["spans"]
+                ]
+
+
+def is_ordered_chord_line(text: str) -> bool:
+    analysis = ordered_chord_analysis(text)
+    return bool(analysis["literal"])
+
+
+def extract_opening_metadata(text: str, current: Optional[dict] = None) -> tuple[str, dict, list[str]]:
+    """Capture bounded metadata fields, returning unconsumed source text.
+
+    The caller limits this to the opening metadata zone. Arbitrary prose is
+    never consumed: after removing candidate spans, only whitespace and chart
+    punctuation may remain, or the original text is returned unchanged.
+    """
+    matches = []
+    for kind, pattern in _OPENING_METADATA_PATTERNS:
+        for match in pattern.finditer(text):
+            matches.append((match.start(), match.end(), kind, match))
+    if not matches:
+        return text, {}, []
+    matches.sort(key=lambda item: item[0])
+    spans = []
+    values: dict[str, list] = {}
+    for start, end, kind, match in matches:
+        if spans and start < spans[-1][1]:
+            continue
+        spans.append((start, end))
+        if kind == "capo":
+            values.setdefault(kind, []).append(int(match.group(1)))
+        elif kind == "key_bpm":
+            values.setdefault("original_key", []).append(match.group(1))
+            values.setdefault("bpm", []).append(int(match.group(2)))
+        else:
+            values.setdefault(kind, []).append(match.group(1))
+    remainder = list(text)
+    for start, end in spans:
+        remainder[start:end] = " " * (end - start)
+    residual = "".join(remainder)
+    if re.sub(r"[\s/\\,*;|:-]*", "", residual):
+        return text, {}, []
+    current = current or {}
+    conflicts = [key for key, items in values.items()
+                 if len(set(items)) > 1 or
+                 (current.get(key) is not None and current.get(key) != items[0])]
+    if conflicts:
+        return text, {}, conflicts
+    captured = {key: items[0] for key, items in values.items()}
+    return residual, captured, []
 
 
 def is_chord_only_line(text: str) -> bool:
@@ -528,38 +845,8 @@ def is_chord_only_line(text: str) -> bool:
 
 
 def is_decorated_chord_line(text: str) -> bool:
-    """Identify pipe-separated chord rows while leaving prose/tab rows alone.
-
-    Parenthesized and bracketed annotations are literal spans, not chord
-    tokens. The existing chord grammar and chord-dominance threshold decide
-    whether a row is chart-oriented.
-    """
-    if "|" not in text or is_tab_line(text):
-        return False
-    tokens: list[str] = []
-    index = 0
-    while index < len(text):
-        char = text[index]
-        if char in "([":
-            close = ")" if char == "(" else "]"
-            depth = 1
-            index += 1
-            while index < len(text) and depth:
-                if text[index] == char:
-                    depth += 1
-                elif text[index] == close:
-                    depth -= 1
-                index += 1
-            continue
-        if char.isspace() or char in "|,;:{}()]":
-            index += 1
-            continue
-        start = index
-        while index < len(text) and not (text[index].isspace() or text[index] in "|,;:{}()[]"):
-            index += 1
-        tokens.append(text[start:index])
-    chord_count = sum(is_chord_token(token) for token in tokens)
-    return chord_count >= 2 and chord_count >= len(tokens) // 2
+    """Identify literal chord rows when structured grouping changes the line."""
+    return is_ordered_chord_line(text) and not is_tab_line(text)
 
 
 # Tablature: lines like  e--5-2-0-3-...  or rows of dashes/pipes/digits.
@@ -830,16 +1117,36 @@ def _retarget_chord_columns(chord_line: str, physical_positions: dict[int, float
     return "".join(out), None
 
 
-def plain_text_chart_body(chart: dict) -> tuple[Optional[str], Optional[str]]:
+def plain_text_chart_body(chart: dict, inline_section_tails: Optional[dict[int, str]] = None) -> tuple[Optional[str], Optional[str]]:
     """Serialize supported chart structures through the ordinary text contract."""
     out: list[str] = []
-    for section in chart.get("sections", []):
+    inline_section_tails = inline_section_tails or {}
+    for section_index, section in enumerate(chart.get("sections", [])):
         label = section.get("label")
-        if label:
+        section_lines = section.get("lines", [])
+        inline_style = inline_section_tails.get(section_index)
+        inline_first = bool(label and inline_style and section_lines and
+                            section_lines[0].get("type") in ("raw", "progression"))
+        if label and inline_first:
+            first = section_lines[0]
+            if first.get("type") == "raw":
+                tail = first.get("text", "")
+                separator = ""
+            else:
+                tail = " ".join(first.get("chords", []))
+                if first.get("repeat") is not None:
+                    tail += f" {first['repeat']}x" if tail else f"{first['repeat']}x"
+                if first.get("note"):
+                    tail += f" {first['note']}" if tail else first["note"]
+                separator = " "
+            prefix = f"[{label}]" if inline_style == "bracket" else f"{label}:"
+            out.append(f"{prefix}{separator}{tail}")
+            section_lines = section_lines[1:]
+        elif label:
             if "]" in label or "\n" in label:
                 return None, "section_label_not_representable_in_ordinary_text"
             out.append(f"[{label}]")
-        for line in section.get("lines", []):
+        for line in section_lines:
             kind = line.get("type")
             if kind == "spacer":
                 out.append("")
@@ -1020,9 +1327,10 @@ def _new_section(label: Optional[str]) -> dict:
 def parse_songs(paragraphs: list[Paragraph],
                 source_document: Optional[str] = None,
                 cover_genre: Optional[str] = None,
-                _derive_plain_body: bool = True) -> list[Song]:
+                _derive_plain_body: bool = True,
+                _parse_opening_metadata: bool = True) -> list[Song]:
     """
-    Walk the paragraph stream, splitting into songs at each title line and
+    Walk the paragraph stream, splitting into songs at each effective heading and
     classifying every body line into the normalized chart_content model.
     """
     songs: list[Song] = []
@@ -1033,14 +1341,20 @@ def parse_songs(paragraphs: list[Paragraph],
     generated_header = _GENERATED_HEADER
     generated_lines: list[str] = []
     chart_started = False
+    inline_section_tails: dict[int, str] = {}
+    song_inline_tails: dict[int, dict[int, str]] = {}
+    unresolved_preheading: Optional[Paragraph] = None
 
     def flush_pending_as_progression():
         """If a chord-only line had no lyric under it, it's a progression."""
         nonlocal pending_chord_line, chart_started
         if pending_chord_line is not None and cur is not None:
             ensure_section()
-            cur_section["lines"].append(
-                parse_progression(None, pending_chord_line.text_spaces))
+            pending_text = pending_chord_line.text_spaces
+            if is_ordered_chord_line(pending_text):
+                cur_section["lines"].append({"type": "raw", "text": pending_text})
+            else:
+                cur_section["lines"].append(parse_progression(None, pending_text))
             pending_chord_line = None
             chart_started = True
 
@@ -1064,12 +1378,14 @@ def parse_songs(paragraphs: list[Paragraph],
         generated_mode = False
         generated_lines = []
 
-    def start_section(label: Optional[str]):
+    def start_section(label: Optional[str], inline_style: Optional[str] = None):
         nonlocal cur_section, chart_started
         if cur_section and cur_section["lines"] and cur_section["lines"][-1].get("type") == "spacer":
             cur_section["lines"].pop()
         cur_section = _new_section(label)
         cur.chart_content["sections"].append(cur_section)
+        if inline_style:
+            inline_section_tails[len(cur.chart_content["sections"]) - 1] = inline_style
         chart_started = True
 
     expanded_paragraphs = []
@@ -1077,6 +1393,7 @@ def parse_songs(paragraphs: list[Paragraph],
         parts = p.text.split("\n")
         normalized_parts = p.text_spaces.split("\n")
         source_offset = 0
+        raw_start = 0
         for index, part in enumerate(parts):
             normalized = normalized_parts[index]
             part_length = _column_length(normalized)
@@ -1088,40 +1405,96 @@ def parse_songs(paragraphs: list[Paragraph],
                     if source_offset <= key < source_offset + part_length
                 }
             expanded_paragraphs.append(Paragraph(
-                part, p.style, p.is_bold, normalized,
-                p.tab_layout_error, p.cell_twips, positions))
+                text=part, style=p.style, normalized_text=normalized,
+                tab_layout_error=p.tab_layout_error, cell_twips=p.cell_twips,
+                physical_positions=positions,
+                outline_level=p.outline_level if index == 0 else None,
+                page_break_before=p.page_break_before if index == 0 else
+                (raw_start > 0 and raw_start - 1 in p.explicit_page_break_offsets),
+                explicit_page_break_offsets=p.explicit_page_break_offsets if index == 0 else (),
+                rendered_page_break_count=p.rendered_page_break_count if index == 0 else 0,
+                source_index=p.source_index, source_span_index=index + 1))
             source_offset += part_length + (1 if index < len(parts) - 1 else 0)
+            raw_start += len(part) + (1 if index < len(parts) - 1 else 0)
     for p in expanded_paragraphs:
         raw_text = p.text_spaces
         txt = raw_text
         stripped = txt.strip()
 
-        # ---- title line: starts a new song ----
-        if looks_like_title(p):
+        # ---- effective outline heading: starts a new song ----
+        if _is_song_boundary_candidate(p):
+            if unresolved_preheading is not None:
+                raise ValueError(
+                    "pre_heading_chart_content_unresolved "
+                    f"paragraph={unresolved_preheading.source_index} "
+                    f"span={unresolved_preheading.source_span_index or 1}")
             flush_pending_as_progression()
             flush_generated()
             if cur_section and cur_section["lines"] and cur_section["lines"][-1].get("type") == "spacer":
                 cur_section["lines"].pop()
-            ti = parse_title(p)
+            ti = _parse_structural_title(p)
             cur = Song(
                 title=ti.title, artist=ti.artist,
                 performance_key=ti.performance_key,
                 original_key=ti.original_key, alt_key=ti.alt_key,
-                capo_fret=0, bpm=None, bb_structure=None,
+                capo_fret=ti.capo_fret if ti.capo_fret is not None else 0,
+                bpm=None, bb_structure=None,
                 primary_genre=cover_genre, source_document=source_document,
             )
+            if ti.unresolved_reason:
+                cur.warnings.append({
+                    "code": "plain_text_body_unresolved",
+                    "section": "?", "line": "?",
+                    "reason": ti.unresolved_reason,
+                    "paragraph": p.source_index,
+                    "span": p.source_span_index,
+                    "style": p.style,
+                    "outline_level": p.outline_level,
+                    "page_break_before": p.page_break_before,
+                    "candidate_title": ti.title,
+                    "candidate_artist": ti.artist,
+                    "candidate_performance_key": ti.performance_key,
+                    "candidate_key_field": ti.candidate_key_field,
+                })
             songs.append(cur)
+            inline_section_tails = {}
+            song_inline_tails[id(cur)] = inline_section_tails
             cur_section = None
             chart_started = False
             continue
 
         if cur is None:
-            # Content before the first title (e.g. a genre cover page).
-            # If we weren't given a cover_genre and this is the very first
-            # non-empty line, remember it as the genre.
-            if stripped and cover_genre is None:
+            if _is_meaningful_preheading_chart(p):
+                unresolved_preheading = unresolved_preheading or p
+            elif stripped and cover_genre is None:
+                # Preserve the existing first plain cover-line genre behavior.
                 cover_genre = stripped
             continue
+
+        if (_parse_opening_metadata and not chart_started
+                and not _BB_RE.match(stripped)
+                and cur_section is None and stripped):
+            residual, metadata, metadata_conflicts = extract_opening_metadata(
+                raw_text, {
+                    "capo": cur.capo_fret if cur.capo_fret else None,
+                    "original_key": cur.original_key,
+                    "bpm": cur.bpm,
+                })
+            if metadata_conflicts:
+                cur.warnings.append({
+                    "code": "opening_metadata_conflict",
+                    "section": "?", "line": "?",
+                    "reason": "conflicting_opening_metadata:" + ",".join(sorted(metadata_conflicts)),
+                    "paragraph": p.source_index, "span": p.source_span_index,
+                })
+            elif metadata:
+                for field, value in metadata.items():
+                    setattr(cur, {"capo": "capo_fret"}.get(field, field), value)
+                raw_text = residual
+                txt = residual
+                stripped = txt.strip()
+                if not stripped:
+                    continue
 
         if stripped in (_GENERATED_HEADER, _LEGACY_GENERATED_HEADER):
             flush_pending_as_progression()
@@ -1139,6 +1512,8 @@ def parse_songs(paragraphs: list[Paragraph],
                 "section": max(1, len(cur.chart_content["sections"])),
                 "line": (len(cur_section["lines"]) + 1) if cur_section else 1,
                 "reason": p.tab_layout_error,
+                "paragraph": p.source_index,
+                "span": p.source_span_index,
             })
 
         # ---- blank line ----
@@ -1153,20 +1528,50 @@ def parse_songs(paragraphs: list[Paragraph],
             flush_pending_as_progression()
             # BB text is everything after "BB:", minus trailing capo and
             # OriginalKey-BPM tokens.
+            original_bb_value = raw_text.split(":", 1)[1]
+            has_metadata_conflict = False
             body = stripped.split(":", 1)[1].strip()
             capo_m = _CAPO_RE.search(body)
             if capo_m:
-                cur.capo_fret = int(capo_m.group(1))
+                candidate_capo = int(capo_m.group(1))
+                if cur.capo_fret and cur.capo_fret != candidate_capo:
+                    has_metadata_conflict = True
+                    cur.warnings.append({
+                        "code": "opening_metadata_conflict", "section": "?", "line": "?",
+                        "reason": "conflicting_opening_metadata:capo",
+                        "paragraph": p.source_index, "span": p.source_span_index,
+                    })
+                else:
+                    cur.capo_fret = candidate_capo
                 body = _CAPO_RE.sub("", body).strip(" /").strip()
             kb_m = _KEY_BPM_RE.search(body)
             if kb_m:
-                # BPM always comes from here; original key only fills in if the
-                # title line didn't already provide one (title wins on conflict).
-                cur.bpm = int(kb_m.group(2))
-                if not cur.original_key:
-                    cur.original_key = kb_m.group(1)
+                candidate_key = kb_m.group(1)
+                candidate_bpm = int(kb_m.group(2))
+                conflicting = []
+                if cur.original_key and cur.original_key != candidate_key:
+                    conflicting.append("original_key")
+                if cur.bpm is not None and cur.bpm != candidate_bpm:
+                    conflicting.append("bpm")
+                if conflicting:
+                    has_metadata_conflict = True
+                    cur.warnings.append({
+                        "code": "opening_metadata_conflict", "section": "?", "line": "?",
+                        "reason": "conflicting_opening_metadata:" + ",".join(sorted(conflicting)),
+                        "paragraph": p.source_index, "span": p.source_span_index,
+                    })
+                # Fill each absent field independently. A conflict in the
+                # original key does not discard an otherwise unconflicted BPM.
+                if cur.original_key is None:
+                    cur.original_key = candidate_key
+                if cur.bpm is None:
+                    cur.bpm = candidate_bpm
                 body = _KEY_BPM_RE.sub("", body).strip(" /").strip()
-            cur.bb_structure = clean_text(body) if body else None
+            # On conflict, retain the complete source value. Metadata fields
+            # already established by the heading remain authoritative, while
+            # the warning prevents this record from passing the loader gate.
+            cur.bb_structure = (original_bb_value if has_metadata_conflict
+                                else clean_text(body) if body else None)
             continue
 
         # ---- tablature / dense symbolic line -> raw passthrough ----
@@ -1183,13 +1588,25 @@ def parse_songs(paragraphs: list[Paragraph],
         if bm:
             flush_pending_as_progression()
             label = bm.group(1).strip()
-            trailing = bm.group(2).strip()
+            close_index = raw_text.find("]")
+            trailing = raw_text[close_index + 1:] if close_index >= 0 else bm.group(2)
             # repeat-only paren like "(Chorus)"? handled below in bare branch;
             # here bracket label always defines/starts a section.
-            start_section(clean_text(label))
+            start_section(clean_text(label), "bracket" if trailing else None)
             if trailing:
+                if re.search(r"\d+%", trailing):
+                    cur_section["lines"].append({"type": "lyric", "text": trailing,
+                                                 "chords": [], "confidence": "high"})
+                    chart_started = True
+                    continue
                 # e.g. "[Intro] G D C (4x)" — a progression on the same line
-                if any(is_chord_token(t) for t in trailing.split()):
+                if is_decorated_chord_line(trailing):
+                    cur_section["lines"].append({"type": "raw", "text": trailing})
+                    chart_started = True
+                elif ordered_chord_analysis(trailing)["prose_tokens"]:
+                    cur_section["lines"].append({"type": "raw", "text": trailing})
+                    chart_started = True
+                elif any(is_chord_token(t) for t in trailing.split()):
                     cur_section["lines"].append(
                         parse_progression(None, trailing))
                     chart_started = True
@@ -1223,17 +1640,40 @@ def parse_songs(paragraphs: list[Paragraph],
         if bc:
             label = (bc.group(1) + (bc.group(2) or "")).strip()
             tail = bc.group(3).strip()
+            if re.search(r"\d+%", tail):
+                flush_pending_as_progression()
+                start_section(clean_text(label))
+                colon = raw_text.find(":")
+                cur_section["lines"].append({"type": "lyric", "text": raw_text[colon + 1:],
+                                             "chords": [], "confidence": "high"})
+                chart_started = True
+                continue
             # Only treat the tail as a progression if it's chord-ish; otherwise
             # it's likely a lyric ("Intro:" rarely precedes lyrics, but guard).
             tail_toks = re.split(r"[,\s]+", tail)
-            if tail_toks and sum(is_chord_token(t) for t in tail_toks if t) >= max(1, len(tail_toks)//2):
+            chordish = (tail_toks and sum(is_chord_token(t) for t in tail_toks if t)
+                        >= max(1, len(tail_toks)//2))
+            if is_decorated_chord_line(tail):
                 flush_pending_as_progression()
-                start_section(clean_text(label))
+                start_section(clean_text(label), "colon")
+                colon = raw_text.find(":")
+                cur_section["lines"].append({"type": "raw", "text": raw_text[colon + 1:]})
+                chart_started = True
+                continue
+            if chordish:
+                flush_pending_as_progression()
+                start_section(clean_text(label), "colon")
                 # commas are just separators inside these inline progressions
                 cur_section["lines"].append(
                     parse_progression(None, tail.replace(",", " ")))
                 chart_started = True
                 continue
+            flush_pending_as_progression()
+            start_section(clean_text(label))
+            cur_section["lines"].append({"type": "lyric", "text": clean_text(tail),
+                                         "chords": [], "confidence": "high"})
+            chart_started = True
+            continue
 
         bare = _BARE_SECTION_RE.match(stripped)
         if bare:
@@ -1249,18 +1689,46 @@ def parse_songs(paragraphs: list[Paragraph],
             chart_started = True
             continue
 
+        # Preserve the classic chord-over-lyric pairing before considering a
+        # standalone literal chord row. Tab-aligned rows retain their anchors.
+        if is_chord_only_line(stripped):
+            flush_pending_as_progression()
+            pending_chord_line = p
+            continue
+
         # Match the shared JavaScript parser's ordinary-text progression
         # rule for a mostly-chord line carrying a repeat or short annotation.
         tokens = stripped.split()
+        if re.search(r"\d+%", txt):
+            flush_pending_as_progression()
+            ensure_section()
+            cur_section["lines"].append({"type": "lyric", "text": txt,
+                                         "chords": [], "confidence": "high"})
+            chart_started = True
+            continue
         chord_count = sum(is_chord_token(token) for token in tokens)
         if is_decorated_chord_line(txt):
             flush_pending_as_progression()
             ensure_section()
+            analysis = ordered_chord_analysis(txt)
             cur_section["lines"].append({"type": "raw", "text": txt})
+            if analysis["spans"] and analysis["unresolved_tokens"]:
+                unresolved = analysis["unresolved_tokens"]
+                reason = ("unsupported_chord_like_token:" + ",".join(
+                    token["text"] for token in unresolved)
+                    )
+                cur.warnings.append({
+                    "code": "ordered_chord_token_unresolved",
+                    "section": len(cur.chart_content["sections"]),
+                    "line": len(cur_section["lines"]),
+                    "reason": reason,
+                    "paragraph": p.source_index,
+                    "span": p.source_span_index,
+                })
             chart_started = True
             continue
         has_repeat = _PROGRESSION_REPEAT_RE.search(stripped) is not None
-        if (tokens and not is_chord_only_line(stripped) and chord_count > 0
+        if (tokens and chord_count > 0
                 and ((has_repeat and chord_count >= 1)
                      or (chord_count >= 2
                          and chord_count >= len(tokens) // 2))):
@@ -1268,12 +1736,6 @@ def parse_songs(paragraphs: list[Paragraph],
             ensure_section()
             cur_section["lines"].append(parse_progression(None, txt))
             chart_started = True
-            continue
-
-        # ---- chord-only line: hold it; it pairs with the next lyric ----
-        if is_chord_only_line(stripped):
-            flush_pending_as_progression()   # two chord lines in a row -> first is a progression
-            pending_chord_line = p
             continue
 
         # ---- lyric line ----
@@ -1290,6 +1752,8 @@ def parse_songs(paragraphs: list[Paragraph],
                         "section": len(cur.chart_content["sections"]),
                         "line": len(cur_section["lines"]) + 1,
                         "reason": p.tab_layout_error,
+                        "paragraph": p.source_index,
+                        "span": p.source_span_index,
                     })
                 elif pending_chord_line.physical_positions is None or p.cell_twips is None:
                     cur.warnings.append({
@@ -1297,6 +1761,9 @@ def parse_songs(paragraphs: list[Paragraph],
                         "section": len(cur.chart_content["sections"]),
                         "line": len(cur_section["lines"]) + 1,
                         "reason": "unsupported_paired_lyric_font_metrics",
+                        "paragraph": p.source_index,
+                        "span": p.source_span_index,
+                        "paired_paragraph": pending_chord_line.source_index,
                     })
                 else:
                     chord_text, mapping_error = _retarget_chord_columns(
@@ -1307,6 +1774,9 @@ def parse_songs(paragraphs: list[Paragraph],
                             "section": len(cur.chart_content["sections"]),
                             "line": len(cur_section["lines"]) + 1,
                             "reason": mapping_error,
+                            "paragraph": p.source_index,
+                            "span": p.source_span_index,
+                            "paired_paragraph": pending_chord_line.source_index,
                         })
                         chord_text = pending_chord_line.text_spaces
             cur_section["lines"].append(
@@ -1321,17 +1791,23 @@ def parse_songs(paragraphs: list[Paragraph],
             chart_started = True
 
     # end: flush any trailing pending chord line
+    if unresolved_preheading is not None:
+        raise ValueError(
+            "pre_heading_chart_content_unresolved "
+            f"paragraph={unresolved_preheading.source_index} "
+            f"span={unresolved_preheading.source_span_index or 1}")
     flush_generated()
-    if pending_chord_line is not None and cur is not None:
-        if cur_section is None:
-            cur_section = _new_section(None)
-            cur.chart_content["sections"].append(cur_section)
-        cur_section["lines"].append(parse_progression(None, pending_chord_line.text_spaces))
+    # Use the same ordered/literal decision for a final chord-only paragraph
+    # as for one flushed by a section or song boundary.  The old special-case
+    # progression conversion reordered punctuation and collapsed spacing.
+    flush_pending_as_progression()
     if cur_section and cur_section["lines"] and cur_section["lines"][-1].get("type") == "spacer":
         cur_section["lines"].pop()
 
     for song in songs:
-        body, error = plain_text_chart_body(song.chart_content)
+        _link_literal_chord_rows(song.chart_content)
+        body, error = plain_text_chart_body(
+            song.chart_content, song_inline_tails.get(id(song), {}))
         song.chart_source = body
         if error:
             song.warnings.append({
@@ -1342,13 +1818,31 @@ def parse_songs(paragraphs: list[Paragraph],
             })
         elif _derive_plain_body and body is not None:
             ordinary_paragraphs = [
-                Paragraph("Plain Body Round Trip – C\x01Synthetic", None, False),
-                *(Paragraph(line, None, False) for line in body.splitlines()),
+                _round_trip_heading(),
+                *(Paragraph(line, None) for line in body.splitlines()),
             ]
             reparsed = parse_songs(
                 ordinary_paragraphs, source_document=None, cover_genre=None,
-                _derive_plain_body=False)
+                _derive_plain_body=False, _parse_opening_metadata=False)
             if len(reparsed) != 1 or reparsed[0].chart_content != song.chart_content:
+                # A source tail is first tried on its original line. If that
+                # spelling changes the structure, accept separate label/body
+                # lines only when they pass the same complete equality check.
+                if song_inline_tails.get(id(song)):
+                    separated, separated_error = plain_text_chart_body(song.chart_content)
+                    if separated_error is None and separated is not None:
+                        separate_paragraphs = [
+                            _round_trip_heading(),
+                            *(Paragraph(line, None) for line in separated.splitlines()),
+                        ]
+                        separate_result = parse_songs(
+                            separate_paragraphs, source_document=None, cover_genre=None,
+                            _derive_plain_body=False, _parse_opening_metadata=False)
+                        if (len(separate_result) == 1 and
+                                separate_result[0].chart_content == song.chart_content):
+                            song.chart_source = separated
+                            song.chart_content = separate_result[0].chart_content
+                            continue
                 section, line = _first_chart_difference(
                     song.chart_content,
                     reparsed[0].chart_content if len(reparsed) == 1 else {"sections": []})
@@ -1376,9 +1870,10 @@ def parse_ordinary_chart_source(source: str) -> dict:
     Confidence is part of the returned structure: callers comparing this value
     with persisted chart_content must retain and compare confidence fields.
     """
-    paragraphs = [Paragraph("Plain Source Check – C\x01Synthetic", None, False)]
-    paragraphs.extend(Paragraph(line, None, False) for line in source.splitlines())
-    songs = parse_songs(paragraphs, _derive_plain_body=False)
+    paragraphs = [_round_trip_heading()]
+    paragraphs.extend(Paragraph(line, None) for line in source.splitlines())
+    songs = parse_songs(paragraphs, _derive_plain_body=False,
+                        _parse_opening_metadata=False)
     if len(songs) != 1:
         raise ValueError("ordinary_source_song_boundaries")
     return songs[0].chart_content

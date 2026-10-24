@@ -18,7 +18,7 @@
  */
 
 import React, { useLayoutEffect, useRef, useState } from "react";
-import { isDecoratedChordLine } from "./chartParser";
+import { decoratedChordAnalysis, decoratedChordTokenSpans, isDecoratedChordLine } from "./chartParser";
 
 function orderedChords(chords) {
   return (chords || []).map((chord, index) => ({
@@ -263,6 +263,50 @@ function ProgressionLine({ line, i }) {
   );
 }
 
+function RawLineContent({ line, exposeChordSpans = false, anchorSpans = null }) {
+  const spans = exposeChordSpans ? decoratedChordTokenSpans(line.text || "") : [];
+  let cursor = 0;
+  const content = spans.length ? spans.flatMap((span, index) => {
+    const parts = [];
+    if (span.start > cursor) parts.push(line.text.slice(cursor, span.start));
+    const anchor = anchorSpans?.[index] || span;
+    const anchorColumn = Number.isFinite(anchor.start) ? anchor.start : span.start;
+    const anchorWidth = Math.max(1, (Number.isFinite(anchor.end) ? anchor.end : span.end) - anchorColumn);
+    parts.push(<span className="raw-chord-token" data-chord-symbol={span.sym}
+      data-anchor-column={exposeChordSpans ? anchorColumn : undefined}
+      style={exposeChordSpans ? { display: "inline-block", width: `${anchorWidth}ch`,
+        overflow: "visible", whiteSpace: "pre", verticalAlign: "baseline" } : undefined}
+      key={`chord-${index}`}>
+      {line.text.slice(span.start, span.end)}
+    </span>);
+    cursor = span.end;
+    return parts;
+  }).concat(cursor < line.text.length ? [line.text.slice(cursor)] : []) : line.text;
+  return <>
+    {content}
+    {line.transposition_status === "partial" && <span className="raw-transposition-warning"
+      role="img" aria-label="Partial transposition; unsupported token preserved"
+      title="Partial transposition; unsupported token preserved" />}
+    {line.transposition_status === "unresolved" && <span className="raw-transposition-warning"
+      role="img" aria-label="Row not transposed; ambiguous text preserved"
+      title="Row not transposed; ambiguous text preserved" />}
+  </>;
+}
+
+function PairedLiteralRow({ line, lyric, anchorSpans, i }) {
+  return (
+    <div className="paired-literal-scroll" data-paired-literal-row="true" key={i}>
+      <div className="paired-literal-grid paired-literal-chords chord-only-line"
+        data-paired-to-next="lyric" data-transposition-status={line.transposition_status || undefined}>
+        <RawLineContent line={line} exposeChordSpans anchorSpans={anchorSpans} />
+      </div>
+      <div className="paired-literal-grid paired-literal-lyric">
+        {lyric.text || ""}
+      </div>
+    </div>
+  );
+}
+
 function renderLine(line, i) {
   switch (line.type) {
     case "lyric":
@@ -275,9 +319,13 @@ function renderLine(line, i) {
           {line.ref}{line.times ? ` ×${line.times}` : ""}
         </div>
       );
-    case "raw":
+    case "raw": {
       return <div key={i} className={isDecoratedChordLine(line.text)
-        ? "chord-only-line" : "tab-line"}>{line.text}</div>;
+        ? "chord-only-line" : "tab-line"}
+        data-transposition-status={line.transposition_status || undefined}>
+        <RawLineContent line={line} />
+      </div>;
+    }
     case "spacer":
       return <div key={i} className="chart-spacer" aria-hidden="true" />;
     default:
@@ -285,16 +333,32 @@ function renderLine(line, i) {
   }
 }
 
-export function renderChart(chartContent) {
+export function renderChart(chartContent, originalChartContent = chartContent) {
   if (!chartContent || !Array.isArray(chartContent.sections)) return null;
   return (
     <div className="chart-body">
       {chartContent.sections.map((sec, si) => {
         const nextHasLeadingSpacer = chartContent.sections[si + 1]?.lines?.[0]?.type === "spacer";
+        const renderedLines = [];
+        const lines = sec.lines || [];
+        for (let li = 0; li < lines.length; li += 1) {
+          const line = lines[li];
+          const next = lines[li + 1];
+          const originalLine = originalChartContent?.sections?.[si]?.lines?.[li];
+          if (line.type === "raw" && line.paired_to_next === true
+              && next?.type === "lyric") {
+            renderedLines.push(<PairedLiteralRow
+              key={`${si}-${li}`} i={`${si}-${li}`} line={line} lyric={next}
+              anchorSpans={originalLine?.paired_to_next === true ? originalLine.chord_spans : null} />);
+            li += 1;
+          } else {
+            renderedLines.push(renderLine(line, `${si}-${li}`));
+          }
+        }
         return (
           <div key={si} className={`chart-section${nextHasLeadingSpacer ? ' chart-section-before-spacer' : ''}`}>
             {sec.label && <div className="chart-section-label">{sec.label}</div>}
-            {(sec.lines || []).map((line, li) => renderLine(line, `${si}-${li}`))}
+            {renderedLines}
           </div>
         );
       })}

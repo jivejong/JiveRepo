@@ -53,23 +53,53 @@
     return toks.length > 0 && toks.every(isChord);
   }
 
-  // A vertical bar is a strong chart-row cue. Keep the entire row literal
-  // when it carries several chord tokens; progression.chords/note cannot
-  // represent the original interleaving or spacing.
+  const ORDERED_ROW_SEPARATORS = "-\u2013\u2014/\\*|,;:";
+  const CHORD_LIKE_TOKEN_RE = /^[A-G][#b]?(?:m|min|maj|sus|dim|aug|add|M)?\d*(?:[#b].*|\/(?:[A-G][#b]?(?:\d.*|[#b].*)))$/;
+
+  function isFullyParenthesized(text) {
+    const start = text.search(/\S/);
+    const end = text.search(/\s*$/);
+    const last = end - 1;
+    if (start < 0 || text[start] !== "(" || start > last) return false;
+    let depth = 0;
+    for (let index = start; index <= last; index += 1) {
+      if (text[index] === "(") depth += 1;
+      else if (text[index] === ")") {
+        depth -= 1;
+        if (depth < 0 || (depth === 0 && index !== last)) return false;
+      }
+    }
+    return depth === 0;
+  }
+
   function decoratedChordAnalysis(text) {
-    if (typeof text !== "string" || !text.includes("|") || isTab(text.trim())) {
+    if (typeof text !== "string" || isTab(text.trim())) {
       return { spans: [], ambiguous: true };
     }
+    if (/\d+%/.test(text)) {
+      return { spans: [], ambiguous: false, unresolvedTokens: [], proseTokens: [],
+        partialTransposition: false, literal: false };
+    }
     const spans = [];
-    let visibleTokens = 0;
-    let ambiguous = false;
+    let visibleTokens = 0, opaqueTokens = 0;
+    const unresolvedTokens = [], proseTokens = [];
+    let literalSyntax = false, repeatedSpace = false;
+    const opaqueOnly = isFullyParenthesized(text);
     let index = 0;
     while (index < text.length) {
       const char = text[index];
+      if (/\s/.test(char)) {
+        let end = index + 1;
+        while (end < text.length && /\s/.test(text[end])) end += 1;
+        if (end - index > 1) repeatedSpace = true;
+        index = end;
+        continue;
+      }
       if (char === "(" || char === "[") {
         const close = char === "(" ? ")" : "]";
         let depth = 1;
         index += 1;
+        literalSyntax = true;
         while (index < text.length && depth > 0) {
           if (text[index] === char) depth += 1;
           else if (text[index] === close) depth -= 1;
@@ -77,16 +107,48 @@
         }
         continue;
       }
-      if (/\s|[|,;:{}()\[\]]/.test(char)) { index += 1; continue; }
-      const start = index;
-      while (index < text.length && !/\s|[|,;:{}()\[\]]/.test(text[index])) index += 1;
-      const token = text.slice(start, index);
+      const separatorsWithoutSlash = ORDERED_ROW_SEPARATORS.replace("/", "");
+      if (separatorsWithoutSlash.includes(char) || char === "/"
+          || char === ")" || char === "]") {
+        literalSyntax = true;
+        index += 1;
+        continue;
+      }
+      if (char === "%") {
+        const before = text.slice(0, index).trimEnd();
+        const after = text.slice(index + 1).trimStart();
+        if (before.endsWith("|") && after.startsWith("|")) {
+          literalSyntax = true;
+          index += 1;
+          continue;
+        }
+      }
+      let end = index + 1;
+      while (end < text.length && !/\s/.test(text[end])
+          && !`${separatorsWithoutSlash}()[]`.includes(text[end])) end += 1;
+      const token = text.slice(index, end);
+      if (isChord(token)) spans.push({ start: index, end, sym: token });
+      else if (/^(?:\d+[xX]?|[xX]\d+)$/.test(token)) literalSyntax = true;
+      else {
+        opaqueTokens += 1;
+        const item = { start: index, end, text: token };
+        if (CHORD_LIKE_TOKEN_RE.test(token)) unresolvedTokens.push(item);
+        else proseTokens.push(item);
+      }
       visibleTokens += 1;
-      if (isChord(token)) spans.push({ start, end: index, sym: token });
-      else if (!/^(?:\d+[xX]|[xX]\d+)$/.test(token)) ambiguous = true;
+      index = end;
     }
-    const eligible = spans.length >= 2 && spans.length >= Math.floor(visibleTokens / 2);
-    return { spans: eligible ? spans : [], ambiguous };
+    const eligible = spans.length >= 2 && spans.length >= Math.ceil(visibleTokens / 2);
+    const partialTransposition = eligible && unresolvedTokens.length > 0
+      && proseTokens.length === 0 && !opaqueOnly;
+    return {
+      spans: eligible ? spans : [],
+      ambiguous: opaqueTokens > 0 || opaqueOnly,
+      unresolvedTokens,
+      proseTokens,
+      partialTransposition,
+      literal: opaqueOnly || (eligible && (literalSyntax || repeatedSpace)),
+    };
   }
 
   function decoratedChordTokenSpans(text) {
@@ -94,7 +156,7 @@
   }
 
   function isDecoratedChordLine(text) {
-    return decoratedChordTokenSpans(text).length > 0;
+    return decoratedChordAnalysis(text).literal === true;
   }
 
   function transposeDecoratedRawLines(chart, transposeChord) {
@@ -106,17 +168,30 @@
         if (line.type !== "raw") return line;
         const analysis = decoratedChordAnalysis(line.text || "");
         const spans = analysis.spans;
-        if (!spans.length || analysis.ambiguous) return line;
+        if (!spans.length) return line;
+        if (analysis.ambiguous && !analysis.partialTransposition) {
+          if (!analysis.unresolvedTokens.length) return line;
+          changed = true;
+          sectionChanged = true;
+          return { ...line, transposition_status: "unresolved" };
+        }
         let text = line.text;
         for (let i = spans.length - 1; i >= 0; i -= 1) {
           const span = spans[i];
           const replacement = transposeChord(span.sym);
           text = text.slice(0, span.start) + replacement + text.slice(span.end);
         }
-        if (text === line.text) return line;
+        const status = analysis.partialTransposition ? "partial" : "complete";
+        const updatedSpans = line.paired_to_next
+          ? decoratedChordAnalysis(text).spans.map(span => ({
+            symbol: span.sym, start: span.start, end: span.end,
+          }))
+          : null;
         changed = true;
         sectionChanged = true;
-        return { ...line, text };
+        return { ...line, text,
+          ...(updatedSpans ? { chord_spans: updatedSpans } : {}),
+          transposition_status: status };
       });
       return sectionChanged ? { ...section, lines } : section;
     });
@@ -181,7 +256,11 @@
   function parseChartBody(text) {
     const lines = (text || "").split(/\r?\n/);
     if (lines[0] === GENERATED_HEADER || lines[0] === LEGACY_GENERATED_HEADER) {
-      try { return parseGeneratedChart(lines.slice(1), lines[0] === GENERATED_HEADER); }
+      try {
+        const generated = parseGeneratedChart(lines.slice(1), lines[0] === GENERATED_HEADER);
+        linkLiteralChordRows(generated);
+        return generated;
+      }
       catch (error) { error.status = 400; throw error; }
     }
     const sections = [];
@@ -192,7 +271,8 @@
     const flushPending = () => {
       if (pendingChord !== null) {
         ensure();
-        cur.lines.push(parseProgression(pendingChord));
+        if (isDecoratedChordLine(pendingChord)) cur.lines.push({ type: "raw", text: pendingChord });
+        else cur.lines.push(parseProgression(pendingChord));
         pendingChord = null;
       }
     };
@@ -234,9 +314,16 @@
       if (bm) {
         flushPending();
         newSection(bm[1].trim());
-        const trailing = bm[2].trim();
+        const closeIndex = line.indexOf("]");
+        const trailing = closeIndex >= 0 ? line.slice(closeIndex + 1) : bm[2];
         if (trailing) {
-          if (trailing.split(/\s+/).some(isChord)) cur.lines.push(parseProgression(trailing));
+          if (/\d+%/.test(trailing)) {
+            cur.lines.push({ type: "lyric", text: trailing, chords: [], confidence: "high" });
+            continue;
+          }
+          if (isDecoratedChordLine(trailing)) cur.lines.push({ type: "raw", text: trailing });
+          else if (decoratedChordAnalysis(trailing).proseTokens?.length) cur.lines.push({ type: "raw", text: trailing });
+          else if (trailing.trim().split(/\s+/).some(isChord)) cur.lines.push(parseProgression(trailing));
           else cur.lines.push({ type: "raw", text: trailing });
         }
         continue;
@@ -245,12 +332,23 @@
       const bc = BARE_SECTION_COLON_RE.exec(s);
       if (bc) {
         const tail = bc[3].trim();
+        if (/\d+%/.test(tail)) {
+          flushPending();
+          newSection((bc[1] + (bc[2] || "")).trim());
+          const colonIndex = line.indexOf(":");
+          cur.lines.push({ type: "lyric", text: line.slice(colonIndex + 1),
+            chords: [], confidence: "high" });
+          continue;
+        }
         const toks = tail.split(/[,\s]+/).filter(Boolean);
         const chordish = toks.filter(isChord).length;
         if (toks.length && chordish >= Math.max(1, Math.floor(toks.length / 2))) {
           flushPending();
           newSection((bc[1] + (bc[2] || "")).trim());
-          cur.lines.push(parseProgression(tail.replace(/,/g, " ")));
+          const colonIndex = line.indexOf(":");
+          const literalTail = colonIndex >= 0 ? line.slice(colonIndex + 1) : tail;
+          if (isDecoratedChordLine(literalTail)) cur.lines.push({ type: "raw", text: literalTail });
+          else cur.lines.push(parseProgression(tail.replace(/,/g, " ")));
           continue;
         }
       }
@@ -272,6 +370,11 @@
       // A bare line that's mostly chords plus a repeat/annotation (e.g.
       // "G D C  4x") is a progression, not a lyric.
       const toks = s.split(/\s+/).filter(Boolean);
+      if (/\d+%/.test(line)) {
+        flushPending(); ensure();
+        cur.lines.push({ type: "lyric", text: line, chords: [], confidence: "high" });
+        continue;
+      }
       const chordCount = toks.filter(isChord).length;
       const hasRepeat = REPEAT_RE.test(s);
       if (toks.length > 0 && chordCount > 0 &&
@@ -294,7 +397,26 @@
     }
     flushPending();
     if (cur?.lines.at(-1)?.type === "spacer") cur.lines.pop();
+    linkLiteralChordRows({ sections });
     return { sections };
+  }
+
+  function linkLiteralChordRows(chart) {
+    for (const section of chart.sections || []) {
+      const lines = section.lines || [];
+      for (let index = 0; index < lines.length - 1; index += 1) {
+        const line = lines[index];
+        if (line.type !== 'raw' || lines[index + 1].type !== 'lyric' || isTab(line.text || '')) continue;
+        const analysis = decoratedChordAnalysis(line.text || '');
+        if (analysis.spans.length && analysis.proseTokens.length === 0) {
+          line.paired_to_next = true;
+          line.chord_spans = analysis.spans.map(span => ({
+            symbol: span.sym, start: span.start, end: span.end,
+          }));
+        }
+      }
+    }
+    return chart;
   }
 
   function parseGeneratedChordText(text) {
@@ -471,7 +593,8 @@
 
   return {
     parseChartBody, chartToText, isGeneratedSourceUnchanged, isGeneratedChartSource,
-    isDecoratedChordLine, decoratedChordTokenSpans, transposeDecoratedRawLines,
+    isDecoratedChordLine, decoratedChordTokenSpans, decoratedChordAnalysis,
+    transposeDecoratedRawLines,
     _isChord: isChord,
   };
 });

@@ -40,12 +40,29 @@ off that section gap to prevent doubled spacing. Synthetic tests cover these
 cases and the shared serialization contract. Ordinary chart text edited in the
 app follows the same internal blank-line normalization; a chord-only line is
 flushed as a progression instead of being paired across a blank separator.
-Pipe-decorated chord-only rows are retained as literal raw lines when the
-existing chord grammar identifies a chord-oriented row. This preserves typed
-separators, annotations, and spacing in ordinary `chart_source`; the app
-transposes recognized chord tokens in place for display. Ambiguous rows remain
-literal and are not guessed during transposition. Tab rows, ordinary prose,
-and non-decorated progression rows keep their existing classification.
+Chord rows are retained as literal raw lines when the structured progression
+form would move punctuation, repeat markers, annotations, or meaningful
+spacing away from its source position. Python ingestion and the shared
+JavaScript editor parser use the same chord spans and eligibility rule. The
+literal line keeps its actual separator characters (including hyphens versus
+en dashes). Parenthesized/bracketed annotations remain opaque. Recognized
+chord spans in a mixed literal row transpose in place; an unsupported
+chord-like token stays byte-for-byte unchanged, the row is marked partial,
+and a located `ordered_chord_token_unresolved` diagnostic blocks loading.
+Rows containing prose lookalikes are left unchanged; they are not treated as
+unsupported chord tokens. Literal
+chord spans followed by a lyric retain their association in chart content
+while the complete source row remains visible with its original punctuation
+and spacing.
+Ordinary progressions that preserve their token order remain structured.
+
+Before chart content begins, the DOCX parser recognizes complete bounded
+opening `Capo N`, `key-BPM`, and `orig key` fields. These fill capo, original
+key, and BPM independently of the heading's written/performance and sounding
+keys. Conflicts remain visible with a located blocking diagnostic; arbitrary
+body text is not treated as metadata, and uncaptured text is preserved. The
+bounded opening original-key/BPM token accepts ASCII hyphen or en dash, with
+optional surrounding whitespace (for example `A-120`, `A - 120`, or `A – 120`).
 
 For an optional host-Python workflow:
 
@@ -131,6 +148,32 @@ Important outputs:
 Review every failure and flagged song against the source documents before
 continuing. Use `--strict` when the command should fail if any document fails.
 
+DOCX song boundaries follow the user's authoritative document contract: only a
+nonempty effective Word outline heading starts a song. Outline levels 0–8 are
+headings; level 9 is body. Direct paragraph properties override inherited
+style properties, and the default paragraph style applies when `w:pStyle` is
+absent. Heading text supplies title, artist, and key fields; missing artist or
+key values remain blank rather than being inferred. Nonempty headings with
+unsupported fields remain song boundaries and carry a located blocking
+diagnostic so they cannot silently become part of the preceding chart.
+In an en-dash heading, a parenthesized key such as `D (E)` or the separate
+tab field `D<TAB>(E)` means the chart is written in D and sounds in E with a
+capo. The parser stores D as the written performance key, E as the alternate
+key, and derives capo fret 2 from that interval. It keeps the artist in its
+own field. A key pair whose capo relation cannot be derived produces a located
+blocking diagnostic.
+
+This heading-only rule supersedes earlier Normal-style title handling. Bold,
+tabs, title-like wording, dash or slash notation, `pageBreakBefore`, and
+explicit or rendered page breaks do not start songs. Explicit breaks inside a
+run still preserve the text on both sides as ordered chart spans. Rendered
+`lastRenderedPageBreak` pagination remains layout metadata only. Meaningful
+chart-like content before the first heading stops parsing with a paragraph/span
+location for review; the parser does not assign uncertain ownership. A plain
+cover line retains the existing cover-genre behavior where that input format
+is used. Reconcile parsed rows against headings as evidence, not as proof that
+the source contains every intended song.
+
 The report distinguishes low-confidence space-aligned lines from
 `word_tab_placement_unresolved`. The latter records document, song, one-based
 section/line, and a reason code without chart text. It means an inserted DOCX
@@ -171,6 +214,14 @@ New DOCX `chart_source` values contain readable ordinary chart text without
 CCM markers. Python derives that source from the parsed structure and checks
 whether ordinary chart syntax can express each line; unsupported structures
 produce `plain_text_body_unresolved` and are rejected before loading. The
+serializer retains a section label's same-paragraph raw/progression tail on
+that ordinary line when it came from a bracketed or bare-colon source and the
+complete parsed chart round-trips exactly. Other sections keep their separate
+label and body lines. Pipe notation is retained as raw text where progression
+normalization would otherwise alter it. When inline serialization fails the
+exact comparison, the parser tries the separate label/body spelling and keeps
+it only if the complete chart, including confidence fields, reparses exactly;
+otherwise the existing blocking diagnostic remains.
 loader reparses each ordinary `chart_source` at batch preflight and requires
 strictly typed exact Python chart-object equality with supplied `chart_content` before any
 database connection or write. Equality includes section/line types, text,

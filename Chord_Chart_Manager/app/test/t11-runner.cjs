@@ -1,14 +1,13 @@
 // T11's complete test command owns one disposable database and never points
 // browser teardown at the live chords database.
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { Pool } = require('../server/node_modules/pg');
-const { isGeneratedChartSource } = require('../server/chartParser.js');
+const { TABLES, protectedSnapshotSha256 } = require('../server/mainEnrichmentSafety.js');
 const { bounded, runCleanupStages, startServerBounded, runWithCleanup } = require('./t11-lifecycle.cjs');
 const { verifyHarnessIdentity } = require('./t11-guards.cjs');
 const { readMainCounts, assertMainCountsUnchanged } = require('./t11-main-checks.cjs');
@@ -65,35 +64,25 @@ function runNode(label, script, args = [], env = process.env, timeoutMs = 600_00
   });
 }
 
-function fingerprintRows(rows) {
-  return rows.map(row => {
-    const data = { song: row.song, artist: row.artist, genres: row.genres,
-      vibes: row.vibes, entries: row.entries };
-    return { id: row.id, version: row.version,
-      sha256: crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex') };
-  });
-}
-
-async function importedSnapshot(pool) {
-  const { rows } = await pool.query(`
-    SELECT s.id, to_char(s.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS version,
-      s.source_document, s.chart_source, to_jsonb(s) AS song, to_jsonb(a) AS artist,
-      COALESCE((SELECT jsonb_agg(jsonb_build_object('join',to_jsonb(sg),'definition',to_jsonb(g)) ORDER BY sg.genre_id)
-        FROM public.song_genres sg JOIN public.genres g ON g.id=sg.genre_id WHERE sg.song_id=s.id),'[]'::jsonb) AS genres,
-      COALESCE((SELECT jsonb_agg(jsonb_build_object('join',to_jsonb(sv),'definition',to_jsonb(v)) ORDER BY sv.vibe_id)
-        FROM public.song_vibes sv JOIN public.vibes v ON v.id=sv.vibe_id WHERE sv.song_id=s.id),'[]'::jsonb) AS vibes,
-      COALESCE((SELECT jsonb_agg(to_jsonb(ss) ORDER BY ss.setlist_id,ss.position)
-        FROM public.setlist_songs ss WHERE ss.song_id=s.id),'[]'::jsonb) AS entries
-    FROM public.songs s JOIN public.artists a ON a.id=s.artist_id
-    WHERE s.source_document='Sample.docx' ORDER BY s.id`);
-  assert.ok(rows.length > 0, 'T11 requires the current Sample.docx rows to exist before testing');
-  for (const row of rows) {
-    assert.equal(row.source_document, 'Sample.docx');
-    assert.equal(typeof row.chart_source, 'string', `Sample row ${row.id} must retain readable source text`);
-    assert.equal(isGeneratedChartSource(row.chart_source), false,
-      `Sample row ${row.id} must not persist generated CCM source markers`);
+async function mainSnapshot(pool) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    const database = (await client.query('SELECT current_database() AS name')).rows[0]?.name;
+    assert.equal(database, 'chords', 'T11 preservation snapshot must connect to main chords');
+    const protectedRowsSha256 = await protectedSnapshotSha256(client);
+    const rows = {};
+    for (const [name, table, key] of TABLES) {
+      rows[name] = (await client.query(`SELECT (${key}) AS row_key, md5(to_jsonb(t)::text) AS row_md5 FROM ${table} t ORDER BY 1`)).rows;
+    }
+    await client.query('COMMIT');
+    return { database, protectedRowsSha256, rows };
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch { /* retain snapshot error */ }
+    throw error;
+  } finally {
+    client.release();
   }
-  return fingerprintRows(rows);
 }
 
 async function seedSyntheticChartFixtures(pool) {
@@ -143,7 +132,7 @@ async function main() {
   let acceptingRequests = false;
   let runId;
   let scratchOwner;
-  let importedBefore;
+  let mainSnapshotBefore;
   let mainCountsBefore;
   await runWithCleanup(async () => {
     const preflight = await admin.query(`SELECT
@@ -156,7 +145,7 @@ async function main() {
     const initialStats = await fetch('http://127.0.0.1:3000/api/stats', { signal: AbortSignal.timeout(5_000) });
     assert.equal(initialStats.status, 200, 'Main app /api/stats must be available before T11 starts');
     mainCountsBefore = readMainCounts(await initialStats.json());
-    importedBefore = await importedSnapshot(main);
+    mainSnapshotBefore = await mainSnapshot(main);
     runId = randomUUID();
     scratchOwner = (await admin.query('SELECT current_user AS owner')).rows[0].owner;
     await admin.query(`CREATE DATABASE ${scratchName}`);
@@ -207,9 +196,14 @@ async function main() {
     process.env.E2E_BASE_URL = testEnv.E2E_BASE_URL;
     process.env.E2E_SYSTEM_CHROME = '1';
     process.env.CCM_T11_ISOLATED = '1';
-    await runNode('Unit tests (Vitest)', path.join(appDir, 'node_modules/vitest/vitest.mjs'), ['run'], testEnv);
-    await runNode('Scratch-database API integration tests', path.join(appDir, 'test/integration/t11-api.test.cjs'), [], testEnv);
-    await runNode('Scratch-database song enrichment apply tests', path.join(appDir, 'test/integration/song-enrichment.test.cjs'), [], testEnv);
+    if (process.env.CCM_T11_FOCUSED_E2E_ONLY !== '1') {
+      await runNode('Unit tests (Vitest)', path.join(appDir, 'node_modules/vitest/vitest.mjs'), ['run'], testEnv);
+      await runNode('Scratch-database API integration tests', path.join(appDir, 'test/integration/t11-api.test.cjs'), [], testEnv);
+      await runNode('Scratch-database song enrichment apply tests', path.join(appDir, 'test/integration/song-enrichment.test.cjs'), [], testEnv);
+    } else {
+      assert.ok(process.env.CCM_T11_E2E_GREP, 'Focused E2E requires an explicit test-name filter');
+      console.log('[T11] Focused E2E only; unit and API suites skipped by request.');
+    }
     const e2eArgs = ['test', '--workers=1'];
     if (process.env.CCM_T11_E2E_GREP) {
       e2eArgs.push('--grep', process.env.CCM_T11_E2E_GREP);
@@ -246,12 +240,12 @@ async function main() {
         assert.equal(remaining.rowCount, 0, 'Task-owned ccm_test remains after T11 cleanup');
         console.log('[T11] ccm_test dropped and absence verified.');
     }]);
-    if (importedBefore) {
-      stages.push(['imported-row preservation check', async () => {
-        const after = await importedSnapshot(main);
-        assert.deepEqual(after, importedBefore,
-          'T11 must preserve every imported song row, exact version, and association');
-        console.log(`[T11] Current Sample.docx rows (${importedBefore.length}), exact versions, sources, and associations match.`);
+    if (mainSnapshotBefore) {
+      stages.push(['main full-row preservation check', async () => {
+        const after = await mainSnapshot(main);
+        assert.deepEqual(after, mainSnapshotBefore,
+          'T11 must preserve every main database row and association');
+        console.log(`[T11] Main protected row fingerprints match (${Object.values(after.rows).reduce((n, table) => n + table.length, 0)} rows).`);
       }]);
       stages.push(['main health and baseline check', async () => {
       const health = await fetch('http://localhost:3000/healthz', { signal: AbortSignal.timeout(5_000) });

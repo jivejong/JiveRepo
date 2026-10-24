@@ -63,6 +63,12 @@ def song_stats(song) -> dict:
         "unresolved_plain_text_body": sum(
             1 for warning in song.warnings
             if warning.get("code") == "plain_text_body_unresolved"),
+        "opening_metadata_conflicts": sum(
+            1 for warning in song.warnings
+            if warning.get("code") == "opening_metadata_conflict"),
+        "unresolved_ordered_chord_tokens": sum(
+            1 for warning in song.warnings
+            if warning.get("code") == "ordered_chord_token_unresolved"),
     }
 
 
@@ -148,11 +154,19 @@ def run(input_dir: str, output_dir: str, per_doc: bool, strict: bool) -> int:
             body_warnings = [dict(w, doc=name, title=s.title or "(untitled)")
                              for w in s.warnings
                              if w.get("code") == "plain_text_body_unresolved"]
-            if miss or tab_warnings or body_warnings:
+            metadata_warnings = [dict(w, doc=name, title=s.title or "(untitled)")
+                                 for w in s.warnings
+                                 if w.get("code") == "opening_metadata_conflict"]
+            chord_warnings = [dict(w, doc=name, title=s.title or "(untitled)")
+                              for w in s.warnings
+                              if w.get("code") == "ordered_chord_token_unresolved"]
+            if miss or tab_warnings or body_warnings or metadata_warnings or chord_warnings:
                 flagged.append({"doc": name, "title": s.title or "(untitled)",
                                 "missing": miss,
                                 "unresolved_placements": tab_warnings,
-                                "unresolved_plain_text_body": body_warnings})
+                                "unresolved_plain_text_body": body_warnings,
+                                "opening_metadata_conflicts": metadata_warnings,
+                                "unresolved_ordered_chord_tokens": chord_warnings})
         # fold this doc's totals into the corpus counter
         corpus.update(agg)
         corpus["songs"] += len(songs)
@@ -172,7 +186,9 @@ def run(input_dir: str, output_dir: str, per_doc: bool, strict: bool) -> int:
         "corpus_totals": {k: corpus[k] for k in
                           ("lyric", "progression", "repeat", "raw",
                            "low_confidence", "unresolved_word_tab_placement",
-                           "unresolved_plain_text_body")},
+                           "unresolved_plain_text_body",
+                           "opening_metadata_conflicts",
+                           "unresolved_ordered_chord_tokens")},
         "docs": doc_reports,
         "flagged_songs": flagged,
         "failures": failures,
@@ -205,6 +221,10 @@ def _print_summary(report: dict) -> None:
           f"{ct['unresolved_word_tab_placement']} (load blocked)")
     print(f"  Unresolved plain-text bodies: "
           f"{ct['unresolved_plain_text_body']} (load blocked)")
+    print(f"  Opening metadata conflicts: "
+          f"{ct['opening_metadata_conflicts']} (load blocked)")
+    print(f"  Unresolved ordered chord tokens: "
+          f"{ct['unresolved_ordered_chord_tokens']} (load blocked)")
     print("-" * 64)
     print("  Per doc:")
     for d in report["docs"]:
@@ -218,7 +238,9 @@ def _print_summary(report: dict) -> None:
         print(f"  ⚠ {len(report['flagged_songs'])} songs flagged for review:")
         for f in report["flagged_songs"][:40]:
             all_warnings = (f.get("unresolved_placements", [])
-                            + f.get("unresolved_plain_text_body", []))
+                            + f.get("unresolved_plain_text_body", [])
+                            + f.get("opening_metadata_conflicts", [])
+                            + f.get("unresolved_ordered_chord_tokens", []))
             codes = sorted({w["code"] for w in all_warnings})
             detail = (f"missing: {', '.join(f['missing'])}"
                       if f["missing"] else "")

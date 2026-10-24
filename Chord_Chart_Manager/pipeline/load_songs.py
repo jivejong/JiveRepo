@@ -86,7 +86,9 @@ def validate_parser_diagnostics(songs: list[dict]) -> None:
                 "reparse with the current parser"
             )
         for warning in warnings:
-            if warning.get("code") in ("word_tab_placement_unresolved", "plain_text_body_unresolved"):
+            if warning.get("code") in (
+                    "word_tab_placement_unresolved", "plain_text_body_unresolved",
+                    "opening_metadata_conflict", "ordered_chord_token_unresolved"):
                 code = warning["code"]
                 problems.append(
                     f"[{index}] {song.get('source_document') or '(unknown document)'} / "

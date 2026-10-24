@@ -27,6 +27,7 @@ export function createAutoScrollController({
   let frame = null;
   let previousTime = null;
   let position = 0;
+  let lastWrittenScrollTop = null;
   let speed = AUTO_SCROLL_DEFAULT_SPEED;
   let running = false;
 
@@ -42,6 +43,17 @@ export function createAutoScrollController({
   const tick = timestamp => {
     frame = null;
     if (!running || !element) return;
+    const actualTop = element.scrollTop;
+    if (lastWrittenScrollTop !== null && actualTop !== lastWrittenScrollTop) {
+      position = actualTop;
+    }
+    const bottom = Math.max(0, element.scrollHeight - element.clientHeight);
+    if (actualTop >= bottom) {
+      position = bottom;
+      pause();
+      onBottom(true);
+      return;
+    }
     if (previousTime !== null) {
       const elapsedMilliseconds = timestamp - previousTime;
       if (elapsedMilliseconds > AUTO_SCROLL_FRAME_GAP_RESET_MS) {
@@ -52,9 +64,9 @@ export function createAutoScrollController({
         return;
       }
       const elapsedSeconds = Math.max(0, elapsedMilliseconds) / 1000;
-      const bottom = Math.max(0, element.scrollHeight - element.clientHeight);
       position = Math.min(bottom, position + speed * elapsedSeconds);
       element.scrollTop = position;
+      lastWrittenScrollTop = element.scrollTop;
       if (position >= bottom) {
         element.scrollTop = bottom;
         pause();
@@ -71,6 +83,7 @@ export function createAutoScrollController({
       if (running) return true;
       element = target;
       position = element?.scrollTop ?? 0;
+      lastWrittenScrollTop = position;
       speed = clampAutoScrollSpeed(nextSpeed);
       if (!element || element.scrollHeight <= element.clientHeight
           || element.scrollTop >= element.scrollHeight - element.clientHeight) {
@@ -88,6 +101,7 @@ export function createAutoScrollController({
     stop() {
       pause();
       element = null;
+      lastWrittenScrollTop = null;
       previousTime = null;
     },
     setSpeed(value) { speed = clampAutoScrollSpeed(value); },

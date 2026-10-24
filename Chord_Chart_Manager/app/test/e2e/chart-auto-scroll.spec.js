@@ -30,7 +30,7 @@ const test = base.extend({
   }, { timeout: 60_000 }],
 });
 
-test('auto-scroll is manual, timed, offline, input-aware, and cleaned up', async ({ page, request, context, t15Fixtures }) => {
+test('auto-scroll is manual, timed, continues through manual scrolling, and is cleaned up', async ({ page, request, context, t15Fixtures }) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.message));
   const suffix = randomUUID();
@@ -158,14 +158,17 @@ test('auto-scroll is manual, timed, offline, input-aware, and cleaned up', async
     await expect.poll(() => scroller.evaluate(node => node.scrollTop), { timeout: 3000 })
       .toBeGreaterThan(offlineStart);
 
-    // Intentional vertical wheel input pauses without resetting position.
+    // Manual vertical interactions move the active scroller without pausing
+    // animation. Each interaction continues from its newly selected position.
     await scroller.hover();
+    const beforeWheel = await scroller.evaluate(node => node.scrollTop);
     await page.mouse.wheel(0, 140);
-    await expect(page.getByRole('button', { name: 'Start auto-scroll' })).toBeVisible();
-    const pausedAt = await scroller.evaluate(node => node.scrollTop);
+    await expect(page.getByRole('button', { name: 'Pause auto-scroll' })).toBeVisible();
+    await expect.poll(() => scroller.evaluate(node => node.scrollTop)).toBeGreaterThan(beforeWheel);
     await scroller.press('PageDown');
-    expect(await scroller.evaluate(node => node.scrollTop)).toBeGreaterThanOrEqual(pausedAt);
-    await page.getByRole('button', { name: 'Start auto-scroll' }).click();
+    await expect(page.getByRole('button', { name: 'Pause auto-scroll' })).toBeVisible();
+    const keyboardPosition = await scroller.evaluate(node => node.scrollTop);
+    await expect.poll(() => scroller.evaluate(node => node.scrollTop)).toBeGreaterThan(keyboardPosition);
     const nativeScrollbar = await scroller.evaluate(node => {
       const rect = node.getBoundingClientRect();
       const width = node.offsetWidth - node.clientWidth;
@@ -185,7 +188,9 @@ test('auto-scroll is manual, timed, offline, input-aware, and cleaned up', async
       await page.mouse.down();
       await page.mouse.move(nativeScrollbar.x, nativeScrollbar.y - 30, { steps: 3 });
       await page.mouse.up();
-      await expect(page.getByRole('button', { name: 'Start auto-scroll' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Pause auto-scroll' })).toBeVisible();
+      const scrollbarPosition = await scroller.evaluate(node => node.scrollTop);
+      await expect.poll(() => scroller.evaluate(node => node.scrollTop)).toBeGreaterThan(scrollbarPosition);
     }
     await scroller.evaluate(node => {
       const rect = node.getBoundingClientRect();
@@ -198,7 +203,54 @@ test('auto-scroll is manual, timed, offline, input-aware, and cleaned up', async
       node.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'mouse',
         pointerId: 77, clientX: x, clientY: y - 12 }));
     });
+    await expect(page.getByRole('button', { name: 'Pause auto-scroll' })).toBeVisible();
+
+    // End native wheel/keyboard motion before testing controlled repositioning.
+    await page.getByRole('button', { name: 'Pause auto-scroll' }).click();
+    await context.setOffline(false);
+    await page.reload();
+    await page.locator('.song-row').filter({ hasText: titles[0] }).click();
+    await page.getByRole('button', { name: 'Start auto-scroll' }).click();
+    await expect(page.getByRole('button', { name: 'Pause auto-scroll' })).toBeVisible();
+
+    // Synthetic touch verifies handler state. Direct repositioning verifies
+    // continuation from the selected position without native input in flight.
+    const touchSetup = await scroller.evaluate(node => {
+      node.style.scrollBehavior = 'auto';
+      node.scrollTop = Math.floor((node.scrollHeight - node.clientHeight) / 2);
+      return { top: node.scrollTop, requested: Math.floor((node.scrollHeight - node.clientHeight) / 2),
+        max: node.scrollHeight - node.clientHeight };
+    });
+    const beforeUpwardSwipe = touchSetup.top;
+    expect(beforeUpwardSwipe).toBeGreaterThan(100);
+    const touchResult = await scroller.evaluate(node => {
+      const rect = node.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height * 0.7;
+      const fire = (type, clientY) => {
+        const point = new Touch({ identifier: 71, target: node, clientX: x, clientY });
+        node.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true,
+          changedTouches: [point], touches: type === 'touchend' ? [] : [point] }));
+      };
+      fire('touchstart', y); fire('touchmove', y + 110); fire('touchend', y + 110);
+      node.scrollTop = Math.max(0, node.scrollTop - 80);
+      return { top: node.scrollTop, at: performance.now() };
+    });
+    const swipePosition = touchResult.top;
+    await expect(page.getByRole('button', { name: 'Pause auto-scroll' })).toBeVisible();
+    expect(swipePosition).toBeLessThan(beforeUpwardSwipe);
+    await expect.poll(() => scroller.evaluate(node => node.scrollTop), { timeout: 3000 })
+      .toBeGreaterThan(swipePosition);
+    const continuation = await scroller.evaluate(node => ({ top: node.scrollTop, at: performance.now() }));
+    const elapsed = (continuation.at - touchResult.at) / 1000;
+    expect(continuation.top).toBeGreaterThan(swipePosition);
+    expect(continuation.top).toBeLessThanOrEqual(swipePosition + 10 * elapsed + 2);
+
+    await page.getByRole('button', { name: 'Pause auto-scroll' }).click();
     await expect(page.getByRole('button', { name: 'Start auto-scroll' })).toBeVisible();
+    const explicitlyPausedAt = await scroller.evaluate(node => node.scrollTop);
+    await page.waitForTimeout(180);
+    expect(await scroller.evaluate(node => node.scrollTop)).toBe(explicitlyPausedAt);
 
     await page.evaluate(() => {
       Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
@@ -215,11 +267,18 @@ test('auto-scroll is manual, timed, offline, input-aware, and cleaned up', async
     });
     await expect(page.getByRole('button', { name: 'Start auto-scroll' })).toBeVisible();
 
-    // Resume from current position, then stop exactly at the bottom.
-    await scroller.evaluate(node => { node.scrollTop = node.scrollHeight - node.clientHeight - 2; });
+    // Start away from bottom, then manually arrive there while running.
+    await scroller.evaluate(node => { node.scrollTop = 0; });
     await page.getByRole('button', { name: 'Start auto-scroll' }).click();
+    await expect(page.getByRole('button', { name: 'Pause auto-scroll' })).toBeVisible();
+    const manuallyReachedBottom = await scroller.evaluate(node => {
+      node.scrollTop = node.scrollHeight - node.clientHeight;
+      return node.scrollTop;
+    });
+    expect(manuallyReachedBottom).toBeGreaterThan(0);
     await expect(page.getByRole('status').filter({ hasText: 'At bottom' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Start auto-scroll' })).toBeVisible();
+    expect(await scroller.evaluate(node => node.scrollTop)).toBe(manuallyReachedBottom);
 
     // At tablet width, controls remain in-flow and usable. Offline remains active.
     await page.setViewportSize({ width: 768, height: 1024 });
@@ -233,6 +292,13 @@ test('auto-scroll is manual, timed, offline, input-aware, and cleaned up', async
     expect(tabletLayout.barTop).toBeGreaterThanOrEqual(tabletLayout.viewBottom - 1);
     expect(tabletLayout.barBottom).toBeLessThanOrEqual(1024);
     expect(tabletLayout.barWidth).toBeLessThanOrEqual(tabletLayout.innerWidth);
+
+    // The offline movement check is complete. Restore the server connection so
+    // navigation can fetch the second synthetic song even if it was not cached.
+    await context.setOffline(false);
+    await page.reload();
+    await page.locator('.song-row').filter({ hasText: titles[0] }).click();
+    await expect(page.locator('.chart-topbar-title')).toHaveText(titles[0]);
 
     // The chart-row swipe is claimed by its own horizontal scroller, not song navigation.
     const row = horizontalRow;

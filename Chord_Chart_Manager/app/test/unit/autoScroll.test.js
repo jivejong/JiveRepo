@@ -84,6 +84,35 @@ describe('auto-scroll timing', () => {
     expect(bottomValues.at(-1)).toBe(true);
   });
 
+  it.each([{ direction: 'upward', from: 50, to: 20 }, { direction: 'downward', from: 20, to: 55 }])(
+    'continues from an external $direction reposition', ({ from, to }) => {
+      const frames = makeFrames();
+      const target = makeScroller({ top: from, height: 1000, viewport: 100 });
+      const controller = createAutoScrollController(frames);
+      controller.start(target, 10);
+      frames.run(0);
+      frames.run(100);
+      target.scrollTop = to;
+      frames.run(200);
+      expect(target.scrollTop).toBe(to + 1);
+    });
+
+  it('stops at a manually reached bottom without snapping back', () => {
+    const frames = makeFrames();
+    const target = makeScroller({ top: 20, height: 1000, viewport: 100 });
+    const bottomValues = [];
+    const controller = createAutoScrollController({ ...frames, onBottom: value => bottomValues.push(value) });
+    controller.start(target, 10);
+    frames.run(0);
+    frames.run(100);
+    target.scrollTop = target.scrollHeight - target.clientHeight;
+    frames.run(200);
+    expect(target.scrollTop).toBe(900);
+    expect(controller.running).toBe(false);
+    expect(frames.count).toBe(0);
+    expect(bottomValues.at(-1)).toBe(true);
+  });
+
   it('retains fractional distance when a browser rounds scrollTop writes', () => {
     const frames = makeFrames();
     let roundedTop = 0;

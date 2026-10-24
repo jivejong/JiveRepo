@@ -36,6 +36,30 @@ def _paragraph(*parts: str | None) -> str:
     return f"<w:p>{''.join(runs)}</w:p>"
 
 
+def _styled_paragraph(paragraph: str, style: str, extra_ppr: str = "") -> str:
+    ppr = f'<w:pPr><w:pStyle w:val="{style}"/>{extra_ppr}</w:pPr>'
+    return paragraph.replace("<w:p>", f"<w:p>{ppr}", 1)
+
+
+def _heading(*parts: str | None) -> str:
+    return _paragraph(*parts).replace(
+        "<w:p>", '<w:p><w:pPr><w:outlineLvl w:val="1"/></w:pPr>', 1)
+
+
+def _bold_paragraph(paragraph: str) -> str:
+    return paragraph.replace("<w:r>", "<w:r><w:rPr><w:b/></w:rPr>", 1)
+
+
+_HEADING_STYLES = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:style w:type="paragraph" w:styleId="Normal"/>'
+    '<w:style w:type="paragraph" w:styleId="Heading2">'
+    '<w:basedOn w:val="Normal"/><w:pPr><w:outlineLvl w:val="1"/></w:pPr>'
+    '</w:style></w:styles>'
+)
+
+
 def _with_paragraph_tab_stop(paragraph: str) -> str:
     definition = ('<w:pPr><w:tabs><w:tab w:val="left" w:pos="720"/>'
                   '</w:tabs></w:pPr>')
@@ -48,8 +72,7 @@ def _write_docx(path: Path, paragraphs: list[str], styles_xml: str | None = None
            f"<w:body>{''.join(paragraphs)}<w:sectPr/></w:body></w:document>")
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as docx:
         docx.writestr("word/document.xml", xml.encode("utf-8"))
-        if styles_xml is not None:
-            docx.writestr("word/styles.xml", styles_xml.encode("utf-8"))
+        docx.writestr("word/styles.xml", (styles_xml or _HEADING_STYLES).encode("utf-8"))
 
 
 def _word_tab_paragraph(*parts: str | None, font_size: int = 16) -> str:
@@ -66,23 +89,17 @@ def _word_tab_paragraph(*parts: str | None, font_size: int = 16) -> str:
 
 def _synthetic_docx(path: Path) -> None:
     paragraphs = [
-        _paragraph("Synthetic One – G", None, "Example Band", None, "D"),
+        _heading("Synthetic One – G", None, "Example Band", None, "D"),
         _paragraph("BB: Intro-V-C | capo 2 | D-118"),
         _paragraph("[Verse 1]"),
         _paragraph("{G}Invented phrase one."),
         _paragraph("C   G"),
         _paragraph("Invented phrase two."),
-        _paragraph("Synthetic Two – Am", None, "Another Ensemble"),
+        _heading("Synthetic Two – Am", None, "Another Ensemble"),
         _paragraph("[Intro] Am C"),
         _paragraph("Invented refrain line."),
     ]
-    xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        f"<w:body>{''.join(paragraphs)}<w:sectPr/></w:body></w:document>"
-    )
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as docx:
-        docx.writestr("word/document.xml", xml.encode("utf-8"))
+    _write_docx(path, paragraphs)
 
 
 def test_parser_extracts_metadata_and_song_boundaries(tmp_path: Path) -> None:
@@ -124,7 +141,7 @@ def test_parser_extracts_metadata_and_song_boundaries(tmp_path: Path) -> None:
 def test_docx_pipe_chord_row_retains_literal_source_order(tmp_path: Path) -> None:
     document = tmp_path / "synthetic_pipe_chord.docx"
     _write_docx(document, [
-        _paragraph("Synthetic Pipe Song – G", None, "Example Band"),
+        _heading("Synthetic Pipe Song – G", None, "Example Band"),
         _paragraph("[Verse]"),
         _paragraph("G  D | C G | Em F | G"),
         _paragraph("Invented lyric line."),
@@ -163,10 +180,647 @@ def test_ordinary_source_keeps_pipe_rows_raw_and_plain_body_round_trips() -> Non
     assert not chart_parser.is_decorated_chord_line("e|--0-2-3--|")
 
 
+def test_ordered_chord_rows_match_shared_fixture_and_preserve_literal_source() -> None:
+    cases = json.loads((Path(__file__).parent / "fixtures" / "ordered_chord_rows.json").read_text())
+    for case in cases:
+        analyzed_text = case.get("analysis_text", case["text"])
+        analysis = chart_parser.ordered_chord_analysis(analyzed_text)
+        assert bool(analysis["literal"]) is case["literal"], case["text"]
+        spans = [[item["start"], item["end"], item["symbol"]] for item in analysis["spans"]]
+        assert spans == case["spans"], case["text"]
+        if "partial_transposition" in case:
+            assert analysis["partial_transposition"] is case["partial_transposition"]
+            assert [item["text"] for item in analysis["unresolved_tokens"]] == case.get(
+                "unresolved_tokens", [])
+        if "ambiguous" in case:
+            assert analysis["ambiguous"] is case["ambiguous"]
+
+        heading = chart_parser.Paragraph("Shared Fixture – G\x01Artist", None, outline_level=1)
+        body = chart_parser.Paragraph(case["text"], None, source_index=2)
+        song = chart_parser.parse_songs([heading, body])[0]
+        if "expected_type" not in case:
+            assert song.chart_source.rstrip("\n") == case["text"]
+        round_trip = chart_parser.parse_ordinary_chart_source(song.chart_source)
+        assert round_trip == song.chart_content
+        first = song.chart_content["sections"][0]["lines"][0]
+        if case["literal"]:
+            assert first == {"type": "raw", "text": case.get("section_tail", case["text"])}
+        elif "expected_type" in case:
+            assert first["type"] == case["expected_type"]
+            assert first["chords"] == []
+            assert first["text"] == case.get("analysis_text", case["text"])
+            if case["text"] == "A 50% C":
+                assert song.chart_source == "A 50% C\n"
+        else:
+            assert first == {"type": "progression", "chords": ["G", "C", "G"]}
+
+
+def test_bracketed_section_tail_preserves_interleaved_bars_and_transposes_spans() -> None:
+    source = "[Intro] | G | % | Em | % | 2X"
+    heading = chart_parser.Paragraph("Section Tail Fixture – G\x01Artist", None,
+                                     outline_level=1)
+    song = chart_parser.parse_songs([heading, chart_parser.Paragraph(source, None)])[0]
+    expected_line = {"type": "raw", "text": " | G | % | Em | % | 2X"}
+    assert song.chart_content["sections"][0]["lines"] == [expected_line]
+    assert song.chart_source == source + "\n"
+    assert chart_parser.parse_ordinary_chart_source(song.chart_source) == song.chart_content
+    analysis = chart_parser.ordered_chord_analysis(expected_line["text"])
+    assert [(span["symbol"], span["start"], span["end"]) for span in analysis["spans"]] == [
+        ("G", 3, 4), ("Em", 11, 13),
+    ]
+
+
+def test_tabbed_decorated_chord_rows_keep_literal_order_and_round_trip() -> None:
+    heading = chart_parser.Paragraph("Tabbed Ordered Row – G\x01Artist", None,
+                                     outline_level=1)
+    row = chart_parser.Paragraph("G -\x01C\x01(4x)", None)
+    song = chart_parser.parse_songs([heading, row])[0]
+
+    assert song.chart_content["sections"][0]["lines"] == [
+        {"type": "raw", "text": row.text_spaces},
+    ]
+    assert song.chart_source == row.text_spaces + "\n"
+    assert chart_parser.parse_ordinary_chart_source(song.chart_source) == song.chart_content
+
+
+def test_opening_metadata_is_bounded_and_separate_from_performance_key() -> None:
+    heading = chart_parser.Paragraph("Go Your Own Way – G (Bb)\x01Fleetwood Mac", None,
+                                     outline_level=1, source_index=1)
+    metadata = chart_parser.Paragraph("Capo 3\x01F-135", None, source_index=2)
+    chart = chart_parser.Paragraph("[Verse] G - C", None, source_index=3)
+    song = chart_parser.parse_songs([heading, metadata, chart])[0]
+    assert (song.performance_key, song.alt_key, song.original_key, song.capo_fret, song.bpm) == (
+        "G", "Bb", "F", 3, 135)
+    assert song.chart_source == "[Verse] G - C\n"
+    assert song.chart_content["sections"][0]["lines"] == [
+        {"type": "raw", "text": " G - C"},
+    ]
+
+    original_heading = chart_parser.Paragraph("Weather – G\x01Band", None,
+                                               outline_level=1, source_index=4)
+    original = chart_parser.Paragraph("orig Db", None, source_index=5)
+    source = chart_parser.Paragraph("[Verse] C", None, source_index=6)
+    weather = chart_parser.parse_songs([original_heading, original, source])[0]
+    assert (weather.performance_key, weather.original_key, weather.bpm, weather.capo_fret) == (
+        "G", "Db", None, 0)
+    assert weather.chart_source == "[Verse] C\n"
+
+    lookalike = chart_parser.Paragraph("Capo 2 is a lyric-like body phrase", None, source_index=8)
+    later = chart_parser.parse_songs([original_heading, source, lookalike])[0]
+    assert later.capo_fret == 0
+    assert "Capo 2 is a lyric-like body phrase" in later.chart_source
+
+
+@pytest.mark.parametrize("annotation", ["A-120", "A - 120", "A \u2013 120"])
+def test_opening_original_key_bpm_accepts_bounded_separator_spacing(annotation: str) -> None:
+    heading = chart_parser.Paragraph("Metadata spacing \u2013 G\x01Band", None,
+                                     outline_level=1, source_index=41)
+    opening = chart_parser.Paragraph(annotation, None, source_index=42)
+    chart = chart_parser.Paragraph("[Verse] C - G", None, source_index=43)
+    body_lookalike = chart_parser.Paragraph("A - 120", None, source_index=44)
+    song = chart_parser.parse_songs([heading, opening, chart, body_lookalike])[0]
+
+    assert (song.performance_key, song.original_key, song.bpm) == ("G", "A", 120)
+    assert song.chart_source == "[Verse] C - G\nA - 120\n"
+    assert song.chart_content["sections"][0]["lines"][0]["text"] == " C - G"
+    assert song.chart_content["sections"][0]["lines"][1]["text"] == "A - 120"
+    assert not song.warnings
+
+
+def test_opening_key_bpm_conflict_preserves_annotation_and_blocks_loader() -> None:
+    heading = chart_parser.Paragraph("Metadata conflict \u2013 G\x01Band\x01E", None,
+                                     outline_level=1, source_index=51)
+    opening = chart_parser.Paragraph(" A \u2013 120 ", None, source_index=52)
+    song = chart_parser.parse_songs([heading, opening])[0]
+
+    assert song.performance_key == "G"
+    assert song.original_key == "E"
+    assert song.bpm is None
+    assert song.chart_source == " A \u2013 120 \n"
+    assert song.chart_content["sections"][0]["lines"][0] == {
+        "type": "lyric", "text": " A \u2013 120 ", "chords": [], "confidence": "high",
+    }
+    assert song.warnings == [{
+        "code": "opening_metadata_conflict", "section": "?", "line": "?",
+        "reason": "conflicting_opening_metadata:original_key", "paragraph": 52, "span": 1,
+    }]
+    with pytest.raises(ValueError, match="opening_metadata_conflict"):
+        validate_parser_diagnostics([chart_parser.song_to_dict(song)])
+
+
+def test_mixed_raw_chord_row_pairs_with_following_lyric_and_reports_partial_token() -> None:
+    heading = chart_parser.Paragraph("Literal Pair \u2013 G\x01Band", None,
+                                     outline_level=1, source_index=60)
+    row = chart_parser.Paragraph("  C - G - D/G5x  ", None, source_index=61)
+    lyric = chart_parser.Paragraph("  lyric placeholder  ", None, source_index=62)
+    song = chart_parser.parse_songs([heading, row, lyric])[0]
+
+    lines = song.chart_content["sections"][0]["lines"]
+    assert lines[0] == {
+        "type": "raw", "text": "  C - G - D/G5x  ", "paired_to_next": True,
+        "chord_spans": [
+            {"symbol": "C", "start": 2, "end": 3},
+            {"symbol": "G", "start": 6, "end": 7},
+        ],
+    }
+    assert lines[1] == {
+        "type": "lyric", "text": "  lyric placeholder  ", "chords": [], "confidence": "high",
+    }
+    assert song.chart_source == "  C - G - D/G5x  \n  lyric placeholder  \n"
+    assert chart_parser.parse_ordinary_chart_source(song.chart_source) == song.chart_content
+    assert song.warnings == [{
+        "code": "ordered_chord_token_unresolved", "section": 1, "line": 1,
+        "reason": "unsupported_chord_like_token:D/G5x", "paragraph": 61, "span": 1,
+    }]
+    assert batch_parse.song_stats(song)["unresolved_ordered_chord_tokens"] == 1
+    with pytest.raises(ValueError, match="ordered_chord_token_unresolved"):
+        validate_parser_diagnostics([chart_parser.song_to_dict(song)])
+
+
+def test_chord_like_substring_inside_unsupported_token_is_not_a_span() -> None:
+    analysis = chart_parser.ordered_chord_analysis("C - G - D/Guitar5x")
+    assert [span["symbol"] for span in analysis["spans"]] == ["C", "G"]
+    assert analysis["unresolved_tokens"] == []
+    assert analysis["prose_tokens"] == [{"start": 8, "end": 18, "text": "D/Guitar5x"}]
+    assert not analysis["partial_transposition"]
+
+
+def test_conflicting_opening_metadata_stays_visible_and_blocks_loader() -> None:
+    heading = chart_parser.Paragraph("Conflict – G (Bb)\x01Band", None,
+                                     outline_level=1, source_index=11)
+    metadata = chart_parser.Paragraph("Capo 2\x01F-135", None, source_index=12)
+    song = chart_parser.parse_songs([heading, metadata])[0]
+    assert song.capo_fret == 3
+    assert song.chart_source == "Capo 2 F-135\n"
+    assert song.warnings == [{
+        "code": "opening_metadata_conflict", "section": "?", "line": "?",
+        "reason": "conflicting_opening_metadata:capo", "paragraph": 12, "span": 1,
+    }]
+    with pytest.raises(ValueError, match="opening_metadata_conflict"):
+        validate_parser_diagnostics([chart_parser.song_to_dict(song)])
+
+
+@pytest.mark.parametrize(("heading", "bb_value", "expected_capo", "expected_key", "expected_bpm",
+                          "reason", "paragraph"), [
+    ("Capo Conflict – G (A)\x01Band", " Intro-V-C | capo 3 | E-120",
+     2, "E", 120, "conflicting_opening_metadata:capo", 22),
+    ("Key Conflict – G\x01Band\x01E", " Intro-V-C | F-120",
+     0, "E", 120, "conflicting_opening_metadata:original_key", 32),
+])
+def test_conflicting_bb_metadata_retains_complete_value_and_blocks_loader(
+        heading: str, bb_value: str, expected_capo: int, expected_key: str,
+        expected_bpm: int | None, reason: str, paragraph: int) -> None:
+    song = chart_parser.parse_songs([
+        chart_parser.Paragraph(heading, None, outline_level=1, source_index=21),
+        chart_parser.Paragraph("BB:" + bb_value, None, source_index=paragraph),
+        chart_parser.Paragraph("[Verse] G - C", None, source_index=paragraph + 1),
+    ])[0]
+
+    assert song.bb_structure == bb_value
+    assert (song.capo_fret, song.original_key, song.bpm) == (
+        expected_capo, expected_key, expected_bpm)
+    assert song.chart_source == "[Verse] G - C\n"
+    assert chart_parser.parse_ordinary_chart_source(song.chart_source) == song.chart_content
+    assert song.warnings == [{
+        "code": "opening_metadata_conflict", "section": "?", "line": "?",
+        "reason": reason, "paragraph": paragraph, "span": 1,
+    }]
+    with pytest.raises(ValueError, match="opening_metadata_conflict"):
+        validate_parser_diagnostics([chart_parser.song_to_dict(song)])
+
+
+def test_only_effective_outline_headings_start_songs(tmp_path: Path) -> None:
+    document = tmp_path / "heading-only-boundaries.docx"
+    nonheading = _styled_paragraph(
+        _bold_paragraph(_paragraph("  Body Title - C  ", None, "Looks Like Artist")),
+        "Normal", "<w:pageBreakBefore/>")
+    blank_heading = _styled_paragraph(_paragraph(""), "Heading2")
+    rendered = _paragraph("Rendered Title - D", None, "Looks Like Artist").replace(
+        "</w:p>", "<w:r><w:lastRenderedPageBreak/></w:r></w:p>")
+    _write_docx(document, [
+        _heading("Opening Song - G", None, "First Band"),
+        blank_heading,
+        nonheading,
+        _paragraph("  G - C  "),
+        _paragraph("[Bridge] G - C - D"),
+        rendered,
+        _heading("Closing Song - E", None, "Last Band"),
+    ])
+
+    paragraphs = chart_parser.load_paragraphs(str(document))
+    songs = chart_parser.parse_docx(str(document))
+
+    assert [(song.title, song.artist) for song in songs] == [
+        ("Opening Song", "First Band"), ("Closing Song", "Last Band"),
+    ]
+    assert paragraphs[1].stripped == ""
+    assert paragraphs[1].outline_level == 1
+    assert paragraphs[2].outline_level is None
+    assert paragraphs[2].page_break_before is True
+    assert paragraphs[2].text == "  Body Title - C  \x01Looks Like Artist"
+    assert paragraphs[2].text_spaces == "  Body Title - C   Looks Like Artist"
+    assert paragraphs[5].rendered_page_break_count == 1
+    body = songs[0].chart_content
+    located_lines = [
+        (section["label"], line)
+        for section in body["sections"] for line in section["lines"]
+    ]
+    assert located_lines[0] == (
+        None, {"type": "lyric", "text": "  Body Title - C   Looks Like Artist",
+               "chords": [], "confidence": "high"})
+    assert located_lines[1] == (
+        None, {"type": "raw", "text": "  G - C  "})
+    assert songs[0].chart_source is not None
+    assert chart_parser.parse_ordinary_chart_source(songs[0].chart_source) == body
+    assert located_lines[2][0] == "Bridge"
+    assert located_lines[2][1] == {"type": "raw", "text": " G - C - D"}
+    assert located_lines[-1] == (
+        "Bridge", {"type": "lyric", "text": paragraphs[5].text_spaces, "chords": [],
+                   "confidence": "high"})
+    assert [(song.title, song.artist) for song in songs] == [
+        ("Opening Song", "First Band"), ("Closing Song", "Last Band"),
+    ]
+    assert songs[0].chart_source is not None
+    assert chart_parser.parse_ordinary_chart_source(songs[0].chart_source) == body
+
+
+def test_nonheading_bold_and_tabs_do_not_create_song_boundaries(tmp_path: Path) -> None:
+    document = tmp_path / "nonheading-formatting.docx"
+    bold_title = _styled_paragraph(
+        _bold_paragraph(_paragraph("Bold Title - C")), "Normal")
+    inherited_bold = _styled_paragraph(
+        _paragraph("Inherited Bold Title - D"), "Normal")
+    mark_bold = _styled_paragraph(
+        _paragraph("Paragraph Mark - D", None, "Possible Band"), "Normal",
+        "<w:rPr><w:b/></w:rPr>")
+    styles = _HEADING_STYLES.replace(
+        '<w:style w:type="paragraph" w:styleId="Normal"/>',
+        '<w:style w:type="paragraph" w:styleId="Normal"><w:rPr><w:b/></w:rPr></w:style>')
+    _write_docx(document, [
+        _heading("Opening - G", None, "First Band"), bold_title, inherited_bold, mark_bold,
+        _paragraph("Tabbed Title - A", None, "Possible Band"),
+        _heading("Closing - E", None, "Last Band"),
+    ], styles)
+
+    songs = chart_parser.parse_docx(str(document))
+
+    assert [(song.title, song.artist) for song in songs] == [
+        ("Opening", "First Band"), ("Closing", "Last Band"),
+    ]
+    chart_json = json.dumps(songs[0].chart_content, ensure_ascii=False)
+    assert all(label in chart_json for label in (
+        "Bold Title", "Inherited Bold Title", "Paragraph Mark", "Tabbed Title", "Possible Band"))
+
+
+def test_outline_heading_levels_and_direct_overrides_define_boundaries(tmp_path: Path) -> None:
+    document = tmp_path / "word-outline-boundaries.docx"
+    styles = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:style w:type="paragraph" w:styleId="Normal" w:default="1">'
+        '<w:pPr><w:outlineLvl w:val="9"/></w:pPr></w:style>'
+        '<w:style w:type="paragraph" w:styleId="Base">'
+        '<w:pPr><w:outlineLvl w:val="2"/><w:pageBreakBefore/></w:pPr></w:style>'
+        '<w:style w:type="paragraph" w:styleId="NearBody"><w:basedOn w:val="Base"/>'
+        '<w:pPr><w:outlineLvl w:val="9"/><w:pageBreakBefore w:val="0"/></w:pPr></w:style>'
+        '<w:style w:type="paragraph" w:styleId="NearHeading"><w:basedOn w:val="NearBody"/>'
+        '<w:pPr><w:outlineLvl w:val="8"/></w:pPr></w:style>'
+        '</w:styles>')
+    _write_docx(document, [
+        _styled_paragraph(_paragraph("Direct Heading - C", None, "Band"), "Normal",
+                          "<w:outlineLvl w:val=\"0\"/>"),
+        _styled_paragraph(_paragraph("Inherited Body - D", None, "Band"), "NearBody"),
+        _styled_paragraph(_paragraph("Direct Body - A", None, "Band"), "Base",
+                          "<w:outlineLvl w:val=\"9\"/><w:pageBreakBefore w:val=\"false\"/>"),
+        _styled_paragraph(_paragraph("Inherited Heading - G", None, "Band"), "NearHeading"),
+        _styled_paragraph(_paragraph("Inherited Break Heading – D", None, "Band"), "Base"),
+        _styled_paragraph(_paragraph("Direct Break Heading – E", None, "Band"), "NearBody",
+                          "<w:outlineLvl w:val=\"1\"/><w:pageBreakBefore/>"),
+    ], styles)
+
+    paragraphs = chart_parser.load_paragraphs(str(document))
+    songs = chart_parser.parse_docx(str(document))
+
+    assert [p.outline_level for p in paragraphs] == [0, 9, 9, 8, 2, 1]
+    assert [p.page_break_before for p in paragraphs] == [
+        False, False, False, False, True, True,
+    ]
+    assert [song.title for song in songs] == [
+        "Direct Heading", "Inherited Heading", "Inherited Break Heading",
+        "Direct Break Heading",
+    ]
+    assert "Inherited Body - D" in json.dumps(songs[0].chart_content, ensure_ascii=False)
+    assert "Direct Body - A" in json.dumps(songs[0].chart_content, ensure_ascii=False)
+
+
+def test_default_paragraph_style_can_supply_heading_without_pstyle(tmp_path: Path) -> None:
+    document = tmp_path / "default-heading-no-pstyle.docx"
+    styles = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:style w:type="paragraph" w:styleId="DefaultHeading" w:default="1">'
+        '<w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style>'
+        '<w:style w:type="paragraph" w:styleId="Body"><w:pPr>'
+        '<w:outlineLvl w:val="9"/></w:pPr></w:style></w:styles>')
+    implicit_heading = _paragraph("Implicit Heading – C", None, "First Band")
+    body = _styled_paragraph(_paragraph("following chart content"), "Body")
+    _write_docx(document, [implicit_heading, body], styles)
+
+    paragraphs = chart_parser.load_paragraphs(str(document))
+    songs = chart_parser.parse_docx(str(document))
+
+    assert paragraphs[0].style is None
+    assert paragraphs[0].outline_level == 0
+    assert [(song.title, song.artist) for song in songs] == [
+        ("Implicit Heading", "First Band"),
+    ]
+    assert "following chart content" in json.dumps(
+        songs[0].chart_content, ensure_ascii=False)
+
+
+def test_chart_like_content_before_first_heading_blocks_with_location(tmp_path: Path) -> None:
+    document = tmp_path / "preheading-chart.docx"
+    _write_docx(document, [_paragraph("[Verse] C G"), _heading("Song - C", None, "Band")])
+
+    with pytest.raises(ValueError, match=r"pre_heading_chart_content_unresolved paragraph=1 span=1"):
+        chart_parser.parse_docx(str(document))
+
+
+def test_explicit_page_break_splits_spans_without_creating_song_boundaries(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    document = tmp_path / "interior-page-break.docx"
+    after_break = '<w:t>Next Song – D</w:t><w:tab/><w:t>Next Band</w:t>'
+    body_and_title = (
+        '<w:p><w:r><w:t>continuing chart span</w:t><w:br w:type="page"/>'
+        f'{after_break}</w:r></w:p>'
+    )
+    continuing = (
+        '<w:p><w:r><w:t>line before break</w:t><w:br w:type="page"/>'
+        '<w:t>line after break</w:t></w:r></w:p>'
+    )
+    _write_docx(document, [
+        _styled_paragraph(_paragraph("First Song – C", None, "First Band"), "Heading2"),
+        continuing,
+        body_and_title,
+        _paragraph("next chart content"),
+    ], _HEADING_STYLES)
+
+    original_boundary = chart_parser._is_song_boundary_candidate
+    original_docx_title_spans: list[tuple[int | None, int | None]] = []
+    internal_round_trip_title_spans: list[tuple[int | None, int | None]] = []
+
+    def observe_spans(paragraph):
+        if paragraph.stripped.startswith("Next Song"):
+            location = (paragraph.source_index, paragraph.source_span_index)
+            if paragraph.source_index is None:
+                internal_round_trip_title_spans.append(location)
+            else:
+                original_docx_title_spans.append(location)
+        return original_boundary(paragraph)
+
+    monkeypatch.setattr(chart_parser, "_is_song_boundary_candidate", observe_spans)
+    songs = chart_parser.parse_docx(str(document))
+
+    assert [(song.title, song.artist) for song in songs] == [
+        ("First Song", "First Band"),
+    ]
+    assert songs[0].chart_source is not None
+    assert songs[0].chart_content == chart_parser.parse_ordinary_chart_source(
+        songs[0].chart_source)
+    serialized = json.dumps(songs[0].chart_content, ensure_ascii=False)
+    assert all(text in serialized for text in (
+        "line before break", "line after break", "continuing chart span",
+        "Next Song", "Next Band", "next chart content"))
+    assert original_docx_title_spans == [(3, 2)]
+    assert internal_round_trip_title_spans
+    assert all(source_index is None for source_index, _ in internal_round_trip_title_spans)
+
+
+def test_section_tail_separate_fallback_checks_full_chart_including_confidence(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    document = tmp_path / "section-tail-fallback.docx"
+    _write_docx(document, [
+        _heading("Tail Song – C", None, "Example Band"),
+        _paragraph("[Verse] e|--0--|"),
+        _paragraph("ordinary lyric line"),
+    ])
+    original_parse_songs = chart_parser.parse_songs
+    internal_round_trips = 0
+
+    def force_inline_comparison_mismatch(paragraphs, *args, **kwargs):
+        nonlocal internal_round_trips
+        result = original_parse_songs(paragraphs, *args, **kwargs)
+        if kwargs.get("_derive_plain_body") is False:
+            internal_round_trips += 1
+            if internal_round_trips == 1:
+                lyric = next(line for section in result[0].chart_content["sections"]
+                             for line in section["lines"] if line.get("type") == "lyric")
+                lyric["confidence"] = "synthetic_mismatch"
+        return result
+
+    monkeypatch.setattr(chart_parser, "parse_songs", force_inline_comparison_mismatch)
+    song = chart_parser.parse_docx(str(document))[0]
+
+    assert internal_round_trips == 2
+    separated, separated_error = chart_parser.plain_text_chart_body(song.chart_content)
+    assert separated_error is None
+    assert chart_parser.parse_ordinary_chart_source(separated) == song.chart_content
+    assert song.chart_source.startswith("[Verse]\n e|--0--|\n")
+    reparsed = chart_parser.parse_ordinary_chart_source(song.chart_source)
+    assert reparsed == song.chart_content
+    assert any(line.get("confidence") == "high"
+               for section in reparsed["sections"] for line in section["lines"])
+
+
+def test_structural_title_without_artist_keeps_artist_missing(tmp_path: Path) -> None:
+    document = tmp_path / "missing-artist-heading.docx"
+    _write_docx(document, [
+        _heading("Moondance – Am"),
+        _paragraph("C G"),
+    ], _HEADING_STYLES)
+
+    songs = chart_parser.parse_docx(str(document))
+
+    assert len(songs) == 1
+    assert songs[0].title == "Moondance"
+    assert songs[0].performance_key == "Am"
+    assert songs[0].artist is None
+    assert songs[0].warnings == []
+
+
+def test_parenthesized_heading_key_sets_capo_without_becoming_artist(tmp_path: Path) -> None:
+    document = tmp_path / "parenthesized-capo-key.docx"
+    _write_docx(document, [
+        _heading("Example One – D", None, "(E)", None, "Example Band"),
+        _paragraph("[Verse] D G"),
+        _heading("Example Two – D (E)", None, "Second Band", None, "G"),
+        _paragraph("[Verse] D A"),
+        _heading("Example Three – Dm", None, "(Em)", None, "Third Band"),
+        _paragraph("[Verse] Dm Gm"),
+    ])
+
+    songs = chart_parser.parse_docx(str(document))
+
+    assert [(song.title, song.artist, song.performance_key, song.alt_key,
+             song.original_key, song.capo_fret) for song in songs] == [
+        ("Example One", "Example Band", "D", "E", None, 2),
+        ("Example Two", "Second Band", "D", "E", "G", 2),
+        ("Example Three", "Third Band", "Dm", "Em", None, 2),
+    ]
+    assert all(song.warnings == [] for song in songs)
+    assert all(song.chart_source is not None and
+               chart_parser.parse_ordinary_chart_source(song.chart_source) == song.chart_content
+               for song in songs)
+
+
+def test_parenthesized_heading_key_with_incompatible_quality_is_blocking(tmp_path: Path) -> None:
+    document = tmp_path / "unresolved-capo-key.docx"
+    _write_docx(document, [
+        _heading("Example – Dm", None, "(E)", None, "Example Band"),
+        _paragraph("[Verse] Dm Gm"),
+    ])
+
+    song = chart_parser.parse_docx(str(document))[0]
+
+    assert (song.title, song.artist, song.performance_key, song.alt_key, song.capo_fret) == (
+        "Example", "Example Band", "Dm", "E", 0)
+    assert [(warning["reason"], warning["paragraph"], warning["span"])
+            for warning in song.warnings] == [("heading_capo_key_relation_unresolved", 1, 1)]
+    with pytest.raises(ValueError, match="heading_capo_key_relation_unresolved"):
+        validate_parser_diagnostics([chart_parser.song_to_dict(song)])
+
+
+def test_structural_heading_unresolved_fields_are_reported_without_inference(tmp_path: Path) -> None:
+    document = tmp_path / "unresolved-heading.docx"
+    heading = _heading("Candidate Title – G/C", None, "Known Band")
+    _write_docx(document, [
+        _heading("Opening – C", None, "First Band"), heading,
+        _paragraph("content after unresolved heading"),
+    ], _HEADING_STYLES)
+
+    songs = chart_parser.parse_docx(str(document))
+
+    assert [(song.title, song.artist) for song in songs] == [
+        ("Opening", "First Band"), ("Candidate Title", "Known Band"),
+    ]
+    assert songs[1].performance_key is None
+    assert songs[1].warnings == [{
+        "code": "plain_text_body_unresolved", "section": "?", "line": "?",
+        "reason": "unrecognized_heading_key_field", "paragraph": 2, "span": 1,
+        "style": None, "outline_level": 1, "page_break_before": False,
+        "candidate_title": "Candidate Title", "candidate_artist": "Known Band",
+        "candidate_performance_key": None, "candidate_key_field": "G/C",
+    }]
+    assert "content after unresolved heading" in json.dumps(
+        songs[1].chart_content, ensure_ascii=False)
+    with pytest.raises(ValueError, match="unrecognized_heading_key_field"):
+        validate_parser_diagnostics([chart_parser.song_to_dict(songs[1])])
+
+
+def test_single_unsupported_slash_key_heading_keeps_boundary_and_location(tmp_path: Path) -> None:
+    document = tmp_path / "single-unsupported-key.docx"
+    _write_docx(document, [
+        _heading("Opening – C", None, "First Band"),
+        _paragraph("opening chart content"),
+        _heading("Candidate Title – G/C"),
+        _paragraph("candidate chart content"),
+    ])
+
+    songs = chart_parser.parse_docx(str(document))
+
+    assert [(song.title, song.artist) for song in songs] == [
+        ("Opening", "First Band"), ("Candidate Title", None),
+    ]
+    assert songs[1].performance_key is None
+    assert songs[1].warnings == [{
+        "code": "plain_text_body_unresolved", "section": "?", "line": "?",
+        "reason": "unrecognized_heading_key_field", "paragraph": 3, "span": 1,
+        "style": None, "outline_level": 1, "page_break_before": False,
+        "candidate_title": "Candidate Title", "candidate_artist": None,
+        "candidate_performance_key": None, "candidate_key_field": "G/C",
+    }]
+    assert "opening chart content" in json.dumps(songs[0].chart_content)
+    assert "candidate chart content" in json.dumps(songs[1].chart_content)
+    with pytest.raises(ValueError, match="unrecognized_heading_key_field"):
+        validate_parser_diagnostics([chart_parser.song_to_dict(songs[1])])
+
+
+def test_artist_only_and_supported_key_headings_keep_existing_metadata(tmp_path: Path) -> None:
+    document = tmp_path / "supported-headings.docx"
+    _write_docx(document, [
+        _heading("Tabbed Artist", None, "AC/DC"),
+        _paragraph("first chart content"),
+        _heading("Dashed Artist - Known Band"),
+        _paragraph("second chart content"),
+        _heading("Supported – C", None, "Example Group", None, "G"),
+        _paragraph("third chart content"),
+    ])
+
+    songs = chart_parser.parse_docx(str(document))
+
+    assert [(song.title, song.artist, song.performance_key, song.original_key)
+            for song in songs] == [
+        ("Tabbed Artist", "AC/DC", None, None),
+        ("Dashed Artist", "Known Band", None, None),
+        ("Supported", "Example Group", "C", "G"),
+    ]
+    assert all(song.warnings == [] for song in songs)
+    for index, song in enumerate(songs, 1):
+        assert f"{('first', 'second', 'third')[index - 1]} chart content" in json.dumps(
+            song.chart_content)
+
+
+@pytest.mark.parametrize("paragraphs,expected_source,expected_type", [
+    ([_paragraph("[Verse] direction 2x")], "[Verse] direction 2x\n", "raw"),
+    ([_paragraph("[Intro] C D | Em F x2")], "[Intro] C D | Em F x2\n", "raw"),
+    ([_paragraph("Intro: C D | Em F x2")], "Intro: C D | Em F x2\n", "raw"),
+    ([_paragraph("[Intro] C D Em F x2")], "[Intro] C D Em F x2\n", "raw"),
+    ([_paragraph("Intro: C D Em F x2")], "Intro: C D Em F x2\n", "raw"),
+    ([_paragraph("Intro: lyric only phrase")], "[Intro]\nlyric only phrase\n", "lyric"),
+])
+def test_section_tails_keep_readable_exact_round_trips(
+        tmp_path: Path, paragraphs: list[str], expected_source: str,
+        expected_type: str) -> None:
+    document = tmp_path / "section-tail.docx"
+    _write_docx(document, [_heading("Tail Song – C", None, "Example Band"), *paragraphs])
+
+    song = chart_parser.parse_docx(str(document))[0]
+
+    lines = [line for section in song.chart_content["sections"] for line in section["lines"]]
+    assert lines[0]["type"] == expected_type
+    if expected_type == "progression":
+        assert lines[0]["repeat"] == 2
+    assert song.chart_source == expected_source
+    assert "[[CCM-" not in song.chart_source
+    assert chart_parser.parse_ordinary_chart_source(song.chart_source) == song.chart_content
+
+
+def test_curly_apostrophe_tabbed_lyric_keeps_blocking_warning_without_proven_metrics(
+        tmp_path: Path) -> None:
+    document = tmp_path / "curly-apostrophe-tab.docx"
+    _write_docx(document, [
+        _heading("Tab Pair – C", None, "Example Band"),
+        _paragraph("[Verse]"),
+        _word_tab_paragraph("C", None, "G"),
+        _word_tab_paragraph("A lyric with ’ apostrophe", None, "continued"),
+    ])
+
+    paragraphs = chart_parser.load_paragraphs(str(document))
+    lyric = paragraphs[3]
+    song = chart_parser.parse_docx(str(document))[0]
+
+    assert lyric.tab_layout_error == "unsupported_non_ascii_tabbed_paragraph"
+    assert lyric.physical_positions is None
+    assert any(w.get("reason") == "unsupported_non_ascii_tabbed_paragraph"
+               for w in song.warnings)
+    with pytest.raises(ValueError, match="unsupported_non_ascii_tabbed_paragraph"):
+        validate_parser_diagnostics([chart_parser.song_to_dict(song)])
+
+
 def test_supported_mixed_tabs_normalize_to_plain_text_without_blocking(tmp_path: Path) -> None:
     document = tmp_path / "mixed-tabs.docx"
     paragraphs = [
-        _paragraph("Tab Guard Song – C", None, "Invented Artist"),
+        _heading("Tab Guard Song – C", None, "Invented Artist"),
         _paragraph("[Verse]"),
         _word_tab_paragraph("C", None, "G   ", None, "D"),
         _word_tab_paragraph("invented lyric for tab guard"),
@@ -197,7 +851,7 @@ def test_paragraph_tab_stops_do_not_change_text_anchors_or_diagnostics(tmp_path:
     plain = tmp_path / "without-stops.docx"
     with_stops = tmp_path / "with-stops.docx"
     base = [
-        _paragraph("Tab Stop Control \u2013 C", None, "Invented Artist"),
+        _heading("Tab Stop Control \u2013 C", None, "Invented Artist"),
         _paragraph("[Verse]"), _paragraph("C   G"), _paragraph("invented lyric"),
     ]
     defined = [*base[:2], _with_paragraph_tab_stop(base[2]),
@@ -218,7 +872,7 @@ def test_tab_stops_and_inserted_tabs_preserve_only_actual_tabs(tmp_path: Path) -
     without_stops = tmp_path / "actual-tabs.docx"
     with_stops = tmp_path / "actual-tabs-and-stops.docx"
     base = [
-        _paragraph("Tab Stop Control \u2013 C", None, "Invented Artist"),
+        _heading("Tab Stop Control \u2013 C", None, "Invented Artist"),
         _paragraph("[Verse]"), _word_tab_paragraph("C", None, "G   ", None, "D"),
         _word_tab_paragraph("invented lyric"),
     ]
@@ -244,12 +898,13 @@ def test_tab_stops_and_inserted_tabs_preserve_only_actual_tabs(tmp_path: Path) -
 def test_unsupported_tabbed_font_still_blocks_load(tmp_path: Path) -> None:
     document = tmp_path / "unsupported-font.docx"
     chord = _word_tab_paragraph("C", None, "G", None, "D").replace("Courier New", "Arial")
-    paragraphs = [_paragraph("Unsupported Tab Song – C", None, "Invented Artist"),
+    paragraphs = [_heading("Unsupported Tab Song – C", None, "Invented Artist"),
                   _paragraph("[Verse]"), chord, _word_tab_paragraph("invented lyric")]
     _write_docx(document, paragraphs)
     song = chart_parser.parse_docx(str(document))[0]
     assert song.warnings == [{
         "code": "word_tab_placement_unresolved", "section": 1, "line": 1,
+        "paragraph": 3, "span": 1,
         "reason": "unsupported_tabbed_paragraph_font_or_size",
     }]
     with pytest.raises(ValueError, match="word_tab_placement_unresolved"):
@@ -262,7 +917,7 @@ def test_explicit_left_tab_stop_and_indent_are_measured_from_paragraph_origin(tm
         "<w:p>", '<w:p><w:pPr><w:ind w:left="120"/>'
         '<w:tabs><w:tab w:val="left" w:pos="480"/></w:tabs></w:pPr>', 1)
     _write_docx(document, [
-        _paragraph("Explicit Stop Song – C", None, "Invented Artist"),
+        _heading("Explicit Stop Song – C", None, "Invented Artist"),
         _paragraph("[Verse]"), chord, _word_tab_paragraph("invented lyric"),
     ])
     song = chart_parser.parse_docx(str(document))[0]
@@ -276,7 +931,7 @@ def test_tab_physical_width_scales_by_font_size_before_mapping_to_lyric_columns(
     document = tmp_path / "scaled-courier-tab.docx"
     chord = _word_tab_paragraph("C", None, "G", font_size=22)
     _write_docx(document, [
-        _paragraph("Scaled Tab Song – C", None, "Invented Artist"),
+        _heading("Scaled Tab Song – C", None, "Invented Artist"),
         _paragraph("[Verse]"), chord, _word_tab_paragraph("invented lyric"),
     ])
     song = chart_parser.parse_docx(str(document))[0]
@@ -291,7 +946,7 @@ def test_tab_mapping_rounds_physical_chord_start_once_for_10pt_over_8pt(tmp_path
     chord = _word_tab_paragraph("C", None, "G", font_size=20)
     lyric = _word_tab_paragraph("invented lyric", font_size=16)
     _write_docx(document, [
-        _paragraph("Single Round Tab Song – C", None, "Invented Artist"),
+        _heading("Single Round Tab Song – C", None, "Invented Artist"),
         _paragraph("[Verse]"), chord, lyric,
     ])
     song = chart_parser.parse_docx(str(document))[0]
@@ -313,7 +968,7 @@ def test_character_style_font_metrics_are_resolved_for_supported_tabs(tmp_path: 
               '<w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>'
               '<w:sz w:val="16"/></w:rPr></w:style></w:styles>')
     _write_docx(document, [
-        _paragraph("Character Style Tab Song – C", None, "Invented Artist"),
+        _heading("Character Style Tab Song – C", None, "Invented Artist"),
         _paragraph("[Verse]"), chord, _word_tab_paragraph("invented lyric"),
     ], styles)
     song = chart_parser.parse_docx(str(document))[0]
@@ -336,13 +991,14 @@ def test_default_and_explicit_paragraph_style_spacing_block_tabs(
               '<w:style w:type="paragraph" w:styleId="Normal" w:default="1">'
               '<w:rPr><w:spacing w:val="20"/></w:rPr></w:style></w:styles>')
     _write_docx(document, [
-        _paragraph("Inherited Spacing Song \u2013 C", None, "Invented Artist"),
+        _heading("Inherited Spacing Song \u2013 C", None, "Invented Artist"),
         _paragraph("[Verse]"), chord, _word_tab_paragraph("invented lyric"),
     ], styles)
 
     song = chart_parser.parse_docx(str(document))[0]
     assert song.warnings == [{
         "code": "word_tab_placement_unresolved", "section": 1, "line": 1,
+        "paragraph": 3, "span": 1,
         "reason": "unsupported_tabbed_paragraph_spacing",
     }]
 
@@ -385,13 +1041,14 @@ def test_unresolved_relevant_style_chains_block_tab_normalization(
               '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
               f'{style_xml}</w:styles>')
     _write_docx(document, [
-        _paragraph("Broken Style Song \u2013 C", None, "Invented Artist"),
+        _heading("Broken Style Song \u2013 C", None, "Invented Artist"),
         _paragraph("[Verse]"), chord, _word_tab_paragraph("invented lyric"),
     ], styles)
 
     song = chart_parser.parse_docx(str(document))[0]
     assert song.warnings == [{
         "code": "word_tab_placement_unresolved", "section": 1, "line": 1,
+        "paragraph": 3, "span": 1,
         "reason": ("unsupported_tabbed_paragraph_character_style"
                    if style_kind.startswith("character_")
                    else "unsupported_tabbed_paragraph_style"),
@@ -409,7 +1066,7 @@ def test_valid_default_paragraph_style_inheritance_supports_tabs(tmp_path: Path)
               '<w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>'
               '<w:sz w:val="16"/></w:rPr></w:style></w:styles>')
     _write_docx(document, [
-        _paragraph("Default Style Song \u2013 C", None, "Invented Artist"),
+        _heading("Default Style Song \u2013 C", None, "Invented Artist"),
         _paragraph("[Verse]"), chord, lyric,
     ], styles)
 
@@ -425,7 +1082,7 @@ def test_unresolved_style_on_unrelated_tab_free_text_does_not_block(tmp_path: Pa
     text = _paragraph("ordinary invented phrase")
     text = text.replace("<w:p>", '<w:p><w:pPr><w:pStyle w:val="Absent"/></w:pPr>', 1)
     _write_docx(document, [
-        _paragraph("Tab Free Style Song \u2013 C", None, "Invented Artist"),
+        _heading("Tab Free Style Song \u2013 C", None, "Invented Artist"),
         _paragraph("[Verse]"), text,
     ])
 
@@ -454,13 +1111,14 @@ def test_unresolved_lyric_style_chain_blocks_tabbed_pairing(
               '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
               f'{style_xml}</w:styles>')
     _write_docx(document, [
-        _paragraph("Paired Lyric Style Song \u2013 C", None, "Invented Artist"),
+        _heading("Paired Lyric Style Song \u2013 C", None, "Invented Artist"),
         _paragraph("[Verse]"), _word_tab_paragraph("C", None, "G"), lyric,
     ], styles)
 
     song = chart_parser.parse_docx(str(document))[0]
     assert song.warnings == [{
         "code": "word_tab_placement_unresolved", "section": 1, "line": 1,
+        "paragraph": 4, "span": 1,
         "reason": "unsupported_tabbed_paragraph_style",
     }]
 
@@ -493,12 +1151,13 @@ def test_inherited_tab_width_changes_are_blocking(
               '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
               f'{extra_style}</w:styles>')
     _write_docx(document, [
-        _paragraph("Inherited Width Tab Song – C", None, "Invented Artist"),
+        _heading("Inherited Width Tab Song – C", None, "Invented Artist"),
         _paragraph("[Verse]"), chord, _word_tab_paragraph("invented lyric"),
     ], styles)
     song = chart_parser.parse_docx(str(document))[0]
     assert song.warnings == [{
         "code": "word_tab_placement_unresolved", "section": 1, "line": 1,
+        "paragraph": 3, "span": 1,
         "reason": reason,
     }]
 
@@ -508,12 +1167,13 @@ def test_mixed_run_sizes_in_a_tabbed_paragraph_remain_blocking(tmp_path: Path) -
     chord = _word_tab_paragraph("C", None, "G").replace(
         '<w:sz w:val="16"/>', '<w:sz w:val="20"/>', 1)
     _write_docx(document, [
-        _paragraph("Mixed Size Tab Song – C", None, "Invented Artist"),
+        _heading("Mixed Size Tab Song – C", None, "Invented Artist"),
         _paragraph("[Verse]"), chord, _word_tab_paragraph("invented lyric"),
     ])
     song = chart_parser.parse_docx(str(document))[0]
     assert song.warnings == [{
         "code": "word_tab_placement_unresolved", "section": 1, "line": 1,
+        "paragraph": 3, "span": 1,
         "reason": "mixed_font_sizes_in_tabbed_paragraph",
     }]
 
@@ -532,7 +1192,7 @@ def test_nested_run_containers_preserve_inline_text_tabs_and_breaks(tmp_path: Pa
 def test_tab_free_docx_keeps_existing_space_aligned_anchors(tmp_path: Path) -> None:
     document = tmp_path / "tab-free.docx"
     paragraphs = [
-        _paragraph("Tab Free Song – C", None, "Invented Artist"),
+        _heading("Tab Free Song – C", None, "Invented Artist"),
         _paragraph("[Verse]"),
         _paragraph("C   G"),
         _paragraph("invented lyric line"),
@@ -576,8 +1236,9 @@ def test_plain_text_body_preserves_structures_collisions_unicode_and_trailing_sp
     assert chart["sections"][0]["lines"][3]["confidence"] == "high"
 
     round_trip_paragraphs = [
-        chart_parser.Paragraph("Invented round trip – C\x01Invented artist", None, False),
-        *(chart_parser.Paragraph(line, None, False) for line in source.splitlines()),
+        chart_parser.Paragraph("Invented round trip – C\x01Invented artist", None,
+                               outline_level=0),
+        *(chart_parser.Paragraph(line, None) for line in source.splitlines()),
     ]
     reparsed = chart_parser.parse_songs(round_trip_paragraphs)[0]
     assert reparsed.chart_content == chart
@@ -588,13 +1249,14 @@ def test_unsupported_tabs_in_a_progression_are_reported_too(tmp_path: Path) -> N
     document = tmp_path / "unsupported-progression-tab.docx"
     chord = _word_tab_paragraph("C", None, "G").replace("Courier New", "Arial")
     _write_docx(document, [
-        _paragraph("Unsupported Progression – C", None, "Invented Artist"),
+        _heading("Unsupported Progression – C", None, "Invented Artist"),
         _paragraph("[Verse]"), chord,
     ])
     song = chart_parser.parse_docx(str(document))[0]
     assert song.chart_content["sections"][0]["lines"][0]["type"] == "progression"
     assert song.warnings == [{
         "code": "word_tab_placement_unresolved", "section": 1, "line": 1,
+        "paragraph": 3, "span": 1,
         "reason": "unsupported_tabbed_paragraph_font_or_size",
     }]
 
@@ -609,10 +1271,11 @@ def test_plain_text_body_blocks_unsupported_raw_and_ambiguous_layout() -> None:
 
 def test_progression_repeat_detection_matches_ordinary_parser_contract() -> None:
     paragraphs = [
-        chart_parser.Paragraph("Synthetic progression – C\x01Artist", None, False),
-        chart_parser.Paragraph("[Verse]", None, False),
-        chart_parser.Paragraph("C G 4x ending cue", None, False),
-        chart_parser.Paragraph("D 2024 imagined cue", None, False),
+        chart_parser.Paragraph("Synthetic progression – C\x01Artist", None,
+                               outline_level=0),
+        chart_parser.Paragraph("[Verse]", None),
+        chart_parser.Paragraph("C G 4x ending cue", None),
+        chart_parser.Paragraph("D 2024 imagined cue", None),
     ]
     song = chart_parser.parse_songs(paragraphs)[0]
     lines = song.chart_content["sections"][0]["lines"]
@@ -637,6 +1300,7 @@ def test_batch_report_surfaces_tab_diagnostic_without_lyrics(tmp_path: Path) -> 
     assert report["corpus_totals"]["unresolved_plain_text_body"] == 0
     assert report["flagged_songs"][0]["unresolved_placements"] == [{
         "code": "word_tab_placement_unresolved", "section": 1, "line": 1,
+        "paragraph": 3, "span": 1,
         "reason": "unsupported_tabbed_paragraph_font_or_size", "doc": "invented.docx",
         "title": "Tab Guard Song",
     }]
@@ -649,7 +1313,7 @@ def test_batch_report_surfaces_tab_diagnostic_without_lyrics(tmp_path: Path) -> 
 
 def _write_tab_guard_docx(path: Path) -> None:
     paragraphs = [
-        _paragraph("Tab Guard Song – C", None, "Invented Artist"),
+        _heading("Tab Guard Song – C", None, "Invented Artist"),
         _paragraph("[Verse]"),
         _word_tab_paragraph("C", None, "G   ", None, "D").replace("Courier New", "Arial"),
         _word_tab_paragraph("invented lyric for tab guard"),
@@ -695,7 +1359,7 @@ def test_generated_chart_source_matches_the_app_line_contract(tmp_path: Path) ->
 
     document = tmp_path / "generated.docx"
     paragraphs = [
-        _paragraph("Generated Song – C", None, "Example Band", None, "C"),
+        _heading("Generated Song – C", None, "Example Band", None, "C"),
         *[_paragraph(line) for line in generated],
     ]
     xml = (
@@ -712,7 +1376,7 @@ def test_generated_chart_source_matches_the_app_line_contract(tmp_path: Path) ->
 def test_blank_paragraphs_and_hard_breaks_keep_chart_spacing_separate(tmp_path: Path) -> None:
     document = tmp_path / "spacing.docx"
     paragraphs = [
-        _paragraph("Spacing Song – C", None, "Test Group"),
+        _heading("Spacing Song – C", None, "Test Group"),
         _paragraph("[Verse 1]"),
         _paragraph("Invented first verse line."),
         _paragraph(""),
@@ -721,7 +1385,7 @@ def test_blank_paragraphs_and_hard_breaks_keep_chart_spacing_separate(tmp_path: 
         _paragraph("[Chorus]"),
         _paragraph("Invented refrain."),
         _paragraph(""),
-        _paragraph("Next Song – D", None, "Other Group"),
+        _heading("Next Song – D", None, "Other Group"),
         _paragraph(""),
     ]
     paragraphs[1] = paragraphs[1].replace("</w:p>", '<w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:p>')
@@ -746,7 +1410,7 @@ def test_blank_paragraphs_and_hard_breaks_keep_chart_spacing_separate(tmp_path: 
 def test_docx_text_breaks_preserve_terminal_separators_but_ignore_page_controls(tmp_path: Path) -> None:
     document = tmp_path / "break-boundaries.docx"
     paragraphs = [
-        _paragraph("Break Song – C", None, "Test Group"),
+        _heading("Break Song – C", None, "Test Group"),
         _paragraph("[Verse]"),
         _paragraph("Invented opening."),
         ('<w:p><w:r><w:t>Invented interior one.</w:t><w:br/>'
@@ -764,7 +1428,7 @@ def test_docx_text_breaks_preserve_terminal_separators_but_ignore_page_controls(
          '<w:t>page control after</w:t><w:br w:type="column"/>'
          '<w:t>column control after</w:t></w:r></w:p>'),
         _paragraph(""),
-        _paragraph("Next Song – D", None, "Other Group"),
+        _heading("Next Song – D", None, "Other Group"),
     ]
     xml = ('<?xml version="1.0" encoding="UTF-8"?>'
            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -788,7 +1452,8 @@ def test_docx_text_breaks_preserve_terminal_separators_but_ignore_page_controls(
         {"type": "lyric", "text": "Invented terminal carriage break.", "chords": [], "confidence": "high"},
         {"type": "spacer"},
         {"type": "lyric", "text": "Invented after carriage break.", "chords": [], "confidence": "high"},
-        {"type": "lyric", "text": "Page control beforepage control aftercolumn control after",
+        {"type": "lyric", "text": "Page control before", "chords": [], "confidence": "high"},
+        {"type": "lyric", "text": "page control aftercolumn control after",
          "chords": [], "confidence": "high"},
     ]
 
@@ -834,7 +1499,7 @@ def test_ccm_v1_v2_docx_and_python_roundtrip_preserve_columns_and_raw_spaces(tmp
 
 
 def _write_generated_docx(path: Path, generated: list[str]) -> None:
-    paragraphs = [_paragraph("Generated Song – C", None, "Example Band")]
+    paragraphs = [_heading("Generated Song – C", None, "Example Band")]
     paragraphs.extend(_paragraph(line) for line in generated)
     xml = ('<?xml version="1.0" encoding="UTF-8"?>'
            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'

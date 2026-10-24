@@ -19,9 +19,10 @@ save after synchronization.
 Charts open with auto-scroll paused. Use **Start** and **Pause** to move the
 vertical chart view at a steady speed; **Slower** and **Faster** adjust the
 visible rate from 5 to 40 CSS pixels per second in 5-pixel steps. Each chart
-opens at 10 CSS pixels per second. Auto-scroll works offline, pauses for
-intentional vertical scrolling or when the page is hidden, resumes from the
-current position, and stops at the bottom. Horizontal chord-row panning and
+opens at 10 CSS pixels per second. Auto-scroll works offline and keeps running
+when you manually scroll vertically; it continues from the new position.
+Pause it with **Pause**, or let it stop at the bottom. A hidden page pauses it
+until you press **Start** again. Horizontal chord-row panning and
 left/right song navigation remain available. A frame delay over 1,000 ms while
 scrolling is treated as suspended time: the current position is held and the
 normal selected speed resumes on the next frame without a catch-up jump.

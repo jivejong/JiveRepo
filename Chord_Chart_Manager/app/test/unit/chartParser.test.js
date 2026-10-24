@@ -1,12 +1,16 @@
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
 import { transposeChord } from '../../transpose.js';
 const {
   chartToText, isGeneratedChartSource, isGeneratedSourceUnchanged, parseChartBody,
-  isDecoratedChordLine, transposeDecoratedRawLines,
+  isDecoratedChordLine, decoratedChordTokenSpans, decoratedChordAnalysis,
+  transposeDecoratedRawLines,
 } = require('../../server/chartParser.js');
+const orderedRowCases = JSON.parse(readFileSync(
+  new URL('../../../pipeline/tests/fixtures/ordered_chord_rows.json', import.meta.url), 'utf8'));
 
 describe('shared chart parser', () => {
   it('parses sections and chord-over-lyric lines', () => {
@@ -115,8 +119,127 @@ describe('shared chart parser', () => {
     const ambiguous = 'G and D | C';
     const ambiguousChart = parseChartBody(ambiguous);
     expect(ambiguousChart.sections[0].lines[0]).toEqual({ type: 'raw', text: ambiguous });
-    expect(transposeDecoratedRawLines(ambiguousChart, symbol => `X${symbol}`))
-      .toEqual(ambiguousChart);
+    const unresolved = transposeDecoratedRawLines(ambiguousChart, symbol => `X${symbol}`);
+    expect(unresolved).toEqual(ambiguousChart);
+  });
+
+  it('matches the shared Python ordered-row recognition and chord spans', () => {
+    for (const fixture of orderedRowCases) {
+      const text = fixture.analysis_text || fixture.text;
+      expect(isDecoratedChordLine(text), fixture.text).toBe(fixture.literal);
+      expect(decoratedChordTokenSpans(text).map(span => [span.start, span.end, span.sym]), fixture.text)
+        .toEqual(fixture.spans);
+      const analysis = decoratedChordAnalysis(text);
+      if (Object.hasOwn(fixture, 'partial_transposition')) {
+        expect(analysis.partialTransposition).toBe(fixture.partial_transposition);
+        expect(analysis.unresolvedTokens.map(token => token.text)).toEqual(fixture.unresolved_tokens || []);
+        const moved = transposeDecoratedRawLines(parseChartBody(fixture.text),
+          symbol => transposeChord(symbol, 2, 'D'));
+        expect(moved.sections[0].lines[0].text).toBe(fixture.expected_transposed);
+        expect(moved.sections[0].lines[0].transposition_status).toBe(fixture.expected_status);
+      }
+      const parsed = parseChartBody(fixture.text);
+      const firstLine = parsed.sections[0].lines[0];
+      if (fixture.literal) {
+        expect(firstLine).toEqual({ type: 'raw', text: fixture.section_tail || fixture.text });
+      } else if (fixture.expected_type) {
+        expect(firstLine.type).toBe(fixture.expected_type);
+        expect(firstLine.chords).toEqual([]);
+        expect(firstLine.text).toBe(fixture.analysis_text || fixture.text);
+        const moved = transposeDecoratedRawLines(parsed,
+          symbol => transposeChord(symbol, 2, 'D'));
+        expect(moved).toEqual(parsed);
+      } else {
+        expect(firstLine).toEqual({ type: 'progression', chords: ['G', 'C', 'G'] });
+      }
+      expect(parseChartBody(chartToText(parsed))).toEqual(parsed);
+    }
+  });
+
+  it('preserves and transposes interleaved bracketed section tails in place', () => {
+    const source = '[Intro] | G | % | Em | % | 2X';
+    const tail = ' | G | % | Em | % | 2X';
+    const expected = ' | A | % | F#m | % | 2X';
+    const parsed = parseChartBody(source);
+    expect(parsed.sections).toEqual([{ label: 'Intro', lines: [{ type: 'raw', text: tail }] }]);
+    expect(decoratedChordTokenSpans(tail).map(span => [span.start, span.end, span.sym]))
+      .toEqual([[3, 4, 'G'], [11, 13, 'Em']]);
+    const readable = chartToText(parsed);
+    expect(parseChartBody(readable)).toEqual(parsed);
+    expect(readable).toContain(tail);
+    const moved = transposeDecoratedRawLines(parsed, symbol => ({ G: 'A', Em: 'F#m' })[symbol] || symbol);
+    expect(moved.sections[0].lines[0].text).toBe(expected);
+    const beforeOther = tail.replace('G', '').replace('Em', '');
+    const afterOther = expected.replace('A', '').replace('F#m', '');
+    expect(afterOther).toBe(beforeOther);
+  });
+
+  it('transposes ordered raw chord spans while preserving punctuation and opaque annotations', () => {
+    const cases = [
+      ['G - C', 'A - D'],
+      ['G – C', 'A – D'],
+      ['G C (4x)', 'A D (4x)'],
+      ['G C 4X', 'A D 4X'],
+      ['(D/E A/E E (E repeat))', '(D/E A/E E (E repeat))'],
+      ['[Verse] C / G \\ D * Am (2x)', '[Verse] D / A \\ E * Bm (2x)'],
+      ['A/C# | Dm7 - G', 'B/D# | Em7 - A'],
+      ['G  G   C', 'A  A   D'],
+      ['G C (hold Am)', 'A D (hold Am)'],
+    ];
+    const move = symbol => ({
+      G: 'A', C: 'D', D: 'E', Am: 'Bm', 'A/C#': 'B/D#', Dm7: 'Em7',
+    })[symbol] || symbol;
+    for (const [source, expected] of cases) {
+      const parsed = parseChartBody(source);
+      expect(transposeDecoratedRawLines(parsed, move).sections[0].lines[0].text).toBe(
+        expected.startsWith('[Verse]') ? expected.slice(expected.indexOf(']') + 1) : expected);
+    }
+    const partialSource = 'C - G - D/G5x';
+    const partialChart = parseChartBody(partialSource);
+    const partial = transposeDecoratedRawLines(partialChart,
+      symbol => ({ C: 'D', G: 'A' })[symbol] || symbol);
+    expect(partial.sections[0].lines[0]).toMatchObject({
+      text: 'D - A - D/G5x', transposition_status: 'partial',
+    });
+    expect(partial.sections[0].lines[0].text.slice(-5)).toBe('D/G5x');
+    expect(transposeDecoratedRawLines(partialChart,
+      symbol => ({ C: 'D', G: 'A' })[symbol] || symbol)).toEqual(partial);
+    expect(transposeDecoratedRawLines(partial,
+      symbol => ({ D: 'E', A: 'B' })[symbol] || symbol).sections[0].lines[0].text)
+      .toBe('E - B - D/G5x');
+    expect(transposeDecoratedRawLines(partialChart,
+      symbol => transposeChord(symbol, 4, 'E')).sections[0].lines[0].text)
+      .toBe('E - B - D/G5x');
+
+    const unsupportedLargerToken = parseChartBody('C - G - D/Guitar5x');
+    expect(transposeDecoratedRawLines(unsupportedLargerToken,
+      symbol => ({ C: 'D', G: 'A' })[symbol] || symbol).sections[0].lines[0].text)
+      .toBe('C - G - D/Guitar5x');
+    const ambiguous = parseChartBody('G and D | C');
+    expect(transposeDecoratedRawLines(ambiguous, symbol => `X${symbol}`)).toEqual(ambiguous);
+  });
+
+  it('keeps literal chord spans attached to the following lyric across ordinary and generated source', () => {
+    const source = '  C - G/D  (4x)  \n  lyric placeholder  ';
+    const parsed = parseChartBody(source);
+    const [raw, lyric] = parsed.sections[0].lines;
+    expect(raw).toMatchObject({ type: 'raw', paired_to_next: true });
+    expect(raw.chord_spans).toEqual([
+      { symbol: 'C', start: 2, end: 3 },
+      { symbol: 'G/D', start: 6, end: 9 },
+    ]);
+    expect(lyric).toMatchObject({ type: 'lyric', text: '  lyric placeholder  ', chords: [] });
+    expect(parseChartBody(chartToText(parsed))).toEqual(parsed);
+    const moved = transposeDecoratedRawLines(parsed,
+      symbol => ({ C: 'D', 'G/D': 'A/E' })[symbol] || symbol);
+    expect(moved.sections[0].lines[0]).toMatchObject({
+      text: '  D - A/E  (4x)  ', paired_to_next: true,
+    });
+    expect(moved.sections[0].lines[1].text).toBe(lyric.text);
+    const parsedMovedSource = parseChartBody(chartToText(moved));
+    const expectedMovedSource = structuredClone(moved);
+    delete expectedMovedSource.sections[0].lines[0].transposition_status;
+    expect(parsedMovedSource).toEqual(expectedMovedSource);
   });
 
   it('does not transpose prose, section labels, tablature, or raw lines without a clear pipe chart pattern', () => {
