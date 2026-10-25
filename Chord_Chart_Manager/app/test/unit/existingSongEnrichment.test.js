@@ -457,6 +457,20 @@ describe('buildEnrichmentPreview', () => {
       .toThrowError(expect.objectContaining({ code: 'INVALID_PRIMARY_SELECTION' }));
   });
 
+  it('accepts only an explicit empty decision when recording identity is unresolved', () => {
+    const unresolvedEvidence = evidence({ mbid: null, scalars: { release_year: [] }, genres: [], vibes: [] });
+    const noOp = buildEnrichmentPreview(snapshot(), unresolvedEvidence,
+      { mbid: null, scalars: {}, genres: [], vibes: [] }, definitions());
+    expect(noOp).toMatchObject({ approved_mbid: null, scalar_changes: [], tag_additions: { genres: [], vibes: [] },
+      primary_proposal: null, has_changes: false });
+    expect(() => buildEnrichmentPreview(snapshot(), unresolvedEvidence,
+      { mbid: null, scalars: { release_year: reference('MusicBrainz', 'year', 1977) }, genres: [], vibes: [] }, definitions()))
+      .toThrowError(expect.objectContaining({ code: 'EVIDENCE_NOT_APPROVED' }));
+    expect(() => buildEnrichmentPreview(snapshot(), unresolvedEvidence,
+      { mbid: null, scalars: {}, genres: ['Hard Rock'], vibes: [] }, definitions()))
+      .toThrowError(expect.objectContaining({ code: 'EVIDENCE_NOT_APPROVED' }));
+  });
+
   it('is deterministic across evidence ordering, leaves inputs unchanged, and cannot leak prohibited fields', () => {
     const song = snapshot({ chart_source: 'SECRET LYRICS', chart_content: { secret: true },
       title: 'Private title', artist: 'Private artist', preferred_key: 'C' });

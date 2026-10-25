@@ -185,7 +185,35 @@ async function createSongEnrichmentCache({ directory, clock = Date.now, maxEntry
     }
   }
 
-  return Object.freeze({ directory: root, get, set, cacheKey });
+  async function verifyIntegrity() {
+    let names;
+    try { names = await fs.readdir(root); } catch (error) {
+      if (error.code === "ENOENT") return { sha256: digest(Buffer.alloc(0)), entries: 0 };
+      throw error;
+    }
+    const files = [];
+    for (const name of names.sort()) {
+      if (!name.endsWith(".json")) throw new Error("Cache contains an unexpected file.");
+      const file = path.join(root, name);
+      const stat = await fs.lstat(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxEntryBytes) throw new Error("Cache entry is invalid.");
+      const bytes = await fs.readFile(file);
+      let entry;
+      try { entry = JSON.parse(bytes.toString("utf8")); } catch { throw new Error("Cache entry is invalid."); }
+      if (!entry || entry.cache_version !== CACHE_VERSION || entry.cache_key !== name.slice(0, -5) ||
+          !["ok", "absent"].includes(entry.status) || !Number.isFinite(entry.fetched_at) || !Number.isFinite(entry.expires_at) ||
+          entry.expires_at - entry.fetched_at !== (entry.status === "absent" ? ABSENCE_TTL_MS : SUCCESS_TTL_MS) ||
+          !Number.isSafeInteger(entry.response_bytes) || typeof entry.response !== "string") throw new Error("Cache entry is invalid.");
+      const response = Buffer.from(entry.response, "base64");
+      if (response.byteLength !== entry.response_bytes || response.byteLength > maxEntryBytes || digest(response) !== entry.response_digest) {
+        throw new Error("Cache response hash is invalid.");
+      }
+      files.push({ name, sha256: digest(bytes) });
+    }
+    return { sha256: digest(Buffer.from(JSON.stringify(files))), entries: files.length };
+  }
+
+  return Object.freeze({ directory: root, get, set, cacheKey, verifyIntegrity });
 }
 
 module.exports = {

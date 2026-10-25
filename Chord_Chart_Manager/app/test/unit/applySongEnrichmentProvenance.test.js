@@ -22,6 +22,22 @@ function manifestWithSchema(schemaVersion) {
 }
 
 describe('B3 Gemini schema provenance versions', () => {
+  it('accepts an unresolved-identity entry only when the full decision and preview are no-op', () => {
+    const snapshot = { id: 42, updated_at: '2026-10-14T18:30:00.123456Z', release_year: null,
+      original_key: null, bpm: null, genres: [], vibes: [] };
+    const evidence = { mbid: null, scalars: { release_year: [], original_key: [], bpm: [] }, genres: [], vibes: [] };
+    const reviewDecision = { mbid: null, scalars: {}, genres: [], vibes: [] };
+    const preview = buildEnrichmentPreview(snapshot, evidence, reviewDecision, { genres: [], vibes: [] });
+    const manifest = { format_version: 1, operation_id: '11111111-1111-4111-8111-111111111111', songs: [{ song_id: 42,
+      base_version: snapshot.updated_at, identity: { title: 'Synthetic', artist_id: 1, artist_name: 'Synthetic Artist' },
+      evidence, review_decision: reviewDecision, preview }] };
+    expect(validateManifest(manifest)).toHaveLength(1);
+
+    const forgedSelection = structuredClone(manifest);
+    forgedSelection.songs[0].preview.has_changes = true;
+    expect(() => validateManifest(forgedSelection)).toThrowError(expect.objectContaining({ code: 'EVIDENCE_IDENTITY_REQUIRED' }));
+  });
+
   it('accepts historical schema v1 and current schema v2 evidence', () => {
     for (const version of ['missing-metadata-schema-v1', 'missing-metadata-schema-v2']) {
       expect(validateManifest(manifestWithSchema(version))).toHaveLength(1);

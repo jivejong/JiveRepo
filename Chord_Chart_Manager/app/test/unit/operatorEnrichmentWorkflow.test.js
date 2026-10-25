@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 const require = createRequire(import.meta.url);
-const { buildDecisionTemplate, buildManifest, hashBytes, normalizeReports, stableJson } = require('../../server/operatorEnrichmentWorkflow.js');
+const { buildBestEffortDecisions, buildDecisionTemplate, buildManifest, hashBytes, normalizeReports, stableJson } = require('../../server/operatorEnrichmentWorkflow.js');
 const genreOnlyReport = require('../fixtures/gemini-genre-only-preview-v1.json');
 
 const mbid="62ec7207-aa84-43b6-949e-8066b6be2cad", digest="a".repeat(64), gd="b".repeat(64);
@@ -179,5 +179,138 @@ describe("saved-evidence operator consolidation",()=>{
   duplicateDecision.targets[0].definitions_sha256=hashBytes(Buffer.from(stableJson(duplicateCatalog)));
   expect(()=>buildManifest({baseline:{songs:[lights]},decisions:duplicateDecision,sourceReports:reports,
     operationId:"94c50cb4-8394-4f9a-8eb4-598725fc3959",definitions:duplicateCatalog})).toThrow();
+ });
+ it("selects one unconflicted missing scalar, preserves populated values, and reports conflicts without choosing them",()=>{
+  const normalized=normalizeReports(song,[source(context)]),sourceReports={727:normalized};
+  const result=buildBestEffortDecisions({baseline:{songs:[song],definitions},sourceReports,definitions});
+  expect(result.decisions.targets[0].decision).toEqual({mbid,scalars:{release_year:normalized.evidence.scalars.release_year[0]},genres:[],vibes:[]});
+  expect(result.report.songs[0].scalars).toMatchObject({
+   release_year:{status:"selected",reason:"one_unconflicted_canonical_value",value:1973,source:"MusicBrainz"},
+   original_key:{status:"abstained",reason:"conflicting_evidence"},
+   bpm:{status:"abstained",reason:"no_candidate"},
+  });
+  const disagreement=structuredClone(normalized);
+  disagreement.evidence.scalars.release_year.push({...disagreement.evidence.scalars.release_year[0],
+   value:1974,source:"Gemini",response_digest:gd,model_id:"gemini-3.1-flash-lite",
+   prompt_version:"missing-metadata-fallback-v2",schema_version:"missing-metadata-schema-v2"});
+  const conflicted=buildBestEffortDecisions({baseline:{songs:[song],definitions},sourceReports:{727:disagreement},definitions});
+  expect(conflicted.report.songs[0].scalars.release_year).toMatchObject({status:"abstained",reason:"conflicting_evidence"});
+  const invalid=structuredClone(normalized);
+  invalid.evidence.scalars.release_year[0].value=0;
+  const rejected=buildBestEffortDecisions({baseline:{songs:[song],definitions},sourceReports:{727:invalid},definitions});
+  expect(rejected.report.songs[0].scalars.release_year).toMatchObject({status:"abstained",reason:"invalid_candidate"});
+  const populated={...song,release_year:1978,original_key:"Cm",bpm:134};
+  const preserved=buildBestEffortDecisions({baseline:{songs:[populated],definitions},sourceReports,definitions});
+  expect(preserved.decisions.targets[0].decision.scalars).toEqual({});
+  expect(preserved.report.songs[0].scalars).toMatchObject({
+   release_year:{status:"preserved",reason:"already_populated"},
+   original_key:{status:"preserved",reason:"already_populated"},
+   bpm:{status:"preserved",reason:"already_populated"},
+  });
+ });
+ it("selects category-correct missing labels once, preserves assignments and primary, and never infers a primary",()=>{
+  const recording="62ec7207-aa84-43b6-949e-8066b6be2cad",tagDigest="c".repeat(64);
+  const b4=b4Envelope([{song_id:727,identity:{title:song.title,artist:song.artist},
+   recording:{search_status:"ok",match:{matched:true,mbid:recording}},approved_preview:null,human_review_required:true,
+   evidence:{mbid:recording,scalars:{release_year:[],original_key:[],bpm:[]},
+    genres:["Rock","Country","country"].map(name=>({name,source:"MusicBrainz",response_digest:tagDigest})),
+    vibes:["Country","Upbeat"].map(name=>({name,source:"MusicBrainz",response_digest:tagDigest}))},
+   scalar_candidates:{},tag_candidates:{}}]);
+  const assigned={...song,genres:[{id:10,name:"Rock",is_primary:true}],vibes:[{id:20,name:"Country"}]};
+  const catalog={genres:[{id:10,name:"Rock"},{id:11,name:"Country"}],vibes:[{id:20,name:"Country"},{id:21,name:"Upbeat"}]};
+  const normalized=normalizeReports(assigned,[source(b4)]),sourceReports={727:normalized};
+  const result=buildBestEffortDecisions({baseline:{songs:[assigned],definitions:catalog},sourceReports,definitions:catalog});
+  expect(result.decisions.targets[0].decision).toMatchObject({mbid:recording,genres:["Country"],vibes:["Upbeat"]});
+  expect(result.decisions.targets[0].decision.primaryGenre).toBeUndefined();
+  expect(result.report.songs[0].genres).toContainEqual({name:"Rock",definition_id:10,status:"preserved",reason:"already_assigned"});
+  expect(result.report.songs[0].genres).toContainEqual({name:"Country",definition_id:11,status:"selected",
+   reason:"unique_category_definition_duplicate_evidence_collapsed"});
+  expect(result.report.songs[0].vibes).toContainEqual({name:"Country",definition_id:20,status:"preserved",reason:"already_assigned"});
+  expect(result.report.songs[0].vibes).toContainEqual({name:"Upbeat",definition_id:21,status:"selected",reason:"unique_category_definition"});
+
+  const primaryless={...assigned,genres:[]};
+  const noPrimary=buildBestEffortDecisions({baseline:{songs:[primaryless],definitions:catalog},sourceReports,definitions:catalog});
+  expect(noPrimary.decisions.targets[0].decision.genres).toEqual(["Country","Rock"]);
+  expect(noPrimary.decisions.targets[0].decision).not.toHaveProperty("primaryGenre");
+  expect(noPrimary.report.songs[0].primary_genre).toEqual({status:"unchanged",reason:"automatic_primary_inference_disabled"});
+ });
+ it("abstains on unresolved recording identity and unknown or ambiguous category definitions",()=>{
+  const uncertain={report_version:1,report_type:"gemini_genre_only_preview",database_writes:false,approval_or_apply_manifest:null,
+   song:{id:727,title:song.title,artist:song.artist},request:{requested_scalars:[],allowed_genres:["Blues Rock"],allowed_vibes:[]},
+   limits:{model:"gemini-3.1-flash-lite"},result:{status:"ok",response_digest:gd,
+    genres:[{name:"Blues Rock",source:"Gemini",response_digest:gd,model_id:"gemini-3.1-flash-lite",
+     prompt_version:"missing-metadata-fallback-v2",schema_version:"missing-metadata-schema-v2"}],vibes:[]}};
+  const normalized=normalizeReports(song,[source(uncertain)]),sourceReports={727:normalized};
+  const unresolved=buildBestEffortDecisions({baseline:{songs:[song],definitions},sourceReports,definitions});
+  expect(unresolved.decisions.targets[0].decision).toEqual({mbid:null,scalars:{},genres:[],vibes:[]});
+  expect(unresolved.report.songs[0].recording_match.reason).toBe("recording_identity_unresolved");
+  expect(unresolved.report.songs[0].genres[0].reason).toBe("recording_identity_unresolved");
+
+  const recording="62ec7207-aa84-43b6-949e-8066b6be2cad";
+  const b4=b4Envelope([{song_id:727,identity:{title:song.title,artist:song.artist},
+   recording:{match:{matched:true,mbid:recording}},evidence:{mbid:recording,scalars:{release_year:[],original_key:[],bpm:[]},
+    genres:[{name:"Blues Rock",source:"MusicBrainz",response_digest:digest}],vibes:[]},
+   approved_preview:null,human_review_required:true}]);
+  const matched=normalizeReports(song,[source(b4)]),reports={727:matched};
+  const mixed={genres:[{id:1,name:"Blues Rock"},{id:2,name:" blues   rock "}],vibes:[]};
+  const diagnosis=buildBestEffortDecisions({baseline:{songs:[song],definitions:mixed},sourceReports:reports,definitions:mixed});
+  expect(diagnosis.decisions.targets[0].decision.genres).toEqual([]);
+  expect(diagnosis.report.songs[0].genres[0].reason).toBe("ambiguous_definition");
+  expect(()=>buildBestEffortDecisions({baseline:{songs:[song],definitions},sourceReports:{},definitions})).toThrow();
+  expect(()=>buildBestEffortDecisions({baseline:{songs:[song],definitions},sourceReports:{727:{sources:[],source_context:[],evidence:{scalars:{},genres:[],vibes:[]}}},definitions}))
+   .toThrow(expect.objectContaining({code:"BEST_EFFORT_INPUT_INVALID"}));
+ });
+ it("requires accepted recording identity at the normalization-to-automatic-decision boundary",()=>{
+  const makeLegacyFallback=(target,recording,preview=null)=>{
+   const report=structuredClone(fallback);
+   report.selected_song_id=target.id;
+   report.baseline={id:target.id,title:target.title,artist:target.artist};
+   report.factual_evidence={context_version:"b4-v1",scalar_candidates:Object.fromEntries(
+    ["release_year","original_key","bpm"].map(field=>[field,{candidates:[]} ])),genre_evidence:[],vibe_evidence:[]};
+   report.recording=recording;
+   report.b1_validation_preview=preview;
+   report.gemini_suggestions.scalars.release_year=[{value:1973,source:"Gemini",response_digest:gd,
+    model_id:"gemini-3.1-flash-lite",prompt_version:"missing-metadata-fallback-v2",schema_version:"missing-metadata-schema-v2"}];
+   report.gemini_suggestions.genres=[{name:"Blues Rock",source:"Gemini",response_digest:gd,
+    model_id:"gemini-3.1-flash-lite",prompt_version:"missing-metadata-fallback-v2",schema_version:"missing-metadata-schema-v2"}];
+   return report;
+  };
+  const cases=[
+   {id:727,reason:"ambiguous",recording:{match:{matched:false,reason:"ambiguous_recording",mbid}}},
+   {id:728,reason:"mismatch",recording:{title:"Different Song",artist:"Different Artist",match:{matched:true,mbid}}},
+   {id:729,reason:"conflicting",recording:{match:{matched:false,reason:"conflicting_recording_candidates",mbid}},
+    preview:{approved_mbid:"a2632d2c-5862-44f8-8235-1a35539ffbdb"}},
+  ];
+  const rejectedSongs=cases.map(item=>({...song,id:item.id,title:`Song ${item.id}`}));
+  const rejectedReports=Object.fromEntries(cases.map((item,index)=>{
+   const report=makeLegacyFallback(rejectedSongs[index],item.recording,item.preview);
+   const normalized=normalizeReports(rejectedSongs[index],[source(report)]);
+   expect(normalized.evidence.mbid).toMatch(/^[0-9a-f-]{36}$/i);
+   expect(normalized.recording_identity).toMatchObject({accepted:false,reason:"recording_identity_not_accepted"});
+   return [item.id,normalized];
+  }));
+
+  const acceptedSong={...song,id:730,title:"Accepted Match"};
+  const acceptedB4=b4Envelope([{song_id:730,identity:{title:acceptedSong.title,artist:acceptedSong.artist},
+   recording:{search_status:"ok",match:{matched:true,mbid}},
+   evidence:{mbid,scalars:{release_year:[{value:1973,source:"MusicBrainz",response_digest:digest}],original_key:[],bpm:[]},
+    genres:[{name:"Blues Rock",source:"MusicBrainz",response_digest:digest}],vibes:[]},
+   approved_preview:null,human_review_required:true}]);
+  const acceptedNormalized=normalizeReports(acceptedSong,[source(acceptedB4)]);
+  expect(acceptedNormalized.recording_identity).toMatchObject({accepted:true,mbid,reason:"accepted_saved_recording_identity"});
+  const baselineSongs=[...rejectedSongs,acceptedSong];
+  const sourceReports={...rejectedReports,730:acceptedNormalized};
+  const result=buildBestEffortDecisions({baseline:{songs:baselineSongs,definitions},sourceReports,definitions});
+  for(const item of cases){
+   const songDecision=result.decisions.targets.find(target=>target.song_id===item.id).decision;
+   expect(songDecision).toEqual({mbid:null,scalars:{},genres:[],vibes:[]});
+   expect(result.report.songs.find(entry=>entry.song_id===item.id)).toMatchObject({
+    recording_match:{status:"abstained",reason:"recording_identity_not_accepted"},
+    scalars:{release_year:{status:"abstained",reason:"recording_identity_not_accepted"}},
+    genres:[{status:"abstained",reason:"recording_identity_not_accepted"}],
+   });
+  }
+  const acceptedDecision=result.decisions.targets.find(target=>target.song_id===730).decision;
+  expect(acceptedDecision).toMatchObject({mbid,scalars:{release_year:acceptedNormalized.evidence.scalars.release_year[0]},genres:["Blues Rock"]});
  });
 });

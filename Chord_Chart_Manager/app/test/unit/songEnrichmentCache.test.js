@@ -32,6 +32,19 @@ describe('song enrichment response cache', () => {
     await expect(createSongEnrichmentCache({ directory: root, maxEntryBytes: 0 })).rejects.toThrow(/positive integer/);
   });
 
+  it('returns a deterministic integrity hash and rejects corrupted private entries', async () => {
+    const cache = await createSongEnrichmentCache({ directory: path.join(root, 'integrity-cache') });
+    const empty = await cache.verifyIntegrity();
+    await cache.set(baseRequest, { status: 'ok', response: Buffer.from('{"recordings":[]}') });
+    const first = await cache.verifyIntegrity();
+    expect(first.entries).toBe(1);
+    expect(first.sha256).not.toBe(empty.sha256);
+    expect((await cache.verifyIntegrity()).sha256).toBe(first.sha256);
+    const file = path.join(root, 'integrity-cache', `${cacheKey(baseRequest)}.json`);
+    await fs.writeFile(file, 'corrupted cache entry');
+    await expect(cache.verifyIntegrity()).rejects.toThrow(/invalid|hash/i);
+  });
+
   it('normalizes search identity and MBID cache keys without including credentials', () => {
     expect(cacheKey(baseRequest)).toBe(cacheKey({
       ...baseRequest, parameters: { title: ' song title ', artist: 'the\tartist' },

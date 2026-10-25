@@ -464,8 +464,10 @@ function createSongEnrichmentProviderClient({
   delay = defaultDelay,
   config = {},
   cache = null,
+  beforeAttempt = null,
 } = {}) {
   if (typeof transport !== "function" || typeof clock !== "function" || typeof delay !== "function") throw new TypeError("Provider dependencies must be functions.");
+  if (beforeAttempt !== null && typeof beforeAttempt !== "function") throw new TypeError("beforeAttempt must be a function when provided.");
   const settings = validateConfig(config);
   const ledger = [];
   let totalAttempts = 0;
@@ -473,6 +475,22 @@ function createSongEnrichmentProviderClient({
   let mbNextStart = 0;
   let acousticNotBefore = 0;
   let mbQueue = Promise.resolve();
+  let attemptReservationQueue = Promise.resolve();
+
+  async function reserveAttempt(provider, operation, gemini) {
+    const previous = attemptReservationQueue;
+    let release;
+    attemptReservationQueue = new Promise(resolve => { release = resolve; });
+    await previous;
+    try {
+      if (!hasBudget(provider, gemini)) return 0;
+      const allowed = beforeAttempt ? await beforeAttempt({ provider, operation, gemini, attempt: totalAttempts + 1 }) : true;
+      if (allowed === false) return 0;
+      totalAttempts += 1;
+      if (gemini) geminiAttempts += 1;
+      return totalAttempts;
+    } finally { release(); }
+  }
 
   function record(provider, operation, attempt, status, tokenUsage = null, failureDetails = null) {
     const index = ledger.length;
@@ -588,11 +606,15 @@ function createSongEnrichmentProviderClient({
             timeoutController.abort();
             return { status: "budget_exhausted" };
           }
-          // JavaScript runs reservation, start-time update and transport invocation
-          // without yielding, so concurrent calls cannot reuse a remaining slot.
-          totalAttempts += 1;
-          if (gemini) geminiAttempts += 1;
-          attempt = totalAttempts;
+          // The reservation hook can durably record intent before dispatch. The
+          // queue keeps the shared client budget safe if callers overlap requests.
+          const reserved = await reserveAttempt(provider, operation, gemini);
+          if (!reserved) {
+            removeParentAbort();
+            timeoutController.abort();
+            return { status: "budget_exhausted" };
+          }
+          attempt = reserved;
           onAttempt?.(attempt);
           const timeout = Symbol("timeout");
           let transportPromise;
@@ -702,7 +724,10 @@ function createSongEnrichmentProviderClient({
         } catch (error) {
           removeParentAbort?.();
           timeoutController?.abort();
-          if (attempt === null) return { status: signal?.aborted ? "cancelled" : "transient_error" };
+          if (attempt === null) {
+            if (error?.code === "COHORT_DRIFT" || error?.code === "CHECKPOINT_INVALID" || error?.code === "CHECKPOINT_TAMPERED") throw error;
+            return { status: signal?.aborted ? "cancelled" : "transient_error" };
+          }
           if (signal?.aborted || error?.name === "AbortError") {
             record(provider, operation, attempt, "cancelled");
             return { status: "cancelled" };

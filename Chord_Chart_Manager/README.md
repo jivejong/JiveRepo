@@ -481,20 +481,22 @@ To schedule a backup, create a Windows Task Scheduler action using `powershell.e
 ## Existing-song enrichment operator workflow
 
 The bounded Stage B CLI consumes saved, validated evidence. Provider acquisition remains in the existing B4/Gemini
-preview commands; this workflow never calls providers. It has three explicit stages: `prepare` captures a fresh
-READ ONLY song/catalog baseline and writes a no-selection decision template; an operator edits that template;
-`preview` rechecks the exact baseline and evidence hashes, rebuilds the B1 preview and writes an exclusive,
-canonical B3 manifest. Outputs belong under ignored `backups/`. Chart bodies and raw provider responses are not
-inputs to this workflow.
+preview commands; this workflow never calls providers. `prepare` captures a fresh READ ONLY song/catalog baseline
+and validates saved evidence. `decide` deterministically selects only missing values with one unconflicted
+B1-normalized scalar value and all uniquely resolved, category-correct missing Genre/Vibe definitions. It writes
+the existing decision schema plus a separate per-field decision report. `preview` rechecks the exact baseline and
+evidence hashes, rebuilds the B1 preview and writes an exclusive, canonical B3 manifest. Outputs belong under
+ignored `backups/`. Chart bodies, lyrics, credentials, and raw provider responses do not enter the decisions or
+decision report.
 
 The accepted best-effort policy fills missing fields from factual evidence then attributed Gemini estimates,
 adds uniquely matched managed Genre/Vibe labels, and preserves populated values, assignments, primary Genre
-and chart/source. Minor positive BPM/key disagreements need not block an available valid estimate; absent or
-rejected evidence remains an exception. The reusable repository CLI still starts with empty decisions and does not run a
-general automatic library batch. Ignored private runners filled this session's decisions; they are not a
-reusable production batch command. Some repository source remains untracked pending the user's commit.
-Fresh backup/actual restore proof, exact versions, replay and
-transactional preservation remain mandatory for main writes.
+and chart/source. The `decide` stage abstains on unresolved recording identity, any source conflict, invalid
+candidates, or distinct normalized scalar values; it never selects a primary Genre. New Genres remain secondary
+when the song has no primary. The stage selects only from evidence already referenced by `prepared-v1.json`;
+it does not make provider requests or write song rows. Fresh backup/actual restore proof, exact versions, replay
+and transactional preservation remain mandatory for main writes. The separate T28 cohort runner can acquire saved
+evidence for an explicitly declared cohort and then feeds each batch through this same operator path.
 
 From `Chord_Chart_Manager/`, convert a saved explicit-recording trial. The converter validates the actual saved
 trial structure and refuses to overwrite an existing file:
@@ -532,12 +534,27 @@ validated `evidence.mbid` only after reviewing that recording/title equivalence 
 review allows that explicit choice). Select only candidates supported by the chosen operating policy. The review report lists the exact
 song version, evidence hashes, source context, coverage/conflicts, and candidate provenance.
 
-Then create a new preview directory and review `changes.txt`, `preview-v1.json`, and the exact manifest/hash:
+For automatic best-effort decisions from saved validated evidence, run `decide` against the same prepared
+artifact. It rechecks source hashes, current song identities/versions, and definitions in a read-only transaction,
+then creates a decisions file and a reason report in a new ignored directory:
 
 ```powershell
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+$automatic = node .\app\scripts\operator-song-enrichment.cjs decide `
+  --prepared $prepare.preparedPath `
+  --output-dir ".\backups\stage-b-decisions-$stamp" | ConvertFrom-Json
+```
+
+Use `$automatic.decisionsPath` with the existing `preview` command below. Review the separate
+`decision-report-v1.json` for stable selected/preserved/abstained reasons. The decisions file retains exact
+validated candidate objects and provenance. Rerunning with the same prepared artifact and unchanged evidence
+produces the same decisions. A changed evidence hash or baseline refuses and requires a new `prepare`.
+
+Then create a new preview directory and review `changes.txt`, `preview-v1.json`, and the exact manifest/hash:
+
+```powershell
 $preview = node .\app\scripts\operator-song-enrichment.cjs preview `
-  --prepared $prepare.preparedPath --decisions $prepare.decisionsPath `
+  --prepared $prepare.preparedPath --decisions $automatic.decisionsPath `
   --output-dir ".\backups\stage-b-preview-727-$stamp" | ConvertFrom-Json
 ```
 
@@ -566,6 +583,45 @@ node .\app\scripts\apply-main-song-enrichment.cjs `
   --manifest $preview.manifestPath --manifest-sha256 $preview.manifestSha256 `
   --target-ids 727 --restore-proof $proof.proofPath
 ```
+
+### Resumable cohort evidence acquisition (T28)
+
+`app/scripts/acquire-song-enrichment-cohort.cjs` accepts only an operator-created private manifest under ignored
+`backups/`. The JSON shape is `{ "cohort_manifest_version": 1, "cohort_id": "...", "songs": [{ "song_id": 123,
+"title": "...", "artist": "..." }] }`. Its exact IDs and identities must match a fresh read-only baseline; it never discovers songs. It
+acquires sequential batches of at most 10 and passes each batch through the existing `prepare` → T27 `decide` →
+`preview` validators. It creates no application-data writes and never calls apply.
+
+For a fresh, separately authorized provider run, choose a new ignored output directory and an explicit ignored
+persistent cache directory. Resume with the same manifest, output directory, and cache directory; the runner rejects
+changed baseline, cache, evidence, or checkpoint hashes instead of refreshing them. The provider client keeps the
+accepted request/response/token limits and shared MusicBrainz pacing; the runner caps factual calls at 12 per song
+(120 per full ten-song batch) by default and Gemini at one request per song. `--factual-attempts-per-song N`
+can lower the factual cap to an integer from 1 through 12. The selected cap is bound into the checkpoint; resuming
+with a different cap is refused. For example, when replacing a run that already spent 3 factual attempts on song
+736, a three-song replacement with `N=9` permits at most 27 new factual attempts and 30 cumulative attempts;
+song 736 can reach at most 12. This is a ceiling, not a prediction of actual calls, and a valid cache entry is reused
+only on an exact unexpired key match; the cache does not guarantee a hit. Each actual batch is capped at its song
+count times `N`. Checkpoints record request intent before transport,
+so interrupted requests stay uncertain and consume their attempt. Exceptions list only song IDs and stable reason
+codes. Checkpoints, decisions, and summaries contain no chart bodies, lyrics, credentials, or raw provider responses.
+Checkpoints also persist a safe active stage and fatal reason. Failed or interrupted runs refuse automatic resume;
+inspect metadata and request counts, then use a separately reviewed recovery disposition. Checkpoints from an older
+state-machine version are rejected unchanged. Do not reset counters, remove a stop marker, or retry an uncertain request.
+
+Example invocation (documentation only; it does not authorize provider acquisition):
+
+```powershell
+node .\app\scripts\acquire-song-enrichment-cohort.cjs `
+  --live-read-only `
+  --manifest .\backups\<private-cohort-manifest>.json `
+  --output-dir .\backups\<new-private-run-directory> `
+  --cache-dir .\backups\stage-b-provider-cache `
+  --factual-attempts-per-song 9
+```
+
+Keep the same output and cache paths when resuming. A completed batch emits a read-only preview manifest for later
+review and backup/restore gates; it is never applied by this runner.
 
 It requires explicit opt-in, exact private manifest/proof paths and hashes, the exact target set, and no more than
 25 songs. It checks database identity and migration before receipt lookup. A matching committed receipt replays

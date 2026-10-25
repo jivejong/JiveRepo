@@ -1,6 +1,6 @@
 const crypto = require("node:crypto");
 const { buildEnrichmentPreview } = require("./existingSongEnrichment.js");
-const { definitionKey } = require("./tagDefinitionNames.js");
+const { definitionKey, normalizeDefinitionName } = require("./tagDefinitionNames.js");
 const { normalizeFactualContext, validateFactualIdentity } = require("../scripts/preview-gemini-fallback.cjs");
 
 const SCALARS = ["release_year", "original_key", "bpm"];
@@ -163,15 +163,34 @@ function reportEvidence(report, songId, context) {
   throw fail("EVIDENCE_FORMAT_UNSUPPORTED");
 }
 
+function hasAcceptedRecordingIdentity(document, songId, normalized) {
+  if (!normalized.mbid || !UUID.test(normalized.mbid)) return false;
+  if (document?.factual_context_version === 1 || document?.context_version === 1 ||
+      document?.mode === "explicit_gemini_missing_metadata_fallback" && document.factual_evidence?.context_version === 1) {
+    return true; // reportEvidence has already normalized and validated the factual identity against the song.
+  }
+  if (document?.report_version === 1 && document?.report_type === "existing_song_enrichment_read_only_preview") {
+    const item = document.songs?.find(row => row?.song_id === songId);
+    return item?.human_review_required === true && item.recording?.match?.matched === true &&
+      typeof item.recording.match.mbid === "string" && item.recording.match.mbid.toLowerCase() === normalized.mbid.toLowerCase() &&
+      item.evidence?.mbid?.toLowerCase() === normalized.mbid.toLowerCase();
+  }
+  // Legacy embedded B4 evidence has no identity-validation contract. A UUID in its
+  // wrapper's recording field may be a provisional candidate, so it is not accepted here.
+  return false;
+}
+
 function normalizeReports(song, reports) {
   const evidence = { mbid: null, scalars: Object.fromEntries(SCALARS.map(field => [field, []])), genres: [], vibes: [] };
   const sources = [];
   const source_context = [];
+  const acceptedRecordingMbids = new Set();
   for (const item of reports) {
     const normalized = reportEvidence(item.document, song.id, { target: { song_id: song.id, title: song.title, artist: song.artist } });
     if (normalized.mbid) {
       if (evidence.mbid && evidence.mbid !== normalized.mbid) throw fail("EVIDENCE_IDENTITY_MISMATCH");
       evidence.mbid = normalized.mbid;
+      if (hasAcceptedRecordingIdentity(item.document, song.id, normalized)) acceptedRecordingMbids.add(normalized.mbid.toLowerCase());
     }
     for (const field of SCALARS) for (const candidate of normalized.scalars[field]) {
       if (!evidence.scalars[field].some(current => stableJson(current) === stableJson(candidate))) evidence.scalars[field].push(candidate);
@@ -206,7 +225,13 @@ function normalizeReports(song, reports) {
       tag_diagnostics:{genres:tagGroup("genres"),vibes:tagGroup("vibes")} });
     }
   }
-  return { evidence, sources, source_context };
+  const recordingIdentityAccepted = evidence.mbid !== null && acceptedRecordingMbids.has(evidence.mbid.toLowerCase());
+  return { evidence, sources, source_context, recording_identity: {
+    accepted: recordingIdentityAccepted,
+    mbid: recordingIdentityAccepted ? evidence.mbid : null,
+    reason: recordingIdentityAccepted ? "accepted_saved_recording_identity" :
+      evidence.mbid ? "recording_identity_not_accepted" : "recording_identity_unresolved",
+  } };
 }
 
 function emptyDecision(evidence) {
@@ -220,6 +245,196 @@ function buildDecisionTemplate({ baseline, sourceReports, definitions }) {
       definitions_sha256: hashBytes(Buffer.from(stableJson(definitions))),
       source_context: sourceReports[song.id].source_context, evidence: sourceReports[song.id].evidence,
       decision: emptyDecision(sourceReports[song.id].evidence) })) };
+}
+
+const SCALAR_SOURCE_PRIORITY = Object.freeze({
+  release_year: ["MusicBrainz", "Gemini"],
+  original_key: ["AcousticBrainz", "Gemini"],
+  bpm: ["AcousticBrainz", "Gemini"],
+});
+
+function sourceConflict(sourceContext, field) {
+  return (Array.isArray(sourceContext) ? sourceContext : []).some(context =>
+    context?.conflicts?.[field] === true || context?.scalar_states?.[field] === "conflicting");
+}
+
+function scalarCandidatePreview(song, evidence, definitions, field, candidate) {
+  try {
+    const preview = buildEnrichmentPreview(song, evidence, {
+      mbid: evidence.mbid,
+      scalars: { [field]: candidate },
+      genres: [],
+      vibes: [],
+    }, definitions);
+    if (preview.diagnostics.some(item => item.code === "invalid_candidate" || item.code === "selection_not_in_evidence")) {
+      return { valid: false, reason: "invalid_candidate" };
+    }
+    const change = preview.scalar_changes.find(item => item.field === field);
+    return change ? { valid: true, value: change.after } : { valid: false, reason: "invalid_candidate" };
+  } catch {
+    return { valid: false, reason: "invalid_candidate" };
+  }
+}
+
+function tagKey(name, category) {
+  try { return definitionKey(normalizeDefinitionName(name, category)); }
+  catch { return null; }
+}
+
+function compareStableJson(left, right) {
+  const a = stableJson(left);
+  const b = stableJson(right);
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function compareStableStrings(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function compareCandidates(left, right, field) {
+  const priority = SCALAR_SOURCE_PRIORITY[field];
+  const leftPriority = priority.indexOf(left.source);
+  const rightPriority = priority.indexOf(right.source);
+  return (leftPriority < 0 ? priority.length : leftPriority) -
+    (rightPriority < 0 ? priority.length : rightPriority) || compareStableJson(left, right);
+}
+
+function selectBestEffortTags(song, evidence, definitions, category, recordingResolved, recordingReason) {
+  const evidenceKey = category === "Genre" ? "genres" : "vibes";
+  const selected = [];
+  const report = [];
+  const candidates = evidence[evidenceKey];
+  if (!recordingResolved) {
+    return { selected, report: candidates.map(item => ({ name: item.name, status: "abstained",
+      reason: recordingReason })) };
+  }
+
+  const catalog = definitions?.[evidenceKey];
+  const assignments = song[evidenceKey] || [];
+  const evidenceByKey = new Map();
+  for (const candidate of candidates) {
+    const key = tagKey(candidate?.name, category);
+    if (!key) {
+      report.push({ name: typeof candidate?.name === "string" ? candidate.name : null,
+        status: "abstained", reason: "invalid_tag_evidence" });
+      continue;
+    }
+    if (!evidenceByKey.has(key)) evidenceByKey.set(key, []);
+    evidenceByKey.get(key).push(candidate);
+  }
+
+  const assignedKeys = new Set(assignments.map(item => tagKey(item?.name, category)).filter(Boolean));
+  for (const [key, items] of evidenceByKey) {
+    const matches = Array.isArray(catalog) ? catalog.filter(item => tagKey(item?.name, category) === key) : [];
+    const label = [...items.map(item => item.name)].sort(compareStableStrings)[0];
+    if (matches.length === 0) {
+      report.push({ name: label, status: "abstained", reason: "unknown_definition" });
+    } else if (matches.length !== 1) {
+      report.push({ name: label, status: "abstained", reason: "ambiguous_definition" });
+    } else if (assignedKeys.has(key)) {
+      report.push({ name: matches[0].name, definition_id: matches[0].id,
+        status: "preserved", reason: "already_assigned" });
+    } else {
+      selected.push(matches[0].name);
+      report.push({ name: matches[0].name, definition_id: matches[0].id, status: "selected",
+        reason: items.length > 1 ? "unique_category_definition_duplicate_evidence_collapsed" : "unique_category_definition" });
+    }
+  }
+  selected.sort(compareStableStrings);
+  report.sort((left, right) => compareStableStrings(left.name || "", right.name || "") ||
+    compareStableStrings(left.reason, right.reason));
+  return { selected, report };
+}
+
+function buildBestEffortDecisions({ baseline, sourceReports, definitions }) {
+  if (!baseline || !Array.isArray(baseline.songs) || baseline.songs.length < 1 ||
+      !definitions || !Array.isArray(definitions.genres) || !Array.isArray(definitions.vibes) ||
+      !sourceReports || typeof sourceReports !== "object" || Array.isArray(sourceReports)) {
+    throw fail("BEST_EFFORT_INPUT_INVALID");
+  }
+  const songIds = baseline.songs.map(song => song?.id);
+  if (songIds.some(id => !Number.isSafeInteger(id) || id < 1) || new Set(songIds).size !== songIds.length ||
+      songIds.some(id => !sourceReports[id] || !Array.isArray(sourceReports[id].sources) ||
+        !Array.isArray(sourceReports[id].source_context) || !sourceReports[id].evidence ||
+        !sourceReports[id].evidence.scalars || !Array.isArray(sourceReports[id].evidence.genres) ||
+        !Array.isArray(sourceReports[id].evidence.vibes))) {
+    throw fail("BEST_EFFORT_INPUT_INVALID");
+  }
+  const decisions = buildDecisionTemplate({ baseline, sourceReports, definitions });
+  const report = { report_version: 1, decision_policy: "best_effort_missing_only_v1", songs: [] };
+  for (const target of decisions.targets) {
+    const song = baseline.songs.find(item => item.id === target.song_id);
+    const source = sourceReports[target.song_id];
+    const evidence = source?.evidence;
+    if (!song || !source || !evidence || !evidence.scalars || !SCALARS.every(field => Array.isArray(evidence.scalars[field])) ||
+        !Array.isArray(evidence.genres) || !Array.isArray(evidence.vibes)) {
+      throw fail("BEST_EFFORT_INPUT_INVALID");
+    }
+    const recordingUuidPresent = typeof evidence.mbid === "string" && UUID.test(evidence.mbid);
+    const recordingResolved = recordingUuidPresent && source.recording_identity?.accepted === true &&
+      source.recording_identity.mbid?.toLowerCase() === evidence.mbid.toLowerCase();
+    const recordingReason = recordingResolved ? "accepted_saved_recording_identity" :
+      recordingUuidPresent ? "recording_identity_not_accepted" : "recording_identity_unresolved";
+    const decision = target.decision;
+    const songReport = {
+      song_id: song.id,
+      title: song.title,
+      artist: song.artist,
+      base_version: song.updated_at,
+      recording_match: { status: recordingResolved ? "resolved" : "abstained",
+        reason: recordingReason },
+      scalars: {},
+      genres: [],
+      vibes: [],
+      primary_genre: song.genres?.some(item => item.is_primary)
+        ? { status: "preserved", reason: "existing_primary_preserved" }
+        : { status: "unchanged", reason: "automatic_primary_inference_disabled" },
+    };
+    if (recordingResolved) decision.mbid = evidence.mbid;
+
+    for (const field of SCALARS) {
+      const current = song[field];
+      if (current !== null && !(typeof current === "string" && current.trim() === "")) {
+        songReport.scalars[field] = { status: "preserved", reason: "already_populated" };
+        continue;
+      }
+      const candidates = evidence.scalars[field];
+      let reason = null;
+      if (!recordingResolved) reason = recordingReason;
+      else if (sourceConflict(source.source_context, field)) reason = "conflicting_evidence";
+      else if (!Array.isArray(candidates) || candidates.length === 0) reason = "no_candidate";
+      if (reason) {
+        songReport.scalars[field] = { status: "abstained", reason };
+        continue;
+      }
+
+      const checked = candidates.map(candidate => ({ candidate,
+        proposal: scalarCandidatePreview(song, evidence, definitions, field, candidate) }));
+      if (checked.some(item => !item.proposal.valid)) {
+        songReport.scalars[field] = { status: "abstained", reason: "invalid_candidate" };
+        continue;
+      }
+      const values = new Set(checked.map(item => stableJson(item.proposal.value)));
+      if (values.size !== 1) {
+        songReport.scalars[field] = { status: "abstained", reason: "conflicting_evidence" };
+        continue;
+      }
+      checked.sort((left, right) => compareCandidates(left.candidate, right.candidate, field));
+      const selected = checked[0].candidate;
+      decision.scalars[field] = selected;
+      songReport.scalars[field] = { status: "selected", reason: "one_unconflicted_canonical_value",
+        value: checked[0].proposal.value, source: selected.source, response_digest: selected.response_digest };
+    }
+
+    const genres = selectBestEffortTags(song, evidence, definitions, "Genre", recordingResolved, recordingReason);
+    const vibes = selectBestEffortTags(song, evidence, definitions, "Vibe", recordingResolved, recordingReason);
+    decision.genres = genres.selected;
+    decision.vibes = vibes.selected;
+    songReport.genres = genres.report;
+    songReport.vibes = vibes.report;
+    report.songs.push(songReport);
+  }
+  return { decisions, report };
 }
 
 function validateDecisionAgainstEvidence(selection, candidates) {
@@ -274,4 +489,4 @@ function buildManifest({ baseline, decisions, sourceReports, operationId, defini
   return { format_version: 1, operation_id: operationId, songs };
 }
 
-module.exports = { buildDecisionTemplate, buildManifest, hashBytes, normalizeReports, reportEvidence, stableJson, validateDecisionAgainstEvidence };
+module.exports = { buildBestEffortDecisions, buildDecisionTemplate, buildManifest, hashBytes, normalizeReports, reportEvidence, stableJson, validateDecisionAgainstEvidence };

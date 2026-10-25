@@ -392,8 +392,11 @@ async function writeReportFiles(directory, report, filesystem = fs) {
   }
 }
 
-async function preparePreview({ pool, songId, factualInput = null }) {
+async function preparePreview({ pool, songId, factualInput = null, expectedBaseline = null }) {
   const baseline = await captureReadOnlyBaseline(pool, [songId]);
+  if (expectedBaseline && JSON.stringify(baseline) !== JSON.stringify(expectedBaseline)) {
+    throw fail("The fresh song/catalog snapshot changed before Gemini acquisition.", "COHORT_DRIFT");
+  }
   const song = baseline.songs[0];
   const factual = normalizeFactualContext(factualInput, songId);
   validateFactualIdentity(factual, song);
@@ -505,6 +508,7 @@ if (require.main === module) main().then(({ artifacts }) => {
 }).catch(error => { process.stderr.write(`${error.safeMessage || "Gemini fallback preview failed."}\n`); process.exitCode = 1; });
 
 module.exports = { buildReport, loadConfiguration, main, parseArguments, parsePrivateEnv, renderSummary, runPreview, preparePreview,
+  executePreparedPreview,
   createFallbackProviderClient, safeFactualEvidence, safeGeminiResult, unassignedAllowedNames,
   normalizeFactualContext, requestedMissingFields, validateFactualIdentity,
   validateConfiguration, writeReportFiles };

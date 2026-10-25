@@ -512,12 +512,15 @@ function buildNotDispatchedReport(song, reason) {
   };
 }
 
-async function runPreview({ pool, providerClient, songIds, maxAttempts, clock = Date.now }) {
+async function runPreview({ pool, providerClient, songIds, maxAttempts, clock = Date.now, expectedBaseline = null }) {
   if (!pool || typeof pool.connect !== "function" || !providerClient ||
       !["searchRecordings", "lookupRecording", "getAcousticBrainzEvidence", "getAttemptCounts", "getRunLedger"]
         .every(name => typeof providerClient[name] === "function")) throw new TypeError("Preview dependencies are incomplete.");
   const baselineCapturedAt = new Date(Number(clock())).toISOString();
   const baseline = await captureReadOnlyBaseline(pool, songIds);
+  if (expectedBaseline && JSON.stringify(baseline) !== JSON.stringify(expectedBaseline)) {
+    throw cliError("The fresh song/catalog snapshot changed before provider acquisition.", "COHORT_DRIFT");
+  }
   const songs = [];
   let budgetExhausted = false;
   for (const song of baseline.songs) {

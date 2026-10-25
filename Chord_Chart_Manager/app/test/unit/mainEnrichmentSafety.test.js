@@ -47,7 +47,8 @@ describe('main apply restore proof safeguards', () => {
     await expect(safety.verifyRestoreProof(signed, { filesystem, now: Date.parse('2026-10-19T13:00:00Z') })).resolves.toBe(true);
     await expect(safety.verifyRestoreProof({ ...signed, live_snapshot_sha256: 'c'.repeat(64) }, { filesystem })).rejects.toThrow('RESTORE_PROOF_INVALID');
     filesystem.files.set(backupPath, Buffer.from('tampered archive'));
-    await expect(safety.verifyRestoreProof(signed, { filesystem })).rejects.toThrow('BACKUP_HASH_MISMATCH');
+    await expect(safety.verifyRestoreProof(signed, { filesystem, now: Date.parse('2026-10-19T13:00:00Z') }))
+      .rejects.toThrow('BACKUP_HASH_MISMATCH');
   });
 
   it('refuses missing main opt-in before connecting to any database client', async () => {

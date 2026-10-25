@@ -354,6 +354,77 @@ canonical manifest hash, database identity, and a fresh actual restore/snapshot
 proof for a new operation. A matching committed receipt may replay without the
 old proof archive. It never dispatches providers or migrates implicitly.
 
+The saved-evidence operator also has a read-only `decide` stage between
+`prepare` and `preview`. It reloads the prepared evidence references,
+checks their hashes and the exact current song/catalog baseline, then emits the
+existing decision-file schema plus `decision-report-v1.json`. It selects
+only missing scalars with one unconflicted B1-normalized value and uniquely
+resolved missing definitions in the matching Genre or Vibe category. It
+preserves populated values and assignments, never proposes a primary Genre,
+and records per-field selection or abstention reasons. It makes no provider
+requests and performs no application-data writes. Use a new ignored
+`backups/` output directory; changed evidence or baseline requires a new
+`prepare`.
+
+## Resumable cohort evidence acquisition (T28)
+
+`scripts/acquire-song-enrichment-cohort.cjs` accepts an explicit manifest only:
+
+```json
+{
+  "cohort_manifest_version": 1,
+  "cohort_id": "operator-chosen-id",
+  "songs": [{ "song_id": 123, "title": "Exact title", "artist": "Exact artist" }]
+}
+```
+
+Keep that file in ignored `backups/`. The runner compares every declared ID,
+title, and artist with a fresh B4 READ ONLY baseline, binds versions and managed
+definitions into an atomic private checkpoint, and never discovers songs. It
+works sequentially in batches of ten or fewer. The existing provider client
+keeps the shared MusicBrainz queue/pacing, retry policy, response validation,
+timeouts, 1 MiB response cap, Gemini input/output bounds, and private response
+cache. The runner caps factual attempts at 12 per song by default and Gemini
+to one outbound request per song. `--factual-attempts-per-song N` lowers the
+factual cap to an integer from 1 through 12; the actual batch ceiling is its
+song count times `N`. The selected cap is bound into the checkpoint, and resume
+with a different cap is refused. For example, if the retained prior run spent
+3 factual attempts on song 736, a three-song replacement with `N=9` permits at
+most 27 new factual attempts and 30 cumulative attempts; song 736 can reach at
+most 12. This is only a ceiling. The cache may reuse only exact, valid,
+unexpired request keys and does not guarantee a hit. A write-ahead attempt intent is
+saved before transport; after an interruption that request stays uncertain and
+continues to consume the budget. Resume with the exact same manifest, output
+directory, cache directory, baseline, and evidence hashes. Drift, corrupt cache
+or checkpoint, invalid evidence, authentication failure, provider outage, or a
+budget-guard failure stops the run without refreshing the baseline.
+
+Checkpoints also record the active stage and a sanitized fatal reason. A failed
+run or an interrupted in-flight request is unsafe to resume automatically;
+inspect its metadata-only checkpoint and request counts, then choose a reviewed
+recovery disposition. Older checkpoints without the current state-machine
+version are rejected without modification. Never reset counters, remove a stop
+marker, or rerun the same output directory to retry an uncertain request.
+
+Example command (provider acquisition requires separate explicit
+authorization):
+
+```powershell
+node .\scripts\acquire-song-enrichment-cohort.cjs `
+  --live-read-only `
+  --manifest ..\backups\<private-cohort-manifest>.json `
+  --output-dir ..\backups\<new-private-run-directory> `
+  --cache-dir ..\backups\stage-b-provider-cache `
+  --factual-attempts-per-song 9
+```
+
+Each completed batch runs the saved-evidence `prepare` → T27 `decide` →
+`preview` validators and produces only a read-only B3 manifest. The runner never
+calls apply. Private summaries contain stable exception codes and song IDs;
+chart bodies, lyrics, credentials, and raw provider responses remain excluded.
+Review the preview, then follow the separate fresh backup/actual-restore and
+main-apply gates if a later task authorizes writes.
+
 The apply transaction locks the operation, then normalized Genre/Vibe names
 and relevant definition rows, then target songs in ascending ID order. It
 rebuilds each B1 preview from the locked current snapshot and requires exact

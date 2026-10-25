@@ -4,7 +4,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { Pool } = require("../server/node_modules/pg");
 const { captureReadOnlyBaseline, validateDatabaseUrl } = require("./preview-existing-song-enrichment.cjs");
-const { buildDecisionTemplate, buildManifest, hashBytes, normalizeReports, stableJson } = require("../server/operatorEnrichmentWorkflow.js");
+const { buildBestEffortDecisions, buildDecisionTemplate, buildManifest, hashBytes, normalizeReports, stableJson } = require("../server/operatorEnrichmentWorkflow.js");
 
 const APP_ROOT = path.resolve(__dirname, "..");
 const ROOT = path.resolve(APP_ROOT, "..");
@@ -19,7 +19,7 @@ function ignored(file) {
 }
 function parseArgs(argv) {
   const [stage, ...args] = argv;
-  if (!new Set(["prepare", "preview"]).has(stage)) throw error("USAGE");
+  if (!new Set(["prepare", "decide", "preview"]).has(stage)) throw error("USAGE");
   const options = { stage, evidence: [] };
   const values = new Set(["--song-ids", "--evidence", "--output-dir", "--prepared", "--decisions"]);
   for (let i=0;i<args.length;i++) {
@@ -34,7 +34,8 @@ function parseArgs(argv) {
   if (stage === "prepare") {
     options.ids=(options.songIds||"").split(",").map(Number);
     if (options.ids.length<1 || options.ids.length>25 || options.ids.some(n=>!Number.isSafeInteger(n)||n<1)||new Set(options.ids).size!==options.ids.length || !options.evidence.length) throw error("USAGE");
-  } else if (!options.prepared || !options.decisions) throw error("USAGE");
+  } else if (!options.prepared || stage === "preview" && !options.decisions ||
+      stage === "decide" && options.decisions) throw error("USAGE");
   return options;
 }
 async function readReport(pathname) {
@@ -117,13 +118,14 @@ function renderChanges(manifest) {
     return lines.join("\n");
   }).join("\n");
 }
-async function prepare(options,{databaseUrl,PoolClass=Pool}={}) {
+async function prepare(options,{databaseUrl,PoolClass=Pool,expectedBaseline=null}={}) {
   const url=await loadDatabaseUrl(databaseUrl);
   const inputs=options.evidence.map(value=>{const m=/^(\d+)=(.+)$/.exec(value);if(!m)throw error("USAGE");return{id:Number(m[1]),path:m[2]};});
   if(inputs.some(x=>!options.ids.includes(x.id)))throw error("EVIDENCE_TARGET_UNDECLARED");
   const docs=await Promise.all(inputs.map(async item=>({id:item.id,...await readReport(item.path)})));
   let baseline;
   baseline=await withReadOnlyPool(url,p=>captureReadOnlyBaseline(p,options.ids),PoolClass);
+  if(expectedBaseline&&stableJson(baseline)!==stableJson(expectedBaseline))throw error("BASELINE_CHANGED_REPREPARE");
   const sourceReports={};
   for(const song of baseline.songs){
     const songDocs=docs.filter(d=>d.id===song.id);
@@ -144,16 +146,62 @@ async function prepare(options,{databaseUrl,PoolClass=Pool}={}) {
   } catch(e){for(const n of ["prepared-v1.json","decisions-v1.json","review.txt"])await fs.unlink(path.join(out,n)).catch(()=>{});await fs.rmdir(out).catch(()=>{});throw e;}
   return {outputDir:out,preparedPath:path.join(out,"prepared-v1.json"),decisionsPath:path.join(out,"decisions-v1.json"),reportPath:path.join(out,"review.txt")};
 }
-async function preview(options,{databaseUrl,PoolClass=Pool,operationId=require("node:crypto").randomUUID()}={}) {
-  const url=await loadDatabaseUrl(databaseUrl), preparedDoc=JSON.parse(await fs.readFile(options.prepared,"utf8")), decisions=JSON.parse(await fs.readFile(options.decisions,"utf8"));
-  if(preparedDoc.operator_prepare_version!==1||!Array.isArray(preparedDoc.baseline?.songs))throw error("PREPARED_INVALID");
-  const ids=preparedDoc.baseline.songs.map(s=>s.id), reports=[];
-  for(const [id,sources] of Object.entries(preparedDoc.sources))for(const source of sources){const read=await readReport(source.path);if(hashBytes(read.bytes)!==source.sha256)throw error("EVIDENCE_CHANGED");reports.push({id:Number(id),...read});}
-  let current;
-  current=await withReadOnlyPool(url,p=>captureReadOnlyBaseline(p,ids),PoolClass);
-  if(stableJson(current)!==stableJson(preparedDoc.baseline)||digestDefinitions(current.definitions)!==preparedDoc.definitions_sha256)throw error("BASELINE_CHANGED_REPREPARE");
+async function loadPreparedInputs(preparedPath,{databaseUrl,PoolClass=Pool}={}) {
+  let preparedDoc;
+  try { preparedDoc=JSON.parse(await fs.readFile(preparedPath,"utf8")); }
+  catch { throw error("PREPARED_INVALID"); }
+  if(preparedDoc?.operator_prepare_version!==1||!Array.isArray(preparedDoc.baseline?.songs)||
+      preparedDoc.baseline.songs.length<1||preparedDoc.baseline.songs.length>25||
+      !preparedDoc.baseline.definitions||!preparedDoc.sources||typeof preparedDoc.sources!=="object"||
+      !preparedDoc.evidence||!preparedDoc.source_context||
+      !/^[a-f0-9]{64}$/.test(preparedDoc.definitions_sha256||""))throw error("PREPARED_INVALID");
+  const ids=preparedDoc.baseline.songs.map(song=>song?.id);
+  if(ids.some(id=>!Number.isSafeInteger(id)||id<1)||new Set(ids).size!==ids.length)throw error("PREPARED_INVALID");
+  const idKeys=ids.map(String).sort();
+  const sourceKeys=Object.keys(preparedDoc.sources).sort();
+  if(stableJson(idKeys)!==stableJson(sourceKeys)||ids.some(id=>!Array.isArray(preparedDoc.sources[id])||preparedDoc.sources[id].length<1)) {
+    throw error("PREPARED_INVALID");
+  }
+  const reports=[];
+  for(const id of ids)for(const source of preparedDoc.sources[id]) {
+    if(!source||typeof source.path!=="string"||!/^[a-f0-9]{64}$/.test(source.sha256||""))throw error("PREPARED_INVALID");
+    const read=await readReport(source.path);
+    if(hashBytes(read.bytes)!==source.sha256)throw error("EVIDENCE_CHANGED");
+    reports.push({id,...read});
+  }
+  const database=await loadDatabaseUrl(databaseUrl);
+  const current=await withReadOnlyPool(database,p=>captureReadOnlyBaseline(p,ids),PoolClass);
+  if(stableJson(current)!==stableJson(preparedDoc.baseline)||
+      digestDefinitions(current.definitions)!==preparedDoc.definitions_sha256)throw error("BASELINE_CHANGED_REPREPARE");
   const sourceReports={};
-  for(const song of current.songs){const docs=reports.filter(r=>r.id===song.id);sourceReports[song.id]=normalizeReports(song,docs);}
+  for(const song of current.songs) {
+    const normalized=normalizeReports(song,reports.filter(item=>item.id===song.id));
+    if(stableJson(normalized.evidence)!==stableJson(preparedDoc.evidence[song.id])||
+        stableJson(normalized.source_context)!==stableJson(preparedDoc.source_context[song.id])||
+        stableJson(normalized.sources)!==stableJson(preparedDoc.sources[song.id]))throw error("PREPARED_EVIDENCE_MISMATCH");
+    sourceReports[song.id]=normalized;
+  }
+  return {preparedDoc,current,sourceReports,ids};
+}
+async function decide(options,{databaseUrl,PoolClass=Pool}={}) {
+  const prepared=await loadPreparedInputs(options.prepared,{databaseUrl,PoolClass});
+  const result=buildBestEffortDecisions({baseline:prepared.current,sourceReports:prepared.sourceReports,
+    definitions:prepared.current.definitions});
+  const out=await createPrivateDir(options.outputDir);
+  try {
+    await writeExclusive(out,"decisions-v1.json",JSON.stringify(result.decisions,null,2)+"\n");
+    await writeExclusive(out,"decision-report-v1.json",JSON.stringify(result.report,null,2)+"\n");
+  } catch(e) {
+    for(const name of ["decisions-v1.json","decision-report-v1.json"])await fs.unlink(path.join(out,name)).catch(()=>{});
+    await fs.rmdir(out).catch(()=>{});
+    throw e;
+  }
+  return {outputDir:out,preparedPath:path.resolve(options.prepared),decisionsPath:path.join(out,"decisions-v1.json"),
+    reportPath:path.join(out,"decision-report-v1.json")};
+}
+async function preview(options,{databaseUrl,PoolClass=Pool,operationId=require("node:crypto").randomUUID()}={}) {
+  const decisions=JSON.parse(await fs.readFile(options.decisions,"utf8"));
+  const {preparedDoc,current,sourceReports,ids}=await loadPreparedInputs(options.prepared,{databaseUrl,PoolClass});
   const manifest=buildManifest({baseline:current,decisions,sourceReports,operationId,definitions:current.definitions});
   const canonical=stableJson(manifest), sha256=hashBytes(Buffer.from(canonical));
   const deltas=manifest.songs.map(s=>({song_id:s.song_id,identity:s.identity,base_version:s.base_version,
@@ -170,6 +218,6 @@ async function preview(options,{databaseUrl,PoolClass=Pool,operationId=require("
   }catch(e){for(const n of ["apply-manifest-v1.json","preview-v1.json","changes.txt"])await fs.unlink(path.join(out,n)).catch(()=>{});await fs.rmdir(out).catch(()=>{});throw e;}
   return {outputDir:out,manifestPath:receipt.manifest_path,manifestSha256:sha256,receiptPath:path.join(out,"preview-v1.json"),changesPath:path.join(out,"changes.txt")};
 }
-async function main(argv=process.argv.slice(2),deps={}){const options=parseArgs(argv);return options.stage==="prepare"?prepare(options,deps):preview(options,deps);}
+async function main(argv=process.argv.slice(2),deps={}){const options=parseArgs(argv);return options.stage==="prepare"?prepare(options,deps):options.stage==="decide"?decide(options,deps):preview(options,deps);}
 if(require.main===module)main().then(result=>process.stdout.write(`${JSON.stringify(result,null,2)}\n`)).catch(e=>{process.stderr.write(`Operator workflow refused: ${e.code||"FAILED"}\n`);process.exitCode=1;});
-module.exports={createPrivateDir,loadDatabaseUrl,main,parseArgs,prepare,preview,targetsFromEvidence,withReadOnlyPool};
+module.exports={createPrivateDir,decide,loadDatabaseUrl,loadPreparedInputs,main,parseArgs,prepare,preview,targetsFromEvidence,withReadOnlyPool};

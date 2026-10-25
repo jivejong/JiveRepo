@@ -109,6 +109,16 @@ function isGeminiOnlyEvidence(evidence) {
   return items.length > 0 && items.every(item => item.source === "Gemini");
 }
 
+function isUnresolvedIdentityNoOp(item) {
+  const { evidence, review_decision: decision, preview } = item;
+  return evidence.mbid === null && decision.mbid === null && Object.keys(decision.scalars).length === 0 &&
+    decision.genres.length === 0 && decision.vibes.length === 0 &&
+    (decision.primaryGenre === undefined || decision.primaryGenre === null) &&
+    preview.approved_mbid === null && preview.has_changes === false && preview.scalar_changes.length === 0 &&
+    preview.tag_additions.genres.length === 0 && preview.tag_additions.vibes.length === 0 &&
+    preview.primary_proposal === null;
+}
+
 function validCandidateValue(value) {
   if (value === null || typeof value === "string" || typeof value === "boolean" ||
       typeof value === "number" && Number.isFinite(value)) return true;
@@ -265,7 +275,7 @@ function validateManifest(manifest) {
     validateDecision(item.review_decision, item.song_id);
     validatePreview(item.preview, item.song_id);
     const geminiOnly = isGeminiOnlyEvidence(item.evidence);
-    if (item.evidence.mbid === null && !geminiOnly) {
+    if (item.evidence.mbid === null && !geminiOnly && !isUnresolvedIdentityNoOp(item)) {
       throw fail("EVIDENCE_IDENTITY_REQUIRED", "Factual-provider evidence requires an approved recording MBID.", item.song_id);
     }
     if (item.evidence.mbid !== item.review_decision.mbid) {

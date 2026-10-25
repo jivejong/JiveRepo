@@ -577,6 +577,17 @@ function buildTagAdditions(category, selectedLabels, song, evidence, definitions
   return additions.sort((a, b) => a.id - b.id || compareStableStrings(a.name, b.name));
 }
 
+function isExplicitNoOpDecision(reviewDecision) {
+  return Boolean(reviewDecision && typeof reviewDecision === "object" && !Array.isArray(reviewDecision) &&
+    (reviewDecision.mbid === null || reviewDecision.mbid === undefined) &&
+    reviewDecision.scalars && typeof reviewDecision.scalars === "object" && !Array.isArray(reviewDecision.scalars) &&
+    Object.keys(reviewDecision.scalars).length === 0 &&
+    Array.isArray(reviewDecision.genres) && reviewDecision.genres.length === 0 &&
+    Array.isArray(reviewDecision.vibes) && reviewDecision.vibes.length === 0 &&
+    (reviewDecision.primaryGenre === undefined || reviewDecision.primaryGenre === null) &&
+    Object.keys(reviewDecision).every(key => ["mbid", "scalars", "genres", "vibes", "primaryGenre"].includes(key)));
+}
+
 function buildEnrichmentPreview(songSnapshot, evidence, reviewDecision, definitions) {
   if (!songSnapshot || typeof songSnapshot !== "object" || Array.isArray(songSnapshot) ||
       !Number.isInteger(songSnapshot.id) || songSnapshot.id < 1) {
@@ -589,7 +600,9 @@ function buildEnrichmentPreview(songSnapshot, evidence, reviewDecision, definiti
   const approvedMbid = reviewDecision?.mbid;
   const hasRecordingIdentity = typeof evidenceMbid === "string" && UUID.test(evidenceMbid) && approvedMbid === evidenceMbid;
   const geminiOnly = evidenceMbid === null && approvedMbid === null && geminiOnlyEvidence(evidence);
-  if (!hasRecordingIdentity && !geminiOnly) {
+  const explicitNoOp = !hasRecordingIdentity && !geminiOnly && evidenceMbid === null &&
+    approvedMbid === null && isExplicitNoOpDecision(reviewDecision);
+  if (!hasRecordingIdentity && !geminiOnly && !explicitNoOp) {
     throw codedError("EVIDENCE_NOT_APPROVED", "reviewDecision must approve the exact evidence MBID");
   }
 
