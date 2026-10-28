@@ -660,20 +660,6 @@ for this command; install Chrome before running it.
 npm.cmd run test:t11
 ```
 
-For a focused owner-verified B3 Gemini null-MBID apply/replay check without the
-unit, API, or browser suites, run the same lifecycle harness with:
-
-```powershell
-$env:CCM_T11_B3_FOCUS = 'gemini-null-mbid-apply-replay'
-node .\test\t11-runner.cjs
-Remove-Item Env:\CCM_T11_B3_FOCUS
-```
-
-This still requires an absent `ccm_test`, creates it with the normal owner/run
-marker, captures a complete read-only main snapshot, runs only the existing
-null-MBID apply/replay subtest, and verifies owned cleanup, scratch absence,
-and unchanged main rows.
-
 Run `npm.cmd run test:t11` twice consecutively to check repeatability. The
 standalone `npm.cmd test` remains available for unit tests. Raw Playwright and
 T11 API integration commands refuse to run outside the isolated harness, so
