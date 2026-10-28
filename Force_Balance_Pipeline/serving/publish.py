@@ -13,7 +13,6 @@ import argparse
 import re
 import sys
 import time
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,14 +20,17 @@ from psycopg.types.json import Jsonb
 
 from agent.config import JOB1_ID
 from agent.lock import AlreadyRunning, InstanceLock
-from agent.run import make_pinger, valid_ping_url
+from agent.run import debounced, make_pinger, valid_ping_url, write_start_stamp
 from serving import config, gate, pull
 from serving.jobs import JobsApiError, latest_successful_run
 from serving.statements import ServingStatementClient
 
+import files_api  # noqa: E402  (agent.run puts ingest/bridge on sys.path)
+
 SERVE_LOCK = config.ROOT / "logs" / "serve.lock"
 AGENT_LOCK = config.ROOT / "logs" / "agent.lock"
 SERVE_LOG = config.ROOT / "logs" / "serve.log"
+SERVE_START = config.ROOT / "logs" / "serve_last_start.txt"
 QUOTA_WINDOW_HOUR_UTC = 3
 AGENT_WAIT_SECONDS = 600
 AGENT_POLL_SECONDS = 5
@@ -71,12 +73,12 @@ def write_row(conn, status, started, finished, error=None, run=None, statements=
 
 def default_client(env):
     return ServingStatementClient(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], env["DATABRICKS_WAREHOUSE_ID"],
-                                  opener=urllib.request.urlopen, sleep=time.sleep, monotonic=time.monotonic)
+                                  opener=files_api.default_opener, sleep=time.sleep, monotonic=time.monotonic)
 
 
 def main(argv=None, *, now_fn=None, sleep=time.sleep, monotonic=time.monotonic, jobs_fn=latest_successful_run, pull_fn=pull.run_pulls,
          client_factory=default_client, conn_factory=config.connect, ping=None, serve_lock=SERVE_LOCK, agent_lock=AGENT_LOCK,
-         serve_log=SERVE_LOG, wait_limit=AGENT_WAIT_SECONDS, poll=AGENT_POLL_SECONDS, owns_conn=True):
+         serve_log=SERVE_LOG, wait_limit=AGENT_WAIT_SECONDS, poll=AGENT_POLL_SECONDS, owns_conn=True, start_path=None):
     parser = argparse.ArgumentParser(prog="serving.publish")
     parser.add_argument("--env", default=str(config.DEFAULT_ENV_FILE))
     parser.add_argument("--no-ping", action="store_true")
@@ -92,8 +94,9 @@ def main(argv=None, *, now_fn=None, sleep=time.sleep, monotonic=time.monotonic, 
         print(f"serving.publish: configuration problem: {scrub(e)}")
         return 2
     if ping is None:
-        ping = (lambda kind: None) if args.no_ping else make_pinger(env["SERVING_PING_S5_URL"], opener=urllib.request.urlopen,
-                                                                  log=lambda m: None)
+        ping = (lambda kind: None) if args.no_ping else make_pinger(
+            env["SERVING_PING_S5_URL"], opener=files_api.default_opener, name="S5",
+            log=lambda m: _log_text(serve_log, now_fn(), scrub(m)))
 
     lock = InstanceLock(serve_lock)
     try:
@@ -101,6 +104,12 @@ def main(argv=None, *, now_fn=None, sleep=time.sleep, monotonic=time.monotonic, 
     except AlreadyRunning:
         return 0
     started, t0 = now_fn(), monotonic()
+    if start_path is not None:                       # the start debounce (doc 05 "Monitoring"): a second launch within 60 s does nothing
+        if debounced(start_path, started):
+            _log_text(serve_log, started, "debounced; the previous start was less than 60 s ago")
+            lock.release()
+            return 0
+        write_start_stamp(start_path, started)
     outcome = {"decision": "error", "status": "failed", "statements": 0, "rows": 0, "reason": ""}
     held, code = {}, 1                                       # held["conn"] is the open connection, if any, for the finally below
     try:
@@ -151,14 +160,18 @@ def _run(env, args, o, started, now_fn, sleep, monotonic, jobs_fn, pull_fn, clie
     return finish("ok", "publish", 0, "success", None, latest, result["statements"], result["rows"])
 
 
-def _log_line(path, when, o, duration):
-    line = (f"{when:%Y-%m-%dT%H:%M:%S}Z decision={o['decision']} status={o['status']} statements={o['statements']} rows={o['rows']} "
-            f"duration_s={duration:.1f}" + (f" reason={scrub(o['reason'])!r}" if o["reason"] else ""))
+def _log_text(path, when, text):
+    """One free-text line in serve.log: "<UTC time>Z <text>"."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8", newline="\n") as f:
-        f.write(line + "\n")
+        f.write(f"{when:%Y-%m-%dT%H:%M:%S}Z {text}\n")
+
+
+def _log_line(path, when, o, duration):
+    _log_text(path, when, f"decision={o['decision']} status={o['status']} statements={o['statements']} rows={o['rows']} "
+                          f"duration_s={duration:.1f}" + (f" reason={scrub(o['reason'])!r}" if o["reason"] else ""))
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(start_path=SERVE_START))

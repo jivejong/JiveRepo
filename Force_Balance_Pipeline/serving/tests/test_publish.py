@@ -1,7 +1,9 @@
 """Tests for serving/publish.py (doc 05 "Serving (Phase 7)" and "Monitoring", S5): fake Jobs API, client and pinger; lock files and the log in
 a temp folder; Postgres force_serving_test. No network."""
+import os
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -197,6 +199,107 @@ class Log(PublishTest):
         self.assertIn("decision=publish status=ok statements=31", lines[1])
         self.assertIn("status=failed", lines[2])
         self.assertNotIn("http", "\n".join(lines).lower())
+
+
+class StartDebounce(PublishTest):
+    """Task Scheduler sometimes launches a task twice, about 2 s apart (outage report 2026-10-27): a start under 60 s after the previous
+    one does nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.stamp = self.dir / "serve_last_start.txt"
+
+    def start(self, seconds=0, **over):
+        return self.go(now=NOON + timedelta(seconds=seconds), start_path=self.stamp, **over)
+
+    def test_a_second_start_two_seconds_later_is_debounced(self):
+        self.assertEqual(self.start(), 0)
+        before = (self.rows(), list(self.pings), list(self.job_calls), len(self.log_lines()))
+        self.assertEqual(self.start(2), 0)
+        self.assertEqual((self.rows(), self.pings, self.job_calls), before[:3])
+        lines = self.log_lines()
+        self.assertEqual(len(lines), before[3] + 1)
+        self.assertIn("debounced", lines[-1])
+        self.assertTrue(lines[-1].startswith("2026-10-19T12:17:02Z "))
+        self.assertEqual(self.stamp.read_text(encoding="ascii").strip(), "2026-10-19T12:17:00.000Z")
+
+    def test_a_start_61_seconds_later_runs(self):
+        self.start()
+        self.start(61)
+        self.assertEqual(self.pings, ["success", "success"])
+        self.assertFalse(any("debounced" in line for line in self.log_lines()))
+
+    def test_a_corrupt_stamp_runs(self):
+        for content in (b"not a time", b"", bytes([255, 254, 0])):
+            self.stamp.write_bytes(content)
+            self.pings.clear()
+            self.assertEqual(self.start(), 0)
+            self.assertEqual(self.pings, ["success"], content)
+
+    def test_the_stamp_is_written_atomically(self):
+        with mock.patch("agent.run.os.replace", wraps=os.replace) as replace:
+            self.start()
+        calls = [c for c in replace.call_args_list if Path(c.args[1]) == self.stamp]
+        self.assertEqual(len(calls), 1)
+        self.assertNotEqual(Path(calls[0].args[0]), self.stamp)
+        self.assertFalse(Path(calls[0].args[0]).exists())
+
+    def test_a_held_lock_is_not_reported_as_debounced(self):
+        self.stamp.write_text("2026-10-19T12:16:59.000Z" + chr(10), encoding="ascii")
+        held = InstanceLock(self.dir / "serve.lock").acquire()
+        try:
+            self.assertEqual(self.start(), 0)
+        finally:
+            held.release()
+        self.assertEqual((self.pings, self.rows(), self.log_lines()), ([], [], []))
+
+    def test_the_debounce_is_off_without_a_start_path(self):
+        self.go()
+        self.go(now=NOON + timedelta(seconds=2))
+        self.assertEqual(self.pings, ["success", "success"])
+
+    def test_the_command_line_passes_the_real_path(self):
+        self.assertEqual(publish.SERVE_START, publish.config.ROOT / "logs" / "serve_last_start.txt")
+        self.assertIn("main(start_path=SERVE_START)", Path(publish.__file__).read_text(encoding="utf-8"))
+
+
+class S5PingLog(PublishTest):
+    def failing_opener(self, request, timeout=None, **kwargs):
+        raise urllib.error.URLError("certificate verify failed for https://hc.example.invalid/ping/SECRET-PATH")
+
+    def test_a_failed_ping_is_logged_with_its_class_and_no_url(self):
+        with mock.patch.object(publish.files_api, "default_opener", self.failing_opener):
+            self.assertEqual(self.go(ping=None, now=NOON.replace(hour=3)), 0)
+        lines = self.log_lines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0], "2026-10-19T03:17:00Z S5 ping failed (TransportError)")
+        self.assertIn("decision=skip_quota_hour", lines[1])
+        text = "\n".join(lines)
+        for fragment in ("example.invalid", "SECRET-PATH", "http"):
+            self.assertNotIn(fragment, text)
+
+    def test_a_working_ping_logs_nothing_extra(self):
+        class Ok:
+            status = 200
+
+            def read(self):
+                return b"OK"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+        with mock.patch.object(publish.files_api, "default_opener", lambda request, timeout=None, **kw: Ok()):
+            self.go(ping=None, now=NOON.replace(hour=3))
+        self.assertEqual(len(self.log_lines()), 1)
+
+    def test_the_pinger_is_built_with_the_s5_name_and_the_project_opener(self):
+        with mock.patch.object(publish, "make_pinger", return_value=lambda kind: None) as make:
+            self.go(ping=None, now=NOON.replace(hour=3))
+        _, kwargs = make.call_args
+        self.assertEqual(kwargs["name"], "S5")
+        self.assertIs(kwargs["opener"], publish.files_api.default_opener)
 
 
 if __name__ == "__main__":

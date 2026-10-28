@@ -7,6 +7,7 @@ Secrets are never logged and never put in an exception message.
 """
 import base64
 import json
+import ssl
 import threading
 import time
 import urllib.error
@@ -56,7 +57,29 @@ def normalise_host(host):
     return host if host.startswith("http") else "https://" + host
 
 
-def http_request(method, url, *, headers=None, data=None, timeout=60, opener=urllib.request.urlopen):
+def ssl_context():
+    """The TLS context for every outbound request: the default context (CERT_REQUIRED, hostname checking) plus
+    VERIFY_X509_PARTIAL_CHAIN.
+
+    Why: on 2026-10-26 the monitoring host started serving a Sectigo chain whose top certificate is cross-signed by
+    "USERTrust ECC Certification Authority". The Windows stores hold that name twice (the self-signed root, and a cross-signed
+    copy issued by "AAA Certificate Services", which is not trusted here). OpenSSL 1.1.1 sometimes picked the copy and then
+    failed with "unable to get issuer certificate", about half the time in a fresh process and every time in a long-lived one,
+    so the S1, S3 and S4 pings failed while Windows itself accepted the chain. PARTIAL_CHAIN lets a chain end at any trust
+    anchor in the store, not only at a self-signed root. On Windows Python already loads the CA store as well as the root
+    store into this context, so no certificate becomes trusted that was not trusted before; only the chain-building rule is
+    relaxed. Verification and hostname checking stay on (outage report, 2026-10-27)."""
+    context = ssl.create_default_context()
+    context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+    return context
+
+
+def default_opener(request, timeout=None):
+    """urllib.request.urlopen with ssl_context(): what http_request, and every caller that used to pass urlopen, uses."""
+    return urllib.request.urlopen(request, timeout=timeout, context=ssl_context())
+
+
+def http_request(method, url, *, headers=None, data=None, timeout=60, opener=default_opener):
     """The one place a request is made. Always sends UA; a caller may not set its own User-Agent.
     Returns (status, body). HTTP error statuses are returned, not raised; network failures raise
     TransportError."""

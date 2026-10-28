@@ -13,7 +13,9 @@ DEFAULT_ENV_FILE = ROOT / ".env.agent"                   # gitignored
 
 AGENT_EPOCH = datetime(2026, 10, 12, 0, 0, tzinfo=timezone.utc)
 MAX_INCIDENTS_PER_RUN = 5
-POLL_LIMIT = 50                    # undecided incidents one poll reads (doc 06 "Human-first window"); at most MAX_INCIDENTS_PER_RUN are decided
+MIN_FIRST_SEEN_AGE_MINUTES = 30    # an incident is decided only when first seen at least this long before the cycle starts (doc 06 "Human-first window"), so a duplicate launch cannot skip the window
+DEBOUNCE_SECONDS = 60              # a start less than this long after the previous start of the same task is dropped (doc 05 "Monitoring")
+POLL_LIMIT = 50                   # undecided incidents one poll reads (doc 06 "Human-first window"); at most MAX_INCIDENTS_PER_RUN are decided
 JOB1_ID = 692051683030737
 
 TABLE_NAME = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+\.[a-z0-9_]+$")

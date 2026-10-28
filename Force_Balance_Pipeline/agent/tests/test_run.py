@@ -106,6 +106,8 @@ class Harness:
         self.limit = limit
         self.epoch = run.AGENT_EPOCH
         self.sleeps = []
+        self.now = NOW
+        self.start_path = None                       # set a path to switch the start debounce on
         self.seen_path = self.dir / "agent_seen_dev.json"
         self.seen = SeenStore(self.seen_path)
         if preseed:                                  # most tests are about the cycle itself, so their ids were polled in an earlier cycle
@@ -131,9 +133,10 @@ class Harness:
     def go(self):
         code = run.run_guarded(
             target="dev", limit=self.limit, lock_path=self.lock_path, db=self.db, gemini=object(), budget=self.budget,
-            job1_check=self.job1_check, ping=self.pings.append, clock=lambda: NOW.replace(hour=self.hour),
+            job1_check=self.job1_check, ping=self.pings.append, clock=lambda: self.now.replace(hour=self.hour),
             monotonic=self.monotonic, log=self.logs.append, decisions_path=self.decisions_path,
-            decide_fn=self.decide_fn, ulid_fn=lambda: next(self.ulids), epoch=self.epoch, seen=self.seen, sleep=self._sleep)
+            decide_fn=self.decide_fn, ulid_fn=lambda: next(self.ulids), epoch=self.epoch, seen=self.seen, sleep=self._sleep,
+            start_path=self.start_path)
         if self.held:
             self.held.release()
         return code
@@ -454,7 +457,10 @@ class MainHandler(unittest.TestCase):
         logs = []
         fake_logger = logging.getLogger("agent-test-main")
         fake_logger.info = logs.append
-        patches = [mock.patch.object(run, "configure_logging", return_value=fake_logger)]
+        start_dir = tempfile.mkdtemp()
+        unittest.addModuleCleanup(shutil.rmtree, start_dir, ignore_errors=True)
+        patches = [mock.patch.object(run, "configure_logging", return_value=fake_logger),
+                   mock.patch.object(run, "START_PATH", Path(start_dir) / "agent_last_start.txt")]
         if opener is not None:
             patches.append(mock.patch.object(run.urllib.request, "urlopen", opener))
         for p in patches:
@@ -594,6 +600,39 @@ class HumanFirst(unittest.TestCase):
         self.assertEqual(h.decide_calls, [])
         self.assertEqual(h.seen.load(), {"inc-1": iso_z(NOW)})
         self.assertTrue(any("new=1 deferred=1" in line for line in h.logs))
+
+    def test_a_second_cycle_two_seconds_later_does_not_decide_a_new_id(self):
+        h = harness(ids=["inc-1"], preseed=False)
+        h.go()
+        h.now = NOW + timedelta(seconds=2)               # Task Scheduler's duplicate launch
+        h.go()
+        self.assertEqual(h.decide_calls, [])
+        self.assertEqual(h.db.kinds.count("write"), 0)
+        self.assertEqual(h.seen.load(), {"inc-1": iso_z(NOW)})
+
+    def test_a_cycle_31_minutes_later_decides_it(self):
+        h = harness(ids=["inc-1"], preseed=False)
+        h.go()
+        h.now = NOW + timedelta(minutes=31)
+        h.go()
+        self.assertEqual(h.db.kinds.count("write"), 1)
+
+    def test_a_cycle_29_minutes_later_does_not(self):
+        h = harness(ids=["inc-1"], preseed=False)
+        h.go()
+        h.now = NOW + timedelta(minutes=29)
+        h.go()
+        self.assertEqual(h.db.kinds.count("write"), 0)
+
+    def test_exactly_30_minutes_is_old_enough(self):
+        h = harness(ids=["inc-1"], preseed=False)
+        h.go()
+        h.now = NOW + timedelta(minutes=30)
+        h.go()
+        self.assertEqual(h.db.kinds.count("write"), 1)
+
+    def test_the_minimum_age_is_30_minutes(self):
+        self.assertEqual(run.MIN_FIRST_SEEN_AGE_MINUTES, 30)
 
     def test_the_next_cycle_decides_it_and_keeps_the_first_seen_time(self):
         h = harness(ids=["inc-1"], preseed=False)
@@ -840,6 +879,104 @@ class Constants(unittest.TestCase):
     def test_paths(self):
         self.assertEqual(run.LOCK_PATH, S.ROOT / "logs" / "agent.lock")
         self.assertEqual(run.DECISIONS_PATH, S.ROOT / "logs" / "agent_decisions.ndjson")
+
+
+class StartDebounce(unittest.TestCase):
+    """Task Scheduler sometimes launches a task twice, about 2 s apart (outage report 2026-10-27): a start less than 60 s after the
+    previous one does nothing."""
+
+    def debounced_harness(self, **options):
+        h = harness(**options)
+        h.start_path = h.dir / "agent_last_start.txt"
+        return h
+
+    def test_a_second_start_two_seconds_later_is_debounced(self):
+        h = self.debounced_harness(ids=["inc-1"])
+        self.assertEqual(h.go(), 0)
+        before = (len(h.pings), h.job1_calls, h.db.statements, len(h.decide_calls))
+        h.now = NOW + timedelta(seconds=2)
+        self.assertEqual(h.go(), 0)
+        self.assertEqual((len(h.pings), h.job1_calls, h.db.statements, len(h.decide_calls)), before)
+        self.assertTrue(any("debounced" in line for line in h.logs))
+        self.assertEqual(h.start_path.read_text(encoding="ascii").strip(), iso_z(NOW))     # the stamp still names the real start
+
+    def test_a_start_61_seconds_later_runs(self):
+        h = self.debounced_harness(ids=["inc-1"])
+        h.go()
+        h.now = NOW + timedelta(seconds=61)
+        h.go()
+        self.assertEqual(len(h.pings), 2)
+        self.assertEqual(sum("debounced" in line for line in h.logs), 0)
+        self.assertEqual(h.start_path.read_text(encoding="ascii").strip(), iso_z(NOW + timedelta(seconds=61)))
+
+    def test_exactly_60_seconds_runs(self):
+        h = self.debounced_harness()
+        h.go()
+        h.now = NOW + timedelta(seconds=60)
+        h.go()
+        self.assertEqual(len(h.pings), 2)
+
+    def test_a_corrupt_stamp_runs(self):
+        for content in (b"not a time", b"", bytes([255, 254, 0]), b"2026-99-99T99:99:99Z"):
+            h = self.debounced_harness()
+            h.start_path.write_bytes(content)
+            h.go()
+            self.assertEqual(len(h.pings), 1, content)
+            self.assertEqual(h.start_path.read_text(encoding="ascii").strip(), iso_z(NOW))
+
+    def test_a_missing_stamp_runs_and_a_future_stamp_runs(self):
+        h = self.debounced_harness()
+        h.go()
+        self.assertEqual(len(h.pings), 1)
+        h2 = self.debounced_harness()
+        h2.start_path.write_text(iso_z(NOW + timedelta(minutes=5)) + chr(10), encoding="ascii")
+        h2.go()
+        self.assertEqual(len(h2.pings), 1)
+
+    def test_the_stamp_is_written_atomically(self):
+        h = self.debounced_harness()
+        with mock.patch("agent.run.os.replace", wraps=run.os.replace) as replace:
+            h.go()
+        stamp_calls = [c for c in replace.call_args_list if Path(c.args[1]) == h.start_path]     # the seen store also uses os.replace
+        self.assertEqual(len(stamp_calls), 1)
+        temp, final = stamp_calls[0].args
+        self.assertEqual(Path(final), h.start_path)
+        self.assertNotEqual(Path(temp), h.start_path)
+        self.assertEqual(Path(temp).parent, h.start_path.parent)
+        self.assertFalse(Path(temp).exists())
+        self.assertEqual(h.start_path.read_text(encoding="ascii").strip(), iso_z(NOW))
+
+    def test_a_failed_write_never_stops_the_run(self):
+        h = self.debounced_harness()
+        real = run.os.replace
+
+        def replace(src, dst):
+            if Path(dst) == h.start_path:
+                raise OSError("disk")
+            return real(src, dst)
+        with mock.patch("agent.run.os.replace", side_effect=replace):
+            self.assertEqual(h.go(), 0)
+        self.assertEqual(len(h.pings), 1)
+        self.assertFalse(h.start_path.exists())
+
+    def test_a_held_lock_is_reported_as_already_running_not_debounced(self):
+        h = self.debounced_harness(hold_lock=True)
+        h.start_path.write_text(iso_z(NOW - timedelta(seconds=1)) + chr(10), encoding="ascii")
+        h.go()
+        self.assertTrue(any("already running" in line for line in h.logs))
+        self.assertFalse(any("debounced" in line for line in h.logs))
+
+    def test_the_debounce_is_off_without_a_start_path(self):
+        h = harness()
+        h.go()
+        h.now = NOW + timedelta(seconds=2)
+        h.go()
+        self.assertEqual(len(h.pings), 2)
+
+    def test_the_command_line_passes_the_real_path(self):
+        self.assertEqual(run.START_PATH, S.ROOT / "logs" / "agent_last_start.txt")
+        self.assertEqual(run.DEBOUNCE_SECONDS, 60)
+        self.assertIn("start_path=START_PATH", Path(run.__file__).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

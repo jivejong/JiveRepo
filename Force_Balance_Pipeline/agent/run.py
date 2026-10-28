@@ -11,18 +11,20 @@ never printed or logged. See agent/loop.py for the decision loop and agent/queri
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 import traceback
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import urlparse
 
 from agent import jobs, queries
 from agent.budget import BudgetExhausted, CallBudget
-from agent.config import AGENT_EPOCH, ENV_KEYS, MAX_INCIDENTS_PER_RUN, PING_KEY, POLL_LIMIT, ROOT, RUN_ENV_KEYS, load_env
+from agent.config import (AGENT_EPOCH, DEBOUNCE_SECONDS, ENV_KEYS, MAX_INCIDENTS_PER_RUN, MIN_FIRST_SEEN_AGE_MINUTES, PING_KEY, POLL_LIMIT,
+                          ROOT, RUN_ENV_KEYS, load_env)
 from agent.context import build_context
 from agent.dbsql import StatementClient, StatementError, iso_z, parse_timestamp
 from agent.distance import released_at
@@ -37,6 +39,7 @@ import files_api  # noqa: E402
 
 LOG_PATH = ROOT / "logs" / "agent.log"
 LOCK_PATH = ROOT / "logs" / "agent.lock"
+START_PATH = ROOT / "logs" / "agent_last_start.txt"
 DECISIONS_PATH = ROOT / "logs" / "agent_decisions.ndjson"
 QUOTA_WINDOW_HOUR_UTC = 3
 CYCLE_SECONDS = 30 * 60
@@ -47,8 +50,9 @@ LOG_MAX_BYTES, LOG_BACKUPS = 1_000_000, 3
 
 
 # ---- pings ----------------------------------------------------------------------------------------------------------
-def make_pinger(url, *, opener, log):
-    """ping(kind) for kind "success" or "fail". A failed ping is logged (without the URL) and never raises. url None disables."""
+def make_pinger(url, *, opener, log, name="agent: S4"):
+    """ping(kind) for kind "success" or "fail". A failed ping is logged (without the URL) and never raises. url None disables.
+    `name` starts the failure line: "agent: S4" here, "S5" for serving.publish ("<name> ping failed (<exception class>)")."""
     def ping(kind):
         if not url:
             return
@@ -56,9 +60,9 @@ def make_pinger(url, *, opener, log):
         try:
             status, _ = files_api.http_request("GET", target, timeout=PING_TIMEOUT_SECONDS, opener=opener)
             if not 200 <= status < 300:
-                log(f"agent: S4 ping failed (HTTP {status})")
+                log(f"{name} ping failed (HTTP {status})")
         except Exception as e:
-            log(f"agent: S4 ping failed ({type(e).__name__})")
+            log(f"{name} ping failed ({type(e).__name__})")
     return ping
 
 
@@ -99,6 +103,28 @@ def append_ndjson(path, record):
         f.write((json.dumps(record, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii"))
 
 
+def debounced(stamp_path, now, window=DEBOUNCE_SECONDS):
+    """True when stamp_path holds a UTC time from 0 up to `window` seconds before `now` (a start under a minute ago: Task Scheduler
+    sometimes launches a task twice, about 2 s apart). A missing, unreadable, corrupt or future-dated stamp is False: carry on."""
+    try:
+        last = parse_timestamp(Path(stamp_path).read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        return False
+    return timedelta(0) <= now - last < timedelta(seconds=window)
+
+
+def write_start_stamp(stamp_path, now):
+    """Record `now` as this task's start, atomically (a temp file in the same folder, then os.replace). A write failure is ignored: the
+    debounce is best effort and must never stop a run."""
+    stamp_path = Path(stamp_path)
+    temp = stamp_path.with_name(stamp_path.name + ".tmp")
+    try:
+        temp.write_text(iso_z(now) + "\n", encoding="ascii")
+        os.replace(temp, stamp_path)
+    except OSError:
+        pass
+
+
 def first_seen(stored, disturbance_id):
     """The recorded first-seen time of an id as a datetime, or None if it has none (or an unreadable one)."""
     try:
@@ -126,7 +152,8 @@ def run_cycle(*, target, limit, db, gemini, budget, job1_check, clock, monotonic
     new = [i for i in ids if first_seen(stored, i) is None]
     for i in new:
         stored[i] = iso_z(cycle_start)
-    eligible = [i for i in ids if first_seen(stored, i) < cycle_start]
+    # At least MIN_FIRST_SEEN_AGE_MINUTES old, not merely earlier: a second launch seconds after the first must not find the id eligible.
+    eligible = [i for i in ids if first_seen(stored, i) <= cycle_start - timedelta(minutes=MIN_FIRST_SEEN_AGE_MINUTES)]
     to_decide = eligible[:min(limit or MAX_INCIDENTS_PER_RUN, MAX_INCIDENTS_PER_RUN)]
     if len(ids) < POLL_LIMIT:
         stored = {k: v for k, v in stored.items() if k in set(ids)}
@@ -218,10 +245,11 @@ def wait_for_job1(job1_check, *, sleep, wait_seconds, poll_seconds):
 
 def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, ping, clock, monotonic, log, decisions_path, seen,
                 decide_fn=decide, ulid_fn=ulid_now, epoch=AGENT_EPOCH, sleep=time.sleep, job1_wait=JOB1_WAIT_SECONDS,
-                job1_poll=JOB1_POLL_SECONDS):
-    """Steps a to c and g: the lock, the quota window, the Job 1 check (waiting for a running Job 1 for up to job1_wait seconds, polling
-    every job1_poll), and the S4 ping. Returns the exit code. S4: success, or /fail after a Jobs API error, a permanent model error or a
-    crash."""
+                job1_poll=JOB1_POLL_SECONDS, start_path=None):
+    """Steps a to c and g: the lock, the start debounce, the quota window, the Job 1 check (waiting for a running Job 1 for up to job1_wait
+    seconds, polling every job1_poll), and the S4 ping. Returns the exit code. S4: success, or /fail after a Jobs API error, a permanent
+    model error or a crash. start_path (logs\\agent_last_start.txt): when given, a start less than DEBOUNCE_SECONDS after the previous one
+    logs "debounced" and exits 0 with no ping, no Jobs call and no statement; otherwise this start is recorded."""
     lock = InstanceLock(lock_path)
     try:
         lock.acquire()
@@ -229,6 +257,12 @@ def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, pin
         log("agent: already running; exiting")
         return 0
     try:
+        if start_path is not None:
+            started = clock()
+            if debounced(start_path, started):
+                log(f"agent: debounced; the previous start was less than {DEBOUNCE_SECONDS} s ago")
+                return 0
+            write_start_stamp(start_path, started)
         if clock().hour == QUOTA_WINDOW_HOUR_UTC:
             log("agent: quota window (03:xx UTC); skipping the cycle")
             ping("success")
@@ -296,7 +330,7 @@ def main(argv=None):
             return 2
         if args.epoch is not None:
             log(f"agent: epoch override {iso_z(epoch)} (dev only)")
-        opener = urllib.request.urlopen
+        opener = files_api.default_opener            # urlopen with the project TLS context (partial chains allowed)
         try:
             env = load_env(args.env, required=ENV_KEYS if args.no_ping else RUN_ENV_KEYS)
             url = None if args.no_ping else env[PING_KEY]
@@ -316,7 +350,8 @@ def main(argv=None):
             target=args.target, limit=args.limit, lock_path=LOCK_PATH, db=db, gemini=gemini, budget=budget,
             job1_check=lambda: jobs.job1_active(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], opener=opener),
             ping=ping, clock=lambda: datetime.now(timezone.utc), monotonic=time.monotonic,
-            log=log, decisions_path=DECISIONS_PATH, seen=SeenStore(ROOT / "logs" / f"agent_seen_{args.target}.json"), epoch=epoch)
+            log=log, decisions_path=DECISIONS_PATH, seen=SeenStore(ROOT / "logs" / f"agent_seen_{args.target}.json"), epoch=epoch,
+            start_path=START_PATH)
     except Exception:
         log("agent: the run failed:\n" + traceback.format_exc())
         ping("fail")

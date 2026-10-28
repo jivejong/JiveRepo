@@ -41,7 +41,7 @@ class FakeOpener:
         self.repeat_last = repeat_last
         self.requests = []
 
-    def __call__(self, request, timeout=None):
+    def __call__(self, request, timeout=None, **kwargs):          # kwargs: files_api.default_opener also passes context=
         self.requests.append({
             "method": request.get_method(),
             "url": request.full_url,

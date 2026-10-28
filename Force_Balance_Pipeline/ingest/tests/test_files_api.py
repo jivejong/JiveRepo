@@ -5,10 +5,13 @@ import base64
 import functools
 import io
 import re
+import ssl
 import sys
 import unittest
 import urllib.error
+import urllib.request
 from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -118,6 +121,27 @@ class UserAgentTests(unittest.TestCase):
         self.assertEqual(offenders, [])
         source = (ROOT / "ingest" / "bridge" / "files_api.py").read_text(encoding="utf-8")
         self.assertEqual(len(re.findall(r"urllib\.request\.Request\(", source)), 1)
+
+
+class SslContextTests(unittest.TestCase):
+    """The TLS context of every outbound request (outage report 2026-10-27): partial chains allowed, verification still on."""
+
+    def test_partial_chain_is_set_and_verification_is_still_on(self):
+        context = files_api.ssl_context()
+        self.assertTrue(context.verify_flags & ssl.VERIFY_X509_PARTIAL_CHAIN)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+
+    def test_default_opener_hands_that_context_to_urlopen(self):
+        with mock.patch.object(urllib.request, "urlopen", return_value="response") as urlopen:
+            self.assertEqual(files_api.default_opener("request", timeout=7), "response")
+        _, kwargs = urlopen.call_args
+        self.assertEqual(kwargs["timeout"], 7)
+        self.assertTrue(kwargs["context"].verify_flags & ssl.VERIFY_X509_PARTIAL_CHAIN)
+        self.assertEqual(kwargs["context"].verify_mode, ssl.CERT_REQUIRED)
+
+    def test_http_request_uses_the_default_opener_unless_given_another(self):
+        self.assertIs(files_api.http_request.__kwdefaults__["opener"], files_api.default_opener)
 
 
 class TokenTests(unittest.TestCase):
