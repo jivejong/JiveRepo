@@ -151,8 +151,16 @@ def test_docx_pipe_chord_row_retains_literal_source_order(tmp_path: Path) -> Non
 
     assert len(songs) == 1
     song = songs[0]
+    # A literal chord row directly above a lyric keeps its text and gains
+    # ordered chord spans for rendering (same shape as the JS parser).
     assert song.chart_content["sections"][0]["lines"][:2] == [
-        {"type": "raw", "text": "G  D | C G | Em F | G"},
+        {"type": "raw", "text": "G  D | C G | Em F | G", "paired_to_next": True,
+         "chord_spans": [
+             {"symbol": "G", "start": 0, "end": 1}, {"symbol": "D", "start": 3, "end": 4},
+             {"symbol": "C", "start": 7, "end": 8}, {"symbol": "G", "start": 9, "end": 10},
+             {"symbol": "Em", "start": 13, "end": 15}, {"symbol": "F", "start": 16, "end": 17},
+             {"symbol": "G", "start": 20, "end": 21},
+         ]},
         {"type": "lyric", "text": "Invented lyric line.", "chords": [],
          "confidence": "high"},
     ]
@@ -433,7 +441,12 @@ def test_only_effective_outline_headings_start_songs(tmp_path: Path) -> None:
     assert songs[0].chart_source is not None
     assert chart_parser.parse_ordinary_chart_source(songs[0].chart_source) == body
     assert located_lines[2][0] == "Bridge"
-    assert located_lines[2][1] == {"type": "raw", "text": " G - C - D"}
+    # Paired to the lyric that follows it; "  G - C  " above ends its section, so it is not.
+    assert located_lines[2][1] == {
+        "type": "raw", "text": " G - C - D", "paired_to_next": True,
+        "chord_spans": [{"symbol": "G", "start": 1, "end": 2},
+                        {"symbol": "C", "start": 5, "end": 6},
+                        {"symbol": "D", "start": 9, "end": 10}]}
     assert located_lines[-1] == (
         "Bridge", {"type": "lyric", "text": paragraphs[5].text_spaces, "chords": [],
                    "confidence": "high"})
