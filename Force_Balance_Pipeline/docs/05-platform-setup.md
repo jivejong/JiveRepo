@@ -1209,6 +1209,8 @@ runs and in every scheduled DISCONNECTED window.
 - **Passed (2026-10-12):** S3's negative test. `fbp-s3-data-landed` stayed up through the 2026-10-12 00:00 to 12:00Z DISCONNECTED window
   (checked at about 10:30 EDT). It can: period plus grace (15 minutes + 3 hours 45 minutes) exceeds the 3-hour maximum window.
 
+Python verifies TLS with VERIFY_X509_PARTIAL_CHAIN (2026-10-27): a duplicate cross-signed root in the Windows store made chain building fail intermittently. Every scheduled task debounces a second launch within 60 s (Task Scheduler sometimes launches a task twice, about 2 s apart). The check is `logs\agent_last_start.txt` (ForceAgent) and `logs\serve_last_start.txt` (ForceServe), read after the task's lock is taken: a start under 60 s after the stamp logs "debounced" and exits 0 with no ping, no Jobs call and no statement. ForceServe now also logs a failed S5 ping to `logs\serve.log` as `S5 ping failed (<exception class>)`.
+
 | Signal | What it says | Sent by | Ping | Check | Period | Grace | Alert after |
 |---|---|---|---|---|---|---|---|
 | **S1** | the bridge is alive and connected | `bridge.py` (`monitor.py`) | every 5 min while `client.is_connected()`, data or not | `fbp-s1-bridge-alive` | 5 min | 25 min | 30 min of silence |
