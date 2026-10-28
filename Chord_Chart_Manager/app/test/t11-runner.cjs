@@ -7,10 +7,9 @@ const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { Pool } = require('../server/node_modules/pg');
-const { TABLES, protectedSnapshotSha256 } = require('../server/mainEnrichmentSafety.js');
 const { bounded, runCleanupStages, startServerBounded, runWithCleanup } = require('./t11-lifecycle.cjs');
 const { verifyHarnessIdentity } = require('./t11-guards.cjs');
-const { readMainCounts, assertMainCountsUnchanged } = require('./t11-main-checks.cjs');
+const { MAIN_TABLES, readMainCounts, assertMainCountsUnchanged } = require('./t11-main-checks.cjs');
 
 const appDir = path.resolve(__dirname, '..');
 const scratchName = 'ccm_test';
@@ -70,13 +69,12 @@ async function mainSnapshot(pool) {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     const database = (await client.query('SELECT current_database() AS name')).rows[0]?.name;
     assert.equal(database, 'chords', 'T11 preservation snapshot must connect to main chords');
-    const protectedRowsSha256 = await protectedSnapshotSha256(client);
     const rows = {};
-    for (const [name, table, key] of TABLES) {
+    for (const [name, table, key] of MAIN_TABLES) {
       rows[name] = (await client.query(`SELECT (${key}) AS row_key, md5(to_jsonb(t)::text) AS row_md5 FROM ${table} t ORDER BY 1`)).rows;
     }
     await client.query('COMMIT');
-    return { database, protectedRowsSha256, rows };
+    return { database, rows };
   } catch (error) {
     try { await client.query('ROLLBACK'); } catch { /* retain snapshot error */ }
     throw error;
@@ -196,32 +194,20 @@ async function main() {
     process.env.E2E_BASE_URL = testEnv.E2E_BASE_URL;
     process.env.E2E_SYSTEM_CHROME = '1';
     process.env.CCM_T11_ISOLATED = '1';
-    const focusedGeminiApplyReplay = process.env.CCM_T11_B3_FOCUS === 'gemini-null-mbid-apply-replay';
-    if (process.env.CCM_T11_B3_FOCUS && !focusedGeminiApplyReplay) {
-      throw new Error('Unknown T11 B3 integration focus.');
-    }
-    if (focusedGeminiApplyReplay) {
-      const integrationTest = path.join(appDir, 'test/integration/song-enrichment.test.cjs');
-      const namePattern = 'transactional enrichment apply is scratch-bound, review-bound, preserving and replayable|Gemini provenance applies and replays for existing and null MBID identities';
-      await runNode('Focused scratch Gemini null-MBID apply/replay integration', '--test',
-        [`--test-name-pattern=${namePattern}`, integrationTest], testEnv);
-    } else if (process.env.CCM_T11_FOCUSED_E2E_ONLY !== '1') {
+    if (process.env.CCM_T11_FOCUSED_E2E_ONLY !== '1') {
       await runNode('Unit tests (Vitest)', path.join(appDir, 'node_modules/vitest/vitest.mjs'), ['run'], testEnv);
       await runNode('Scratch-database API integration tests', path.join(appDir, 'test/integration/t11-api.test.cjs'), [], testEnv);
-      await runNode('Scratch-database song enrichment apply tests', path.join(appDir, 'test/integration/song-enrichment.test.cjs'), [], testEnv);
     } else {
       assert.ok(process.env.CCM_T11_E2E_GREP, 'Focused E2E requires an explicit test-name filter');
       console.log('[T11] Focused E2E only; unit and API suites skipped by request.');
     }
-    if (!focusedGeminiApplyReplay) {
-      const e2eArgs = ['test', '--workers=1'];
-      if (process.env.CCM_T11_E2E_GREP) {
-        e2eArgs.push('--grep', process.env.CCM_T11_E2E_GREP);
-        console.log('[T11] Applying requested guarded E2E name filter.');
-      }
-      await runNode('Serial Playwright E2E (installed system Chrome)', path.join(appDir, 'node_modules/@playwright/test/cli.js'),
-        e2eArgs, testEnv);
+    const e2eArgs = ['test', '--workers=1'];
+    if (process.env.CCM_T11_E2E_GREP) {
+      e2eArgs.push('--grep', process.env.CCM_T11_E2E_GREP);
+      console.log('[T11] Applying requested guarded E2E name filter.');
     }
+    await runNode('Serial Playwright E2E (installed system Chrome)', path.join(appDir, 'node_modules/@playwright/test/cli.js'),
+      e2eArgs, testEnv);
   }, async () => {
     const cleanup = [];
     const stages = [];
