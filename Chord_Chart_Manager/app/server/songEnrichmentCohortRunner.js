@@ -11,14 +11,19 @@ const GEMINI_ATTEMPTS_PER_SONG = 1;
 const STATE_MACHINE_VERSION = 3;
 const MAX_EVIDENCE_BYTES = 2_000_000;
 const SAFE_STOP_CODES = new Set(["AUTHENTICATION_FAILURE", "PROVIDER_OUTAGE", "INVALID_EVIDENCE",
+  "GEMINI_EGRESS_ENVIRONMENT_BLOCKED", "GEMINI_CONNECTIVITY_UNAVAILABLE",
   "CACHE_INVALID", "CHECKPOINT_INVALID", "CHECKPOINT_TAMPERED", "CHECKPOINT_UNSAFE_RESUME", "CHECKPOINT_WRITE_FAILED",
-  "COHORT_DRIFT", "BUDGET_ENFORCEMENT", "ACQUISITION_FAILED", "PREVIEW_FAILED"]);
+  "COHORT_DRIFT", "BUDGET_ENFORCEMENT", "GEMINI_SPEND_LIMIT", "GEMINI_SPEND_LEDGER_INVALID", "GEMINI_SPEND_LEDGER_LOCKED",
+  "GEMINI_SPEND_POLICY_UNVERIFIED", "GEMINI_PRIOR_RESERVATION", "GEMINI_RECOVERY_AUTHORIZATION_INVALID",
+  "ACQUISITION_FAILED", "PREVIEW_FAILED"]);
 const SAFE_STAGES = new Set(["factual_acquisition", "factual_validation", "factual_evidence_write", "gemini_acquisition",
   "gemini_validation", "gemini_evidence_write", "preview_transition", "checkpoint_transition"]);
 const SAFE_PREVIEW_DIAGNOSTICS = new Set(["EVIDENCE_NOT_APPROVED", "EVIDENCE_IDENTITY_REQUIRED", "EVIDENCE_IDENTITY_MISMATCH",
   "PREVIEW_IDENTITY_MISMATCH", "DECISIONS_INVALID", "DECISIONS_UNEVIDENCED", "DECISIONS_STALE_OR_TAMPERED",
   "BASELINE_CHANGED_REPREPARE", "PREPARED_EVIDENCE_MISMATCH", "EVIDENCE_CHANGED", "INVALID_MANIFEST"]);
-const SAFE_EXCEPTION = /^(?:interrupted_request_uncertain|recording_match_unresolved|missing_or_uncertain_evidence|missing_values_unresolved|gemini_evidence_unusable|factual_attempt_limit_reached|gemini_attempt_limit_reached|scalar_(?:release_year|original_key|bpm)_(?:recording_identity_not_accepted|recording_identity_unresolved|conflicting_evidence|no_candidate|invalid_candidate)|(?:genre|vibe)_(?:recording_identity_not_accepted|recording_identity_unresolved|invalid_tag_evidence|unknown_definition|ambiguous_definition|no_candidate))$/;
+const SAFE_FACTUAL_ORIGINS = new Set(["provider_invalid_response", "provider_invalid_request", "local_evidence_validation"]);
+const SAFE_EXCEPTION = /^(?:interrupted_request_uncertain|recording_match_unresolved|missing_or_uncertain_evidence|missing_values_unresolved|gemini_evidence_unusable|factual_attempt_limit_reached|gemini_attempt_limit_reached|factual_acquisition_not_attempted_due_to_provider_failure|provider_(?:musicbrainz|acousticbrainz|gemini)_transient_failure|provider_(?:musicbrainz|acousticbrainz)_invalid_response|scalar_(?:release_year|original_key|bpm)_(?:recording_identity_not_accepted|recording_identity_unresolved|conflicting_evidence|no_candidate|invalid_candidate)|(?:genre|vibe)_(?:recording_identity_not_accepted|recording_identity_unresolved|invalid_tag_evidence|unknown_definition|ambiguous_definition|no_candidate))$/;
+const GEMINI_ONLY_MODE = "gemini_only_after_factual_provider_failure";
 
 function fail(code) { const error = new Error(code); error.code = code; return error; }
 function canonical(value) {
@@ -81,6 +86,7 @@ async function readCheckpoint(file) {
       !Number.isSafeInteger(value.checkpoint.gemini_attempts) ||
       (value.checkpoint.stop_reason !== undefined && !SAFE_STOP_CODES.has(value.checkpoint.stop_reason))) throw fail("CHECKPOINT_INVALID");
   if (value.checkpoint.state_machine_version !== STATE_MACHINE_VERSION) throw fail("CHECKPOINT_UNSAFE_RESUME");
+  if (value.checkpoint.acquisition_mode !== undefined && !["standard", GEMINI_ONLY_MODE].includes(value.checkpoint.acquisition_mode)) throw fail("CHECKPOINT_INVALID");
   if (!Number.isSafeInteger(value.checkpoint.factual_attempts_per_song) || value.checkpoint.factual_attempts_per_song < 1 ||
       value.checkpoint.factual_attempts_per_song > FACTUAL_ATTEMPTS_PER_SONG ||
       value.checkpoint.binding.factual_attempts_per_song !== value.checkpoint.factual_attempts_per_song) throw fail("CHECKPOINT_INVALID");
@@ -90,6 +96,8 @@ async function readCheckpoint(file) {
   if (value.checkpoint.fatal_stop && (!SAFE_STOP_CODES.has(value.checkpoint.fatal_stop.reason) ||
       !SAFE_STAGES.has(value.checkpoint.fatal_stop.stage) ||
       (value.checkpoint.fatal_stop.song_id !== null && !Number.isSafeInteger(value.checkpoint.fatal_stop.song_id)) ||
+      value.checkpoint.fatal_stop.origin !== undefined &&
+        (value.checkpoint.fatal_stop.stage !== "factual_validation" || !SAFE_FACTUAL_ORIGINS.has(value.checkpoint.fatal_stop.origin)) ||
       value.checkpoint.fatal_stop.diagnostic_code !== undefined &&
         (value.checkpoint.fatal_stop.stage !== "preview_transition" ||
          !SAFE_PREVIEW_DIAGNOSTICS.has(value.checkpoint.fatal_stop.diagnostic_code)))) throw fail("CHECKPOINT_INVALID");
@@ -126,6 +134,11 @@ async function validateCheckpointState(state, songs, directory, factualAttemptsP
       catch { throw fail("CHECKPOINT_TAMPERED"); }
       if (sha256(bytes) !== item.evidence_hashes[stage]) throw fail("CHECKPOINT_TAMPERED");
       assertSanitizedEvidence(report, song.id, stage);
+      if (state.acquisition_mode === GEMINI_ONLY_MODE && stage === "factual" &&
+          (report.report_type !== "factual_acquisition_status" ||
+           report.songs[0].identity?.title !== song.title || report.songs[0].identity?.artist !== song.artist)) {
+        throw fail("CHECKPOINT_INVALID");
+      }
       digestList.push(...collectDigests(report));
     }
     if (item.completed_stage !== "none" && !item.evidence.factual) throw fail("CHECKPOINT_INVALID");
@@ -161,24 +174,58 @@ async function validateCheckpointState(state, songs, directory, factualAttemptsP
   if (state.in_flight && (!byId.has(state.in_flight.song_id) || typeof state.in_flight.operation !== "string" ||
       typeof state.in_flight.provider !== "string" || state.in_flight.status !== "uncertain")) throw fail("CHECKPOINT_INVALID");
 }
-function safeProviderStatus(result) {
-  const statuses = [];
-  const add = value => { if (typeof value === "string") statuses.push(value); };
+const TRANSIENT_PROVIDER_STATUSES = new Set(["transient_error", "network_disabled", "cancelled", "timeout"]);
+const PROVIDER_EXCEPTION_CODES = Object.freeze({
+  MusicBrainz: "provider_musicbrainz_transient_failure",
+  AcousticBrainz: "provider_acousticbrainz_transient_failure",
+  Gemini: "provider_gemini_transient_failure",
+});
+const PROVIDER_NAMES = Object.freeze({ MusicBrainz: "musicbrainz", AcousticBrainz: "acousticbrainz", Gemini: "gemini" });
+function factualOrigin(error, stage) {
+  if (SAFE_FACTUAL_ORIGINS.has(error?.origin)) return error.origin;
+  return stage === "factual_validation" && error?.code === "INVALID_EVIDENCE" ? "local_evidence_validation" : undefined;
+}
+function safeProviderStatus(result, { factual = false } = {}) {
+  const geminiFailure = result?.gemini_suggestions?.failure_details;
+  if (geminiFailure?.failure_phase === "request" && geminiFailure?.transport_error_code === "EACCES" &&
+      geminiFailure?.https_started === true) throw fail("GEMINI_EGRESS_ENVIRONMENT_BLOCKED");
+  const statuses = new Map([["MusicBrainz", []], ["AcousticBrainz", []], ["Gemini", []]]);
+  const add = (provider, value) => { if (typeof value === "string") statuses.get(provider).push(value); };
   for (const song of result?.songs || []) {
-    add(song.recording?.search_status);
-    add(song.recording?.lookup_status);
-    for (const candidate of song.recording?.richness_comparison?.candidates || []) add(candidate?.lookup_status);
-    add(song.acousticbrainz?.status);
+    add("MusicBrainz", song.recording?.search_status);
+    add("MusicBrainz", song.recording?.lookup_status);
+    for (const candidate of song.recording?.richness_comparison?.candidates || []) add("MusicBrainz", candidate?.lookup_status);
+    add("AcousticBrainz", song.acousticbrainz?.status);
   }
-  add(result?.gemini_suggestions?.status);
-  if (statuses.some(status => ["authentication_error", "unauthorized", "forbidden"].includes(status))) throw fail("AUTHENTICATION_FAILURE");
-  if (statuses.some(status => ["transient_error", "network_disabled", "cancelled", "timeout"].includes(status))) throw fail("PROVIDER_OUTAGE");
-  if (statuses.some(status => ["invalid_response", "invalid_request"].includes(status))) throw fail("INVALID_EVIDENCE");
+  add("Gemini", result?.gemini_suggestions?.status);
+  const all = [...statuses.values()].flat();
+  if (all.some(status => ["authentication_error", "unauthorized", "forbidden"].includes(status))) throw fail("AUTHENTICATION_FAILURE");
+  if (all.includes("budget_exhausted")) throw fail("BUDGET_ENFORCEMENT");
+  if (all.includes("invalid_request")) {
+    const failure = fail("INVALID_EVIDENCE");
+    if (factual) failure.origin = "provider_invalid_request";
+    throw failure;
+  }
+  if (!factual && all.includes("invalid_response")) throw fail("INVALID_EVIDENCE");
+  return [...statuses].flatMap(([provider, values]) => {
+    const failures = [];
+    if (values.includes("invalid_response")) failures.push({ provider, status: "invalid_response" });
+    if (values.some(status => TRANSIENT_PROVIDER_STATUSES.has(status))) failures.push({ provider, status: "transient" });
+    return failures;
+  });
 }
 function assertSanitizedEvidence(report, songId, kind) {
   if (!report || typeof report !== "object" || Array.isArray(report)) throw fail("INVALID_EVIDENCE");
-  if (kind === "factual" && (report.report_type !== "existing_song_enrichment_read_only_preview" ||
-      !Array.isArray(report.selected_song_ids) || report.selected_song_ids.length !== 1 || report.selected_song_ids[0] !== songId)) throw fail("INVALID_EVIDENCE");
+  if (kind === "factual" && (report.report_type === "factual_acquisition_status"
+      ? report.report_version !== 1 || report.database_writes !== false || report.approved_apply_manifest !== null ||
+        !Array.isArray(report.selected_song_ids) || report.selected_song_ids.length !== 1 || report.selected_song_ids[0] !== songId ||
+        report.songs?.length !== 1 || report.songs[0]?.song_id !== songId ||
+        report.songs[0]?.acquisition?.status !== "not_attempted_due_to_provider_failure" ||
+        report.songs[0]?.acquisition?.reason !== "factual_provider_failure_guard"
+      : report.report_type !== "existing_song_enrichment_read_only_preview" ||
+        !Array.isArray(report.selected_song_ids) || report.selected_song_ids.length !== 1 || report.selected_song_ids[0] !== songId)) {
+    throw fail("INVALID_EVIDENCE");
+  }
   if (kind === "gemini" && (report.format_version !== 1 || report.mode !== "explicit_gemini_missing_metadata_fallback" ||
       report.selected_song_id !== songId)) throw fail("INVALID_EVIDENCE");
   const forbidden = /(?:chart.?body|lyrics?|raw.?response|credential|api.?key|authorization)/i;
@@ -193,8 +240,8 @@ function assertSanitizedEvidence(report, songId, kind) {
 }
 function validateNormalizedEvidence(report, song) {
   try {
-    normalizeReports(song, [{ document: report, bytes: Buffer.from(JSON.stringify(report)), path: "in-memory" }]);
-  } catch { throw fail("INVALID_EVIDENCE"); }
+    return normalizeReports(song, [{ document: report, bytes: Buffer.from(JSON.stringify(report)), path: "in-memory" }]);
+  } catch { const failure = fail("INVALID_EVIDENCE"); failure.origin = "local_evidence_validation"; throw failure; }
 }
 function usableGeminiEvidence(report, songId) {
   const suggestion = report?.gemini_suggestions;
@@ -221,25 +268,42 @@ async function saveEvidenceArtifact({ filesystem, directory, songId, stage, repo
 
 async function runSongEnrichmentCohort({ manifest, baseline, directory, providerClient, acquireFactual, acquireGemini = async () => ({}), processBatch,
   factualAttemptsPerSong = FACTUAL_ATTEMPTS_PER_SONG,
+  acquisitionMode = "standard",
+  recoveryAuthorizationSha256 = null,
+  recoveryRunId = null,
   getCacheHash = async () => null, filesystem = fs, clock = Date.now, checkpointWriter = atomicJson }) {
   if (!providerClient || typeof acquireFactual !== "function" || typeof acquireGemini !== "function" || typeof processBatch !== "function") throw fail("RUNNER_DEPENDENCY_INVALID");
   if (!Number.isSafeInteger(factualAttemptsPerSong) || factualAttemptsPerSong < 1 || factualAttemptsPerSong > FACTUAL_ATTEMPTS_PER_SONG) {
     throw fail("BUDGET_ENFORCEMENT");
   }
+  if (recoveryAuthorizationSha256 !== null && (!/^[a-f0-9]{64}$/.test(recoveryAuthorizationSha256) ||
+      !/^[a-f0-9]{64}$/.test(recoveryRunId || "") || acquisitionMode !== GEMINI_ONLY_MODE)) throw fail("BUDGET_ENFORCEMENT");
+  if (recoveryAuthorizationSha256 === null && recoveryRunId !== null) throw fail("BUDGET_ENFORCEMENT");
+  if (!["standard", GEMINI_ONLY_MODE].includes(acquisitionMode)) throw fail("BUDGET_ENFORCEMENT");
   const songs = validateManifest(manifest, baseline);
+  if (acquisitionMode === GEMINI_ONLY_MODE && !/^lite-/i.test(manifest.cohort_id)) throw fail("COHORT_INVALID");
   const checkpointPath = path.join(directory, "checkpoint-v1.json");
   const checkpointBaseline = { songs: baseline.songs, definitions: baseline.definitions };
   const binding = { cohort_id: manifest.cohort_id, manifest_sha256: hashJson(manifest),
     baseline_sha256: hashJson(checkpointBaseline), cache_sha256: await getCacheHash(), policy_version: POLICY_VERSION,
-    factual_attempts_per_song: factualAttemptsPerSong };
+    factual_attempts_per_song: factualAttemptsPerSong,
+    ...(acquisitionMode === "standard" ? {} : { acquisition_mode: acquisitionMode }),
+    ...(recoveryAuthorizationSha256 ? { recovery_authorization_sha256: recoveryAuthorizationSha256,
+      recovery_run_id: recoveryRunId } : {}) };
   const prior = await readCheckpoint(checkpointPath);
+  if (prior && (prior.acquisition_mode || "standard") !== acquisitionMode) throw fail("CHECKPOINT_UNSAFE_RESUME");
   if (prior && prior.factual_attempts_per_song !== factualAttemptsPerSong) throw fail("CHECKPOINT_UNSAFE_RESUME");
   if (prior && canonical({ ...prior.binding, cache_sha256: null }) !== canonical({ ...binding, cache_sha256: null })) throw fail("COHORT_DRIFT");
   if (prior && prior.binding.cache_sha256 !== binding.cache_sha256) throw fail("CACHE_INVALID");
   if (prior) await validateCheckpointState(prior, songs, directory, factualAttemptsPerSong);
+  if (prior && acquisitionMode === GEMINI_ONLY_MODE &&
+      (prior.factual_attempts !== 0 || prior.songs.some(item => item.factual_attempts !== 0))) {
+    throw fail("CHECKPOINT_INVALID");
+  }
   if (prior?.fatal_stop || prior?.stop_reason || prior?.in_flight || prior?.active_stage) throw fail("CHECKPOINT_UNSAFE_RESUME");
   const state = prior || { checkpoint_version: CHECKPOINT_VERSION, state_machine_version: STATE_MACHINE_VERSION,
-    factual_attempts_per_song: factualAttemptsPerSong, policy_version: POLICY_VERSION, binding,
+    factual_attempts_per_song: factualAttemptsPerSong, policy_version: POLICY_VERSION,
+    ...(acquisitionMode === "standard" ? {} : { acquisition_mode: acquisitionMode }), binding,
     created_at: new Date(Number(clock())).toISOString(), songs: [], batches: [], factual_attempts: 0, gemini_attempts: 0,
     exceptions: [], in_flight: null };
   const stateById = new Map(state.songs.map(item => [item.song_id, item]));
@@ -275,7 +339,9 @@ async function runSongEnrichmentCohort({ manifest, baseline, directory, provider
     const reason = SAFE_STOP_CODES.has(error?.code) ? error.code :
       (activeStage === "preview_transition" ? "PREVIEW_FAILED" : "ACQUISITION_FAILED");
     const stage = SAFE_STAGES.has(activeStage) ? activeStage : "checkpoint_transition";
+    const origin = stage === "factual_validation" ? factualOrigin(error, stage) : undefined;
     state.fatal_stop = { reason, stage, song_id: activeSongId,
+      ...(origin ? { origin } : {}),
       ...(stage === "preview_transition" && SAFE_PREVIEW_DIAGNOSTICS.has(error?.code) ? { diagnostic_code: error.code } : {}) };
     try { await save(); } catch { /* A durable active stage or in-flight reservation still blocks resume. */ }
     const stopped = fail(reason);
@@ -284,6 +350,25 @@ async function runSongEnrichmentCohort({ manifest, baseline, directory, provider
   };
   try { await save(); } catch (error) { await persistFatal(error); }
   const batches = [];
+  const recordProviderFailures = (providers, songIndex, songId, item) => {
+    let repeatedAcrossSongs = false;
+    let origin;
+    for (const { provider, status } of providers) {
+      const code = status === "invalid_response"
+        ? `provider_${PROVIDER_NAMES[provider]}_invalid_response`
+        : PROVIDER_EXCEPTION_CODES[provider];
+      if (!code) throw fail("INVALID_EVIDENCE");
+      const previous = state.songs[songIndex - 1];
+      const providerFailurePrefix = `provider_${PROVIDER_NAMES[provider]}_`;
+      if (previous && previous.song_id !== songId && previous.exception_codes.some(existing =>
+        existing.startsWith(providerFailurePrefix) && /(?:transient_failure|invalid_response)$/.test(existing))) {
+        repeatedAcrossSongs = true;
+        if (status === "invalid_response") origin = "provider_invalid_response";
+      }
+      item.exception_codes = [...new Set([...item.exception_codes, code])];
+    }
+    return { repeatedAcrossSongs, origin };
+  };
   for (let start = 0; start < songs.length; start += MAX_BATCH_SIZE) {
     const rows = songs.slice(start, start + MAX_BATCH_SIZE);
     const batchIndex = Math.floor(start / MAX_BATCH_SIZE);
@@ -291,7 +376,8 @@ async function runSongEnrichmentCohort({ manifest, baseline, directory, provider
     if (state.batches[batchIndex]?.completed_stage === "preview") { batches.push(state.batches[batchIndex]); continue; }
     let factualInBatch = batchState.reduce((sum, item) => sum + item.factual_attempts, 0);
     const currentBatch = { batch_index: batchIndex, song_ids: rows.map(row => row.id), completed_stage: "acquiring" };
-    for (const row of rows) {
+    for (const [rowOffset, row] of rows.entries()) {
+      const songIndex = start + rowOffset;
       const item = stateById.get(row.id);
       if (item.completed_stage === "evidence") continue;
       const reserve = async ({ provider, operation, gemini = false } = {}) => {
@@ -300,6 +386,7 @@ async function runSongEnrichmentCohort({ manifest, baseline, directory, provider
           if (state.gemini_attempts >= songs.length * GEMINI_ATTEMPTS_PER_SONG) return false;
           item.gemini_attempts += 1; state.gemini_attempts += 1;
         } else {
+          if (acquisitionMode === GEMINI_ONLY_MODE) return false;
           const batchLimit = rows.length * factualAttemptsPerSong;
           if (item.factual_attempts >= factualAttemptsPerSong || factualInBatch >= batchLimit ||
               state.factual_attempts >= songs.length * factualAttemptsPerSong) return false;
@@ -312,9 +399,26 @@ async function runSongEnrichmentCohort({ manifest, baseline, directory, provider
       };
       try {
         let factualReport;
-        if (item.evidence.factual) {
+        let factualNormalization;
+        if (acquisitionMode === GEMINI_ONLY_MODE && !item.evidence.factual) {
+          await enterStage("factual_evidence_write", row.id);
+          factualReport = { report_version: 1, report_type: "factual_acquisition_status", database_writes: false,
+            selected_song_ids: [row.id], approved_apply_manifest: null,
+            songs: [{ song_id: row.id, identity: { title: row.title, artist: row.artist },
+              acquisition: { status: "not_attempted_due_to_provider_failure", reason: "factual_provider_failure_guard" },
+              human_review_required: true, approved_preview: null }] };
+          assertSanitizedEvidence(factualReport, row.id, "factual");
+          factualNormalization = validateNormalizedEvidence(factualReport, row);
+          item.exception_codes = [...new Set([...item.exception_codes,
+            "factual_acquisition_not_attempted_due_to_provider_failure"])];
+          await saveEvidenceArtifact({ filesystem, directory, songId: row.id, stage: "factual", report: factualReport, item });
+          item.completed_stage = "factual";
+          await save();
+        } else if (item.evidence.factual) {
           await enterStage("factual_validation", row.id);
           factualReport = JSON.parse(await filesystem.readFile(item.evidence.factual, "utf8"));
+          assertSanitizedEvidence(factualReport, row.id, "factual");
+          factualNormalization = validateNormalizedEvidence(factualReport, row);
         } else {
           await enterStage("factual_acquisition", row.id);
           const factual = await acquireFactual({ song: row, providerClient, existingEvidence: item.evidence,
@@ -330,12 +434,18 @@ async function runSongEnrichmentCohort({ manifest, baseline, directory, provider
           await save();
           if (!factualReport) throw fail("INVALID_EVIDENCE");
           assertSanitizedEvidence(factualReport, row.id, "factual");
-          safeProviderStatus(factualReport);
-          validateNormalizedEvidence(factualReport, row);
+          const providerFailures = safeProviderStatus(factualReport, { factual: true });
+          factualNormalization = validateNormalizedEvidence(factualReport, row);
           const acquisitionCodes = factual.exceptionCodes || [];
           if (!Array.isArray(acquisitionCodes) || acquisitionCodes.some(code => !SAFE_EXCEPTION.test(code))) throw fail("INVALID_EVIDENCE");
           item.exception_codes = [...new Set([...item.exception_codes, ...acquisitionCodes,
             ...(factualReport.attempts?.total >= factualAttemptsPerSong ? ["factual_attempt_limit_reached"] : [])])];
+          const providerFailureState = recordProviderFailures(providerFailures, songIndex, row.id, item);
+          if (providerFailureState.repeatedAcrossSongs) {
+            const failure = fail("PROVIDER_OUTAGE");
+            if (providerFailureState.origin) failure.origin = providerFailureState.origin;
+            throw failure;
+          }
           activeStage = "factual_evidence_write";
           state.active_stage = activeStage;
           await save();
@@ -349,14 +459,11 @@ async function runSongEnrichmentCohort({ manifest, baseline, directory, provider
           const matchAccepted = factualReport.songs?.[0]?.recording?.match?.matched === true;
           if (!matchAccepted) {
             item.exception_codes = [...new Set([...item.exception_codes, "recording_match_unresolved"])];
-            item.completed_stage = "evidence";
-            state.binding.cache_sha256 = await getCacheHash();
-            await save();
-            await leaveStage();
-            continue;
           }
           await enterStage("gemini_acquisition", row.id);
-          const geminiResult = await acquireGemini({ song: row, factualReport, providerClient, reserveAttempt: reserve, signal: undefined });
+          const geminiResult = await acquireGemini({ song: row, factualReport,
+            acceptedRecordingIdentity: factualNormalization?.recording_identity?.accepted === true,
+            providerClient, reserveAttempt: reserve, signal: undefined });
           const geminiReport = geminiResult?.geminiReport;
           state.in_flight = null;
           state.binding.cache_sha256 = await getCacheHash();
@@ -364,13 +471,15 @@ async function runSongEnrichmentCohort({ manifest, baseline, directory, provider
           activeStage = "gemini_validation";
           state.active_stage = activeStage;
           await save();
+          let geminiProviderFailures = [];
           if (geminiReport) {
             assertSanitizedEvidence(geminiReport, row.id, "gemini");
-            safeProviderStatus(geminiReport);
+            geminiProviderFailures = safeProviderStatus(geminiReport);
             if (geminiReport.gemini_suggestions?.status === "ok") validateNormalizedEvidence(geminiReport, row);
           }
           const geminiCodes = geminiResult?.exceptionCodes || [];
           if (!Array.isArray(geminiCodes) || geminiCodes.some(code => !SAFE_EXCEPTION.test(code))) throw fail("INVALID_EVIDENCE");
+          if (recordProviderFailures(geminiProviderFailures, songIndex, row.id, item).repeatedAcrossSongs) throw fail("PROVIDER_OUTAGE");
           if (geminiReport && usableGeminiEvidence(geminiReport, row.id)) {
             activeStage = "gemini_evidence_write";
             state.active_stage = activeStage;
@@ -382,6 +491,8 @@ async function runSongEnrichmentCohort({ manifest, baseline, directory, provider
             item.exception_codes.push("gemini_attempt_limit_reached");
           } else if (geminiResult?.skipped === true) {
             // No missing scalar or unassigned managed tags remained; this is a completed no-op.
+          } else if (geminiProviderFailures.length) {
+            // The transient failure is already recorded as a song-level exception.
           } else if (geminiReport) {
             item.exception_codes.push("gemini_evidence_unusable");
           } else if (!geminiCodes.includes("gemini_attempt_limit_reached")) {

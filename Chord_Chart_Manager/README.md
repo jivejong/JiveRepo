@@ -489,14 +489,33 @@ evidence hashes, rebuilds the B1 preview and writes an exclusive, canonical B3 m
 ignored `backups/`. Chart bodies, lyrics, credentials, and raw provider responses do not enter the decisions or
 decision report.
 
-The accepted best-effort policy fills missing fields from factual evidence then attributed Gemini estimates,
-adds uniquely matched managed Genre/Vibe labels, and preserves populated values, assignments, primary Genre
-and chart/source. The `decide` stage abstains on unresolved recording identity, any source conflict, invalid
-candidates, or distinct normalized scalar values; it never selects a primary Genre. New Genres remain secondary
-when the song has no primary. The stage selects only from evidence already referenced by `prepared-v1.json`;
+The accepted best-effort policy fills missing fields from valid, unconflicted factual evidence, then from
+attributed Gemini estimates when factual evidence is unavailable and the estimate is bound to the exact song
+identity. An unresolved MusicBrainz recording identity does not prevent the one bounded Gemini request. That
+request contains only the exact title/artist, missing scalar field names, and currently unassigned managed
+Genre/Vibe definitions; it contains no chart or lyrics. Null-MBID changes are accepted only when every selected
+value has validated Gemini provenance for that song. Unverified factual values cannot use this route. The
+workflow adds uniquely matched managed Genre/Vibe labels and preserves populated values, assignments, primary
+Genre and chart/source. Any source conflict, invalid candidate, or distinct normalized scalar values abstain;
+the workflow never selects a primary Genre. New Genres remain secondary when the song has no primary. Decisions
+select only evidence already referenced by `prepared-v1.json`;
 it does not make provider requests or write song rows. Fresh backup/actual restore proof, exact versions, replay
 and transactional preservation remain mandatory for main writes. The separate T28 cohort runner can acquire saved
 evidence for an explicitly declared cohort and then feeds each batch through this same operator path.
+
+All production cohort and explicit Gemini fallback commands share the private
+`backups/stage-b-gemini-spend-ledger-v1.json` ledger. On first use it conservatively
+seeds retained Gemini attempt counts from valid cohort checkpoints, saved Gemini
+reports, and the known legacy Genre/Vibe reports with nested attempt counts. Each dispatch reserves the maximum permitted request cost first; interrupted
+reservations remain charged. The gate checks the pinned `gemini-3.1-flash-lite`
+standard paid rates, a 16,384-byte input allowance reserved as up to 16,384 input
+tokens, 1,024 output tokens, the response cap, and timeout. At those pinned rates
+each call reserves 5,632 micro-USD. The ledger refuses corrupt or changed seed
+artifacts, an unverifiable policy, or any call that would cross $2. Cached responses
+do not reserve spend because they make no provider request. The ledger stores only
+reservation metadata and hashes, never credentials or responses. Review the pinned
+official [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) before
+changing its model, rates, or bounds; do not edit or delete the ledger to reset the cap.
 
 From `Chord_Chart_Manager/`, convert a saved explicit-recording trial. The converter validates the actual saved
 trial structure and refuses to overwrite an existing file:
@@ -609,6 +628,37 @@ Checkpoints also persist a safe active stage and fatal reason. Failed or interru
 inspect metadata and request counts, then use a separately reviewed recovery disposition. Checkpoints from an older
 state-machine version are rejected unchanged. Do not reset counters, remove a stop marker, or retry an uncertain request.
 
+For an approved Lite cohort that must skip the failed factual-provider path,
+add `--gemini-only`. This mode accepts only a `lite-` cohort, makes no
+MusicBrainz or AcousticBrainz calls, and reserves zero factual attempts. It
+records factual acquisition as `not_attempted_due_to_provider_failure` and
+binds the checkpoint to the selected mode. The existing Gemini fallback still
+uses exact database title/artist, missing scalar fields, and unassigned managed
+Genre/Vibe definitions within the same request limits and shared $2 spend
+ledger; chart text and lyrics are excluded. Exclude songs with earlier Gemini
+reservations, including uncertain ID 755. The CLI checks the shared ledger
+before a fresh Gemini-only run and refuses a target with any prior reservation;
+it also fails closed if retained spend cannot be attributed to song IDs. The
+ledger's locked reservation gate rejects duplicate song IDs across runs. Use validated saved Gemini evidence
+through `prepare` → T27 `decide` → `preview` rather than redispatching it, and
+do not re-enrich populated values.
+
+The one-time Lite recovery path accepts a private `--gemini-recovery-authorization`
+file only with `--gemini-only`. It is pinned in code to IDs 735, 736, 737, 738,
+and 755; every prior reservation and retained checkpoint/report hash must match
+the authorization exactly. The ledger records the recovery parent and authorization
+hash, so a second recovery call for any of those IDs is refused. This exception
+does not permit recovery for another song or a third attempt. Songs without a
+prior reservation in the same explicitly bounded cohort continue through the
+ordinary one-request gate.
+
+Before the cohort reaches its database baseline or spend ledger, the CLI performs
+a non-generating Gemini egress preflight: DNS lookup, verified TLS, then an
+unauthenticated GET to the API host. It sends no API key, prompt, or generating
+POST. A connect-time `EACCES` stops with `GEMINI_EGRESS_ENVIRONMENT_BLOCKED`;
+use the already reviewed outside-sandbox execution path. The CLI never switches
+execution environments itself.
+
 Example invocation (documentation only; it does not authorize provider acquisition):
 
 ```powershell
@@ -619,6 +669,10 @@ node .\app\scripts\acquire-song-enrichment-cohort.cjs `
   --cache-dir .\backups\stage-b-provider-cache `
   --factual-attempts-per-song 9
 ```
+
+Append `--gemini-only` only for an explicitly approved eligible Lite cohort
+whose factual provider path is being skipped. It does not bypass the live
+read-only preflight or evidence, preview, and apply validation.
 
 Keep the same output and cache paths when resuming. A completed batch emits a read-only preview manifest for later
 review and backup/restore gates; it is never applied by this runner.

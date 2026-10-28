@@ -29,10 +29,11 @@ function proofPayload() {
     created_at: new Date('2026-10-19T12:00:00Z').toISOString() };
 }
 function approvedManifest(){
- const snapshot={id:727,updated_at:'2026-10-13T03:17:35.356314Z',release_year:null,original_key:null,bpm:null,genres:[],vibes:[]};
- const candidate={value:1973,source:'Gemini',response_digest:'a'.repeat(64),model_id:'gemini-3.1-flash-lite',prompt_version:'missing-metadata-fallback-v2',schema_version:'missing-metadata-schema-v2'};
+ const snapshot={id:727,title:'Fixture',artist:'Fixture Artist',updated_at:'2026-10-13T03:17:35.356314Z',release_year:null,original_key:null,bpm:null,genres:[],vibes:[]};
+ const candidate={value:1973,source:'Gemini',response_digest:'a'.repeat(64),model_id:'gemini-3.1-flash-lite',prompt_version:'missing-metadata-fallback-v2',schema_version:'missing-metadata-schema-v2',
+  song_identity:{song_id:snapshot.id,title:snapshot.title,artist:snapshot.artist}};
  const evidence={mbid:null,scalars:{release_year:[candidate],original_key:[],bpm:[]},genres:[],vibes:[]};
- const review_decision={mbid:null,scalars:{release_year:{value:1973,source:'Gemini',response_digest:candidate.response_digest}},genres:[],vibes:[]};
+ const review_decision={mbid:null,scalars:{release_year:candidate},genres:[],vibes:[]};
  const preview=buildEnrichmentPreview(snapshot,evidence,review_decision,{genres:[],vibes:[]});
  return{format_version:1,operation_id:runId,songs:[{song_id:727,base_version:snapshot.updated_at,identity:{title:'Fixture',artist_id:1,artist_name:'Fixture Artist'},evidence,review_decision,preview}]};
 }

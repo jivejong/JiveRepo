@@ -16,12 +16,13 @@ const GEMINI_DIGEST = 'f'.repeat(64);
 const GEMINI_PROVENANCE = { model_id: 'gemini-3.1-flash-lite', prompt_version: 'missing-metadata-fallback-v1', schema_version: 'missing-metadata-schema-v1' };
 
 test('B3 validates Gemini identity variants and rejects factual-null or mismatched identities specifically', () => {
-  const snapshot = { id: 42, updated_at: '2026-10-15T14:22:33.123456Z', release_year: null,
+  const snapshot = { id: 42, title: 'Synthetic', artist: 'Synthetic Artist', updated_at: '2026-10-15T14:22:33.123456Z', release_year: null,
     original_key: null, bpm: null, genres: [], vibes: [] };
   const candidate = { value: { key_key: 'C', key_scale: 'minor' }, source: 'Gemini',
-    response_digest: GEMINI_DIGEST, ...GEMINI_PROVENANCE };
+    response_digest: GEMINI_DIGEST, ...GEMINI_PROVENANCE,
+    song_identity: { song_id: snapshot.id, title: snapshot.title, artist: snapshot.artist } };
   const evidence = { mbid: null, scalars: { original_key: [candidate] }, genres: [], vibes: [] };
-  const reviewDecision = { mbid: null, scalars: { original_key: { value: candidate.value, source: 'Gemini', response_digest: GEMINI_DIGEST } }, genres: [], vibes: [] };
+  const reviewDecision = { mbid: null, scalars: { original_key: candidate }, genres: [], vibes: [] };
   const preview = buildEnrichmentPreview(snapshot, evidence, reviewDecision, { genres: [], vibes: [] });
   const manifest = { format_version: 1, operation_id: randomUUID(), songs: [{ song_id: 42,
     base_version: snapshot.updated_at, identity: { title: 'Synthetic', artist_id: 1, artist_name: 'Synthetic Artist' },
@@ -135,22 +136,25 @@ async function makeManifest(fixture, songId, options = {}) {
   const row = songResult.rows[0];
   const provenance = gemini ? { model_id: GEMINI_PROVENANCE.model_id, prompt_version: GEMINI_PROVENANCE.prompt_version,
     schema_version: GEMINI_PROVENANCE.schema_version } : {};
+  const songIdentity = { song_id: row.id, title: row.title, artist: row.artist_name };
   const evidence = { mbid, scalars: {}, genres: [], vibes: [] };
   const review = { mbid, scalars: {}, genres: [...genres], vibes: [...vibes], ...(primaryGenre ? { primaryGenre } : {}) };
   for (const [field, value, source] of [['release_year', year, 'MusicBrainz'], ['original_key', key, 'AcousticBrainz'], ['bpm', bpm, 'AcousticBrainz']]) {
     if (value !== undefined) {
       const actualSource = gemini ? 'Gemini' : source;
       const item = { value, source: actualSource,
-        response_digest: gemini ? GEMINI_DIGEST : `${DIGEST}${field}_scalar`, ...provenance };
+        response_digest: gemini ? GEMINI_DIGEST : `${DIGEST}${field}_scalar`, ...provenance,
+        ...(gemini ? { song_identity: songIdentity } : {}) };
       evidence.scalars[field] = [item];
-      review.scalars[field] = { value: item.value, source: item.source, response_digest: item.response_digest };
+      review.scalars[field] = item;
     }
   }
   for (const [field, labels] of [['genres', genres], ['vibes', vibes]]) {
     evidence[field] = labels.map((name, index) => ({ name, source: gemini ? 'Gemini' : 'MusicBrainz',
-      response_digest: gemini ? GEMINI_DIGEST : `${DIGEST}${field}_${index}`, ...provenance }));
+      response_digest: gemini ? GEMINI_DIGEST : `${DIGEST}${field}_${index}`, ...provenance,
+      ...(gemini ? { song_identity: songIdentity } : {}) }));
   }
-  const snapshot = { id: row.id, updated_at: row.updated_at, release_year: row.release_year, original_key: row.original_key,
+  const snapshot = { id: row.id, title: row.title, artist: row.artist_name, updated_at: row.updated_at, release_year: row.release_year, original_key: row.original_key,
     bpm: row.bpm, genres: genreAssignments.rows, vibes: vibeAssignments.rows };
   const definitions = { genres: genreRows.rows, vibes: vibeRows.rows };
   const preview = buildEnrichmentPreview(snapshot, evidence, review, definitions);
@@ -297,7 +301,15 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
     await verifyHarnessIdentity({ baseUrl: process.env.E2E_BASE_URL, runId: process.env.CCM_T11_RUN_ID });
     assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'ccm_test');
     await createFixture(fixture);
-    await t.test('wrong database, owner, or run marker refuses before writes', async () => {
+    const focusedSubtestName = process.env.CCM_T11_B3_FOCUS === 'gemini-null-mbid-apply-replay'
+      ? 'Gemini provenance applies and replays for existing and null MBID identities' : null;
+    let focusedSubtestRan = false;
+    const runSubtest = (name, callback) => {
+      if (focusedSubtestName && name !== focusedSubtestName) return t.test(name, { skip: 'not selected by the focused T11 B3 run' }, callback);
+      if (focusedSubtestName) focusedSubtestRan = true;
+      return t.test(name, callback);
+    };
+    await runSubtest('wrong database, owner, or run marker refuses before writes', async () => {
       const manifest = await makeManifest(fixture, fixture.songs.noop);
       const wrongIdentities = [
         { database_name: 'chords', current_user_name: 'role', owner_name: 'role', marker: `CCM T11 owned scratch run ${process.env.CCM_T11_RUN_ID}` },
@@ -317,7 +329,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       }
     });
 
-    await t.test('Gemini provenance applies and replays for existing and null MBID identities', async () => {
+    await runSubtest('Gemini provenance applies and replays for existing and null MBID identities', async () => {
       const yearGenre = await makeManifest(fixture, fixture.songs.geminiMatchedMbid, {
         gemini: true, year: 1978, genres: [fixture.definitions.genres.get('Country').name],
       });
@@ -335,6 +347,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       assert.equal(first.songs[0].delta.scalar_changes[0].evidence.model_id, GEMINI_PROVENANCE.model_id);
       assert.deepEqual(first.songs[0].delta.scalar_changes[0].evidence, {
         source: 'Gemini', response_digest: GEMINI_DIGEST, ...GEMINI_PROVENANCE,
+        song_identity: { song_id: fixture.songs.geminiMatchedMbid, title: `B3 gemini-matched-mbid ${fixture.suffix}`, artist: `B3 synthetic artist ${fixture.suffix}` },
       });
       assert.equal(first.songs[0].delta.tag_additions.genres[0].evidence[0].schema_version, GEMINI_PROVENANCE.schema_version);
       assert.equal(first.songs[1].delta.scalar_changes[0].evidence.prompt_version, GEMINI_PROVENANCE.prompt_version);
@@ -365,7 +378,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       fixture.operations.add(manifest.operation_id);
     });
 
-    await t.test('mixed changed/no-op batch uses exact scalars, adds multiple category-scoped tags, and preserves no-op versions', async () => {
+    await runSubtest('mixed changed/no-op batch uses exact scalars, adds multiple category-scoped tags, and preserves no-op versions', async () => {
       const genres = [fixture.definitions.genres.get('Country').name, fixture.definitions.genres.get('Pop').name];
       const vibes = [fixture.definitions.vibes.get('Mellow').name, fixture.definitions.vibes.get('Dreamy').name];
       const first = await makeManifest(fixture, fixture.songs.empty, { year: 2001, key: { key_key: 'F#', key_scale: 'minor' }, bpm: 123.6, genres, vibes, primaryGenre: genres[0] });
@@ -384,7 +397,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
         { release_year: 2001, original_key: 'F#m', bpm: 124 });
     });
 
-    await t.test('caller mutations after entry cannot change the private reviewed operation', async () => {
+    await runSubtest('caller mutations after entry cannot change the private reviewed operation', async () => {
       const manifest = await makeManifest(fixture, fixture.songs.private, {
         year: 2002, genres: [fixture.definitions.genres.get('Country').name],
       });
@@ -432,7 +445,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       fixture.operations.add(original.operation_id);
     });
 
-    await t.test('assignment preservation uses numeric ID ordering across digit boundaries in both categories', async () => {
+    await runSubtest('assignment preservation uses numeric ID ordering across digit boundaries in both categories', async () => {
       for (const category of ['genres', 'vibes']) {
         const [lower, upper] = await insertDigitBoundaryPair(category, fixture);
         if (category === 'genres') {
@@ -451,7 +464,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       assert.equal((await pool.query('SELECT count(*)::int AS n FROM public.song_vibes WHERE song_id=$1', [fixture.songs.numeric])).rows[0].n, 2);
     });
 
-    await t.test('populated values and current primary survive; an explicit valid primary applies', async () => {
+    await runSubtest('populated values and current primary survive; an explicit valid primary applies', async () => {
       const additive = await makeManifest(fixture, fixture.songs.preserved, {
         year: 2020, key: 'C', bpm: 90, genres: [fixture.definitions.genres.get('Country').name], vibes: [fixture.definitions.vibes.get('Mellow').name],
       });
@@ -472,7 +485,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
         [fixture.songs.primaryless, fixture.definitions.genres.get('Jazz').id])).rows[0].is_primary, true);
     });
 
-    await t.test('one stale exact version rolls back every target and the receipt', async () => {
+    await runSubtest('one stale exact version rolls back every target and the receipt', async () => {
       const operationId = newOperation(fixture);
       const first = await makeManifest(fixture, fixture.songs.staleFirst, { operationId, year: 1997 });
       const second = await makeManifest(fixture, fixture.songs.staleSecond, { operationId });
@@ -488,7 +501,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       assert.equal((await pool.query('SELECT 1 FROM public.song_enrichment_runs WHERE operation_id=$1', [operationId])).rowCount, 0);
     });
 
-    await t.test('changed identity, missing songs, rename and ambiguous definitions invalidate reviewed previews', async () => {
+    await runSubtest('changed identity, missing songs, rename and ambiguous definitions invalidate reviewed previews', async () => {
       const title = await makeManifest(fixture, fixture.songs.title, { year: 1990 });
       await pool.query('UPDATE public.songs SET title=title || $2 WHERE id=$1', [fixture.songs.title, ' edited']);
       await assert.rejects(applySongEnrichment(pool, title), hasCode('SONG_IDENTITY_CHANGED'));
@@ -558,7 +571,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       if (duplicateCleanupError) throw duplicateCleanupError;
     });
 
-    await t.test('forged preview fields, evidence references and unknown keys cannot create changes', async () => {
+    await runSubtest('forged preview fields, evidence references and unknown keys cannot create changes', async () => {
       const base = await makeManifest(fixture, fixture.songs.forged, { year: 2004, genres: [fixture.definitions.genres.get('Rock').name] });
       assert.equal(base.songs[0].preview.scalar_changes.length, 1);
       assert.equal(base.songs[0].preview.tag_additions.genres.length, 1);
@@ -581,7 +594,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       assert.equal((await pool.query('SELECT release_year FROM public.songs WHERE id=$1', [fixture.songs.forged])).rows[0].release_year, null);
     });
 
-    await t.test('replay returns the saved result after updates and deletion; changed request reuse fails', async () => {
+    await runSubtest('replay returns the saved result after updates and deletion; changed request reuse fails', async () => {
       const manifest = await makeManifest(fixture, fixture.songs.replay, { year: 1981 });
       const first = await applySongEnrichment(pool, manifest);
       await pool.query('UPDATE public.songs SET title=title || $2 WHERE id=$1', [fixture.songs.replay, ' changed']);
@@ -597,7 +610,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       assert.deepEqual(receipt.rows[0].response, first);
     });
 
-    await t.test('actual prepare and preview workflow applies its scalar, factual Genre and Gemini Vibe in owned scratch', async () => {
+    await runSubtest('actual prepare and preview workflow applies its scalar, factual Genre and Gemini Vibe in owned scratch', async () => {
       const inserted=await pool.query(`INSERT INTO public.songs(title,artist_id,chart_content,chart_source,source_document)
         VALUES($1,$2,'{"fixture":"operator workflow chart"}'::jsonb,'operator workflow source','operator workflow fixture') RETURNING id`,
         [`B3 operator workflow ${fixture.suffix}`,fixture.artistIds[0]]);
@@ -682,7 +695,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       }finally{await fs.rm(evidenceDir,{recursive:true,force:true});}
     });
 
-    await t.test('main wrapper applies in owned scratch, replays after target/snapshot drift, and rejects changed content', async () => {
+    await runSubtest('main wrapper applies in owned scratch, replays after target/snapshot drift, and rejects changed content', async () => {
       const inserted=await pool.query(`INSERT INTO public.songs(title,artist_id,chart_content,chart_source)
         VALUES($1,$2,'{"fixture":"main-wrapper test chart"}'::jsonb,'main-wrapper test source') RETURNING id`,
       [`B3 main wrapper ${fixture.suffix}`,fixture.artistIds[0]]);
@@ -715,7 +728,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       }
     });
 
-    await t.test('diagnostics survive a valid apply and an all-no-op operation is recorded and replayed exactly', async () => {
+    await runSubtest('diagnostics survive a valid apply and an all-no-op operation is recorded and replayed exactly', async () => {
       const unknownName = `B3 unmatched reviewed label ${fixture.suffix}`;
       const diagnosticRun = await makeManifest(fixture, fixture.songs.noop, { year: 2008, genres: [unknownName] });
       const diagnosticResult = await applySongEnrichment(pool, diagnosticRun);
@@ -734,7 +747,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       assert.doesNotMatch(saved.rows[0].response_text, /B3 chart sentinel|B3 source sentinel|chart_content|chart_source/);
     });
 
-    await t.test('concurrent identical calls produce one receipt and one applied delta', async () => {
+    await runSubtest('concurrent identical calls produce one receipt and one applied delta', async () => {
       const manifest = await makeManifest(fixture, fixture.songs.concurrent, { year: 2007 });
       const [left, right] = await Promise.all([applySongEnrichment(pool, manifest), applySongEnrichment(pool, manifest)]);
       assert.deepEqual(left, right);
@@ -743,7 +756,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       assert.equal((await pool.query('SELECT release_year FROM public.songs WHERE id=$1', [fixture.songs.concurrent])).rows[0].release_year, 2007);
     });
 
-    await t.test('receipt-trigger changes to an approved scalar or no-op version roll back with the run', async () => {
+    await runSubtest('receipt-trigger changes to an approved scalar or no-op version roll back with the run', async () => {
       for (const mode of ['scalar', 'noop-version']) {
         const songId = mode === 'scalar' ? fixture.songs.sideEffect : fixture.songs.noop;
         const manifest = await makeManifest(fixture, songId, mode === 'scalar' ? { year: 2005 } : {});
@@ -769,7 +782,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       }
     });
 
-    await t.test('unexpected row side effects abort the transaction and receipt', async () => {
+    await runSubtest('unexpected row side effects abort the transaction and receipt', async () => {
       const manifest = await makeManifest(fixture, fixture.songs.sideEffect, { year: 2005 });
       const suffix = randomUUID().replaceAll('-', '');
       const trigger = `b3_side_effect_${suffix}`;
@@ -786,7 +799,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       assert.equal((await pool.query('SELECT 1 FROM public.song_enrichment_runs WHERE operation_id=$1', [manifest.operation_id])).rowCount, 0);
     });
 
-    await t.test('receipt contains no chart/source body and exact chart fields survive', async () => {
+    await runSubtest('receipt contains no chart/source body and exact chart fields survive', async () => {
       const row = await pool.query('SELECT manifest::text AS manifest_text,response::text AS response_text FROM public.song_enrichment_runs ORDER BY created_at DESC LIMIT 1');
       assert.equal(row.rowCount, 1);
       for (const sentinel of ['B3 chart sentinel', 'B3 source sentinel', 'chart_content', 'chart_source', 'apiKey', 'secret']) {
@@ -796,6 +809,7 @@ test('transactional enrichment apply is scratch-bound, review-bound, preserving 
       const chart = await pool.query('SELECT chart_content::text,chart_source FROM public.songs WHERE id=$1', [fixture.songs.empty]);
       assert.deepEqual(chart.rows[0], { chart_content: '{"fixture": "B3 chart sentinel"}', chart_source: 'B3 source sentinel' });
     });
+    if (focusedSubtestName && !focusedSubtestRan) throw new Error('Focused T11 B3 subtest did not run.');
   } catch (error) {
     testFailure = error;
   } finally {

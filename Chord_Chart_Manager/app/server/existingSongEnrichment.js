@@ -50,6 +50,7 @@ function normalizeIdentityPart(value) {
 
 const VERSION_EXCLUSION_MARKERS = [
   ["live_version", /\blive\b/i],
+  ["bootleg_version", /\bbootleg\b/i],
   ["remix_version", /\bremix(?:ed)?\b/i],
   ["acoustic_version", /\bacoustic\b/i],
   ["demo_version", /\bdemo\b/i],
@@ -57,6 +58,10 @@ const VERSION_EXCLUSION_MARKERS = [
   ["rerecorded_version", /\bre[-\u2010-\u2015\u2212]?record(?:ed|ing)\b/i],
   ["alternate_version", /\b(?:alternate|alternative|alt)(?:\s+(?:version|recording|take|mix))?\b/i],
 ];
+// MusicBrainz uses recording disambiguation for explicit mix identity. Treat
+// these exact descriptions as positive studio evidence; unknown descriptions
+// still abstain instead of being interpreted as studio recordings.
+const SUPPORTED_STUDIO_DESCRIPTIONS = /^(?:studio(?: recording)?|original(?:\s+(?:stereo|mono))?\s+mix)$/i;
 const SELECTION_REASONS = Object.freeze({
   unique: "unique_exact_match",
   earliest: "earliest_release_year",
@@ -65,6 +70,7 @@ const SELECTION_REASONS = Object.freeze({
   richnessIncomplete: "richness_comparison_incomplete",
   missingDate: "no_dated_eligible_recording",
   unresolvedVersion: "unresolved_version_ambiguity",
+  releaseEvidence: "release_evidence_unresolved",
   noEligible: "no_eligible_recording",
 });
 
@@ -73,7 +79,7 @@ function titleVersionQualifiers(title) {
   for (const match of title.matchAll(/\(([^()]*)\)|\[([^\[\]]*)\]/g)) qualifiers.push(match[1] ?? match[2]);
   const separatedSuffix = /\s[-\u2013\u2014:]\s*([^\n]+)$/.exec(title);
   if (separatedSuffix) qualifiers.push(separatedSuffix[1]);
-  const trailingVersionMarker = /(?:^|\s)(live|remix(?:ed)?|acoustic|demo|music(?:[-\u2010-\u2015\u2212]|\s+)video|re[-\u2010-\u2015\u2212]?record(?:ed|ing)|(?:alternate|alternative|alt)(?:\s+(?:version|recording|take|mix))?)\s*$/i.exec(title);
+  const trailingVersionMarker = /(?:^|\s)(live|bootleg|remix(?:ed)?|acoustic|demo|music(?:[-\u2010-\u2015\u2212]|\s+)video|re[-\u2010-\u2015\u2212]?record(?:ed|ing)|(?:alternate|alternative|alt)(?:\s+(?:version|recording|take|mix))?)\s*$/i.exec(title);
   if (trailingVersionMarker) qualifiers.push(trailingVersionMarker[1]);
   return qualifiers;
 }
@@ -84,15 +90,16 @@ function classifyRecordingVersion(candidate) {
   const version = typeof candidate.version === "string" ? candidate.version.trim() : "";
   const malformedVersionText = candidate.disambiguation != null && typeof candidate.disambiguation !== "string" ||
     candidate.version != null && typeof candidate.version !== "string";
+  if (candidate.video === true) return { eligible: false, reason: "music_video_version" };
   const markedText = [...titleQualifiers, disambiguation, version].join(" ");
   for (const [reason, marker] of VERSION_EXCLUSION_MARKERS) {
     if (marker.test(markedText)) return { eligible: false, reason };
   }
-  if (malformedVersionText || version && !/^(?:studio|studio recording)$/i.test(version) ||
-      disambiguation && !/^(?:studio|studio recording)$/i.test(disambiguation)) {
+  if (malformedVersionText || version && !SUPPORTED_STUDIO_DESCRIPTIONS.test(version) ||
+      disambiguation && !SUPPORTED_STUDIO_DESCRIPTIONS.test(disambiguation)) {
     return { eligible: false, reason: "unresolved_version_ambiguity" };
   }
-  return { eligible: true, reason: null };
+  return { eligible: true, reason: null, requiresReleaseEvidence: !disambiguation && !version && titleQualifiers.length === 0 };
 }
 
 function releaseDateRange(value) {
@@ -148,6 +155,60 @@ function lookupForMbid(lookups, mbid) {
   return null;
 }
 
+function recordingReleaseDate(candidate, lookup) {
+  if (releaseDateRange(candidate?.first_release_date)) return {
+    value: candidate.first_release_date,
+    response_digest: candidate.response_digest,
+  };
+  const evidence = lookup?.recording?.release_type_evidence;
+  return releaseDateRange(evidence?.first_release_date) && /^[a-f0-9]{64}$/i.test(evidence?.response_digest || "")
+    ? { value: evidence.first_release_date, response_digest: evidence.response_digest }
+    : null;
+}
+
+function classifyFirstReleaseEvidence(candidate, lookup) {
+  const evidence = lookup?.status === "ok" && lookup.recording?.mbid?.toLowerCase() === candidate.mbid.toLowerCase()
+    ? lookup.recording.release_type_evidence : null;
+  if (!evidence || evidence.mbid?.toLowerCase() !== candidate.mbid.toLowerCase() ||
+      !/^[a-f0-9]{64}$/i.test(evidence.response_digest || "") || evidence.complete !== true ||
+      !Number.isSafeInteger(evidence.release_count) || evidence.release_count !== evidence.releases?.length ||
+      !Array.isArray(evidence.releases) || evidence.release_count > 25 || !recordingReleaseDate(candidate, lookup)) {
+    return "unresolved";
+  }
+  if (releaseDateRange(candidate.first_release_date) && releaseDateRange(evidence.first_release_date)) {
+    const searchRange = releaseDateRange(candidate.first_release_date);
+    const lookupRange = releaseDateRange(evidence.first_release_date);
+    if (searchRange.end < lookupRange.start || lookupRange.end < searchRange.start) return "unresolved";
+  }
+  if (evidence.releases.some(release => !release || typeof release.id !== "string" || !UUID.test(release.id) ||
+      typeof release.title !== "string" || release.title.length > 240 ||
+      !(release.date === null || typeof release.date === "string" && releaseDateRange(release.date)) ||
+      !(release.status === null || typeof release.status === "string" && release.status.length <= 80) ||
+      typeof release.disambiguation !== "string" || release.disambiguation.length > 240 ||
+      !release.release_group || typeof release.release_group.id !== "string" || !UUID.test(release.release_group.id) ||
+      typeof release.release_group.title !== "string" || release.release_group.title.length > 240 ||
+      !(release.release_group.primary_type === null || typeof release.release_group.primary_type === "string") ||
+      !Array.isArray(release.release_group.secondary_types) ||
+      release.release_group.secondary_types.some(type => typeof type !== "string" || type.length > 80))) return "unresolved";
+  const dateEvidence = recordingReleaseDate(candidate, lookup);
+  const claimedRange = releaseDateRange(dateEvidence.value);
+  const links = evidence.releases.filter(release => {
+    const range = releaseDateRange(release?.date);
+    return range && range.start <= claimedRange.end && claimedRange.start <= range.end;
+  });
+  if (!links.length) return "unresolved";
+  const types = links.map(release => {
+    const group = release.release_group;
+    const text = [release.title, release.disambiguation, group?.title].filter(Boolean).join(" ");
+    if (release.status === "Bootleg" || /\bbootleg\b/i.test(text)) return "bootleg";
+    if ((Array.isArray(group?.secondary_types) && group.secondary_types.includes("Live")) || /\blive\b/i.test(text)) return "live";
+    if (release.status === "Official" && ["Album", "Single", "EP"].includes(group?.primary_type) &&
+        Array.isArray(group.secondary_types) && !group.secondary_types.some(type => ["Live", "Compilation", "Bootleg"].includes(type))) return "studio";
+    return "unresolved";
+  });
+  return new Set(types).size === 1 ? types[0] : "unresolved";
+}
+
 function countMatchedGenres(lookup, mbid, definitionsByKey) {
   if (!lookup || lookup.status !== "ok" || typeof lookup.recording?.mbid !== "string" ||
       lookup.recording.mbid.toLowerCase() !== mbid.toLowerCase() ||
@@ -186,6 +247,7 @@ function resolveRecordingCandidate(identity, candidates, searchResult = null, ge
     normalizeIdentityPart(candidate?.artist) === artist);
   const counts = new Map();
   const eligible = [];
+  const unresolvedReleaseCandidates = [];
   const exclude = reason => counts.set(reason, (counts.get(reason) || 0) + 1);
   for (const candidate of exact) {
     if (!candidate || typeof candidate.mbid !== "string" || !UUID.test(candidate.mbid)) {
@@ -197,7 +259,21 @@ function resolveRecordingCandidate(identity, candidates, searchResult = null, ge
       exclude(version.reason);
       continue;
     }
-    eligible.push({ candidate, dateRange: releaseDateRange(candidate.first_release_date) });
+    if (version.requiresReleaseEvidence) {
+      const candidateLookup = lookupForMbid(ranking?.lookups, candidate.mbid.toLowerCase());
+      const releaseType = classifyFirstReleaseEvidence(candidate, candidateLookup);
+      if (releaseType === "live" || releaseType === "bootleg") {
+        exclude(releaseType === "live" ? "live_first_release" : "bootleg_first_release");
+        continue;
+      }
+      if (releaseType !== "studio") {
+        unresolvedReleaseCandidates.push({ candidate, dateRange: releaseDateRange(recordingReleaseDate(candidate, candidateLookup)?.value) });
+        continue;
+      }
+    }
+    const dateEvidence = version.requiresReleaseEvidence
+      ? recordingReleaseDate(candidate, lookupForMbid(ranking?.lookups, candidate.mbid.toLowerCase())) : null;
+    eligible.push({ candidate, dateEvidence, dateRange: releaseDateRange(dateEvidence?.value || candidate.first_release_date) });
   }
 
   const exclusionCounts = Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right, "en")));
@@ -211,13 +287,16 @@ function resolveRecordingCandidate(identity, candidates, searchResult = null, ge
     matched_genre_counts: details.genreCounts || [],
     richness_comparison_complete: details.richnessComplete ?? false,
     provisional_mbid: details.provisional?.candidate ? canonicalMbid(details.provisional.candidate) : null,
+    ...(details.releaseEvidenceRequired?.length ? { release_evidence_required_mbids:
+      details.releaseEvidenceRequired.map(item => canonicalMbid(item.candidate)).sort() } : {}),
     tie_break_reason: details.tieBreakReason ?? null,
     ...(details.selected ? {
       mbid: canonicalMbid(details.selected.candidate),
       release_date_evidence: {
-        first_release_date: typeof details.selected.candidate.first_release_date === "string" && details.selected.dateRange
-          ? details.selected.candidate.first_release_date : null,
-        response_digest: typeof details.selected.candidate.response_digest === "string" ? details.selected.candidate.response_digest : null,
+        first_release_date: typeof (details.selected.dateEvidence?.value || details.selected.candidate.first_release_date) === "string" && details.selected.dateRange
+          ? (details.selected.dateEvidence?.value || details.selected.candidate.first_release_date) : null,
+        response_digest: typeof (details.selected.dateEvidence?.response_digest || details.selected.candidate.response_digest) === "string"
+          ? (details.selected.dateEvidence?.response_digest || details.selected.candidate.response_digest) : null,
       },
     } : {}),
     ...(details.provisional ? { provisional_release_date_evidence: {
@@ -229,13 +308,37 @@ function resolveRecordingCandidate(identity, candidates, searchResult = null, ge
 
   if (eligible.length === 0) {
     const hasUnresolved = counts.has("unresolved_version_ambiguity");
+    if (unresolvedReleaseCandidates.length) {
+      const datedUnresolved = unresolvedReleaseCandidates.filter(item => item.dateRange);
+      const earliestUnresolvedYear = datedUnresolved.length
+        ? Math.min(...datedUnresolved.map(item => Math.floor(item.dateRange.start / 10000))) : null;
+      const required = earliestUnresolvedYear === null ? unresolvedReleaseCandidates :
+        datedUnresolved.filter(item => Math.floor(item.dateRange.start / 10000) === earliestUnresolvedYear);
+      return result(false, "release_evidence_unresolved", SELECTION_REASONS.releaseEvidence,
+        { earliestYear: earliestUnresolvedYear, releaseEvidenceRequired: required });
+    }
     return result(false, hasUnresolved ? "unresolved_version_ambiguity" : exact.length === 0 ? "no_exact_match" : "no_eligible_recording",
       hasUnresolved ? SELECTION_REASONS.unresolvedVersion : SELECTION_REASONS.noEligible);
   }
 
   const dated = eligible.filter(item => item.dateRange);
-  if (dated.length === 0) return result(false, "missing_or_invalid_release_evidence", SELECTION_REASONS.missingDate);
+  if (dated.length === 0) {
+    if (unresolvedReleaseCandidates.length) return result(false, "release_evidence_unresolved", SELECTION_REASONS.releaseEvidence,
+      { releaseEvidenceRequired: unresolvedReleaseCandidates });
+    return result(false, "missing_or_invalid_release_evidence", SELECTION_REASONS.missingDate);
+  }
   const earliestYear = Math.min(...dated.map(item => Math.floor(item.dateRange.start / 10000)));
+  const unresolvedBeforeSelection = unresolvedReleaseCandidates.filter(item => !item.dateRange ||
+    Math.floor(item.dateRange.start / 10000) <= earliestYear);
+  if (unresolvedBeforeSelection.length) {
+    const datedUnresolved = unresolvedBeforeSelection.filter(item => item.dateRange);
+    const requiredYear = datedUnresolved.length
+      ? Math.min(...datedUnresolved.map(item => Math.floor(item.dateRange.start / 10000))) : null;
+    const required = requiredYear === null ? unresolvedBeforeSelection :
+      datedUnresolved.filter(item => Math.floor(item.dateRange.start / 10000) === requiredYear);
+    return result(false, "release_evidence_unresolved", SELECTION_REASONS.releaseEvidence,
+      { earliestYear, releaseEvidenceRequired: required });
+  }
   const sameYear = dated.filter(item => Math.floor(item.dateRange.start / 10000) === earliestYear)
     .sort((left, right) => canonicalMbid(left.candidate) < canonicalMbid(right.candidate) ? -1 :
       canonicalMbid(left.candidate) > canonicalMbid(right.candidate) ? 1 : 0);
@@ -297,15 +400,19 @@ function compareDiagnostics(left, right) {
     .find(result => result !== 0) ?? 0;
 }
 
-function evidenceReference(item, allowedSources = SOURCES) {
+function evidenceReference(item, allowedSources = SOURCES, songSnapshot = null) {
   if (!item || typeof item.source !== "string" || !allowedSources.has(item.source) ||
       typeof item.response_digest !== "string" ||
       !/^[A-Za-z0-9._:-]{1,160}$/.test(item.response_digest)) return null;
   if (item.source === "Gemini") {
     if (!/^[a-f0-9]{64}$/.test(item.response_digest) || item.model_id !== GEMINI_MODEL_ID ||
         !GEMINI_PROMPT_VERSIONS.has(item.prompt_version) || !GEMINI_SCHEMA_VERSIONS.has(item.schema_version)) return null;
+    const identity = item.song_identity;
+    if (songSnapshot && (!identity || identity.song_id !== songSnapshot.id || identity.title !== songSnapshot.title ||
+        identity.artist !== songSnapshot.artist)) return null;
     return { source: item.source, response_digest: item.response_digest, model_id: item.model_id,
-      prompt_version: item.prompt_version, schema_version: item.schema_version };
+      prompt_version: item.prompt_version, schema_version: item.schema_version,
+      ...(identity ? { song_identity: { song_id: identity.song_id, title: identity.title, artist: identity.artist } } : {}) };
   }
   if (item.submission_id !== undefined && (typeof item.submission_id !== "string" ||
       item.source === "AcousticBrainz" && !/^[0-9a-f-]{36}:\d+$/i.test(item.submission_id) ||
@@ -314,13 +421,26 @@ function evidenceReference(item, allowedSources = SOURCES) {
     ...(item.source !== "Gemini" && item.submission_id ? { submission_id: item.submission_id.toLowerCase() } : {}) };
 }
 
-function geminiOnlyEvidence(evidence) {
-  const items = [
-    ...SCALAR_FIELDS.flatMap(field => Array.isArray(evidence?.scalars?.[field]) ? evidence.scalars[field] : []),
-    ...(Array.isArray(evidence?.genres) ? evidence.genres : []),
-    ...(Array.isArray(evidence?.vibes) ? evidence.vibes : []),
-  ];
-  return items.length > 0 && items.every(item => item?.source === "Gemini" && evidenceReference(item) !== null);
+function geminiOnlyEvidence(evidence, decision, song) {
+  if (!song?.title || !song?.artist || decision?.primaryGenre) return false;
+  const scalars = Object.entries(decision?.scalars || {}).map(([field, selected]) =>
+    (evidence?.scalars?.[field] || []).some(item => item?.source === "Gemini" &&
+      sameRawValue(item.value, selected?.value) && item.response_digest === selected?.response_digest &&
+      selected?.song_identity?.song_id === song.id && selected.song_identity.title === song.title &&
+      selected.song_identity.artist === song.artist && evidenceReference(item, SCALAR_SOURCES[field], song) !== null));
+  const tags = [];
+  for (const category of ["Genre", "Vibe"]) {
+    const field = category === "Genre" ? "genres" : "vibes";
+    for (const label of decision?.[field] || []) {
+      const key = definitionKey(normalizeDefinitionName(label, category));
+      tags.push((evidence?.[field] || []).some(item => {
+        if (item?.source !== "Gemini" || evidenceReference(item, SOURCES, song) === null) return false;
+        try { return definitionKey(normalizeDefinitionName(item.name, category)) === key; }
+        catch { return false; }
+      }));
+    }
+  }
+  return scalars.length + tags.length > 0 && scalars.every(Boolean) && tags.every(Boolean);
 }
 
 function normalizedScalarValue(field, value) {
@@ -390,7 +510,7 @@ function valueFingerprint(value) {
   return `${typeof value}:${String(value)}`;
 }
 
-function resolveScalar(field, song, evidence, reviewDecision, diagnostics) {
+function resolveScalar(field, song, evidence, reviewDecision, diagnostics, geminiIdentityOnly = false) {
   if (!currentScalarIsEmpty(song, field, diagnostics)) return null;
   const candidates = listEvidenceValues(evidence.scalars?.[field]);
   const selected = reviewDecision.scalars?.[field];
@@ -401,6 +521,7 @@ function resolveScalar(field, song, evidence, reviewDecision, diagnostics) {
 
   const valid = [];
   for (const item of candidates) {
+    if (geminiIdentityOnly && (item?.source !== "Gemini" || !evidenceReference(item, SCALAR_SOURCES[field], song))) continue;
     const reference = evidenceReference(item, SCALAR_SOURCES[field]);
     const after = item && normalizedScalarValue(field, item.value);
     if (!reference || after === null) {
@@ -423,6 +544,9 @@ function resolveScalar(field, song, evidence, reviewDecision, diagnostics) {
   const selectedValue = normalizedScalarValue(field, selected.value);
   const match = valid.find(item => sameRawValue(item.raw, selected.value) && item.reference.source === selected.source &&
     item.reference.response_digest === selected.response_digest &&
+    (!geminiIdentityOnly || selected.song_identity?.song_id === item.reference.song_identity?.song_id &&
+      selected.song_identity?.title === item.reference.song_identity?.title &&
+      selected.song_identity?.artist === item.reference.song_identity?.artist) &&
     (item.reference.submission_id === undefined || selected.submission_id === item.reference.submission_id) &&
     ["model_id", "prompt_version", "schema_version"].every(key => selected[key] === undefined || selected[key] === item.reference[key]));
   if (selectedValue === null || !match) {
@@ -503,12 +627,13 @@ function evidenceLabels(evidence, category) {
   return Array.isArray(evidence[key]) ? evidence[key] : [];
 }
 
-function buildTagAdditions(category, selectedLabels, song, evidence, definitions, diagnostics) {
+function buildTagAdditions(category, selectedLabels, song, evidence, definitions, diagnostics, geminiIdentityOnly = false) {
   const current = currentAssignments(song, category, diagnostics);
   const groupedDefinitions = canonicalDefinitions(definitions, category, diagnostics);
   if (current === null || groupedDefinitions === null) return [];
   const evidenceByKey = new Map();
   for (const item of evidenceLabels(evidence, category)) {
+    if (geminiIdentityOnly && item?.source !== "Gemini") continue;
     if (!item || typeof item.name !== "string") {
       diagnostics.push(diagnostic("invalid_tag_evidence", category));
       continue;
@@ -516,7 +641,7 @@ function buildTagAdditions(category, selectedLabels, song, evidence, definitions
     let key;
     try { key = definitionKey(normalizeDefinitionName(item.name, category)); }
     catch { diagnostics.push(diagnostic("invalid_tag_evidence", category)); continue; }
-    const reference = evidenceReference(item);
+    const reference = evidenceReference(item, SOURCES, geminiIdentityOnly ? song : null);
     if (!reference) {
       diagnostics.push(diagnostic("invalid_tag_evidence", category, null, item.name));
       continue;
@@ -599,7 +724,7 @@ function buildEnrichmentPreview(songSnapshot, evidence, reviewDecision, definiti
   const evidenceMbid = evidence?.mbid;
   const approvedMbid = reviewDecision?.mbid;
   const hasRecordingIdentity = typeof evidenceMbid === "string" && UUID.test(evidenceMbid) && approvedMbid === evidenceMbid;
-  const geminiOnly = evidenceMbid === null && approvedMbid === null && geminiOnlyEvidence(evidence);
+  const geminiOnly = evidenceMbid === null && approvedMbid === null && geminiOnlyEvidence(evidence, reviewDecision, songSnapshot);
   const explicitNoOp = !hasRecordingIdentity && !geminiOnly && evidenceMbid === null &&
     approvedMbid === null && isExplicitNoOpDecision(reviewDecision);
   if (!hasRecordingIdentity && !geminiOnly && !explicitNoOp) {
@@ -625,14 +750,14 @@ function buildEnrichmentPreview(songSnapshot, evidence, reviewDecision, definiti
   }
   const scalars = [];
   for (const field of SCALAR_FIELDS) {
-    const change = resolveScalar(field, songSnapshot, evidence, reviewDecision, diagnostics);
+    const change = resolveScalar(field, songSnapshot, evidence, reviewDecision, diagnostics, geminiOnly);
     if (change && !sameRawValue(change.before, change.after)) scalars.push(change);
   }
 
   const genreAdditions = buildTagAdditions("Genre", reviewDecision.genres,
-    songSnapshot, evidence, definitions, diagnostics);
+    songSnapshot, evidence, definitions, diagnostics, geminiOnly);
   const vibeAdditions = buildTagAdditions("Vibe", reviewDecision.vibes,
-    songSnapshot, evidence, definitions, diagnostics);
+    songSnapshot, evidence, definitions, diagnostics, geminiOnly);
 
   const existingPrimary = existingGenres.filter(item => item.is_primary);
   let primaryProposal = null;

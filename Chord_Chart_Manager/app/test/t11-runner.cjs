@@ -196,7 +196,16 @@ async function main() {
     process.env.E2E_BASE_URL = testEnv.E2E_BASE_URL;
     process.env.E2E_SYSTEM_CHROME = '1';
     process.env.CCM_T11_ISOLATED = '1';
-    if (process.env.CCM_T11_FOCUSED_E2E_ONLY !== '1') {
+    const focusedGeminiApplyReplay = process.env.CCM_T11_B3_FOCUS === 'gemini-null-mbid-apply-replay';
+    if (process.env.CCM_T11_B3_FOCUS && !focusedGeminiApplyReplay) {
+      throw new Error('Unknown T11 B3 integration focus.');
+    }
+    if (focusedGeminiApplyReplay) {
+      const integrationTest = path.join(appDir, 'test/integration/song-enrichment.test.cjs');
+      const namePattern = 'transactional enrichment apply is scratch-bound, review-bound, preserving and replayable|Gemini provenance applies and replays for existing and null MBID identities';
+      await runNode('Focused scratch Gemini null-MBID apply/replay integration', '--test',
+        [`--test-name-pattern=${namePattern}`, integrationTest], testEnv);
+    } else if (process.env.CCM_T11_FOCUSED_E2E_ONLY !== '1') {
       await runNode('Unit tests (Vitest)', path.join(appDir, 'node_modules/vitest/vitest.mjs'), ['run'], testEnv);
       await runNode('Scratch-database API integration tests', path.join(appDir, 'test/integration/t11-api.test.cjs'), [], testEnv);
       await runNode('Scratch-database song enrichment apply tests', path.join(appDir, 'test/integration/song-enrichment.test.cjs'), [], testEnv);
@@ -204,13 +213,15 @@ async function main() {
       assert.ok(process.env.CCM_T11_E2E_GREP, 'Focused E2E requires an explicit test-name filter');
       console.log('[T11] Focused E2E only; unit and API suites skipped by request.');
     }
-    const e2eArgs = ['test', '--workers=1'];
-    if (process.env.CCM_T11_E2E_GREP) {
-      e2eArgs.push('--grep', process.env.CCM_T11_E2E_GREP);
-      console.log('[T11] Applying requested guarded E2E name filter.');
+    if (!focusedGeminiApplyReplay) {
+      const e2eArgs = ['test', '--workers=1'];
+      if (process.env.CCM_T11_E2E_GREP) {
+        e2eArgs.push('--grep', process.env.CCM_T11_E2E_GREP);
+        console.log('[T11] Applying requested guarded E2E name filter.');
+      }
+      await runNode('Serial Playwright E2E (installed system Chrome)', path.join(appDir, 'node_modules/@playwright/test/cli.js'),
+        e2eArgs, testEnv);
     }
-    await runNode('Serial Playwright E2E (installed system Chrome)', path.join(appDir, 'node_modules/@playwright/test/cli.js'),
-      e2eArgs, testEnv);
   }, async () => {
     const cleanup = [];
     const stages = [];

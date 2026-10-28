@@ -3,6 +3,7 @@ import { SearchIcon, FilterIcon, ChevronRight, MusicIcon, PlusIcon } from '../co
 import TagPanel from '../components/TagPanel';
 import { useSongs, useTags } from '../hooks';
 import { readSongSortPreference, SONG_SORTS, sortSongs, writeSongSortPreference } from '../lib/songSort';
+import { assignedGenreNames } from '../lib/songMetadata';
 
 export default function HomeView({ online, onSelectSong, onNewSong }) {
   const [query,      setQuery]      = useState('');
@@ -135,7 +136,7 @@ export default function HomeView({ online, onSelectSong, onNewSong }) {
           <div className="song-info">
             <div className="song-title">{song.title}</div>
             <div className="song-meta">
-              {[song.artist, song.feel, song.era].filter(Boolean).join(' · ')}
+              {[song.artist, assignedGenreNames(song.genres).join(', '), song.feel, song.era].filter(Boolean).join(' · ')}
             </div>
           </div>
           <div className="song-key-badge">

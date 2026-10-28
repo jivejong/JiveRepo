@@ -52,7 +52,7 @@ function fakePool(rows = [song()], events = [], failAt = null) {
 }
 
 function mbSearch(candidates = [{ id: MBID, title: 'Lights', 'artist-credit': [{ artist: { name: 'Journey' } }],
-  'first-release-date': '1977-06-18', score: '99' }], overrides = {}) {
+  'first-release-date': '1977-06-18', disambiguation: 'Studio recording', score: '99' }], overrides = {}) {
   return { count: candidates.length, offset: 0, recordings: candidates, apiKey: 'provider-secret-sentinel',
     chart_content: 'forbidden-chart-sentinel', ...overrides };
 }
@@ -63,7 +63,7 @@ function evidenceBody({ bpm = 90, key = 'C', scale = 'major', keyStrength = 0.75
 }
 
 function mockProvider({ candidates, genres = [{ name: 'Country' }, { name: 'Uncatalogued' }],
-  genresByMbid = {}, lookupDatesByMbid = {}, failedLookupMbids = [], authFailedLookupMbids = [], submissions = [evidenceBody(), evidenceBody({ bpm: 102, key: 'D', scale: 'minor' })],
+  genresByMbid = {}, lookupDatesByMbid = {}, releaseEvidenceByMbid = {}, failedLookupMbids = [], authFailedLookupMbids = [], submissions = [evidenceBody(), evidenceBody({ bpm: 102, key: 'D', scale: 'minor' })],
   count = 2, events = [], maxAttempts = 12, failSubmissionOffset = null } = {}) {
   let now = 1_800_000_000_000;
   const calls = [];
@@ -78,8 +78,14 @@ function mockProvider({ candidates, genres = [{ name: 'Country' }, { name: 'Unca
       if (authFailedLookupMbids.map(value => value.toLowerCase()).includes(mbid)) {
         return { status: 401, headers: {}, body: Buffer.from('synthetic authentication failure') };
       }
+      const candidate = (candidates || [{ id: MBID, 'first-release-date': '1977-06-18' }]).find(item => item.id.toLowerCase() === mbid);
+      const firstDate = candidate?.['first-release-date'] || lookupDatesByMbid[mbid] || '1977-06-18';
       return { id: mbid, title: 'Lights', 'artist-credit': [{ artist: { name: 'Journey' } }],
         ...(lookupDatesByMbid[mbid] ? { 'first-release-date': lookupDatesByMbid[mbid] } : {}),
+        'release-count': 1,
+        releases: releaseEvidenceByMbid[mbid] || [{ id: OTHER_MBID, title: 'Studio Album', date: firstDate,
+          status: 'Official', disambiguation: '', 'release-group': { id: THIRD_MBID, title: 'Studio Album',
+            'primary-type': 'Album', 'secondary-types': [] } }],
         genres: genresByMbid[mbid] || genres, tags: [{ name: 'Rock' }], apiKey: 'provider-secret-sentinel' };
     }
     if (url.pathname.endsWith('/count')) return { mbid: MBID, count };
@@ -267,7 +273,7 @@ describe('existing-song read-only enrichment preview', () => {
     const duplicate = [MBID, OTHER_MBID].map(id => ({ id, title: 'Lights',
       'artist-credit': [{ artist: { name: 'Journey' } }],
       'first-release-date': id === MBID ? '1977-06' : '1978',
-      disambiguation: id === MBID ? 'Studio recording' : '',
+      disambiguation: 'Studio recording',
       score: id === MBID ? '1' : '100' }));
     duplicate.push({ id: THIRD_MBID, title: 'Lights', 'artist-credit': [{ artist: { name: 'Journey' } }],
       'first-release-date': '1970', disambiguation: 'Live' });
@@ -288,8 +294,8 @@ describe('existing-song read-only enrichment preview', () => {
 
   it('looks up every earliest-year tie once, ranks validated Genre matches, and reuses the selected lookup', async () => {
     const candidates = [
-      { id: MBID, title: 'Lights', 'artist-credit': [{ artist: { name: 'Journey' } }], 'first-release-date': '1978-01-01' },
-      { id: OTHER_MBID, title: 'Lights', 'artist-credit': [{ artist: { name: 'Journey' } }], 'first-release-date': '1978-12-31' },
+      { id: MBID, title: 'Lights', 'artist-credit': [{ artist: { name: 'Journey' } }], 'first-release-date': '1978-01-01', disambiguation: 'Studio recording' },
+      { id: OTHER_MBID, title: 'Lights', 'artist-credit': [{ artist: { name: 'Journey' } }], 'first-release-date': '1978-12-31', disambiguation: 'Studio recording' },
     ];
     const { pool } = fakePool([song({ original_key: 'D', bpm: 120 })]);
     const providers = mockProvider({ candidates, genresByMbid: {
@@ -321,7 +327,7 @@ describe('existing-song read-only enrichment preview', () => {
 
   it('reuses the selected tied lookup when comparison consumes the final shared attempt', async () => {
     const candidates = [MBID, OTHER_MBID].map(id => ({ id, title: 'Lights',
-      'artist-credit': [{ artist: { name: 'Journey' } }], 'first-release-date': '1978' }));
+      'artist-credit': [{ artist: { name: 'Journey' } }], 'first-release-date': '1978', disambiguation: 'Studio recording' }));
     const { pool } = fakePool([song({ original_key: '', bpm: null })]);
     const providers = mockProvider({ candidates, genresByMbid: {
       [MBID]: [{ name: 'Rock' }], [OTHER_MBID]: [{ name: 'Country' }, { name: 'Rock' }],
@@ -344,7 +350,7 @@ describe('existing-song read-only enrichment preview', () => {
     ['shared budget exhaustion', 2, [], 'budget_exhausted'],
   ])('keeps tied-year selection provisional when a comparison lookup has %s', async (_label, maxAttempts, failed, expectedStatus) => {
     const candidates = [MBID, OTHER_MBID].map(id => ({ id, title: 'Lights',
-      'artist-credit': [{ artist: { name: 'Journey' } }], 'first-release-date': '1978' }));
+      'artist-credit': [{ artist: { name: 'Journey' } }], 'first-release-date': '1978', disambiguation: 'Studio recording' }));
     const { pool } = fakePool([song({ original_key: 'D', bpm: 120 })]);
     const providers = mockProvider({ candidates, failedLookupMbids: failed });
     const report = await preview.runPreview({ pool, providerClient: providers.client, songIds: [42], maxAttempts });
@@ -366,7 +372,7 @@ describe('existing-song read-only enrichment preview', () => {
 
   it('preserves authentication failure for a tied recording lookup', async () => {
     const candidates = [MBID, OTHER_MBID].map(id => ({ id, title: 'Lights',
-      'artist-credit': [{ artist: { name: 'Journey' } }], 'first-release-date': '1978' }));
+      'artist-credit': [{ artist: { name: 'Journey' } }], 'first-release-date': '1978', disambiguation: 'Studio recording' }));
     const { pool } = fakePool([song({ original_key: 'D', bpm: 120 })]);
     const providers = mockProvider({ candidates, authFailedLookupMbids: [OTHER_MBID] });
     const report = await preview.runPreview({ pool, providerClient: providers.client, songIds: [42], maxAttempts: 12 });

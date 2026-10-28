@@ -26,7 +26,8 @@ function response(body, status = 200, headers = {}) {
   return { status, headers, body: typeof body === 'string' ? body : JSON.stringify(body) };
 }
 
-function harness({ route, config = {}, cache = null, timeout = false, initialTime = 1_800_000_000_000, delayImpl = null } = {}) {
+function harness({ route, config = {}, cache = null, timeout = false, initialTime = 1_800_000_000_000, delayImpl = null,
+  beforeAttempt = null } = {}) {
   let now = initialTime;
   const calls = [];
   const transport = async request => {
@@ -41,7 +42,7 @@ function harness({ route, config = {}, cache = null, timeout = false, initialTim
     }
     now += milliseconds;
   };
-  const client = createSongEnrichmentProviderClient({ transport, clock: () => now, delay, cache,
+  const client = createSongEnrichmentProviderClient({ transport, clock: () => now, delay, cache, beforeAttempt,
     config: { ...REQUIRED_BOUNDS, musicBrainzUserAgent: USER_AGENT, ...config } });
   return { client, calls, now: () => now };
 }
@@ -57,6 +58,7 @@ function recordingRows(start, length, { matchFirst = false, ids = null } = {}) {
     title: matchFirst && index === 0 ? 'Song' : `Other ${start + index}`,
     'artist-credit': [{ artist: { name: 'Artist' } }],
     'first-release-date': '1977',
+    disambiguation: 'Studio recording',
   }));
 }
 
@@ -147,6 +149,16 @@ describe('song enrichment provider adapters', () => {
     }
   });
 
+  it('preserves recording disambiguation exactly for explicit version classification', () => {
+    const row = { ...searchBody().recordings[0], disambiguation: 'original stereo mix',
+      'first-release-date': '1970-03' };
+    const parsed = normalizeMusicBrainzSearch(searchBody({ recordings: [row] }), 'e'.repeat(64));
+    expect(parsed.candidates[0]).toMatchObject({ disambiguation: 'original stereo mix',
+      first_release_date: '1970-03', response_digest: 'e'.repeat(64) });
+    expect(resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, parsed.candidates))
+      .toMatchObject({ matched: true, earliest_year: 1970 });
+  });
+
   it('reports no MusicBrainz results as documented absence and never ranks a candidate as identity', async () => {
     const { client } = harness({ route: () => response({ count: 0, offset: 0, recordings: [] }) });
     expect(await client.searchRecordings({ title: 'Song', artist: 'Artist' })).toMatchObject({ status: 'absent', candidates: [] });
@@ -234,12 +246,15 @@ describe('song enrichment provider adapters', () => {
   it('passes actual MusicBrainz evidence through both accepted B1 public functions', async () => {
     const h = harness({ route: request => request.url.includes('/recording/?') ? response(searchBody()) : response({
       id: MBID, title: 'Song', 'artist-credit': [{ artist: { name: 'Artist' } }],
-      'first-release-date': '1977-06-18', genres: [{ name: 'Rock' }],
+      'first-release-date': '1977-06-18', genres: [{ name: 'Rock' }], 'release-count': 1,
+      releases: [{ id: OTHER_MBID, title: 'Studio Album', date: '1977-06-18', status: 'Official', disambiguation: '',
+        'release-group': { id: OTHER_MBID, title: 'Studio Album', 'primary-type': 'Album', 'secondary-types': [] } }],
     }) });
     const search = await h.client.searchRecordings({ title: 'Song', artist: 'Artist' });
-    const match = resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, search.candidates);
-    expect(match.matched).toBe(true);
-    const detail = await h.client.lookupRecording({ mbid: match.mbid, searchCandidate: search.candidates[0] });
+    const detail = await h.client.lookupRecording({ mbid: MBID, searchCandidate: search.candidates[0] });
+    const match = resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, search.candidates, search, null,
+      { lookups: new Map([[MBID, detail]]) });
+    expect(match).toMatchObject({ matched: true, mbid: MBID, earliest_year: 1977 });
     const year = detail.scalars.release_year[0];
     const preview = buildEnrichmentPreview({ id: 42, updated_at: '2026-10-14T18:30:00.123456Z',
       release_year: null, original_key: null, bpm: null, genres: [], vibes: [] }, detail,
@@ -266,7 +281,7 @@ describe('song enrichment provider adapters', () => {
     const result = await client.lookupRecording({ mbid: MBID.toUpperCase(), searchCandidate });
     expect(calls).toHaveLength(1);
     expect(new URL(calls[0].url).pathname).toBe(`/ws/2/recording/${MBID}`);
-    expect(new URL(calls[0].url).searchParams.get('inc')).toBe('artist-credits genres tags');
+    expect(new URL(calls[0].url).searchParams.get('inc')).toBe('artist-credits genres tags releases release-groups');
     expect(result.status).toBe('ok');
     expect(result.recording.mbid).toBe(MBID);
     expect(result).toMatchObject({ mbid: MBID, vibes: [] });
@@ -274,6 +289,41 @@ describe('song enrichment provider adapters', () => {
     expect(result.recording.scalars.release_year[0].response_digest).toBe(searchCandidate.response_digest);
     expect(result.recording.genres.map(item => [item.name, item.association])).toEqual([['Rock', 'genre'], ['Classic Rock', 'tag']]);
     expect(result.recording.genres.every(item => item.response_digest === result.response_digest)).toBe(true);
+  });
+
+  it('validates bounded release links used to classify an unmarked recording', () => {
+    const releaseBody = { id: MBID, title: 'Song', 'artist-credit': [{ artist: { name: 'Artist' } }],
+      'first-release-date': '1977-06-18', 'release-count': 1, releases: [{ id: OTHER_MBID, title: 'Studio Album', date: '1977-06-18', status: 'Official',
+        disambiguation: '', 'release-group': { id: MBID, title: 'Studio Album', 'primary-type': 'Album', 'secondary-types': [] } }] };
+    const parsed = normalizeMusicBrainzLookup(releaseBody, MBID, 'a'.repeat(64));
+    expect(parsed.recording.release_type_evidence).toMatchObject({ mbid: MBID, complete: true, release_count: 1,
+      first_release_date: '1977-06-18',
+      releases: [{ id: OTHER_MBID, date: '1977-06-18', status: 'Official', release_group: {
+        id: MBID, primary_type: 'Album', secondary_types: [],
+      } }] });
+    const incomplete = normalizeMusicBrainzLookup({ ...releaseBody, 'release-count': 2 }, MBID, 'b'.repeat(64));
+    expect(incomplete.status).toBe('ok');
+    expect(incomplete.recording.release_type_evidence).toMatchObject({ complete: false, release_count: 2, releases: [] });
+
+    const candidateRow = { ...searchBody().recordings[0] };
+    delete candidateRow['first-release-date'];
+    const search = { ...normalizeMusicBrainzSearch(searchBody({ recordings: [candidateRow] }), 'd'.repeat(64)),
+      pagination: { complete: true, expected_total: 1, collected_count: 1, attempted_pages: 1, validated_pages: 1 } };
+    const resolved = resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, search.candidates, search, null,
+      { lookups: new Map([[MBID, parsed]]) });
+    expect(resolved).toMatchObject({ matched: true, mbid: MBID, earliest_year: 1977,
+      release_date_evidence: { first_release_date: '1977-06-18', response_digest: 'a'.repeat(64) } });
+  });
+
+  it('versions the recording lookup cache key when release evidence is requested', async () => {
+    const cacheRequests = [];
+    const h = harness({ cache: { async get(request) { cacheRequests.push(request); return null; }, async set() {} },
+      route: () => response({ id: MBID, title: 'Song', 'artist-credit': [{ artist: { name: 'Artist' } }],
+        'release-count': 0, releases: [], genres: [], tags: [] }) });
+    await h.client.lookupRecording({ mbid: MBID });
+    expect(cacheRequests).toMatchObject([{ provider: 'MusicBrainz', operation: 'recording_lookup',
+      parserVersion: 'musicbrainz-recording-lookup-release-type-v1', parameters: { mbid: MBID } }]);
+    expect(new URL(h.calls[0].url).searchParams.get('inc')).toContain('releases');
   });
 
   it('rejects missing or malformed lookup artist credits without accepting scalar or Genre evidence', async () => {
@@ -466,6 +516,19 @@ describe('song enrichment provider adapters', () => {
     expect(providerExhausted.calls).toHaveLength(1);
   });
 
+  it('keeps the first Gemini failure when the cohort reservation refuses its one-per-song retry', async () => {
+    let reservationChecks = 0;
+    const h = harness({ config: { maxAttempts: 130, maxGeminiAttempts: 10 },
+      beforeAttempt: intent => { reservationChecks += 1; return intent.provider === 'Gemini' && reservationChecks === 1; },
+      route: () => response({}, 503), delayImpl: async () => {} });
+    const result = await h.client.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'synthetic-key' });
+    expect(result).toMatchObject({ status: 'transient_error', failure_details: { failure_phase: 'http', http_status: 503 } });
+    expect(h.calls).toHaveLength(1);
+    expect(reservationChecks).toBe(2);
+    expect(h.client.getAttemptCounts()).toEqual({ total: 1, gemini: 1 });
+    expect(h.client.getRunLedger().map(item => item.status)).toEqual(['transient_error']);
+  });
+
   it('keeps the first terminal failure if another call spends the retry slot during delay', async () => {
     let releaseRetry;
     let retryWaiting;
@@ -540,6 +603,22 @@ describe('song enrichment provider adapters', () => {
     expect(failed).toMatchObject({ status: 'transient_error', failure_details: { failure_phase: 'request',
       transport_error_code: 'ECONNRESET', https_started: true } });
     expect(JSON.stringify(client.getRunLedger())).not.toContain('private');
+
+    const deniedTransport = createSongEnrichmentTransport({ request: () => {
+      const req = new EventEmitter();
+      req.end = () => queueMicrotask(() => req.emit('error', Object.assign(new Error('private network policy'), {
+        code: 'EACCES', errno: -4092, syscall: 'connect',
+      })));
+      req.destroy = () => {};
+      return req;
+    } });
+    const deniedClient = createSongEnrichmentProviderClient({ transport: deniedTransport,
+      config: { ...REQUIRED_BOUNDS, maxAttempts: 1, maxGeminiAttempts: 1, musicBrainzUserAgent: USER_AGENT } });
+    const denied = await deniedClient.requestGeminiTags({ title: 'Song', artist: 'Artist', definitions, apiKey: 'synthetic' });
+    expect(denied).toMatchObject({ status: 'transient_error', failure_details: {
+      failure_phase: 'request', transport_error_code: 'EACCES', https_started: true,
+    } });
+    expect(JSON.stringify({ denied, ledger: deniedClient.getRunLedger() })).not.toMatch(/private network policy|-4092|syscall|connect/);
 
     let timeoutStarted = false;
     const timedTransport = createSongEnrichmentTransport({ request: () => {
@@ -1121,6 +1200,31 @@ describe('song enrichment provider adapters', () => {
     expect(body.response_format.schema.properties.bpm).toEqual({ type: ['number', 'null'], minimum: 0 });
     expect(body.response_format.schema.properties.original_key).toMatchObject({ type: ['object', 'null'],
       required: ['key_key', 'key_scale'], additionalProperties: false });
+  });
+
+  it('prepares a bounded null-identity Gemini fallback with only exact song metadata and managed labels', async () => {
+    const h = harness({ config: { geminiMaxInputBytes: 16_384, geminiMaxOutputTokens: 1_024 },
+      route: () => geminiResponse({ release_year: 1970, bpm: 96, original_key: { key_key: 'G', key_scale: 'major' },
+        genres: ['Country'], vibes: ['Upbeat'] }) });
+    const result = await h.client.requestGeminiTags({ mbid: null, title: 'Exact Song', artist: 'Exact Artist',
+      requestedFields: ['release_year', 'original_key', 'bpm'], definitions, apiKey: 'synthetic-only-key' });
+    expect(result.status).toBe('ok');
+    expect(h.calls).toHaveLength(1);
+    expect(h.client.getAttemptCounts()).toEqual({ total: 1, gemini: 1 });
+    const request = h.calls[0];
+    const body = JSON.parse(request.body.toString('utf8'));
+    expect(request.body.byteLength).toBeLessThanOrEqual(16_384);
+    expect(body.generation_config.max_output_tokens).toBe(1_024);
+    expect(body.input).toContain('Exact Song');
+    expect(body.input).toContain('Exact Artist');
+    expect(body.input).toContain('release_year');
+    expect(body.input).toContain('original_key');
+    expect(body.input).toContain('bpm');
+    expect(body.input).toContain('  Hard   Rock  ');
+    expect(body.input).toContain('Country');
+    expect(body.input).toContain('Upbeat');
+    expect(body.input).not.toMatch(/mbid|lyrics|chart|chord/i);
+    expect(body).not.toHaveProperty('api_key');
   });
 
   it('rejects scalar suggestions for populated or unrequested fields and malformed key/value output', async () => {

@@ -5,37 +5,49 @@ const crypto = require("node:crypto");
 const { Pool } = require("../server/node_modules/pg");
 const { createSongEnrichmentCache } = require("../server/songEnrichmentCache.js");
 const { createSongEnrichmentProviderClient } = require("../server/songEnrichmentProviders.js");
-const { createSongEnrichmentTransport, MAX_RESPONSE_BYTES } = require("../server/songEnrichmentTransport.js");
+const { createSongEnrichmentTransport, preflightGeminiConnectivity, MAX_RESPONSE_BYTES } = require("../server/songEnrichmentTransport.js");
 const { runPreview, captureReadOnlyBaseline, checkIgnoredDirectory } = require("./preview-existing-song-enrichment.cjs");
 const { loadConfiguration, preparePreview, executePreparedPreview } = require("./preview-gemini-fallback.cjs");
 const operator = require("./operator-song-enrichment.cjs");
 const { runSongEnrichmentCohort } = require("../server/songEnrichmentCohortRunner.js");
+const { createGeminiSpendLedger, MODEL_ID, MAX_INPUT_BYTES, MAX_OUTPUT_TOKENS, RECOVERY_SONG_IDS } = require("../server/geminiSpendLedger.js");
 
 const ROOT = path.resolve(__dirname, "../..");
 function error(code) { const value = new Error(code); value.code = code; return value; }
 function providerAttemptBudget(songCount, factualAttemptsPerSong) {
   return (factualAttemptsPerSong + 1) * songCount;
 }
+async function reserveBeforeProviderAttempt({ intent, songId, cohortId, providerConfig, spendLedger, reserveRunnerAttempt,
+  recoveryAuthorization, recoveryAuthorizationSha256, recoveryRunId }) {
+  if (intent.gemini) await spendLedger.reserve({ providerConfig, cohortId, songId, recoveryAuthorization,
+    recoveryAuthorizationSha256, recoveryRunId });
+  return reserveRunnerAttempt ? reserveRunnerAttempt(intent) : true;
+}
 function parseArgs(argv) {
-  const values = new Set(["--manifest", "--output-dir", "--cache-dir", "--factual-attempts-per-song"]), options = {};
+  const values = new Set(["--manifest", "--output-dir", "--cache-dir", "--factual-attempts-per-song",
+    "--gemini-recovery-authorization"]), options = {};
   let liveReadOnly = false;
+  let geminiOnly = false;
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index];
     if (name === "--live-read-only" && !liveReadOnly) { liveReadOnly = true; continue; }
+    if (name === "--gemini-only" && !geminiOnly) { geminiOnly = true; continue; }
     if (!values.has(name) || !argv[index + 1] || argv[index + 1].startsWith("--")) throw error("USAGE");
     const key = ({ "--manifest": "manifest", "--output-dir": "outputDir", "--cache-dir": "cacheDir",
-      "--factual-attempts-per-song": "factualAttemptsPerSong" })[name];
+      "--factual-attempts-per-song": "factualAttemptsPerSong",
+      "--gemini-recovery-authorization": "geminiRecoveryAuthorization" })[name];
     if (options[key]) throw error("USAGE");
     options[key] = argv[++index];
   }
   if (!options.manifest || !options.outputDir || !options.cacheDir) throw error("USAGE");
   if (!liveReadOnly) throw error("LIVE_READ_ONLY_OPT_IN_REQUIRED");
+  if (options.geminiRecoveryAuthorization && !geminiOnly) throw error("GEMINI_RECOVERY_AUTHORIZATION_INVALID");
   if (options.factualAttemptsPerSong !== undefined &&
       (!/^[1-9]\d*$/.test(options.factualAttemptsPerSong) || Number(options.factualAttemptsPerSong) > 12)) {
     throw error("FACTUAL_ATTEMPT_CAP_INVALID");
   }
   options.factualAttemptsPerSong = options.factualAttemptsPerSong === undefined ? 12 : Number(options.factualAttemptsPerSong);
-  return { ...options, liveReadOnly };
+  return { ...options, liveReadOnly, acquisitionMode: geminiOnly ? "gemini_only_after_factual_provider_failure" : "standard" };
 }
 function insideBackups(target) {
   const backups = path.join(ROOT, "backups");
@@ -105,15 +117,35 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
         typeof item.artist !== "string") || new Set(manifest.songs.map(item => item.song_id)).size !== manifest.songs.length) {
     throw error("COHORT_INVALID");
   }
+  let recoveryAuthorization = null, recoveryAuthorizationSha256 = null;
+  if (args.geminiRecoveryAuthorization) {
+    const recoveryPath = await requirePrivateFile(path.resolve(args.geminiRecoveryAuthorization));
+    const recoveryBytes = await fs.readFile(recoveryPath);
+    try { recoveryAuthorization = JSON.parse(recoveryBytes.toString("utf8")); }
+    catch { throw error("GEMINI_RECOVERY_AUTHORIZATION_INVALID"); }
+    recoveryAuthorizationSha256 = crypto.createHash("sha256").update(recoveryBytes).digest("hex");
+  }
+  const recoveryRunId = recoveryAuthorization ? crypto.createHash("sha256").update(path.resolve(outputDirectory)).digest("hex") : null;
   const checkpointPath = path.join(outputDirectory, "checkpoint-v1.json");
   const outputEntries = await fs.readdir(outputDirectory);
   if (outputEntries.length && !outputEntries.includes("checkpoint-v1.json")) throw error("OUTPUT_DIRECTORY_NOT_OWNED");
   const config = dependencies.config || await loadConfiguration();
+  const geminiConnectivity = await (dependencies.geminiConnectivityPreflight || preflightGeminiConnectivity)();
   const databaseUrl = config.databaseUrl;
   const pool = dependencies.pool || new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000,
     options: "-c default_transaction_read_only=on" });
   const cache = dependencies.cache || await createSongEnrichmentCache({ directory: cacheDirectory });
   let client;
+  const providerConfig = { model: MODEL_ID, maxAttempts: args.acquisitionMode === "standard"
+      ? providerAttemptBudget(manifest.songs.length, factualAttemptsPerSong) : manifest.songs.length,
+    maxGeminiAttempts: manifest.songs.length, timeoutMs: 10_000, maxResponseBytes: MAX_RESPONSE_BYTES,
+    geminiMaxInputBytes: MAX_INPUT_BYTES, geminiMaxOutputTokens: MAX_OUTPUT_TOKENS,
+    maxRetryAfterMs: 5_000, retryDelayMs: 1_000, musicBrainzMinimumIntervalMs: 1_000,
+    musicBrainzUserAgent: config.musicBrainzUserAgent };
+  const spendLedger = dependencies.spendLedger || createGeminiSpendLedger({
+    ledgerPath: path.join(ROOT, "backups", "stage-b-gemini-spend-ledger-v1.json"),
+    backupsRoot: dependencies.spendLedgerBackupsRoot || path.join(ROOT, "backups"),
+  });
   let activeReserve = null;
   let activeSongId = null;
   const cacheHitsBySong = new Map();
@@ -129,20 +161,33 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
   try {
     const baseline = await captureReadOnlyBaseline(pool, manifest.songs.map(item => item.song_id));
     try { await cache.verifyIntegrity(); } catch { throw error("CACHE_INVALID"); }
+    await spendLedger.initialize(providerConfig);
+    if (args.acquisitionMode === "gemini_only_after_factual_provider_failure" && !outputEntries.includes("checkpoint-v1.json")) {
+      const prior = await spendLedger.reservedSongIds();
+      if (prior.unattributedReservations > 0) throw error("GEMINI_SPEND_LEDGER_INVALID");
+      const recoveryIds = recoveryAuthorization?.songs?.map(item => item?.song_id) || [];
+      if (recoveryAuthorization) await spendLedger.validateRecoveryAuthorization({ authorization: recoveryAuthorization,
+        authorizationSha256: recoveryAuthorizationSha256, recoveryRunId, cohortId: manifest.cohort_id,
+        songIds: manifest.songs.map(item => item.song_id) });
+      if (manifest.songs.some(song => prior.songIds.includes(song.song_id) && !recoveryIds.includes(song.song_id)) ||
+          recoveryIds.some(id => !manifest.songs.some(song => song.song_id === id))) {
+        throw error("GEMINI_PRIOR_RESERVATION");
+      }
+    }
     client = dependencies.providerClient || createSongEnrichmentProviderClient({ transport,
       beforeAttempt: async intent => {
+        if (args.acquisitionMode !== "standard" && intent.gemini !== true) throw error("BUDGET_ENFORCEMENT");
         if (!activeSongId) return activeReserve ? activeReserve(intent) : true;
         const expectedSong = baseline.songs.find(item => item.id === activeSongId);
         if (!expectedSong) throw error("COHORT_DRIFT");
         const current = await captureReadOnlyBaseline(pool, [activeSongId]);
         const expected = { songs: [expectedSong], definitions: baseline.definitions };
         if (JSON.stringify(current) !== JSON.stringify(expected)) throw error("COHORT_DRIFT");
-        return activeReserve ? activeReserve(intent) : true;
+        return reserveBeforeProviderAttempt({ intent, songId: activeSongId, cohortId: manifest.cohort_id,
+          providerConfig, spendLedger, reserveRunnerAttempt: activeReserve, recoveryAuthorization,
+          recoveryAuthorizationSha256, recoveryRunId });
       },
-      cache: trackedCache, config: { maxAttempts: providerAttemptBudget(manifest.songs.length, factualAttemptsPerSong), maxGeminiAttempts: manifest.songs.length,
-      timeoutMs: 10_000, maxResponseBytes: MAX_RESPONSE_BYTES, geminiMaxInputBytes: 16_384,
-        geminiMaxOutputTokens: 1_024, maxRetryAfterMs: 5_000, retryDelayMs: 1_000,
-        musicBrainzMinimumIntervalMs: 1_000, musicBrainzUserAgent: config.musicBrainzUserAgent } });
+      cache: trackedCache, config: providerConfig });
     const acquireFactual = async ({ song, reserveAttempt }) => {
       activeReserve = reserveAttempt;
       activeSongId = song.id;
@@ -158,12 +203,13 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
         return { factualReport };
       } finally { activeReserve = null; activeSongId = null; }
     };
-    const acquireGemini = async ({ song, factualReport, reserveAttempt }) => {
+    const acquireGemini = async ({ song, factualReport, acceptedRecordingIdentity, reserveAttempt }) => {
       activeReserve = reserveAttempt;
       activeSongId = song.id;
       try {
         const expectedBaseline = { songs: [baseline.songs.find(item => item.id === song.id)], definitions: baseline.definitions };
-        const prepared = await preparePreview({ pool, songId: song.id, factualInput: factualReport, expectedBaseline });
+        const prepared = await preparePreview({ pool, songId: song.id, factualInput: factualReport, expectedBaseline,
+          automaticCohort: true, acceptedRecordingIdentity });
         if (!prepared.missing.length && !prepared.allowedNames.genres.length && !prepared.allowedNames.vibes.length) return { skipped: true };
         const geminiCacheStart = cacheHitsBySong.get(song.id) || 0;
         const gemini = await executePreparedPreview({ prepared, providerClient: client, apiKey: config.apiKey });
@@ -190,17 +236,20 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     };
     const result = await runSongEnrichmentCohort({ manifest, baseline, directory: outputDirectory, providerClient: client,
       factualAttemptsPerSong,
+      acquisitionMode: args.acquisitionMode,
+      recoveryAuthorizationSha256,
+      recoveryRunId,
       acquireFactual, acquireGemini, processBatch, getCacheHash: async () => {
         try { return (await cache.verifyIntegrity()).sha256; } catch { throw error("CACHE_INVALID"); }
       },
       clock: dependencies.clock || Date.now });
     const summaryPath = path.join(outputDirectory, "summary-v1.json");
-    await writeAtomic(summaryPath, { cohort_id: result.cohortId, songs: result.songs,
+    await writeAtomic(summaryPath, { cohort_id: result.cohortId, acquisition_mode: args.acquisitionMode, songs: result.songs,
       batches: result.batches.map(batch => ({ batch_index: batch.batch_index, song_ids: batch.song_ids,
         completed_stage: batch.completed_stage, manifest_sha256: batch.manifest_sha256 })),
       factual_attempts: result.factualAttempts, gemini_attempts: result.geminiAttempts,
       exceptions: result.exceptions });
-    process.stdout.write(`${JSON.stringify({ checkpointPath: result.checkpointPath, summaryPath,
+    process.stdout.write(`${JSON.stringify({ geminiConnectivity, checkpointPath: result.checkpointPath, summaryPath,
       batchesCompleted: result.batches.length, factualAttempts: result.factualAttempts, geminiAttempts: result.geminiAttempts })}\n`);
     return result;
   } catch (failure) {
@@ -214,12 +263,18 @@ if (require.main === module) main().catch(failure => {
   const allowedCodes = new Set(["USAGE", "LIVE_READ_ONLY_OPT_IN_REQUIRED", "ARTIFACT_NOT_PRIVATE", "ARTIFACT_INVALID",
     "OUTPUT_DIRECTORY_NOT_OWNED", "COHORT_INVALID", "FACTUAL_ATTEMPT_CAP_INVALID", "COHORT_DRIFT", "CACHE_INVALID", "CHECKPOINT_INVALID",
     "CHECKPOINT_TAMPERED", "CHECKPOINT_UNSAFE_RESUME", "CHECKPOINT_WRITE_FAILED", "AUTHENTICATION_FAILURE",
-    "PROVIDER_OUTAGE", "INVALID_EVIDENCE", "BUDGET_ENFORCEMENT", "ACQUISITION_FAILED", "PREVIEW_FAILED"]);
+    "PROVIDER_OUTAGE", "INVALID_EVIDENCE", "GEMINI_EGRESS_ENVIRONMENT_BLOCKED", "GEMINI_CONNECTIVITY_UNAVAILABLE",
+    "BUDGET_ENFORCEMENT", "GEMINI_SPEND_LIMIT", "GEMINI_SPEND_LEDGER_INVALID",
+    "GEMINI_SPEND_LEDGER_LOCKED", "GEMINI_SPEND_POLICY_UNVERIFIED", "GEMINI_PRIOR_RESERVATION",
+    "GEMINI_RECOVERY_AUTHORIZATION_INVALID", "ACQUISITION_FAILED", "PREVIEW_FAILED"]);
   const allowedStages = new Set(["setup_or_resume", "factual_acquisition", "factual_validation", "factual_evidence_write",
     "gemini_acquisition", "gemini_validation", "gemini_evidence_write", "preview_transition", "checkpoint_transition"]);
   const code = allowedCodes.has(failure?.code) ? failure.code : "ACQUISITION_FAILED";
   const stage = allowedStages.has(failure?.stage) ? failure.stage : "setup_or_resume";
   process.stderr.write(`Cohort evidence acquisition stopped at ${stage}: ${code}\n`);
+  if (code === "GEMINI_EGRESS_ENVIRONMENT_BLOCKED") {
+    process.stderr.write("Use the already reviewed outside-sandbox execution path; the CLI will not switch execution environments automatically.\n");
+  }
   process.exitCode = 1;
 });
-module.exports = { main, parseArgs, providerAttemptBudget, songScopedClient };
+module.exports = { main, parseArgs, providerAttemptBudget, reserveBeforeProviderAttempt, songScopedClient };

@@ -5,10 +5,40 @@ import { Duplex } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
-const { MAX_RESPONSE_BYTES, createSongEnrichmentTransport } = require('../../server/songEnrichmentTransport.js');
+const { MAX_RESPONSE_BYTES, createSongEnrichmentTransport, preflightGeminiConnectivity } = require('../../server/songEnrichmentTransport.js');
 const { createSongEnrichmentProviderClient } = require('../../server/songEnrichmentProviders.js');
 const MBID = 'a1111111-1111-4111-8111-111111111111';
 const USER_AGENT = 'ChordChartManager/1.0.0 (contact@example.test)';
+
+describe('Gemini non-generating connectivity preflight', () => {
+  it('requires DNS, verified TLS, then an HTTP status from the API host without credentials or POST', async () => {
+    const sequence = [];
+    const result = await preflightGeminiConnectivity({
+      lookup: async (hostname, options) => { sequence.push('dns'); expect(hostname).toBe('generativelanguage.googleapis.com');
+        expect(options).toMatchObject({ all: true }); return [{ address: '203.0.113.4', family: 4 }]; },
+      tlsConnect: options => { sequence.push('tls'); expect(options).toMatchObject({ host: '203.0.113.4', port: 443,
+        servername: 'generativelanguage.googleapis.com', rejectUnauthorized: true });
+        const socket = new EventEmitter(); socket.authorized = true; socket.end = () => {}; socket.destroy = () => {};
+        queueMicrotask(() => socket.emit('secureConnect')); return socket; },
+      httpsRequest: (options, onResponse) => { sequence.push('http'); expect(options).toMatchObject({ hostname: 'generativelanguage.googleapis.com',
+        path: '/', method: 'GET', headers: { Accept: '*/*' } });
+        expect(Object.keys(options.headers)).toEqual(['Accept']); const req = new EventEmitter(); req.end = () => {
+          const response = { statusCode: 404, destroy() {} }; queueMicrotask(() => onResponse(response)); }; req.destroy = () => {}; return req; },
+    });
+    expect(result).toEqual({ dns: 'ok', tls: 'ok', http_status: 404 });
+    expect(sequence).toEqual(['dns', 'tls', 'http']);
+  });
+
+  it('classifies connect EACCES as a local execution-environment block and stops before HTTP', async () => {
+    let httpCalls = 0;
+    const tlsConnect = () => { const socket = new EventEmitter(); socket.end = () => {}; socket.destroy = () => {};
+      queueMicrotask(() => socket.emit('error', Object.assign(new Error('private'), { code: 'EACCES', errno: -4092, syscall: 'connect' })));
+      return socket; };
+    await expect(preflightGeminiConnectivity({ lookup: async () => [{ address: '203.0.113.4', family: 4 }], tlsConnect,
+      httpsRequest: () => { httpCalls += 1; } })).rejects.toMatchObject({ code: 'GEMINI_EGRESS_ENVIRONMENT_BLOCKED' });
+    expect(httpCalls).toBe(0);
+  });
+});
 
 function request(url, overrides = {}) {
   const musicBrainz = url.hostname === 'musicbrainz.org';
@@ -104,7 +134,7 @@ describe('bounded provider HTTPS transport', () => {
     expect(fake.captured.calls).toHaveLength(1);
     const actualUrl = new URL(fake.captured.calls[0].url);
     expect(actualUrl.pathname).toBe(`/ws/2/recording/${MBID}`);
-    expect(actualUrl.searchParams.get('inc')).toBe('artist-credits genres tags');
+    expect(actualUrl.searchParams.get('inc')).toBe('artist-credits genres tags releases release-groups');
     expect(actualUrl.searchParams.get('fmt')).toBe('json');
     expect(client.getAttemptCounts()).toEqual({ total: 1, gemini: 0 });
     expect(client.getRunLedger()).toEqual([{ provider: 'MusicBrainz', operation: 'recording_lookup', attempt: 1, status: 'ok' }]);

@@ -1,6 +1,8 @@
 const https = require("node:https");
 const http = require("node:http");
 const { URL } = require("node:url");
+const dns = require("node:dns").promises;
+const tls = require("node:tls");
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_RESPONSE_BYTES = 1_048_576;
@@ -12,7 +14,7 @@ function invalidRequest(message = "Provider request is not allowed.") {
   return error;
 }
 
-const SAFE_TRANSPORT_CODES = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH",
+const SAFE_TRANSPORT_CODES = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EACCES", "EHOSTUNREACH", "ENETUNREACH",
   "EAI_AGAIN", "ENOTFOUND", "EPIPE", "RESPONSE_TOO_LARGE", "INVALID_PROVIDER_REQUEST"]);
 function transportFailure(error, phase, httpsStarted, timeoutSource = undefined, httpStatus = undefined) {
   const code = SAFE_TRANSPORT_CODES.has(error?.code) ? error.code : undefined;
@@ -21,6 +23,87 @@ function transportFailure(error, phase, httpsStarted, timeoutSource = undefined,
     ...(Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? { http_status: httpStatus } : {}),
     ...(timeoutSource ? { timeout: true, timeout_source: timeoutSource } : {}),
   } });
+}
+
+const GEMINI_API_HOST = "generativelanguage.googleapis.com";
+function nestedErrorCode(error) {
+  const queue = [error], seen = new Set();
+  while (queue.length && seen.size < 16) {
+    const item = queue.shift();
+    if (!item || typeof item !== "object" || seen.has(item)) continue;
+    seen.add(item);
+    if (typeof item.code === "string") return item.code;
+    if (item.cause) queue.push(item.cause);
+    if (Array.isArray(item.errors)) queue.push(...item.errors);
+  }
+  return null;
+}
+function geminiPreflightError(error) {
+  const failure = new Error("Gemini connectivity preflight failed.");
+  failure.code = nestedErrorCode(error) === "EACCES"
+    ? "GEMINI_EGRESS_ENVIRONMENT_BLOCKED" : "GEMINI_CONNECTIVITY_UNAVAILABLE";
+  return failure;
+}
+async function preflightGeminiConnectivity({ lookup = dns.lookup, tlsConnect = tls.connect,
+  httpsRequest = https.request, timeoutMs = 5_000 } = {}) {
+  let addresses;
+  try { addresses = await lookup(GEMINI_API_HOST, { all: true }); }
+  catch (error) { throw geminiPreflightError(error); }
+  const address = Array.isArray(addresses) ? addresses[0] : null;
+  if (!address || typeof address.address !== "string" || !Number.isInteger(address.family)) {
+    throw geminiPreflightError(null);
+  }
+  try {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const socket = tlsConnect({ host: address.address, family: address.family, port: 443,
+        servername: GEMINI_API_HOST, rejectUnauthorized: true });
+      const timer = setTimeout(() => {
+        const error = Object.assign(new Error(), { code: "ETIMEDOUT" });
+        socket.destroy(error);
+      }, timeoutMs);
+      const finish = error => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.removeListener("secureConnect", onSecureConnect);
+        socket.removeListener("error", onError);
+        if (error) { socket.destroy(); reject(error); }
+        else { socket.end(); resolve(); }
+      };
+      const onSecureConnect = () => socket.authorized === true ? finish() : finish(new Error());
+      const onError = error => finish(error);
+      socket.once("secureConnect", onSecureConnect);
+      socket.once("error", onError);
+    });
+  } catch (error) { throw geminiPreflightError(error); }
+
+  const status = await new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      const error = Object.assign(new Error(), { code: "ETIMEDOUT" });
+      request.destroy(error);
+    }, timeoutMs);
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error); else resolve(value);
+    };
+    let request;
+    try {
+      request = httpsRequest({ hostname: GEMINI_API_HOST, port: 443, path: "/", method: "GET",
+        headers: { Accept: "*/*" } }, response => {
+        const statusCode = response?.statusCode;
+        response?.destroy?.();
+        if (Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599) finish(null, statusCode);
+        else finish(new Error());
+      });
+      request.once("error", error => finish(error));
+      request.end();
+    } catch (error) { finish(error); }
+  }).catch(error => { throw geminiPreflightError(error); });
+  return { dns: "ok", tls: "ok", http_status: status };
 }
 
 function validateRequest(request) {
@@ -77,7 +160,8 @@ function validateRequest(request) {
     !hasSubmissionCount && (url.pathname === "/ws/2/recording/" && request.method === "GET" &&
       searchParametersValid ||
      /^\/ws\/2\/recording\/[0-9a-f-]{36}$/i.test(url.pathname) && request.method === "GET" &&
-      entries.length === 2 && parameterMap.get("fmt") === "json" && parameterMap.get("inc") === "artist-credits genres tags" &&
+      entries.length === 2 && parameterMap.get("fmt") === "json" &&
+      parameterMap.get("inc") === "artist-credits genres tags releases release-groups" &&
       UUID.test(url.pathname.slice("/ws/2/recording/".length)));
   const acoustic = url.hostname === "acousticbrainz.org" && uuidPath && UUID.test(uuidPath[1]) &&
     (uuidPath[2] === "count" && entries.length === 0 && !hasSubmissionCount || uuidPath[2] === "low-level" &&
@@ -244,4 +328,4 @@ function createSongEnrichmentTransport({ request: httpsRequest = https.request, 
   };
 }
 
-module.exports = { MAX_RESPONSE_BYTES, createSongEnrichmentTransport, validateRequest };
+module.exports = { MAX_RESPONSE_BYTES, createSongEnrichmentTransport, preflightGeminiConnectivity, validateRequest };

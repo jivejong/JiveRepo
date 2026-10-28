@@ -164,9 +164,40 @@ function safeCandidate(candidate) {
   return {
     mbid: candidate.mbid.toLowerCase(), title: candidate.title, artist: candidate.artist,
     disambiguation: candidate.disambiguation,
+    ...(typeof candidate.video === "boolean" ? { video: candidate.video } : {}),
     ...(typeof candidate.first_release_date === "string" ? { first_release_date: candidate.first_release_date } : {}),
     response_digest: candidate.response_digest,
   };
+}
+
+function safeReleaseTypeEvidence(lookupMap) {
+  if (!(lookupMap instanceof Map)) return [];
+  return [...lookupMap.entries()].map(([mbid, lookup]) => {
+    const evidence = lookup?.recording?.release_type_evidence;
+    if (lookup?.status !== "ok" || typeof mbid !== "string" || !UUID.test(mbid) ||
+        !evidence || evidence.mbid?.toLowerCase() !== mbid.toLowerCase() ||
+        !Array.isArray(evidence.releases) || !DIGEST.test(evidence.response_digest || "")) return null;
+    const releases = evidence.releases.map(release => {
+      const group = release?.release_group;
+      if (!release || typeof release.id !== "string" || !UUID.test(release.id) ||
+          typeof release.title !== "string" || release.title.length > 240 ||
+          !(release.date === null || typeof release.date === "string" && /^\d{4}(?:-\d{2}(?:-\d{2})?)?$/.test(release.date)) ||
+          !(release.status === null || typeof release.status === "string" && release.status.length <= 80) ||
+          typeof release.disambiguation !== "string" || release.disambiguation.length > 240 ||
+          !group || typeof group.id !== "string" || !UUID.test(group.id) ||
+          typeof group.title !== "string" || group.title.length > 240 ||
+          !(group.primary_type === null || typeof group.primary_type === "string" && group.primary_type.length <= 80) ||
+          !Array.isArray(group.secondary_types) || group.secondary_types.some(type => typeof type !== "string" || type.length > 80)) return null;
+      return { id: release.id.toLowerCase(), title: release.title, date: release.date, status: release.status,
+        disambiguation: release.disambiguation, release_group: { id: group.id.toLowerCase(), title: group.title,
+          primary_type: group.primary_type, secondary_types: [...group.secondary_types].sort() } };
+    });
+    if (releases.some(release => release === null)) return null;
+    return { mbid: mbid.toLowerCase(), response_digest: evidence.response_digest,
+      first_release_date: typeof evidence.first_release_date === "string" && /^\d{4}(?:-\d{2}(?:-\d{2})?)?$/.test(evidence.first_release_date)
+        ? evidence.first_release_date : null,
+      release_count: evidence.release_count, complete: evidence.complete === true, releases };
+  }).filter(Boolean).sort((left, right) => left.mbid.localeCompare(right.mbid, "en"));
 }
 
 function safeEvidenceItem(item, expectedSource, field) {
@@ -258,6 +289,7 @@ const PAGINATION_DIAGNOSTIC_CODES = new Set([
 const RECORDING_SELECTION_REASONS = new Set([
   "unique_exact_match", "earliest_release_year", "genre_richness", "canonical_mbid_tiebreak",
   "richness_comparison_incomplete", "no_dated_eligible_recording", "unresolved_version_ambiguity", "no_eligible_recording",
+  "release_evidence_unresolved",
 ]);
 const LOOKUP_STATUSES = new Set(["ok", "absent", "invalid_response", "authentication_error", "transient_error", "timeout",
   "budget_exhausted", "cancelled", "network_disabled"]);
@@ -283,7 +315,7 @@ function safeRecordingMatch(matching) {
   };
   if (matching?.exclusion_counts && typeof matching.exclusion_counts === "object" && !Array.isArray(matching.exclusion_counts)) {
     for (const [reason, count] of Object.entries(matching.exclusion_counts).sort(([left], [right]) => left.localeCompare(right, "en"))) {
-      if (/^(?:invalid_mbid|live_version|remix_version|acoustic_version|demo_version|music_video_version|rerecorded_version|alternate_version|unresolved_version_ambiguity)$/.test(reason) &&
+      if (/^(?:invalid_mbid|live_version|bootleg_version|live_first_release|bootleg_first_release|release_evidence_incomplete|remix_version|acoustic_version|demo_version|music_video_version|rerecorded_version|alternate_version|unresolved_version_ambiguity)$/.test(reason) &&
           Number.isSafeInteger(count) && count > 0) output.exclusion_counts[reason] = count;
     }
   }
@@ -368,7 +400,7 @@ function safePaginationDiagnostic(diagnostic) {
   return output;
 }
 
-function buildSongReport(song, search, matching, lookup, audio, definitions, richnessComparison = null) {
+function buildSongReport(song, search, matching, lookup, audio, definitions, richnessComparison = null, releaseLookups = new Map()) {
   const mbScalars = lookup?.status === "ok" && lookup.recording?.scalars && typeof lookup.recording.scalars === "object"
     ? lookup.recording.scalars : {};
   // B2 may return already validated earlier submissions with a partial/error status.
@@ -440,6 +472,7 @@ function buildSongReport(song, search, matching, lookup, audio, definitions, ric
       candidates: isCompleteSearchResult(search) && search.status === "ok" ? safeRecordingCandidates(search.candidates) : [],
       ...(typeof search.reason === "string" && /^[a-z0-9_]{1,80}$/.test(search.reason) ? { reason: search.reason } : {}),
       ...(safePagination(search) ? { pagination: safePagination(search) } : {}),
+      ...(safeReleaseTypeEvidence(releaseLookups).length ? { release_type_evidence: safeReleaseTypeEvidence(releaseLookups) } : {}),
       ...(safePaginationDiagnostic(search.validation_diagnostic) ? { validation_diagnostic: safePaginationDiagnostic(search.validation_diagnostic) } : {}),
       ...(matching.matched ? { lookup_status: lookup?.status || "not_attempted" } : {}),
       ...(matching.earliest_year ? { release_date_comparison: {
@@ -532,15 +565,35 @@ async function runPreview({ pool, providerClient, songIds, maxAttempts, clock = 
     let audio = null;
     let richnessComparison = null;
     const search = await providerClient.searchRecordings({ title: song.title, artist: song.artist });
-    let matching = isCompleteSearchResult(search)
-      ? resolveRecordingCandidate({ title: song.title, artist: song.artist }, search.candidates, search, baseline.definitions.genres)
-      : { matched: false, reason: search?.reason || search?.status || "search_unavailable", selection_reason: null };
     const lookupMap = new Map();
+    let matching = isCompleteSearchResult(search)
+      ? resolveRecordingCandidate({ title: song.title, artist: song.artist }, search.candidates, search, baseline.definitions.genres,
+        { lookups: lookupMap })
+      : { matched: false, reason: search?.reason || search?.status || "search_unavailable", selection_reason: null };
+    while (!matching.matched && Array.isArray(matching.release_evidence_required_mbids) && matching.release_evidence_required_mbids.length) {
+      let dispatched = false;
+      for (const mbid of matching.release_evidence_required_mbids) {
+        if (lookupMap.has(mbid)) continue;
+        if (providerClient.getAttemptCounts().total >= maxAttempts) break;
+        const candidate = search.candidates.find(item => item.mbid.toLowerCase() === mbid);
+        if (!candidate) { lookupMap.set(mbid, { status: "invalid_response" }); continue; }
+        const candidateLookup = await providerClient.lookupRecording({ mbid, searchCandidate: candidate });
+        lookupMap.set(mbid, candidateLookup);
+        dispatched = true;
+        matching = resolveRecordingCandidate({ title: song.title, artist: song.artist }, search.candidates, search,
+          baseline.definitions.genres, { lookups: lookupMap });
+        if (matching.matched) break;
+      }
+      if (!dispatched || matching.matched) break;
+      const canDispatchAnother = matching.release_evidence_required_mbids?.some(mbid => !lookupMap.has(mbid));
+      if (!canDispatchAnother) break;
+    }
     if (!matching.matched && matching.earliest_year && matching.same_year_candidate_mbids?.length > 1) {
       const statuses = new Map();
       for (const mbid of matching.same_year_candidate_mbids) {
         const candidate = search.candidates.find(item => item.mbid.toLowerCase() === mbid);
         if (!candidate) { statuses.set(mbid, "invalid_response"); continue; }
+        if (lookupMap.has(mbid)) { statuses.set(mbid, lookupMap.get(mbid)?.status || "invalid_response"); continue; }
         if (providerClient.getAttemptCounts().total >= maxAttempts) {
           statuses.set(mbid, "budget_exhausted");
           continue;
@@ -578,7 +631,7 @@ async function runPreview({ pool, providerClient, songIds, maxAttempts, clock = 
         } else audio = { status: "budget_exhausted", submission_enumeration: "unknown" };
       }
     }
-    songs.push(buildSongReport(song, search, matching, lookup, audio, baseline.definitions, richnessComparison));
+    songs.push(buildSongReport(song, search, matching, lookup, audio, baseline.definitions, richnessComparison, lookupMap));
     budgetExhausted = providerClient.getAttemptCounts().total >= maxAttempts ||
       [search?.status, lookup?.status, audio?.status].includes("budget_exhausted");
   }

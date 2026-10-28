@@ -8,7 +8,23 @@ const { resolveRecordingCandidate, buildEnrichmentPreview } =
 const UUID_A = 'a1111111-1111-4111-8111-111111111111';
 const UUID_B = 'b2222222-2222-4222-8222-222222222222';
 const UUID_C = 'c3333333-3333-4333-8333-333333333333';
+const RELEASE_A = 'd4444444-4444-4444-8444-444444444444';
+const RELEASE_B = 'e5555555-5555-4555-8555-555555555555';
+const RELEASE_C = 'f6666666-6666-4666-8666-666666666666';
 const VERSION = '2026-10-14T18:30:00.123456Z';
+
+function completeSearch(candidates) {
+  return { status: 'ok', candidates, pagination: { expected_total: candidates.length, collected_count: candidates.length,
+    attempted_pages: 1, validated_pages: 1, complete: true } };
+}
+function releaseEvidence(mbid, releases, releaseCount = releases.length) {
+  return { status: 'ok', recording: { mbid, release_type_evidence: { mbid, response_digest: 'f'.repeat(64),
+    complete: releaseCount === releases.length, release_count: releaseCount, releases } } };
+}
+function release(id, title, date, primaryType = 'Album', secondaryTypes = [], status = 'Official') {
+  return { id, title, date, status, disambiguation: '', release_group: { id: UUID_C, title,
+    primary_type: primaryType, secondary_types: secondaryTypes } };
+}
 
 function snapshot(overrides = {}) {
   return {
@@ -73,7 +89,7 @@ describe('resolveRecordingCandidate', () => {
       { title: '  Lights ', artist: 'Journey' },
       [
         { mbid: UUID_B, title: 'Lights', artist: 'Other Artist', score: 100 },
-        { mbid: UUID_A, title: ' lights ', artist: ' JOURNEY ', score: 2,
+        { mbid: UUID_A, title: ' lights ', artist: ' JOURNEY ', disambiguation: 'Studio recording', score: 2,
           first_release_date: '1977-06-18', response_digest: 'a'.repeat(64) },
       ],
     );
@@ -118,9 +134,79 @@ describe('resolveRecordingCandidate', () => {
     ])).toMatchObject({ matched: true, selection_reason: 'unique_exact_match' });
   });
 
+  it('prefers supported original-mix evidence over a later unmarked recording and excludes live/bootleg versions', () => {
+    const identity = { title: 'And It Stoned Me', artist: 'Van Morrison' };
+    const result = resolveRecordingCandidate(identity, [
+      { mbid: UUID_A, title: identity.title, artist: identity.artist, disambiguation: 'live at the Roxy',
+        first_release_date: '1989', response_digest: 'a'.repeat(64) },
+      { mbid: UUID_B, title: identity.title, artist: identity.artist, disambiguation: 'original stereo mix',
+        first_release_date: '1970-03', response_digest: 'b'.repeat(64) },
+      { mbid: UUID_C, title: identity.title, artist: identity.artist, disambiguation: '',
+        first_release_date: '1978-11-26', response_digest: 'c'.repeat(64) },
+    ]);
+    expect(result).toMatchObject({ matched: true, mbid: UUID_B, earliest_year: 1970,
+      selection_reason: 'unique_exact_match', exclusion_counts: { live_version: 1 } });
+    expect(resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, [
+      { mbid: UUID_B, title: 'Song', artist: 'Artist', disambiguation: 'bootleg recording', first_release_date: '1970' },
+    ])).toMatchObject({ matched: false, reason: 'no_eligible_recording', exclusion_counts: { bootleg_version: 1 } });
+    expect(resolveRecordingCandidate({ title: 'Song (Bootleg)', artist: 'Artist' }, [
+      { mbid: UUID_A, title: 'Song (Bootleg)', artist: 'Artist', disambiguation: '', first_release_date: '1970' },
+    ])).toMatchObject({ matched: false, reason: 'no_eligible_recording', exclusion_counts: { bootleg_version: 1 } });
+    expect(resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, [
+      { mbid: UUID_A, title: 'Song (Bootleg)', artist: 'Artist', first_release_date: '1970' },
+    ])).toMatchObject({ matched: false, reason: 'no_exact_match' });
+    const originalMix = { mbid: UUID_A, title: 'Song', artist: 'Artist', disambiguation: 'original stereo mix' };
+    expect(resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, [originalMix]))
+      .toMatchObject({ matched: false, reason: 'missing_or_invalid_release_evidence' });
+    expect(resolveRecordingCandidate({ title: 'Song', artist: 'Artist' }, [
+      { ...originalMix, first_release_date: '1970' },
+    ], { status: 'ok', candidates: [{ ...originalMix, first_release_date: '1970' }], pagination: {
+      expected_total: 2, collected_count: 1, attempted_pages: 1, validated_pages: 1, complete: false,
+    } })).toMatchObject({ matched: false, reason: 'incomplete_search_results' });
+  });
+
+  it('requires first-release evidence for unmarked recordings and ignores later live/bootleg compilations', () => {
+    const identity = { title: 'Song', artist: 'Artist' };
+    const roxy = { mbid: UUID_A, ...identity, disambiguation: '', first_release_date: '1970-05', response_digest: 'a'.repeat(64) };
+    const roxyEvidence = releaseEvidence(UUID_A, [release(RELEASE_A, 'Live at the Roxy', '1970-05-10', 'Album', ['Live'])]);
+    const sole = resolveRecordingCandidate(identity, [roxy], completeSearch([roxy]), null,
+      { lookups: new Map([[UUID_A, roxyEvidence]]) });
+    expect(sole).toMatchObject({ matched: false, reason: 'no_eligible_recording',
+      exclusion_counts: { live_first_release: 1 } });
+    expect(sole.release_evidence_required_mbids).toBeUndefined();
+
+    const studio = { mbid: UUID_B, ...identity, disambiguation: '', first_release_date: '1971-02', response_digest: 'b'.repeat(64) };
+    const studioEvidence = releaseEvidence(UUID_B, [
+      release(RELEASE_B, 'Studio Album', '1971-02-03'),
+      release(RELEASE_C, 'Live Bootleg Compilation', '1998-01-01', 'Album', ['Compilation'], 'Bootleg'),
+    ]);
+    expect(resolveRecordingCandidate(identity, [studio], completeSearch([studio]), null,
+      { lookups: new Map([[UUID_B, studioEvidence]]) })).toMatchObject({ matched: true, mbid: UUID_B, earliest_year: 1971 });
+    const combined = resolveRecordingCandidate(identity, [roxy, studio], completeSearch([roxy, studio]), null,
+      { lookups: new Map([[UUID_A, roxyEvidence], [UUID_B, studioEvidence]]) });
+    expect(combined).toMatchObject({ matched: true, mbid: UUID_B, earliest_year: 1971,
+      exclusion_counts: { live_first_release: 1 } });
+  });
+
+  it('abstains on conflicting or incomplete first-release links for an unmarked candidate', () => {
+    const identity = { title: 'Song', artist: 'Artist' };
+    const candidate = { mbid: UUID_A, ...identity, disambiguation: '', first_release_date: '1970', response_digest: 'a'.repeat(64) };
+    const conflicting = releaseEvidence(UUID_A, [
+      release(RELEASE_A, 'Studio Album', '1970-02-02'),
+      release(RELEASE_B, 'Live Album', '1970-03-03', 'Album', ['Live']),
+    ]);
+    expect(resolveRecordingCandidate(identity, [candidate], completeSearch([candidate]), null,
+      { lookups: new Map([[UUID_A, conflicting]]) })).toMatchObject({ matched: false, reason: 'release_evidence_unresolved' });
+    const incomplete = releaseEvidence(UUID_A, [release(RELEASE_A, 'Studio Album', '1970-02-02')], 2);
+    expect(resolveRecordingCandidate(identity, [candidate], completeSearch([candidate]), null,
+      { lookups: new Map([[UUID_A, incomplete]]) })).toMatchObject({ matched: false, reason: 'release_evidence_unresolved' });
+    expect(resolveRecordingCandidate(identity, [candidate], completeSearch([candidate])))
+      .toMatchObject({ matched: false, reason: 'release_evidence_unresolved', release_evidence_required_mbids: [UUID_A] });
+  });
+
   it('selects the earliest release year and is independent of provider order or score', () => {
     const identity = { title: 'Song', artist: 'Artist' };
-    const early = { mbid: UUID_A, title: 'Song', artist: 'Artist', disambiguation: '',
+    const early = { mbid: UUID_A, title: 'Song', artist: 'Artist', disambiguation: 'Studio recording',
       first_release_date: '1977-06', response_digest: 'a'.repeat(64), score: 1 };
     const late = { mbid: UUID_B, title: 'Song', artist: 'Artist', disambiguation: 'Studio',
       first_release_date: '1978', response_digest: 'b'.repeat(64), score: 100 };
@@ -140,8 +226,8 @@ describe('resolveRecordingCandidate', () => {
   it('treats dates within the same year as a Genre-richness tie', () => {
     const identity = { title: 'Song', artist: 'Artist' };
     const pair = [
-      { mbid: UUID_A, title: 'Song', artist: 'Artist', first_release_date: '2000-01-01' },
-      { mbid: UUID_B, title: 'Song', artist: 'Artist', first_release_date: '2000-12-31' },
+      { mbid: UUID_A, title: 'Song', artist: 'Artist', disambiguation: 'Studio recording', first_release_date: '2000-01-01' },
+      { mbid: UUID_B, title: 'Song', artist: 'Artist', disambiguation: 'Studio recording', first_release_date: '2000-12-31' },
     ];
     const incomplete = resolveRecordingCandidate(identity, pair, null, [{ id: 1, name: 'Rock' }]);
     expect(incomplete).toMatchObject({ matched: false, reason: 'genre_richness_incomplete', earliest_year: 2000,
@@ -151,13 +237,13 @@ describe('resolveRecordingCandidate', () => {
   it('lets missing dates coexist with a dated eligible candidate and abstains when all dates are missing or invalid', () => {
     const identity = { title: 'Song', artist: 'Artist' };
     const dated = resolveRecordingCandidate(identity, [
-      { mbid: UUID_A, title: 'Song', artist: 'Artist' },
-      { mbid: UUID_B, title: 'Song', artist: 'Artist', first_release_date: '1978-11-29' },
+      { mbid: UUID_A, title: 'Song', artist: 'Artist', disambiguation: 'Studio recording' },
+      { mbid: UUID_B, title: 'Song', artist: 'Artist', disambiguation: 'Studio recording', first_release_date: '1978-11-29' },
     ]);
     expect(dated).toMatchObject({ matched: true, mbid: UUID_B, earliest_year: 1978, missing_release_date_count: 1,
       selection_reason: 'earliest_release_year' });
     for (const values of [[undefined, undefined], ['1977-02-29', '1977-13']]) {
-      const candidates = values.map((date, index) => ({ mbid: index ? UUID_B : UUID_A, title: 'Song', artist: 'Artist', first_release_date: date }));
+      const candidates = values.map((date, index) => ({ mbid: index ? UUID_B : UUID_A, title: 'Song', artist: 'Artist', disambiguation: 'Studio recording', first_release_date: date }));
       expect(resolveRecordingCandidate(identity, candidates)).toMatchObject({ matched: false,
         reason: 'missing_or_invalid_release_evidence', selection_reason: 'no_dated_eligible_recording', earliest_year: null });
     }
@@ -165,7 +251,7 @@ describe('resolveRecordingCandidate', () => {
 
   it('does not inflate tied-year richness with duplicate, unknown, tag, or Vibe evidence', () => {
     const identity = { title: 'Lights', artist: 'Journey' };
-    const candidates = [UUID_A, UUID_B].map(mbid => ({ mbid, title: 'Lights', artist: 'Journey', first_release_date: mbid === UUID_A ? '1978-01-01' : '1978-12-31' }));
+    const candidates = [UUID_A, UUID_B].map(mbid => ({ mbid, title: 'Lights', artist: 'Journey', disambiguation: 'Studio recording', first_release_date: mbid === UUID_A ? '1978-01-01' : '1978-12-31' }));
     const digest = 'c'.repeat(64);
     const lookups = new Map([
       [UUID_A, { status: 'ok', recording: { mbid: UUID_A, genres: [
@@ -190,7 +276,7 @@ describe('resolveRecordingCandidate', () => {
 
   it('selects by Genre richness when counts differ and by canonical MBID when equal, independent of order', () => {
     const identity = { title: 'Lights', artist: 'Journey' };
-    const candidates = [UUID_B, UUID_A].map(mbid => ({ mbid, title: 'Lights', artist: 'Journey', first_release_date: '1978' }));
+    const candidates = [UUID_B, UUID_A].map(mbid => ({ mbid, title: 'Lights', artist: 'Journey', disambiguation: 'Studio recording', first_release_date: '1978' }));
     const digest = 'd'.repeat(64);
     const definitions = [{ id: 1, name: 'Rock' }, { id: 2, name: 'Country' }];
     const lookup = (mbid, names) => ({ status: 'ok', recording: { mbid, genres: names.map(name => ({
@@ -213,7 +299,7 @@ describe('resolveRecordingCandidate', () => {
       { mbid: UUID_A, title: 'Lights', artist: 'Journey', first_release_date: '1970', disambiguation: 'Music-video version' },
       { mbid: UUID_B, title: 'Lights', artist: 'Journey', first_release_date: '1977', disambiguation: 'Re‐recorded version' },
       { mbid: UUID_C, title: 'Lights', artist: 'Journey', first_release_date: '1978', disambiguation: 'Unrecognized catalog note' },
-      { mbid: 'd4444444-4444-4444-8444-444444444444', title: 'Lights', artist: 'Journey', first_release_date: '1979', disambiguation: '' },
+      { mbid: 'd4444444-4444-4444-8444-444444444444', title: 'Lights', artist: 'Journey', first_release_date: '1979', disambiguation: 'Studio recording' },
     ]);
     expect(result).toMatchObject({ matched: true, mbid: 'd4444444-4444-4444-8444-444444444444',
       exclusion_counts: { music_video_version: 1, rerecorded_version: 1, unresolved_version_ambiguity: 1 } });
@@ -222,7 +308,7 @@ describe('resolveRecordingCandidate', () => {
   it('ignores earlier wrong-artist candidates and does not accept incomplete search results', () => {
     const identity = { title: 'Song', artist: 'Artist' };
     const wrongArtist = { mbid: UUID_A, title: 'Song', artist: 'Other', first_release_date: '1950' };
-    const valid = { mbid: UUID_B, title: 'Song', artist: 'Artist', first_release_date: '1977' };
+    const valid = { mbid: UUID_B, title: 'Song', artist: 'Artist', disambiguation: 'Studio recording', first_release_date: '1977' };
     expect(resolveRecordingCandidate(identity, [wrongArtist, valid]))
       .toMatchObject({ matched: true, mbid: UUID_B, selection_reason: 'unique_exact_match' });
     expect(resolveRecordingCandidate(identity, [valid], { status: 'ok', candidates: [valid], pagination: {
@@ -540,13 +626,33 @@ describe('buildEnrichmentPreview', () => {
   });
 
   it('allows Gemini-only null MBID evidence but rejects factual evidence without a real approved MBID', () => {
-    const item = reference('Gemini', 'gemini-year', 1978);
+    const target = { ...snapshot(), title: 'Identity-bound song', artist: 'Identity-bound artist' };
+    const item = { ...reference('Gemini', 'gemini-year', 1978), song_identity: { song_id: target.id,
+      title: target.title, artist: target.artist } };
     const ev = evidence({ mbid: null, scalars: { release_year: [item] } });
     const reviewed = decision({ mbid: null, scalars: { release_year: item } });
-    expect(buildEnrichmentPreview(snapshot(), ev, reviewed, definitions()).scalar_changes)
-      .toMatchObject([{ field: 'release_year', after: 1978, evidence: { source: 'Gemini' } }]);
-    expect(() => buildEnrichmentPreview(snapshot(), { ...ev, scalars: { release_year: [reference('MusicBrainz', 'factual', 1978)] } }, reviewed, definitions()))
+    expect(buildEnrichmentPreview(target, ev, reviewed, definitions()).scalar_changes)
+      .toMatchObject([{ field: 'release_year', after: 1978, evidence: { source: 'Gemini', song_identity: item.song_identity } }]);
+    const wrongSong = { ...item, song_identity: { ...item.song_identity, song_id: 999 } };
+    expect(() => buildEnrichmentPreview(target, { ...ev, scalars: { release_year: [wrongSong] } },
+      decision({ mbid: null, scalars: { release_year: wrongSong } }), definitions()))
+      .toThrowError(expect.objectContaining({ code: 'EVIDENCE_NOT_APPROVED' }));
+    const wrongSelection = { ...item, song_identity: { ...item.song_identity, title: 'Other title' } };
+    expect(() => buildEnrichmentPreview(target, ev,
+      decision({ mbid: null, scalars: { release_year: wrongSelection } }), definitions()))
+      .toThrowError(expect.objectContaining({ code: 'EVIDENCE_NOT_APPROVED' }));
+    expect(() => buildEnrichmentPreview(target, { ...ev, scalars: { release_year: [reference('MusicBrainz', 'factual', 1978)] } }, reviewed, definitions()))
       .toThrow(/exact evidence MBID/);
+  });
+
+  it('ignores malformed Gemini labels while validating a different valid null-MBID tag selection', () => {
+    const target = { ...snapshot(), title: 'Identity-bound song', artist: 'Identity-bound artist' };
+    const identity = { song_id: target.id, title: target.title, artist: target.artist };
+    const malformed = { ...tagReference('Gemini', 'bad-label', ''), song_identity: identity };
+    const valid = { ...tagReference('Gemini', 'valid-label', 'Country'), song_identity: identity };
+    const result = buildEnrichmentPreview(target, evidence({ mbid: null, genres: [malformed, valid] }),
+      decision({ mbid: null, genres: ['Country'] }), definitions());
+    expect(result.tag_additions.genres.map(item => item.name)).toEqual(['Country']);
   });
 
   it('requires explicit selection for conflicting BPM and key evidence and rejects absent selections', () => {

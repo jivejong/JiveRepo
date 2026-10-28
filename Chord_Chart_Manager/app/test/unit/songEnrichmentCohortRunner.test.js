@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url);
 const { FACTUAL_ATTEMPTS_PER_SONG, hashJson, runSongEnrichmentCohort } = require('../../server/songEnrichmentCohortRunner.js');
 const { createSongEnrichmentProviderClient } = require('../../server/songEnrichmentProviders.js');
 const { main, parseArgs, providerAttemptBudget } = require('../../scripts/acquire-song-enrichment-cohort.cjs');
+const { buildBestEffortDecisions, buildManifest, normalizeReports } = require('../../server/operatorEnrichmentWorkflow.js');
 const { captureReadOnlyBaseline, runPreview } = require('../../scripts/preview-existing-song-enrichment.cjs');
 const { preparePreview, executePreparedPreview } = require('../../scripts/preview-gemini-fallback.cjs');
 const project = path.resolve(import.meta.dirname, '../../..');
@@ -42,19 +43,21 @@ function readPool(currentSong, definitions) {
   }, release() {} }) };
 }
 function factual(song, status = 'ok') {
+  const matched = status === 'ok';
   return { report_version: 1, report_type: 'existing_song_enrichment_read_only_preview',
     selected_song_ids: [song.id], database_writes: false, approved_apply_manifest: null,
     songs: [{ song_id: song.id, identity: { title: song.title, artist: song.artist },
-      recording: { search_status: status, match: { matched: status === 'ok', mbid: status === 'ok' ? mbid : null } },
-      evidence: { mbid: status === 'ok' ? mbid : null,
+      recording: { search_status: status, match: { matched, mbid: matched ? mbid : null } },
+      evidence: matched ? { mbid,
         scalars: { release_year: [{ value: 1973, source: 'MusicBrainz', response_digest: digest,
           submission_reference: `recording:${mbid}` }], original_key: [], bpm: [] },
-        genres: [{ name: 'Blues Rock', source: 'MusicBrainz', response_digest: digest }], vibes: [] },
+        genres: [{ name: 'Blues Rock', source: 'MusicBrainz', response_digest: digest }], vibes: [] } : null,
       human_review_required: true, approved_preview: null }] };
 }
 function gemini(song) {
   return { format_version: 1, mode: 'explicit_gemini_missing_metadata_fallback', selected_song_id: song.id,
     baseline: { title: song.title, artist: song.artist },
+    requested_missing_fields: [],
     gemini_suggestions: { status: 'ok', response_digest: 'b'.repeat(64), model_id: 'gemini-3.1-flash-lite',
       prompt_version: 'missing-metadata-fallback-v2', schema_version: 'missing-metadata-schema-v2',
       scalars: { release_year: [], original_key: [], bpm: [] }, genres: [], vibes: [] },
@@ -75,6 +78,202 @@ describe('resumable evidence cohort runner', () => {
       '--cache-dir', '.\\backups\\cache'];
     expect(() => parseArgs(args)).toThrow(expect.objectContaining({ code: 'LIVE_READ_ONLY_OPT_IN_REQUIRED' }));
     expect(parseArgs(['--live-read-only', ...args]).liveReadOnly).toBe(true);
+    expect(parseArgs(['--live-read-only', '--gemini-only', ...args]).acquisitionMode)
+      .toBe('gemini_only_after_factual_provider_failure');
+    const recoveryArgs = ['--manifest', '.\\backups\\cohort.json', '--output-dir', '.\\backups\\run',
+      '--cache-dir', '.\\backups\\cache', '--gemini-recovery-authorization', '.\\backups\\recovery.json'];
+    expect(parseArgs(['--live-read-only', '--gemini-only', ...recoveryArgs]).geminiRecoveryAuthorization)
+      .toBe('.\\backups\\recovery.json');
+    expect(() => parseArgs(['--live-read-only', ...recoveryArgs]))
+      .toThrow(expect.objectContaining({ code: 'GEMINI_RECOVERY_AUTHORIZATION_INVALID' }));
+  });
+
+  it('runs Gemini connectivity preflight before database access or spend-ledger initialization', async () => {
+    const { songs, manifest } = fixture(1, 799), root = await rootDir(), events = [];
+    const manifestPath = path.join(root, 'manifest-v1.json');
+    await fs.writeFile(manifestPath, JSON.stringify(manifest), { flag: 'wx' });
+    const outputDirectory = path.join(root, 'run'), cacheDirectory = path.join(root, 'cache');
+    const denied = Object.assign(new Error('safe preflight stop'), { code: 'GEMINI_EGRESS_ENVIRONMENT_BLOCKED' });
+    const pool = { connect: async () => { events.push('database'); throw new Error('database must not be reached'); } };
+    await expect(main(['--live-read-only', '--manifest', manifestPath, '--output-dir', outputDirectory,
+      '--cache-dir', cacheDirectory], {
+      pool, config: { databaseUrl: 'postgresql://synthetic@localhost/chords',
+        musicBrainzUserAgent: 'ChordChartManager/1.0.0 (offline test)', apiKey: 'synthetic-only-key' },
+      geminiConnectivityPreflight: async () => { events.push('preflight'); throw denied; },
+      spendLedger: { async initialize() { events.push('spend_initialize'); }, async reserve() { events.push('spend_reserve'); } },
+      cache: { async verifyIntegrity() { events.push('cache'); return { sha256: 'd'.repeat(64), entries: 0 }; } },
+      transport: async () => { events.push('transport'); return {}; },
+    })).rejects.toMatchObject({ code: 'GEMINI_EGRESS_ENVIRONMENT_BLOCKED' });
+    expect(events).toEqual(['preflight']);
+    expect(songs).toHaveLength(1);
+  });
+
+  it('runs Gemini-only after the factual failure guard, records no factual attempts, and binds the mode', async () => {
+    const { songs, baseline, manifest } = fixture(1, 781), root = await rootDir();
+    manifest.cohort_id = 'lite-gemini-only-2026-10';
+    const song = songs[0];
+    song.updated_at = '2026-10-13T03:17:00.000000Z';
+    let activeReserve = null;
+    const reserved = [], providers = [];
+    const client = createSongEnrichmentProviderClient({
+      cache: { get: async () => null, set: async () => true },
+      beforeAttempt: intent => { reserved.push(intent.provider); return activeReserve ? activeReserve(intent) : false; },
+      transport: async request => {
+        providers.push(request.url.includes('generativelanguage.googleapis.com') ? 'Gemini' : 'non-Gemini');
+        expect(request.body.byteLength).toBeLessThanOrEqual(16_384);
+        const prompt = request.body.toString('utf8');
+        const envelope = JSON.parse(prompt);
+        const payload = JSON.parse(envelope.input.slice(envelope.input.indexOf('\n') + 1));
+        expect(payload.recording).toEqual({ title: song.title, artist: song.artist, context: {} });
+        expect(payload.requested_missing_fields).toEqual(['release_year', 'original_key', 'bpm']);
+        expect(payload.allowed_names).toEqual({ genres: ['Blues Rock'], vibes: ['Rocker'] });
+        expect(prompt).not.toContain('PRIVATE_CHART_SENTINEL');
+        expect(prompt).not.toContain('PRIVATE_LYRICS_SENTINEL');
+        expect(envelope.generation_config.max_output_tokens).toBe(1_024);
+        return { status: 200, headers: {}, body: Buffer.from(JSON.stringify({ status: 'completed',
+          steps: [{ type: 'model_output', content: [{ type: 'text', text: JSON.stringify({ release_year: 1978,
+            original_key: { key_key: 'G', key_scale: 'major' }, bpm: 92, genres: ['Blues Rock'], vibes: ['Rocker'] }) }] }],
+          usage: { total_input_tokens: 20, total_output_tokens: 18, total_tokens: 38 } })) };
+      },
+      config: { maxAttempts: 1, maxGeminiAttempts: 1, timeoutMs: 10_000, maxResponseBytes: 1_048_576,
+        geminiMaxInputBytes: 16_384, geminiMaxOutputTokens: 1_024, maxRetryAfterMs: 5_000, retryDelayMs: 1_000,
+        musicBrainzMinimumIntervalMs: 1_000, musicBrainzUserAgent: 'ChordChartManager/1.0.0 (test)' },
+    });
+    const status = { report_version: 1, report_type: 'factual_acquisition_status', database_writes: false,
+      selected_song_ids: [song.id], approved_apply_manifest: null,
+      songs: [{ song_id: song.id, identity: { title: song.title, artist: song.artist },
+        acquisition: { status: 'not_attempted_due_to_provider_failure', reason: 'factual_provider_failure_guard' },
+        human_review_required: true, approved_preview: null }] };
+    let normalizedModeEvidence = 'unchecked', decisionStage = 'not-started', runResult, runFailure = null;
+    const recoveryAuthorizationSha256 = 'c'.repeat(64);
+    const recoveryRunId = 'e'.repeat(64);
+    try { runResult = await runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: client,
+      acquisitionMode: 'gemini_only_after_factual_provider_failure', getCacheHash: staticCacheHash,
+      recoveryAuthorizationSha256, recoveryRunId,
+      processBatch: noProcess,
+      acquireFactual: async () => { throw new Error('factual provider path must not run'); },
+      acquireGemini: async ({ song: target, factualReport, acceptedRecordingIdentity, reserveAttempt }) => {
+        expect(factualReport).toEqual(status);
+        expect(acceptedRecordingIdentity).toBe(false);
+        activeReserve = reserveAttempt;
+        try {
+          const prepared = await preparePreview({ pool: readPool({ ...target, chart_content: 'PRIVATE_CHART_SENTINEL',
+            lyrics: 'PRIVATE_LYRICS_SENTINEL' }, baseline.definitions), songId: target.id,
+            factualInput: factualReport, expectedBaseline: { songs: [target], definitions: baseline.definitions },
+            automaticCohort: true, acceptedRecordingIdentity: false });
+          expect(prepared.missing).toEqual(['release_year', 'original_key', 'bpm']);
+          const executed = await executePreparedPreview({ prepared, providerClient: client, apiKey: 'synthetic-key' });
+          try {
+            const sourceReports = normalizeReports(target, [
+            { path: 'factual-status.json', bytes: Buffer.from(JSON.stringify(factualReport)), document: factualReport },
+            { path: 'gemini-report.json', bytes: Buffer.from(JSON.stringify(executed.report)), document: executed.report },
+            ]);
+            decisionStage = 'decision-build';
+            const decisions = buildBestEffortDecisions({ baseline: { songs: [target], definitions: baseline.definitions },
+              sourceReports: { [target.id]: sourceReports }, definitions: baseline.definitions });
+            decisionStage = 'manifest-build';
+            const applyPreview = buildManifest({ baseline: { songs: [target], definitions: baseline.definitions }, decisions: decisions.decisions,
+              sourceReports: { [target.id]: sourceReports }, operationId: 'b4a4ba98-cdd2-46d5-b5c2-c15095b49bbf', definitions: baseline.definitions });
+            decisionStage = 'approved-mbid';
+            expect(applyPreview.songs[0].preview.approved_mbid).toBeNull();
+            decisionStage = 'primary-proposal';
+            expect(applyPreview.songs[0].preview.primary_proposal).toBeNull();
+            decisionStage = 'scalar-fields';
+            expect(applyPreview.songs[0].preview.scalar_changes.map(change => change.field)).toEqual(['bpm', 'original_key', 'release_year']);
+            decisionStage = 'genre-tags';
+            expect(applyPreview.songs[0].preview.tag_additions.genres.map(tag => tag.name)).toEqual(['Blues Rock']);
+            decisionStage = 'vibe-tags';
+            expect(applyPreview.songs[0].preview.tag_additions.vibes.map(tag => tag.name)).toEqual(['Rocker']);
+            decisionStage = 'secondary-genre';
+            expect(applyPreview.songs[0].preview.tag_additions.genres.every(tag => !tag.is_primary)).toBe(true);
+            normalizedModeEvidence = 'accepted';
+          } catch (error) { normalizedModeEvidence = `${decisionStage}:${error.code || error.name || 'untyped'}`; }
+          return { geminiReport: { ...executed.report, attempts: { total: executed.attempts.total, gemini: executed.attempts.gemini } } };
+        } finally { activeReserve = null; }
+      } }); } catch (error) { runFailure = error.code || 'untyped'; }
+    expect(runFailure).toBeNull();
+    expect(normalizedModeEvidence).toBe('accepted');
+    const result = runResult;
+    const checkpoint = JSON.parse(await fs.readFile(path.join(root, 'checkpoint-v1.json'), 'utf8')).checkpoint;
+    const savedFactual = JSON.parse(await fs.readFile(checkpoint.songs[0].evidence.factual, 'utf8'));
+    const savedGemini = JSON.parse(await fs.readFile(checkpoint.songs[0].evidence.gemini, 'utf8'));
+    expect(providers).toEqual(['Gemini']);
+    expect(reserved).toEqual(['Gemini']);
+    expect(result.factualAttempts).toBe(0);
+    expect(result.geminiAttempts).toBe(1);
+    expect(checkpoint.binding.acquisition_mode).toBe('gemini_only_after_factual_provider_failure');
+    expect(checkpoint.binding.recovery_authorization_sha256).toBe(recoveryAuthorizationSha256);
+    expect(checkpoint.binding.recovery_run_id).toBe(recoveryRunId);
+    expect(checkpoint.songs[0].factual_attempts).toBe(0);
+    expect(savedFactual.songs[0].acquisition.status).toBe('not_attempted_due_to_provider_failure');
+    expect(savedGemini.factual_evidence.mbid).toBeUndefined();
+    expect(savedGemini.gemini_suggestions.scalars.release_year[0]).toMatchObject({ value: 1978, source: 'Gemini' });
+    expect(checkpoint.songs[0].exception_codes).toContain('factual_acquisition_not_attempted_due_to_provider_failure');
+    let redispatches = 0;
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: client,
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async () => { redispatches += 1; return {}; },
+      acquireGemini: async () => { redispatches += 1; return {}; } }))
+      .rejects.toMatchObject({ code: 'CHECKPOINT_UNSAFE_RESUME' });
+    expect(redispatches).toBe(0);
+
+    const envelopePath = path.join(root, 'checkpoint-v1.json');
+    const partialEnvelope = JSON.parse(await fs.readFile(envelopePath, 'utf8'));
+    const partial = partialEnvelope.checkpoint;
+    const partialSong = partial.songs[0];
+    delete partialSong.evidence.gemini;
+    delete partialSong.evidence_hashes.gemini;
+    partialSong.cache_response_hashes = [];
+    partialSong.gemini_attempts = 0;
+    partialSong.completed_stage = 'factual';
+    partial.gemini_attempts = 0;
+    partial.batches = [];
+    partial.exceptions = partial.songs.flatMap(item => item.exception_codes.map(code => ({ song_id: item.song_id, code })));
+    delete partial.fatal_stop;
+    delete partial.stop_reason;
+    delete partial.in_flight;
+    delete partial.active_stage;
+    delete partial.active_song_id;
+    await fs.writeFile(envelopePath, JSON.stringify({ checkpoint: partial, sha256: hashJson(partial) }));
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: client,
+      acquisitionMode: 'gemini_only_after_factual_provider_failure', recoveryAuthorizationSha256: 'd'.repeat(64),
+      recoveryRunId,
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async () => { throw new Error('must not reacquire factual'); },
+      acquireGemini: async () => { throw new Error('must not redispatch on changed authorization'); } }))
+      .rejects.toMatchObject({ code: 'COHORT_DRIFT' });
+    let resumedGeminiCalls = 0;
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: client,
+      acquisitionMode: 'gemini_only_after_factual_provider_failure', getCacheHash: staticCacheHash,
+      recoveryAuthorizationSha256,
+      recoveryRunId,
+      processBatch: noProcess, acquireFactual: async () => { throw new Error('must not reacquire factual'); },
+      acquireGemini: async () => { resumedGeminiCalls += 1; throw new Error('synthetic interruption'); } }))
+      .rejects.toMatchObject({ code: 'ACQUISITION_FAILED' });
+    expect(resumedGeminiCalls).toBe(1);
+  });
+
+  it('treats connect-time Gemini EACCES as a fatal local stop, not a provider outage', async () => {
+    const { songs, baseline, manifest } = fixture(2, 811), root = await rootDir();
+    let geminiCalls = 0;
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async ({ song }) => ({ factualReport: factual(song, 'absent') }),
+      acquireGemini: async ({ song, reserveAttempt }) => {
+        geminiCalls += 1;
+        await reserveAttempt({ provider: 'Gemini', operation: 'missing_metadata_fallback', gemini: true });
+        const report = gemini(song);
+        report.gemini_suggestions.status = 'transient_error';
+        report.gemini_suggestions.failure_details = { failure_phase: 'request', transport_error_code: 'EACCES', https_started: true };
+        return { geminiReport: report };
+      } })).rejects.toMatchObject({ code: 'GEMINI_EGRESS_ENVIRONMENT_BLOCKED', stage: 'gemini_validation' });
+    const checkpoint = JSON.parse(await fs.readFile(path.join(root, 'checkpoint-v1.json'), 'utf8')).checkpoint;
+    expect(geminiCalls).toBe(1);
+    expect(checkpoint.gemini_attempts).toBe(1);
+    expect(checkpoint.fatal_stop).toEqual({ reason: 'GEMINI_EGRESS_ENVIRONMENT_BLOCKED', stage: 'gemini_validation',
+      song_id: songs[0].id });
+    expect(checkpoint.songs[0].exception_codes).not.toContain('provider_gemini_transient_failure');
+    expect(checkpoint.songs[1].gemini_attempts).toBe(0);
   });
 
   it('accepts the default factual cap and rejects malformed overrides before database or provider access', async () => {
@@ -194,19 +393,30 @@ describe('resumable evidence cohort runner', () => {
     await fs.writeFile(manifestPath, JSON.stringify({ cohort_manifest_version: 1, cohort_id: 'synthetic-unresolved-preview',
       songs: [{ song_id: song.id, title: song.title, artist: song.artist }] }), { flag: 'wx' });
     let transportCalls = 0;
+    const spendEvents = [];
     const result = await main(['--live-read-only', '--manifest', manifestPath, '--output-dir', outputDirectory,
       '--cache-dir', cacheDirectory], {
       pool: readOnlyPool, PoolClass, config: { databaseUrl: 'postgresql://synthetic@localhost/chords',
-        musicBrainzUserAgent: 'ChordChartManager/1.0.0 (offline test)' },
+        musicBrainzUserAgent: 'ChordChartManager/1.0.0 (offline test)', apiKey: 'synthetic-only-key' },
+      geminiConnectivityPreflight: async () => ({ dns: 'ok', tls: 'ok', http_status: 404 }),
+      spendLedger: { async initialize(config) { expect(config.model).toBe('gemini-3.1-flash-lite'); },
+        async reserve({ cohortId, songId }) { spendEvents.push({ cohortId, songId }); } },
       cache: { get: async () => null, set: async () => true, verifyIntegrity: async () => ({ sha256: 'd'.repeat(64), entries: 0 }) },
       transport: async () => {
         transportCalls += 1;
-        return { status: 200, body: Buffer.from('{"count":0,"offset":0,"recordings":[]}') };
+        const gemini = transportCalls > 1;
+        if (gemini) expect(spendEvents).toHaveLength(1);
+        const body = gemini ? { status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text: JSON.stringify({
+          release_year: null, original_key: null, bpm: null, genres: [], vibes: [],
+        }) }] }], usage: { total_input_tokens: 10, total_output_tokens: 10, total_tokens: 20 } }
+          : { count: 0, offset: 0, recordings: [] };
+        return { status: 200, body: Buffer.from(JSON.stringify(body)) };
       },
     });
-    expect(transportCalls).toBe(1);
+    expect(transportCalls).toBe(2);
+    expect(spendEvents).toEqual([{ cohortId: 'synthetic-unresolved-preview', songId: song.id }]);
     expect(result.factualAttempts).toBe(1);
-    expect(result.geminiAttempts).toBe(0);
+    expect(result.geminiAttempts).toBe(1);
     expect(result.exceptions).toContainEqual({ song_id: song.id, code: 'recording_match_unresolved' });
     const manifest = JSON.parse(await fs.readFile(result.batches[0].manifest_path, 'utf8'));
     expect(manifest.songs).toHaveLength(1);
@@ -521,14 +731,12 @@ describe('resumable evidence cohort runner', () => {
     expect(failed.reservationWasDurable).toBe(true);
     expect(failedCheckpoint.factual_attempts).toBe(1);
     expect(failedCheckpoint.gemini_attempts).toBe(1);
-    expect(failedCheckpoint.fatal_stop).toEqual({ reason: 'PROVIDER_OUTAGE', stage: 'gemini_validation', song_id: 736 });
+    expect(failedCheckpoint.fatal_stop).toBeUndefined();
     expect(JSON.stringify(failedCheckpoint)).not.toContain('private synthetic failure');
-    expect(failed.failure).toEqual({ code: 'PROVIDER_OUTAGE', stage: 'gemini_validation' });
-    expect(failed.result).toBeUndefined();
-    await expect(runSongEnrichmentCohort({ ...fixture(1, 736),
-      directory: failed.root, providerClient: {}, getCacheHash: staticCacheHash, processBatch: noProcess,
-      acquireFactual: async () => { throw new Error('must not redispatch'); }, acquireGemini: async () => ({}) }))
-      .rejects.toMatchObject({ code: 'CHECKPOINT_UNSAFE_RESUME' });
+    expect(failed.failure).toBeUndefined();
+    expect(failed.result.geminiAttempts).toBe(1);
+    expect(failed.result.exceptions).toContainEqual({ song_id: 736, code: 'provider_gemini_transient_failure' });
+    expect(failedCheckpoint.songs[0].exception_codes).toContain('provider_gemini_transient_failure');
 
     const accepted = await runScenario({ transport: async () => ({ status: 200, headers: {}, body: Buffer.from(JSON.stringify({
       status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text: JSON.stringify({
@@ -611,24 +819,233 @@ describe('resumable evidence cohort runner', () => {
     expect(JSON.stringify(saved)).not.toContain('private preview details');
   });
 
-  it('persists provider-wide stops across resume and rejects evidence containing private raw fields', async () => {
-    const { songs, baseline, manifest } = fixture(), root = await rootDir();
-    const processBatch = async () => { throw new Error('must not preview failed evidence'); };
-    let calls = 0;
-    const outage = { manifest, baseline, directory: root, providerClient: {},
-      getCacheHash: staticCacheHash, processBatch,
-      acquireFactual: async ({ song }) => { calls += 1; return { factualReport: factual(song, 'transient_error') }; } };
-    await expect(runSongEnrichmentCohort(outage)).rejects.toMatchObject({ code: 'PROVIDER_OUTAGE' });
-    expect(calls).toBe(1);
-    await expect(runSongEnrichmentCohort(outage)).rejects.toMatchObject({ code: 'CHECKPOINT_UNSAFE_RESUME' });
-    expect(calls).toBe(1);
-    const next = await rootDir();
-    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: next, providerClient: {},
-      getCacheHash: staticCacheHash, processBatch,
+  it('continues to the next song after one song-level transient provider failure', async () => {
+    const { songs, baseline, manifest } = fixture(2), root = await rootDir();
+    const dispatched = [];
+    const result = await runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async ({ song, reserveAttempt }) => {
+        dispatched.push(song.id);
+        await reserveAttempt({ provider: 'MusicBrainz', operation: 'recording_search' });
+        return { factualReport: factual(song, song.id === songs[0].id ? 'transient_error' : 'ok') };
+      }, acquireGemini: async () => ({ skipped: true }) });
+    const checkpoint = JSON.parse(await fs.readFile(path.join(root, 'checkpoint-v1.json'), 'utf8')).checkpoint;
+    expect(dispatched).toEqual(songs.map(song => song.id));
+    expect(result.factualAttempts).toBe(2);
+    expect(result.exceptions).toContainEqual({ song_id: songs[0].id, code: 'provider_musicbrainz_transient_failure' });
+    expect(checkpoint.songs[0].exception_codes).toContain('provider_musicbrainz_transient_failure');
+    expect(checkpoint.fatal_stop).toBeUndefined();
+    expect(checkpoint.batches[0].completed_stage).toBe('preview');
+    expect(checkpoint.songs.every(song => song.completed_stage === 'preview')).toBe(true);
+  });
+
+  it('requests one Gemini fallback for an unresolved factual identity and saves the acknowledged report', async () => {
+    const { songs, baseline, manifest } = fixture(1), root = await rootDir();
+    let geminiCalls = 0;
+    const result = await runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async ({ song, reserveAttempt }) => {
+        await reserveAttempt({ provider: 'MusicBrainz', operation: 'recording_search' });
+        return { factualReport: factual(song, 'absent') };
+      },
+      acquireGemini: async ({ song, reserveAttempt }) => {
+        geminiCalls += 1;
+        await reserveAttempt({ provider: 'Gemini', operation: 'missing_metadata_fallback', gemini: true });
+        return { geminiReport: gemini(song) };
+      } });
+    const checkpoint = JSON.parse(await fs.readFile(path.join(root, 'checkpoint-v1.json'), 'utf8')).checkpoint;
+    expect(geminiCalls).toBe(1);
+    expect(result.geminiAttempts).toBe(1);
+    expect(checkpoint.songs[0].gemini_attempts).toBe(1);
+    expect(checkpoint.songs[0].completed_stage).toBe('preview');
+    expect(checkpoint.songs[0].evidence.gemini).toMatch(/-gemini-v1\.json$/);
+    expect(checkpoint.fatal_stop).toBeUndefined();
+  });
+
+  it('requests provisional factual fields from Gemini in the cohort path when B1 identity is not accepted', async () => {
+    const { songs, baseline } = fixture(1), song = songs[0];
+    const saved = factual(song, 'ok');
+    saved.songs[0].scalar_candidates = Object.fromEntries(['release_year', 'original_key', 'bpm'].map(field => [field,
+      { current_value: null, state: field === 'release_year' ? 'unapproved_candidates' : 'no_candidate',
+        candidates: field === 'release_year' ? [{ value: 1973, source: 'MusicBrainz', response_digest: digest,
+          submission_id: `recording:${mbid}` }] : [], conflicting_evidence: false }]));
+    const prepared = await preparePreview({ pool: readPool(song, baseline.definitions), songId: song.id,
+      factualInput: saved, automaticCohort: true, acceptedRecordingIdentity: false });
+    expect(prepared.missing).toContain('release_year');
+    expect(prepared.requestFactualEvidence).toBeNull();
+    let captured;
+    await executePreparedPreview({ prepared, apiKey: 'synthetic-only-key', providerClient: {
+      async requestGeminiTags(args) {
+        captured = args;
+        return { status: 'ok', response_digest: 'b'.repeat(64), model_id: 'gemini-3.1-flash-lite',
+          prompt_version: 'missing-metadata-fallback-v2', schema_version: 'missing-metadata-schema-v2',
+          scalars: { release_year: [], original_key: [], bpm: [] }, genres: [], vibes: [] };
+      }, getAttemptCounts: () => ({ total: 1, gemini: 1 }),
+    } });
+    expect(captured.requestedFields).toContain('release_year');
+    expect(captured.factualEvidence).toBeNull();
+  });
+
+  it('records upstream invalid_response as a charged song exception and continues', async () => {
+    const { songs, baseline, manifest } = fixture(2), root = await rootDir();
+    const dispatched = [];
+    const result = await runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async ({ song, reserveAttempt }) => {
+        dispatched.push(song.id);
+        await reserveAttempt({ provider: 'MusicBrainz', operation: 'recording_search' });
+        return { factualReport: factual(song, song.id === songs[0].id ? 'invalid_response' : 'ok') };
+      }, acquireGemini: async () => ({ skipped: true }) });
+    const envelope = JSON.parse(await fs.readFile(path.join(root, 'checkpoint-v1.json'), 'utf8'));
+    const checkpoint = envelope.checkpoint;
+    expect(dispatched).toEqual(songs.map(song => song.id));
+    expect(result.factualAttempts).toBe(2);
+    expect(result.exceptions).toContainEqual({ song_id: songs[0].id, code: 'provider_musicbrainz_invalid_response' });
+    expect(checkpoint.songs[0].factual_attempts).toBe(1);
+    expect(checkpoint.songs[0].completed_stage).toBe('preview');
+    expect(checkpoint.fatal_stop).toBeUndefined();
+    expect(envelope.sha256).toBe(hashJson(checkpoint));
+  });
+
+  it('stops after invalid_response from the same provider on two consecutive songs', async () => {
+    const { songs, baseline, manifest } = fixture(3), root = await rootDir();
+    const dispatched = [];
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async ({ song, reserveAttempt }) => {
+        dispatched.push(song.id);
+        await reserveAttempt({ provider: 'MusicBrainz', operation: 'recording_search' });
+        return { factualReport: factual(song, song.id === songs[2].id ? 'ok' : 'invalid_response') };
+      } })).rejects.toMatchObject({ code: 'PROVIDER_OUTAGE', stage: 'factual_validation' });
+    const envelope = JSON.parse(await fs.readFile(path.join(root, 'checkpoint-v1.json'), 'utf8'));
+    const checkpoint = envelope.checkpoint;
+    expect(dispatched).toEqual(songs.slice(0, 2).map(song => song.id));
+    expect(checkpoint.factual_attempts).toBe(2);
+    expect(checkpoint.fatal_stop).toEqual({ reason: 'PROVIDER_OUTAGE', stage: 'factual_validation',
+      song_id: songs[1].id, origin: 'provider_invalid_response' });
+    expect(checkpoint.exceptions).toContainEqual({ song_id: songs[0].id, code: 'provider_musicbrainz_invalid_response' });
+    expect(checkpoint.exceptions).toContainEqual({ song_id: songs[1].id, code: 'provider_musicbrainz_invalid_response' });
+    expect(envelope.sha256).toBe(hashJson(checkpoint));
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async () => { dispatched.push(999); return {}; } }))
+      .rejects.toMatchObject({ code: 'CHECKPOINT_UNSAFE_RESUME' });
+    expect(dispatched).toHaveLength(2);
+  });
+
+  it('keeps provider invalid_request fatal with a safe factual origin', async () => {
+    const { songs, baseline, manifest } = fixture(2), root = await rootDir();
+    const dispatched = [];
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: async () => { throw new Error('must stop before preview'); },
+      acquireFactual: async ({ song, reserveAttempt }) => {
+        dispatched.push(song.id);
+        await reserveAttempt({ provider: 'MusicBrainz', operation: 'recording_search' });
+        return { factualReport: factual(song, 'invalid_request') };
+      } })).rejects.toMatchObject({ code: 'INVALID_EVIDENCE', stage: 'factual_validation' });
+    const envelope = JSON.parse(await fs.readFile(path.join(root, 'checkpoint-v1.json'), 'utf8'));
+    expect(dispatched).toEqual([songs[0].id]);
+    expect(envelope.checkpoint.fatal_stop).toEqual({ reason: 'INVALID_EVIDENCE', stage: 'factual_validation',
+      song_id: songs[0].id, origin: 'provider_invalid_request' });
+    expect(envelope.checkpoint.songs[0].factual_attempts).toBe(1);
+    expect(envelope.sha256).toBe(hashJson(envelope.checkpoint));
+    expect(JSON.stringify(envelope.checkpoint)).not.toContain('private');
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async () => { dispatched.push(999); return {}; } }))
+      .rejects.toMatchObject({ code: 'CHECKPOINT_UNSAFE_RESUME' });
+    expect(dispatched).toEqual([songs[0].id]);
+    envelope.checkpoint.fatal_stop.origin = 'private exception detail';
+    envelope.sha256 = hashJson(envelope.checkpoint);
+    await fs.writeFile(path.join(root, 'checkpoint-v1.json'), JSON.stringify(envelope));
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async () => { dispatched.push(998); return {}; } }))
+      .rejects.toMatchObject({ code: 'CHECKPOINT_INVALID' });
+    expect(dispatched).toEqual([songs[0].id]);
+  });
+
+  it('stops after the same provider fails on two consecutive distinct songs', async () => {
+    const { songs, baseline, manifest } = fixture(3), root = await rootDir();
+    const dispatched = [];
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: async () => { throw new Error('must stop before preview'); },
+      acquireFactual: async ({ song, reserveAttempt }) => {
+        dispatched.push(song.id);
+        await reserveAttempt({ provider: 'MusicBrainz', operation: 'recording_search' });
+        return { factualReport: factual(song, 'transient_error') };
+      } })).rejects.toMatchObject({ code: 'PROVIDER_OUTAGE', stage: 'factual_validation' });
+    const checkpoint = JSON.parse(await fs.readFile(path.join(root, 'checkpoint-v1.json'), 'utf8')).checkpoint;
+    expect(dispatched).toEqual(songs.slice(0, 2).map(song => song.id));
+    expect(checkpoint.factual_attempts).toBe(2);
+    expect(checkpoint.fatal_stop).toEqual({ reason: 'PROVIDER_OUTAGE', stage: 'factual_validation', song_id: songs[1].id });
+    expect(checkpoint.songs.slice(0, 2).map(song => song.factual_attempts)).toEqual([1, 1]);
+    expect(checkpoint.songs.slice(0, 2).every(song => song.exception_codes.includes('provider_musicbrainz_transient_failure'))).toBe(true);
+    expect(checkpoint.exceptions).toContainEqual({ song_id: songs[0].id, code: 'provider_musicbrainz_transient_failure' });
+    expect(checkpoint.exceptions).toContainEqual({ song_id: songs[1].id, code: 'provider_musicbrainz_transient_failure' });
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async () => { dispatched.push(999); return {}; } })).rejects.toMatchObject({ code: 'CHECKPOINT_UNSAFE_RESUME' });
+    expect(dispatched).toEqual(songs.slice(0, 2).map(song => song.id));
+
+    const privateEvidenceRoot = await rootDir();
+    await expect(runSongEnrichmentCohort({ ...fixture(1), directory: privateEvidenceRoot, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: noProcess,
       acquireFactual: async ({ song }) => ({ factualReport: { ...factual(song), lyrics: 'PRIVATE LYRICS' } }) }))
       .rejects.toMatchObject({ code: 'INVALID_EVIDENCE' });
-    const saved = await fs.readFile(path.join(next, 'checkpoint-v1.json'), 'utf8');
-    expect(saved).not.toContain('PRIVATE LYRICS');
+    expect(await fs.readFile(path.join(privateEvidenceRoot, 'checkpoint-v1.json'), 'utf8')).not.toContain('PRIVATE LYRICS');
+  });
+
+  it('carries a provider outage across a validated checkpoint resume boundary', async () => {
+    const { songs, baseline, manifest } = fixture(2), originalRoot = await rootDir(), resumedRoot = await rootDir();
+    const completed = await runSongEnrichmentCohort({ manifest, baseline, directory: originalRoot, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: noProcess,
+      acquireFactual: async ({ song, reserveAttempt }) => {
+        await reserveAttempt({ provider: 'MusicBrainz', operation: 'recording_search' });
+        return { factualReport: factual(song, song.id === songs[0].id ? 'transient_error' : 'ok') };
+      }, acquireGemini: async () => ({ skipped: true }) });
+    expect(completed.batches).toHaveLength(1);
+    const envelope = JSON.parse(await fs.readFile(path.join(originalRoot, 'checkpoint-v1.json'), 'utf8'));
+    const checkpoint = envelope.checkpoint;
+    const previous = checkpoint.songs[0];
+    const previousEvidenceSource = previous.evidence.factual;
+    await fs.mkdir(path.join(resumedRoot, 'evidence'), { recursive: true });
+    const previousEvidencePath = path.join(resumedRoot, 'evidence', path.basename(previousEvidenceSource));
+    await fs.copyFile(previousEvidenceSource, previousEvidencePath);
+    previous.evidence.factual = previousEvidencePath;
+    previous.completed_stage = 'evidence';
+    const pending = checkpoint.songs[1];
+    pending.evidence = {};
+    pending.evidence_hashes = {};
+    pending.cache_response_hashes = [];
+    pending.factual_attempts = 0;
+    pending.gemini_attempts = 0;
+    pending.completed_stage = 'none';
+    pending.exception_codes = [];
+    checkpoint.factual_attempts = previous.factual_attempts;
+    checkpoint.gemini_attempts = previous.gemini_attempts;
+    checkpoint.batches = [];
+    checkpoint.exceptions = checkpoint.songs.flatMap(item => item.exception_codes.map(code => ({ song_id: item.song_id, code })));
+    delete checkpoint.active_stage;
+    delete checkpoint.active_song_id;
+    delete checkpoint.fatal_stop;
+    checkpoint.in_flight = null;
+    await fs.writeFile(path.join(resumedRoot, 'checkpoint-v1.json'), JSON.stringify({ checkpoint,
+      sha256: hashJson(checkpoint) }));
+
+    const dispatched = [];
+    await expect(runSongEnrichmentCohort({ manifest, baseline, directory: resumedRoot, providerClient: {},
+      getCacheHash: staticCacheHash, processBatch: async () => { throw new Error('must stop before preview'); },
+      acquireFactual: async ({ song, reserveAttempt }) => {
+        dispatched.push(song.id);
+        await reserveAttempt({ provider: 'MusicBrainz', operation: 'recording_search' });
+        return { factualReport: factual(song, 'transient_error') };
+      } })).rejects.toMatchObject({ code: 'PROVIDER_OUTAGE', stage: 'factual_validation' });
+    const resumed = JSON.parse(await fs.readFile(path.join(resumedRoot, 'checkpoint-v1.json'), 'utf8')).checkpoint;
+    expect(dispatched).toEqual([songs[1].id]);
+    expect(resumed.fatal_stop).toEqual({ reason: 'PROVIDER_OUTAGE', stage: 'factual_validation', song_id: songs[1].id });
+    expect(resumed.exceptions).toContainEqual({ song_id: songs[0].id, code: 'provider_musicbrainz_transient_failure' });
+    expect(resumed.exceptions).toContainEqual({ song_id: songs[1].id, code: 'provider_musicbrainz_transient_failure' });
   });
 
   it('records an unusable Gemini report without passing it to T27 evidence validation', async () => {
@@ -679,7 +1096,8 @@ describe('resumable evidence cohort runner', () => {
       } })).rejects.toMatchObject({ code: 'INVALID_EVIDENCE' });
     expect(dispatched).toEqual([songs[0].id]);
     const checkpoint = JSON.parse(await fs.readFile(path.join(root, 'checkpoint-v1.json'), 'utf8')).checkpoint;
-    expect(checkpoint.fatal_stop).toMatchObject({ reason: 'INVALID_EVIDENCE', stage: 'factual_validation', song_id: songs[0].id });
+    expect(checkpoint.fatal_stop).toEqual({ reason: 'INVALID_EVIDENCE', stage: 'factual_validation',
+      song_id: songs[0].id, origin: 'local_evidence_validation' });
     expect(checkpoint.songs[0].factual_attempts).toBe(1);
     await expect(runSongEnrichmentCohort({ manifest, baseline, directory: root, providerClient: {},
       getCacheHash: staticCacheHash, processBatch: async () => { throw new Error('must not preview'); },

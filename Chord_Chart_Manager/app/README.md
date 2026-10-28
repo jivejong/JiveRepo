@@ -242,8 +242,10 @@ limit may change. A Gemini request is explicit; failures do not trigger
 automatic fallback. Gemini's project/model limits vary, so check the account
 quota before any future caller is authorized. Results carry stable statuses
 and a redacted attempt ledger. Gemini token usage is reported only when
-returned by the provider; the module does not estimate or claim a dollar cost
-or enforce a monetary spending cap.
+returned by the provider. Production cohort and explicit Gemini fallback
+commands reserve their maximum permitted request cost in the shared private
+`backups/stage-b-gemini-spend-ledger-v1.json` ledger before dispatch. Direct
+library callers must provide the same ledger through `beforeAttempt`.
 
 MusicBrainz search results are identity candidates only; their ranking score
 is discarded. Search candidates retain the provider's `first-release-date`
@@ -406,6 +408,55 @@ recovery disposition. Older checkpoints without the current state-machine
 version are rejected without modification. Never reset counters, remove a stop
 marker, or rerun the same output directory to retry an uncertain request.
 
+For each song the runner makes at most one Gemini request, including when B1
+cannot accept a MusicBrainz recording identity. The fallback sends the exact
+title and artist, missing scalar field names, and currently unassigned managed
+Genre/Vibe definitions within the configured 16 KiB input and 1,024 output-token
+limits. It sends no chart or lyrics. A resulting null-MBID change is eligible
+only when each selected scalar and tag has validated saved Gemini provenance
+bound to that exact song identity; factual values still require the accepted
+recording evidence path. A valid, unconflicted factual candidate takes
+precedence, while conflicts and invalid candidates abstain. The shared durable
+ledger charges the maximum permitted request cost before dispatch, retains
+interrupted reservations, and refuses calls above the $2 Lite-wide ceiling. It
+seeds from validated retained checkpoints and saved Gemini reports, and fails
+closed on unverifiable pricing/bounds or changed seed artifacts. The pinned
+standard paid rates and limits reserve 5,632 micro-USD per request; the 16 KiB
+byte bound is priced as a conservative 16,384-token input allowance. Cached
+responses do not reserve spend because they do not dispatch a provider request.
+The ledger stores only hashes and reservation metadata, never credentials or
+responses.
+
+For an approved Lite cohort that must skip the failed factual-provider path,
+add `--gemini-only`. The runner accepts only a `lite-` cohort, makes no
+MusicBrainz or AcousticBrainz calls, and reserves zero factual attempts. Each
+target records factual acquisition as
+`not_attempted_due_to_provider_failure`; the checkpoint is bound to this mode
+and refuses a mode change on resume. Gemini still receives only exact
+title/artist, missing scalar fields, and unassigned managed Genre/Vibe names.
+Chart text and lyrics are excluded, and the existing 16 KiB input, 1,024 output
+token, one-request-per-song, and shared $2 ledger gates remain in force. The
+CLI checks prior and uncertain reservations, including ID 755, before a fresh
+Gemini-only run and refuses targets that were already reserved. It fails closed
+if retained spend cannot be attributed to song IDs; the locked ledger also
+rejects duplicate song reservations across runs. Use
+saved validated Gemini evidence through `prepare` → T27 `decide` → `preview`
+without redispatch, and do not re-enrich populated values.
+
+The bounded one-time recovery exception uses
+`--gemini-recovery-authorization <private-file>` with `--gemini-only`. It is
+fixed to Lite IDs 735, 736, 737, 738, and 755, and validates each exact previous
+reservation and retained artifact hash before dispatch. The authorization hash
+is bound into the checkpoint and each recovery ledger entry; a second recovery
+attempt is refused. It cannot be used for another song or a third attempt.
+
+Before the cohort reaches its database baseline or spend ledger, the CLI performs
+a non-generating Gemini egress preflight: DNS lookup, verified TLS, then an
+unauthenticated GET to the API host. It sends no API key, prompt, or generating
+POST. A connect-time `EACCES` stops with `GEMINI_EGRESS_ENVIRONMENT_BLOCKED`;
+use the already reviewed outside-sandbox execution path. The CLI never switches
+execution environments itself.
+
 Example command (provider acquisition requires separate explicit
 authorization):
 
@@ -417,6 +468,10 @@ node .\scripts\acquire-song-enrichment-cohort.cjs `
   --cache-dir ..\backups\stage-b-provider-cache `
   --factual-attempts-per-song 9
 ```
+
+Append `--gemini-only` only when factual providers are intentionally skipped
+for an explicit eligible Lite cohort. This mode does not relax evidence,
+preview, or apply validation.
 
 Each completed batch runs the saved-evidence `prepare` → T27 `decide` →
 `preview` validators and produces only a read-only B3 manifest. The runner never
@@ -560,10 +615,13 @@ This disables Interaction storage for this request. It does not define or
 override Google's broader data-use or retention terms and account controls.
 
 Limits are 16,384 UTF-8 input bytes, 1,024 output tokens, 1,048,576 response
-bytes and a 10-second timeout. These controls do not impose a monetary cap;
-Google account quotas and pricing vary. Token counts are reported only when
-returned by the provider. Output JSON and `summary.txt` use exclusive creation
-under the ignored directory and contain only an explicit report allowlist.
+bytes and a 10-second timeout. Production calls reserve up to 5,632 micro-USD
+against the shared $2 ledger before dispatch. This uses the pinned standard paid
+price schedule and conservatively treats every allowed input byte as one token;
+the gate fails closed when its model/price/bounds contract or retained ledger
+cannot be verified. Check account quota separately. Token counts are reported
+only when returned by the provider. Output JSON and `summary.txt` use exclusive
+creation under the ignored directory and contain only an explicit report allowlist.
 
 Example from `app/` (replace the placeholder with a new ignored path):
 
@@ -601,6 +659,20 @@ for this command; install Chrome before running it.
 ```powershell
 npm.cmd run test:t11
 ```
+
+For a focused owner-verified B3 Gemini null-MBID apply/replay check without the
+unit, API, or browser suites, run the same lifecycle harness with:
+
+```powershell
+$env:CCM_T11_B3_FOCUS = 'gemini-null-mbid-apply-replay'
+node .\test\t11-runner.cjs
+Remove-Item Env:\CCM_T11_B3_FOCUS
+```
+
+This still requires an absent `ccm_test`, creates it with the normal owner/run
+marker, captures a complete read-only main snapshot, runs only the existing
+null-MBID apply/replay subtest, and verifies owned cleanup, scratch absence,
+and unchanged main rows.
 
 Run `npm.cmd run test:t11` twice consecutively to check repeatability. The
 standalone `npm.cmd test` remains available for unit tests. Raw Playwright and

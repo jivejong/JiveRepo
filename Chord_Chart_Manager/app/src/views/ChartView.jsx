@@ -11,6 +11,7 @@ import { buildPerformanceSaveTarget, resolveStartingPerformance } from '../setli
 import { setlistWriteError } from '../setlistMutations';
 import { AUTO_SCROLL_DEFAULT_SPEED, AUTO_SCROLL_MAX_SPEED, AUTO_SCROLL_MIN_SPEED,
   AUTO_SCROLL_STEP, createAutoScrollController } from '../lib/autoScroll';
+import { assignedGenreNames } from '../lib/songMetadata';
 
 /**
  * ChartView — displays a single chart with:
@@ -123,6 +124,9 @@ export default function ChartView({
 
   const capo    = capoOverride ?? initialCapo;
   const baseKey = song.chart_written_key || 'C';
+  const songMetadata = [assignedGenreNames(song.genres).join(', '),
+    Array.isArray(song.vibes) ? song.vibes.filter(Boolean).join(', ') : song.feel,
+    song.era].filter(Boolean);
 
   // Current key after offset, in its CONVENTIONAL spelling (Bb, not A#).
   const currentWrittenKey = keyAfter(baseKey, semiOffset);
@@ -236,7 +240,7 @@ export default function ChartView({
     <div className="screen chart-scroll" ref={scrollRef} tabIndex={0} aria-label="Chart content"
       {...swipeHandlers} onScroll={onChartScroll}>
       {/* Top bar */}
-      <div className="chart-topbar">
+      <div className={`chart-topbar ${songMetadata.length ? 'has-meta' : ''}`}>
         <button className="icon-btn" onClick={onBack} aria-label="Back">
           <ArrowLeft size={20} />
         </button>
@@ -244,6 +248,9 @@ export default function ChartView({
           <div className="chart-topbar-title">{song.title}</div>
           <div className="chart-topbar-artist">{song.artist}</div>
         </div>
+        {songMetadata.length > 0 && (
+          <div className="chart-topbar-meta">{songMetadata.join(' · ')}</div>
+        )}
         <button className="icon-btn" onClick={() => onEdit(song)} aria-label="Edit">
           <EditIcon size={18} />
         </button>

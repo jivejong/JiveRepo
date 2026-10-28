@@ -8,13 +8,13 @@ const { validateManifest } = require('../../server/applySongEnrichment.js');
 const RESPONSE_DIGEST = 'a'.repeat(64);
 
 function manifestWithSchema(schemaVersion) {
-  const snapshot = { id: 42, updated_at: '2026-10-14T18:30:00.123456Z', release_year: null,
+  const snapshot = { id: 42, title: 'Synthetic', artist: 'Synthetic Artist', updated_at: '2026-10-14T18:30:00.123456Z', release_year: null,
     original_key: null, bpm: null, genres: [], vibes: [] };
   const candidate = { value: 1978, source: 'Gemini', response_digest: RESPONSE_DIGEST,
-    model_id: 'gemini-3.1-flash-lite', prompt_version: 'missing-metadata-fallback-v2', schema_version: schemaVersion };
+    model_id: 'gemini-3.1-flash-lite', prompt_version: 'missing-metadata-fallback-v2', schema_version: schemaVersion,
+    song_identity: { song_id: snapshot.id, title: snapshot.title, artist: snapshot.artist } };
   const evidence = { mbid: null, scalars: { release_year: [candidate] }, genres: [], vibes: [] };
-  const reviewDecision = { mbid: null, scalars: { release_year: { value: candidate.value, source: candidate.source,
-    response_digest: candidate.response_digest } }, genres: [], vibes: [] };
+  const reviewDecision = { mbid: null, scalars: { release_year: candidate }, genres: [], vibes: [] };
   const preview = buildEnrichmentPreview(snapshot, evidence, reviewDecision, { genres: [], vibes: [] });
   return { format_version: 1, operation_id: '11111111-1111-4111-8111-111111111111', songs: [{ song_id: 42,
     base_version: snapshot.updated_at, identity: { title: 'Synthetic', artist_id: 1, artist_name: 'Synthetic Artist' },
@@ -51,5 +51,22 @@ describe('B3 Gemini schema provenance versions', () => {
     let failure;
     try { validateManifest(manifest); } catch (error) { failure = error; }
     expect(failure).toMatchObject({ code: 'INVALID_MANIFEST' });
+  });
+
+  it('requires exact song identity on every null-MBID Gemini change and rejects factual substitutions', () => {
+    const manifest = manifestWithSchema('missing-metadata-schema-v2');
+    const target = manifest.songs[0];
+    expect(validateManifest(manifest)).toHaveLength(1);
+    const wrongIdentity = structuredClone(manifest);
+    wrongIdentity.songs[0].evidence.scalars.release_year[0].song_identity.title = 'Other song';
+    expect(() => validateManifest(wrongIdentity)).toThrowError(expect.objectContaining({ code: 'INVALID_MANIFEST' }));
+    const forgedFactual = structuredClone(manifest);
+    const candidate = forgedFactual.songs[0].evidence.scalars.release_year[0];
+    candidate.source = 'MusicBrainz'; candidate.response_digest = 'recording:unverified'; candidate.value = 1978;
+    delete candidate.model_id; delete candidate.prompt_version; delete candidate.schema_version; delete candidate.song_identity;
+    forgedFactual.songs[0].review_decision.scalars.release_year = { value: 1978, source: 'MusicBrainz', response_digest: 'recording:unverified' };
+    forgedFactual.songs[0].preview.scalar_changes[0].evidence = { source: 'MusicBrainz', response_digest: 'recording:unverified' };
+    expect(() => validateManifest(forgedFactual)).toThrowError(expect.objectContaining({ code: 'EVIDENCE_IDENTITY_REQUIRED' }));
+    expect(target.preview.scalar_changes[0].evidence.song_identity).toEqual({ song_id: 42, title: 'Synthetic', artist: 'Synthetic Artist' });
   });
 });

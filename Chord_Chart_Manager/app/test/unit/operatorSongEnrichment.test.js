@@ -46,7 +46,9 @@ describe('operator saved-evidence prepare → preview orchestration',()=>{
   const manifest={cohort_manifest_version:1,cohort_id:'t28-synthetic',songs:[{song_id:727,title:song.title,artist:song.artist}]};
   const factualReport={report_version:1,report_type:'existing_song_enrichment_read_only_preview',selected_song_ids:[727],
    database_writes:false,approved_apply_manifest:null,songs:[{song_id:727,identity:{title:song.title,artist:song.artist},
-    recording:{search_status:'ok',match:{matched:true,mbid}},evidence:{mbid,
+    recording:{search_status:'ok',match:{matched:true,mbid},candidates:[{mbid,title:song.title,artist:song.artist,
+     disambiguation:'original stereo mix',first_release_date:'1973',response_digest:digest}],
+     pagination:{complete:true,expected_total:1,collected_count:1,attempted_pages:1,validated_pages:1}},evidence:{mbid,
      scalars:{release_year:[{value:1973,source:'MusicBrainz',response_digest:digest,submission_reference:`recording:${mbid}`}],original_key:[],bpm:[]},
      genres:[{name:'Blues Rock',source:'MusicBrainz',response_digest:digest}],vibes:[]},
     approved_preview:null,human_review_required:true}]};
@@ -66,7 +68,7 @@ describe('operator saved-evidence prepare → preview orchestration',()=>{
   const accepted=JSON.parse(await fs.readFile(result.batches[0].manifest_path,'utf8'));
   expect(validateManifest(accepted).map(item=>item.song_id)).toEqual([727]);
   expect(accepted.songs[0].preview.scalar_changes).toEqual([{field:'release_year',before:null,after:1973,
-   evidence:{source:'MusicBrainz',response_digest:digest,submission_id:`recording:${mbid}`}}]);
+   evidence:{source:'MusicBrainz',response_digest:digest}}]);
   expect(accepted.songs[0].preview.tag_additions.genres).toMatchObject([{id:1,name:'Blues Rock'}]);
   expect(accepted.songs[0].preview.primary_proposal).toBeNull();
   expect(result.factualAttempts).toBe(1);
@@ -277,7 +279,10 @@ describe('operator saved-evidence prepare → preview orchestration',()=>{
    const reportFor=(row,{matched,mbid,year,conflicts=false,genres=[]}={})=>({report_version:1,
     report_type:'existing_song_enrichment_read_only_preview',selected_song_ids:[row.id],database_writes:false,approved_apply_manifest:null,
     songs:[{song_id:row.id,identity:{title:row.title,artist:row.artist},
-     recording:{match:matched?{matched:true,mbid}:{matched:false,reason:'no_exact_match'}},
+     recording:matched?{search_status:'ok',match:{matched:true,mbid},candidates:[{mbid,title:row.title,artist:row.artist,
+      disambiguation:'original stereo mix',first_release_date:String(year||1973),response_digest:digestFor('9')}],
+      pagination:{complete:true,expected_total:1,collected_count:1,attempted_pages:1,validated_pages:1}}
+      :{match:{matched:false,reason:'no_exact_match'}},
      evidence:matched?{mbid,scalars:{release_year:year?[{value:year,source:'MusicBrainz',response_digest:digestFor(row.id===736?'a':'b')}]:[],
       original_key:conflicts?[{value:'Cm',source:'AcousticBrainz',response_digest:digestFor('c'),submission_id:`${mbid}:0`},
        {value:'G',source:'AcousticBrainz',response_digest:digestFor('d'),submission_id:`${mbid}:68`}]:[],

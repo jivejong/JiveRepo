@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const http = require("node:http");
 const { execFileSync } = require("node:child_process");
 const { buildEnrichmentPreview } = require("../server/existingSongEnrichment.js");
-const { createSongEnrichmentProviderClient, DEFAULTS } = require("../server/songEnrichmentProviders.js");
+const { createSongEnrichmentProviderClient } = require("../server/songEnrichmentProviders.js");
 const { MAX_RESPONSE_BYTES, createSongEnrichmentTransport } = require("../server/songEnrichmentTransport.js");
 const { captureReadOnlyBaseline, createOutputDirectory } = require("./preview-existing-song-enrichment.cjs");
 const { definitionKey, normalizeDefinitionName } = require("../server/tagDefinitionNames.js");
+const { createGeminiSpendLedger, MODEL_ID, MAX_INPUT_BYTES, MAX_OUTPUT_TOKENS } = require("../server/geminiSpendLedger.js");
 
 const APP_ROOT = path.resolve(__dirname, "..");
 const PROJECT_ROOT = path.resolve(APP_ROOT, "..");
@@ -21,6 +23,8 @@ const GEMINI_VALIDATION_REASONS = new Set(["interaction_envelope_invalid", "mode
 const VALIDATION_FIELDS = new Set(["response", "release_year", "bpm", "original_key", "genres", "vibes"]);
 const VALIDATION_CATEGORIES = new Set(["Genre", "Vibe"]);
 const SCALARS = ["release_year", "original_key", "bpm"];
+const SPEND_STOP_CODES = new Set(["GEMINI_SPEND_LIMIT", "GEMINI_SPEND_LEDGER_INVALID", "GEMINI_SPEND_LEDGER_LOCKED",
+  "GEMINI_SPEND_POLICY_UNVERIFIED"]);
 const KEY_ROOTS = new Set(["C", "B#", "C#", "Db", "D", "D#", "Eb", "E", "Fb", "E#", "F", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B", "Cb"]);
 
 function fail(message, code = "INVALID_ARGUMENTS") {
@@ -113,10 +117,10 @@ function validateConfiguration(config) {
   return { ...config, apiKey: config.apiKey.trim() };
 }
 
-function requestedMissingFields(song, factual = null) {
+function requestedMissingFields(song, factual = null, { allowFactualCandidates = true } = {}) {
   return SCALARS.filter(field => (field === "original_key"
     ? song[field] === null || typeof song[field] === "string" && song[field].trim() === ""
-    : song[field] === null) && !hasUsableFactualCandidate(factual, field));
+    : song[field] === null) && (!allowFactualCandidates || !hasUsableFactualCandidate(factual, field)));
 }
 
 function hasUsableFactualCandidate(factual, field) {
@@ -156,7 +160,7 @@ function safeGeminiResult(result, requestedFields) {
     ...(Number.isInteger(detail.http_status) && detail.http_status >= 100 && detail.http_status <= 599 ? { http_status: detail.http_status } : {}),
     ...(detail.timeout === true ? { timeout: true } : {}),
     ...(["provider_watchdog", "transport"].includes(detail.timeout_source) ? { timeout_source: detail.timeout_source } : {}),
-    ...(["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN", "ENOTFOUND", "EPIPE", "RESPONSE_TOO_LARGE", "INVALID_PROVIDER_REQUEST"].includes(detail.transport_error_code)
+    ...(["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EACCES", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN", "ENOTFOUND", "EPIPE", "RESPONSE_TOO_LARGE", "INVALID_PROVIDER_REQUEST"].includes(detail.transport_error_code)
       ? { transport_error_code: detail.transport_error_code } : {}),
     ...(detail.https_started === true || detail.https_started === false ? { https_started: detail.https_started } : {}),
     ...(GEMINI_VALIDATION_REASONS.has(detail.validation_reason) ? { validation_reason: detail.validation_reason } : {}),
@@ -173,7 +177,7 @@ function safeGeminiResult(result, requestedFields) {
 }
 
 function safeAttemptLedger(rows) {
-  const codes = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH",
+  const codes = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EACCES", "EHOSTUNREACH", "ENETUNREACH",
     "EAI_AGAIN", "ENOTFOUND", "EPIPE", "RESPONSE_TOO_LARGE", "INVALID_PROVIDER_REQUEST"]);
   const phases = new Set(["validation", "request_start", "request", "response", "timeout", "http", "provider"]);
   return (Array.isArray(rows) ? rows : []).map(row => {
@@ -392,7 +396,8 @@ async function writeReportFiles(directory, report, filesystem = fs) {
   }
 }
 
-async function preparePreview({ pool, songId, factualInput = null, expectedBaseline = null }) {
+async function preparePreview({ pool, songId, factualInput = null, expectedBaseline = null, automaticCohort = false,
+  acceptedRecordingIdentity = false }) {
   const baseline = await captureReadOnlyBaseline(pool, [songId]);
   if (expectedBaseline && JSON.stringify(baseline) !== JSON.stringify(expectedBaseline)) {
     throw fail("The fresh song/catalog snapshot changed before Gemini acquisition.", "COHORT_DRIFT");
@@ -400,19 +405,20 @@ async function preparePreview({ pool, songId, factualInput = null, expectedBasel
   const song = baseline.songs[0];
   const factual = normalizeFactualContext(factualInput, songId);
   validateFactualIdentity(factual, song);
-  const missing = requestedMissingFields(song, factual);
+  const requestFactualEvidence = automaticCohort && !acceptedRecordingIdentity ? null : factual;
+  const missing = requestedMissingFields(song, requestFactualEvidence, { allowFactualCandidates: !automaticCohort || acceptedRecordingIdentity });
   const definitions = baseline.definitions;
   const allowedNames = {
     genres: unassignedAllowedNames(definitions.genres, song.genres, "Genre"),
     vibes: unassignedAllowedNames(definitions.vibes, song.vibes, "Vibe"),
   };
-  return { baseline, song, factual, missing, definitions, allowedNames };
+  return { baseline, song, factual, requestFactualEvidence, missing, definitions, allowedNames };
 }
 
 async function executePreparedPreview({ prepared, providerClient, apiKey, signal, clock = Date.now }) {
-  const { baseline, song, factual, missing, definitions, allowedNames } = prepared;
+  const { baseline, song, factual, requestFactualEvidence = factual, missing, definitions, allowedNames } = prepared;
   const result = await providerClient.requestGeminiTags({ mbid: null, title: song.title, artist: song.artist,
-    context: {}, factualEvidence: factual, requestedFields: missing, definitions, allowedNames, apiKey, signal });
+    context: {}, factualEvidence: requestFactualEvidence, requestedFields: missing, definitions, allowedNames, apiKey, signal });
   const gemini = safeGeminiResult(result, missing);
   const evidence = { mbid: null, scalars: gemini.scalars, genres: gemini.genres, vibes: gemini.vibes };
   const evidenceCount = SCALARS.reduce((count, field) => count + gemini.scalars[field].length, 0) + gemini.genres.length + gemini.vibes.length;
@@ -427,12 +433,12 @@ async function runPreview({ pool, providerClient, songId, apiKey, signal, clock 
   return executePreparedPreview({ prepared, providerClient, apiKey, signal, clock });
 }
 
-function createFallbackProviderClient({ transport, musicBrainzUserAgent }) {
+function createFallbackProviderClient({ transport, musicBrainzUserAgent, beforeAttempt }) {
   return createSongEnrichmentProviderClient({
-    transport, cache: null,
+    transport, cache: null, beforeAttempt,
     config: { maxAttempts: 1, maxGeminiAttempts: 1, timeoutMs: 10_000, maxResponseBytes: MAX_RESPONSE_BYTES,
-      geminiMaxInputBytes: 16_384, geminiMaxOutputTokens: 1_024, maxRetryAfterMs: 5_000,
-      retryDelayMs: 1_000, musicBrainzMinimumIntervalMs: 1_000, musicBrainzUserAgent, model: DEFAULTS.model },
+      geminiMaxInputBytes: MAX_INPUT_BYTES, geminiMaxOutputTokens: MAX_OUTPUT_TOKENS, maxRetryAfterMs: 5_000,
+      retryDelayMs: 1_000, musicBrainzMinimumIntervalMs: 1_000, musicBrainzUserAgent, model: MODEL_ID },
   });
 }
 
@@ -453,6 +459,13 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     catch (error) { if (error?.safeMessage) throw error; throw fail("Saved factual evidence could not be read or parsed.", "FACTUAL_REPORT_INVALID"); }
   }
   const config = validateConfiguration(dependencies.configuration || await loadConfiguration(dependencies.configurationOptions));
+  const spendProviderConfig = { model: MODEL_ID, maxGeminiAttempts: 1, timeoutMs: 10_000,
+    maxResponseBytes: MAX_RESPONSE_BYTES, geminiMaxInputBytes: MAX_INPUT_BYTES, geminiMaxOutputTokens: MAX_OUTPUT_TOKENS };
+  const spendLedger = dependencies.spendLedger || (dependencies.transport || dependencies.pool || dependencies.providerClient
+    ? null : createGeminiSpendLedger({ ledgerPath: path.join(PROJECT_ROOT, "backups", "stage-b-gemini-spend-ledger-v1.json"),
+      backupsRoot: path.join(PROJECT_ROOT, "backups") }));
+  const spendRunId = crypto.randomUUID();
+  if (spendLedger) await spendLedger.initialize(spendProviderConfig);
   const outputPath = path.resolve(args.outputDirectory);
   if (!isWithin(outputPath, projectRoot)) throw fail("Output directory must be beneath Chord Chart Manager.", "OUTPUT_PATH_INVALID");
   try {
@@ -478,6 +491,9 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     }
     const providerClient = dependencies.providerClient || createFallbackProviderClient({
       transport: dependencies.transport || createSongEnrichmentTransport(), musicBrainzUserAgent: config.musicBrainzUserAgent,
+      beforeAttempt: spendLedger ? intent => intent.provider === "Gemini"
+        ? spendLedger.reserve({ providerConfig: spendProviderConfig, cohortId: `standalone:${spendRunId}`, songId: args.songId }).then(() => true)
+        : false : undefined,
     });
     const prepared = await preparePreview({ pool, songId: args.songId, factualInput: factual });
     outputDirectory = await createOutputDirectory(args.outputDirectory, { ...dependencies.outputOptions, filesystem });
@@ -492,6 +508,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
   }
   if (failure) {
     if (outputDirectory) try { await filesystem.rmdir(outputDirectory); } catch { /* remove only the empty invocation-owned directory */ }
+    if (SPEND_STOP_CODES.has(failure?.code)) throw fail(`Gemini spend gate stopped safely (${failure.code}).`, failure.code);
     throw failure?.safeMessage ? failure : fail("Gemini fallback preview failed safely.", "PREVIEW_FAILED");
   }
   try {

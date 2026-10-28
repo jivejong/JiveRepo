@@ -18,6 +18,8 @@ const ACOUSTIC_KEY_NAMES = new Set(["A", "A#", "B", "C", "C#", "D", "D#", "E", "
 const MUSICBRAINZ_SEARCH_MAX_RESULTS = 100;
 const MUSICBRAINZ_SEARCH_LIMIT = MUSICBRAINZ_SEARCH_MAX_RESULTS;
 const MUSICBRAINZ_SEARCH_PARSER_VERSION = "musicbrainz-search-single-response-v1";
+const MUSICBRAINZ_RECORDING_LOOKUP_PARSER_VERSION = "musicbrainz-recording-lookup-release-type-v1";
+const MUSICBRAINZ_LOOKUP_RELEASE_MAX_RESULTS = 25;
 const GEMINI_PROMPT_VERSION = "missing-metadata-fallback-v2";
 const GEMINI_SCHEMA_VERSION = "missing-metadata-schema-v2";
 const GEMINI_VALIDATION_REASONS = new Set(["interaction_envelope_invalid", "model_text_missing", "invalid_json",
@@ -186,7 +188,8 @@ function normalizeMusicBrainzSearch(body, digest) {
     const artist = creditedArtist(row?.["artist-credit"]);
     if (!isRecord(row) || typeof row.id !== "string" || !UUID.test(row.id) ||
         typeof row.title !== "string" || !artist ||
-        row.disambiguation != null && typeof row.disambiguation !== "string") return invalidPage("invalid_candidate");
+        row.disambiguation != null && typeof row.disambiguation !== "string" ||
+        row.video != null && typeof row.video !== "boolean") return invalidPage("invalid_candidate");
     const mbid = row.id.toLowerCase();
     if (seen.has(mbid)) return invalidPage("duplicate_recording_identity", {
       duplicate_mbid: mbid,
@@ -200,6 +203,7 @@ function normalizeMusicBrainzSearch(body, digest) {
       title: row.title,
       artist,
       disambiguation: typeof row.disambiguation === "string" ? row.disambiguation : "",
+      ...(typeof row.video === "boolean" ? { video: row.video } : {}),
       response_digest: digest,
       ...(validMusicBrainzDate(row["first-release-date"])
         ? { first_release_date: row["first-release-date"] }
@@ -207,6 +211,43 @@ function normalizeMusicBrainzSearch(body, digest) {
     });
   }
   return { status: "ok", candidates, response_digest: digest, count: body.count, offset: body.offset };
+}
+
+function normalizeReleaseTypeEvidence(body, expectedMbid, digest) {
+  const releases = body.releases;
+  const releaseCount = body["release-count"];
+  const firstReleaseDate = body["first-release-date"];
+  const base = { mbid: expectedMbid.toLowerCase(), response_digest: digest,
+    first_release_date: validMusicBrainzDate(firstReleaseDate) ? firstReleaseDate : null,
+    release_count: Number.isSafeInteger(releaseCount) && releaseCount >= 0 ? releaseCount : null,
+    releases: [], complete: false };
+  if (firstReleaseDate != null && !validMusicBrainzDate(firstReleaseDate)) return base;
+  if (!Array.isArray(releases) || !Number.isSafeInteger(releaseCount) || releaseCount < releases.length ||
+      releaseCount > MUSICBRAINZ_LOOKUP_RELEASE_MAX_RESULTS || releases.length !== releaseCount) return base;
+  const groups = Array.isArray(body["release-groups"]) ? body["release-groups"] : [];
+  const output = [];
+  for (const release of releases) {
+    if (!isRecord(release) || typeof release.id !== "string" || !UUID.test(release.id) ||
+        typeof release.title !== "string" || !release.title.trim() ||
+        release.date != null && !validMusicBrainzDate(release.date) ||
+        release.status != null && typeof release.status !== "string" ||
+        release.disambiguation != null && typeof release.disambiguation !== "string") return base;
+    let group = release["release-group"];
+    if (typeof group === "string") group = groups.find(item => typeof item?.id === "string" && item.id.toLowerCase() === group.toLowerCase());
+    if (!isRecord(group)) group = groups.find(item => item?.id === release["release-group-id"]);
+    if (!isRecord(group) || typeof group.id !== "string" || !UUID.test(group.id) ||
+        typeof group.title !== "string" || !group.title.trim() ||
+        group["primary-type"] != null && typeof group["primary-type"] !== "string" ||
+        !Array.isArray(group["secondary-types"]) || group["secondary-types"].some(type => typeof type !== "string")) return base;
+    output.push({ id: release.id.toLowerCase(), title: release.title,
+      date: typeof release.date === "string" ? release.date : null,
+      status: typeof release.status === "string" ? release.status : null,
+      disambiguation: typeof release.disambiguation === "string" ? release.disambiguation : "",
+      release_group: { id: group.id.toLowerCase(), title: group.title,
+        primary_type: typeof group["primary-type"] === "string" ? group["primary-type"] : null,
+        secondary_types: [...group["secondary-types"]].sort() } });
+  }
+  return { ...base, releases: output, complete: true };
 }
 
 function normalizeMusicBrainzLookup(body, expectedMbid, digest, searchCandidate = null) {
@@ -243,6 +284,8 @@ function normalizeMusicBrainzLookup(body, expectedMbid, digest, searchCandidate 
       title: body.title,
       artist: creditedArtist(body["artist-credit"]),
       disambiguation: typeof body.disambiguation === "string" ? body.disambiguation : "",
+      video: typeof body.video === "boolean" ? body.video : null,
+      release_type_evidence: normalizeReleaseTypeEvidence(body, expectedMbid, digest),
       scalars,
       genres,
     },
@@ -499,7 +542,7 @@ function createSongEnrichmentProviderClient({
     return index;
   }
 
-  const safeTransportCodes = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH",
+  const safeTransportCodes = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EACCES", "EHOSTUNREACH", "ENETUNREACH",
     "EAI_AGAIN", "ENOTFOUND", "EPIPE", "RESPONSE_TOO_LARGE", "INVALID_PROVIDER_REQUEST"]);
   function safeFailureDetails(details, defaults = {}) {
     const source = details && typeof details === "object" ? details : {};
@@ -612,7 +655,11 @@ function createSongEnrichmentProviderClient({
           if (!reserved) {
             removeParentAbort();
             timeoutController.abort();
-            return { status: "budget_exhausted" };
+            // A cohort reservation hook may refuse a retry after the first
+            // provider failure because its stricter per-song cap is spent.
+            // Preserve that acknowledged failure instead of misclassifying
+            // the retry refusal as exhaustion of the shared/provider budget.
+            return retryFailure || { status: "budget_exhausted" };
           }
           attempt = reserved;
           onAttempt?.(attempt);
@@ -725,7 +772,9 @@ function createSongEnrichmentProviderClient({
           removeParentAbort?.();
           timeoutController?.abort();
           if (attempt === null) {
-            if (error?.code === "COHORT_DRIFT" || error?.code === "CHECKPOINT_INVALID" || error?.code === "CHECKPOINT_TAMPERED") throw error;
+            if (error?.code === "COHORT_DRIFT" || error?.code === "CHECKPOINT_INVALID" || error?.code === "CHECKPOINT_TAMPERED" ||
+                ["GEMINI_SPEND_LIMIT", "GEMINI_SPEND_LEDGER_INVALID", "GEMINI_SPEND_LEDGER_LOCKED",
+                  "GEMINI_SPEND_POLICY_UNVERIFIED"].includes(error?.code)) throw error;
             return { status: signal?.aborted ? "cancelled" : "transient_error" };
           }
           if (signal?.aborted || error?.name === "AbortError") {
@@ -826,8 +875,9 @@ function createSongEnrichmentProviderClient({
   async function lookupRecording({ mbid, searchCandidate = null, signal } = {}) {
     if (typeof mbid !== "string" || !UUID.test(mbid)) return result("invalid_response");
     const normalized = mbid.toLowerCase();
-    const url = `https://musicbrainz.org/ws/2/recording/${encodeURIComponent(normalized)}?inc=artist-credits+genres+tags&fmt=json`;
-    const cacheRequest = { provider: "MusicBrainz", operation: "recording_lookup", parameters: { mbid: normalized } };
+    const url = `https://musicbrainz.org/ws/2/recording/${encodeURIComponent(normalized)}?inc=artist-credits+genres+tags+releases+release-groups&fmt=json`;
+    const cacheRequest = { provider: "MusicBrainz", operation: "recording_lookup",
+      parserVersion: MUSICBRAINZ_RECORDING_LOOKUP_PARSER_VERSION, parameters: { mbid: normalized } };
     const fetched = await requestCached("MusicBrainz", "recording_lookup", { url, method: "GET", headers: musicBrainzHeaders() }, cacheRequest,
       { signal, musicBrainz: true });
     if (fetched.status !== "ok") return evidenceResult(fetched.status, normalized, {}, [], [], fetched.reason ? { reason: fetched.reason } : {});

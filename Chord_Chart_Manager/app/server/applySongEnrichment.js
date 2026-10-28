@@ -90,23 +90,42 @@ function validateJsonTree(value, seen = new Set()) {
   return valid;
 }
 
-function validEvidenceRef(item, allowed = SOURCES) {
+function validGeminiSongIdentity(value, identity) {
+  return exactKeys(value, ["song_id", "title", "artist"]) && value.song_id === identity.song_id &&
+    value.title === identity.title && value.artist === identity.artist;
+}
+
+function validEvidenceRef(item, allowed = SOURCES, identity = null) {
   if (!item || !allowed.has(item.source) || typeof item.response_digest !== "string" ||
       !/^[A-Za-z0-9._:-]{1,160}$/.test(item.response_digest)) return false;
-  if (item.source === "Gemini") return exactKeys(item, ["source", "response_digest", ...Object.keys(GEMINI_PROVENANCE)]) &&
+  if (item.source === "Gemini") return exactKeys(item, ["source", "response_digest", ...Object.keys(GEMINI_PROVENANCE)], ["song_identity"]) &&
     /^[a-f0-9]{64}$/.test(item.response_digest) && item.model_id === GEMINI_PROVENANCE.model_id &&
-    LEGACY_GEMINI_PROMPT_VERSIONS.has(item.prompt_version) && SUPPORTED_GEMINI_SCHEMA_VERSIONS.has(item.schema_version);
+    LEGACY_GEMINI_PROMPT_VERSIONS.has(item.prompt_version) && SUPPORTED_GEMINI_SCHEMA_VERSIONS.has(item.schema_version) &&
+    (identity ? validGeminiSongIdentity(item.song_identity, identity) : item.song_identity === undefined ||
+      exactKeys(item.song_identity, ["song_id", "title", "artist"]) && Number.isSafeInteger(item.song_identity.song_id) &&
+        typeof item.song_identity.title === "string" && typeof item.song_identity.artist === "string");
   if (item.submission_id !== undefined && (typeof item.submission_id !== "string" ||
       item.source === "AcousticBrainz" && !/^[0-9a-f-]{36}:\d+$/i.test(item.submission_id) ||
       item.source === "MusicBrainz" && !/^recording:[0-9a-f-]{36}$/i.test(item.submission_id) || item.source === "Gemini")) return false;
   return exactKeys(item, ["source", "response_digest"], ["submission_id"]);
 }
 
-function isGeminiOnlyEvidence(evidence) {
-  const items = [
-    ...Object.values(evidence.scalars).flat(), ...evidence.genres, ...evidence.vibes,
-  ];
-  return items.length > 0 && items.every(item => item.source === "Gemini");
+function isGeminiBackedNullIdentityChange(item) {
+  const identity = { song_id: item.song_id, title: item.identity.title, artist: item.identity.artist_name };
+  const { review_decision: decision, preview } = item;
+  if (!preview.has_changes) return isUnresolvedIdentityNoOp(item);
+  if (decision.primaryGenre !== undefined && decision.primaryGenre !== null || preview.primary_proposal !== null) return false;
+  const scalarRefs = preview.scalar_changes.map(change => change.evidence);
+  const additions = [...preview.tag_additions.genres, ...preview.tag_additions.vibes];
+  const selectedScalars = Object.values(decision.scalars);
+  if (scalarRefs.length !== selectedScalars.length || additions.length !== decision.genres.length + decision.vibes.length ||
+      scalarRefs.length + additions.length === 0) return false;
+  const hasBoundGeminiRef = ref => ref?.source === "Gemini" && validEvidenceRef(ref, SOURCES, identity);
+  return scalarRefs.every(hasBoundGeminiRef) && selectedScalars.every(selection => selection.source === "Gemini" &&
+    validEvidenceRef({ source: selection.source, response_digest: selection.response_digest,
+      model_id: selection.model_id, prompt_version: selection.prompt_version, schema_version: selection.schema_version,
+      song_identity: selection.song_identity }, SOURCES, identity)) && additions.every(addition => addition.evidence.length > 0 &&
+      addition.evidence.every(hasBoundGeminiRef));
 }
 
 function isUnresolvedIdentityNoOp(item) {
@@ -126,7 +145,7 @@ function validCandidateValue(value) {
     typeof value.key_key === "string" && typeof value.key_scale === "string";
 }
 
-function validateEvidence(evidence, songId) {
+function validateEvidence(evidence, songId, identity) {
   if (!exactKeys(evidence, ["mbid", "scalars", "genres", "vibes"]) ||
       evidence.mbid !== null && (typeof evidence.mbid !== "string" || !UUID.test(evidence.mbid))) {
     throw fail("INVALID_MANIFEST", "Evidence shape is invalid.", songId);
@@ -137,15 +156,16 @@ function validateEvidence(evidence, songId) {
     }
     for (const [field, candidates] of Object.entries(evidence.scalars)) {
       if (!Array.isArray(candidates) || !candidates.every(item => {
-        if (!exactKeys(item, ["value", "source", "response_digest"], ["submission_id", "association", ...Object.keys(GEMINI_PROVENANCE)]) ||
+        if (!exactKeys(item, ["value", "source", "response_digest"], ["submission_id", "association", "song_identity", ...Object.keys(GEMINI_PROVENANCE)]) ||
             !validCandidateValue(item.value) || !SOURCES.has(item.source) ||
             typeof item.response_digest !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(item.response_digest)) return false;
         if (item.submission_id !== undefined && (typeof item.submission_id !== "string" || item.submission_id.length > 200)) return false;
         if (item.association !== undefined && !["genre", "tag"].includes(item.association)) return false;
-        return (item.source === "Gemini" ? exactKeys(item, ["value", "source", "response_digest", ...Object.keys(GEMINI_PROVENANCE)]) &&
+        return (item.source === "Gemini" ? exactKeys(item, ["value", "source", "response_digest", ...Object.keys(GEMINI_PROVENANCE)], ["song_identity"]) &&
           validEvidenceRef({ source: item.source, response_digest: item.response_digest,
             model_id: item.model_id, prompt_version: item.prompt_version, schema_version: item.schema_version }) :
           !Object.keys(GEMINI_PROVENANCE).some(key => Object.hasOwn(item, key))) &&
+          (item.source === "Gemini" ? item.song_identity === undefined || validGeminiSongIdentity(item.song_identity, identity) : item.song_identity === undefined) &&
           FIELD_SOURCES[field].has(item.source) && (field === "original_key"
           ? typeof item.value === "string" || exactKeys(item.value, ["key_key", "key_scale"]) &&
             typeof item.value.key_key === "string" && typeof item.value.key_scale === "string"
@@ -156,13 +176,14 @@ function validateEvidence(evidence, songId) {
   for (const field of ["genres", "vibes"]) {
     const labels = evidence[field];
     if (!Array.isArray(labels) || !labels.every(item =>
-      exactKeys(item, ["name", "source", "response_digest"], ["association", ...Object.keys(GEMINI_PROVENANCE)]) &&
+      exactKeys(item, ["name", "source", "response_digest"], ["association", "song_identity", ...Object.keys(GEMINI_PROVENANCE)]) &&
       typeof item.name === "string" && SOURCES.has(item.source) &&
       typeof item.response_digest === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(item.response_digest) &&
-      (item.source === "Gemini" ? exactKeys(item, ["name", "source", "response_digest", ...Object.keys(GEMINI_PROVENANCE)]) &&
+      (item.source === "Gemini" ? exactKeys(item, ["name", "source", "response_digest", ...Object.keys(GEMINI_PROVENANCE)], ["song_identity"]) &&
         validEvidenceRef({ source: item.source, response_digest: item.response_digest,
           model_id: item.model_id, prompt_version: item.prompt_version, schema_version: item.schema_version }) :
         !Object.keys(GEMINI_PROVENANCE).some(key => Object.hasOwn(item, key))) &&
+      (item.source === "Gemini" ? item.song_identity === undefined || validGeminiSongIdentity(item.song_identity, identity) : item.song_identity === undefined) &&
       (item.association === undefined || ["genre", "tag"].includes(item.association)))) {
       throw fail("INVALID_MANIFEST", "Tag evidence shape is invalid.", songId);
     }
@@ -187,19 +208,20 @@ function validateDecision(decision, songId) {
         ? typeof selection?.value === "string" || exactKeys(selection?.value, ["key_key", "key_scale"]) &&
           typeof selection.value.key_key === "string" && typeof selection.value.key_scale === "string"
         : typeof selection?.value === "number" && Number.isFinite(selection.value);
-      if (!exactKeys(selection, ["value", "source", "response_digest"], ["submission_id", "model_id", "prompt_version", "schema_version"]) || !validValue ||
+      if (!exactKeys(selection, ["value", "source", "response_digest"], ["submission_id", "song_identity", "model_id", "prompt_version", "schema_version"]) || !validValue ||
           !SOURCES.has(selection.source) || typeof selection.response_digest !== "string" ||
           !/^[A-Za-z0-9._:-]{1,160}$/.test(selection.response_digest)) {
         throw fail("INVALID_MANIFEST", "Scalar review selection is invalid.", songId);
       }
       const selectedRef = { source: selection.source, response_digest: selection.response_digest,
         ...(selection.submission_id !== undefined ? { submission_id: selection.submission_id } : {}),
+        ...(selection.song_identity !== undefined ? { song_identity: selection.song_identity } : {}),
         ...(selection.model_id !== undefined ? { model_id: selection.model_id } : {}),
         ...(selection.prompt_version !== undefined ? { prompt_version: selection.prompt_version } : {}),
         ...(selection.schema_version !== undefined ? { schema_version: selection.schema_version } : {}) };
       const suppliedGeminiProvenance=["model_id","prompt_version","schema_version"].some(key=>selection[key]!==undefined);
-      if (selection.source === "Gemini" && suppliedGeminiProvenance && !validEvidenceRef(selectedRef) ||
-          Object.keys(selection).some(key => !["value","source","response_digest","submission_id","model_id","prompt_version","schema_version"].includes(key)) ||
+      if (selection.source === "Gemini" && (suppliedGeminiProvenance || selection.song_identity !== undefined) && !validEvidenceRef(selectedRef) ||
+          Object.keys(selection).some(key => !["value","source","response_digest","submission_id","song_identity","model_id","prompt_version","schema_version"].includes(key)) ||
           selection.submission_id !== undefined && !validEvidenceRef({source:selection.source,response_digest:selection.response_digest,submission_id:selection.submission_id})) {
         throw fail("INVALID_MANIFEST", "Scalar review provenance is invalid.", songId);
       }
@@ -271,11 +293,10 @@ function validateManifest(manifest) {
       throw fail("INVALID_MANIFEST", "Enrichment song entry is invalid.", item?.song_id);
     }
     ids.add(item.song_id);
-    validateEvidence(item.evidence, item.song_id);
+    validateEvidence(item.evidence, item.song_id, { song_id: item.song_id, title: item.identity.title, artist: item.identity.artist_name });
     validateDecision(item.review_decision, item.song_id);
     validatePreview(item.preview, item.song_id);
-    const geminiOnly = isGeminiOnlyEvidence(item.evidence);
-    if (item.evidence.mbid === null && !geminiOnly && !isUnresolvedIdentityNoOp(item)) {
+    if (item.evidence.mbid === null && !isGeminiBackedNullIdentityChange(item)) {
       throw fail("EVIDENCE_IDENTITY_REQUIRED", "Factual-provider evidence requires an approved recording MBID.", item.song_id);
     }
     if (item.evidence.mbid !== item.review_decision.mbid) {
@@ -584,7 +605,7 @@ async function applyEnrichmentTransaction(pool, manifest, authorizeConnection, {
         throw fail("SONG_IDENTITY_CHANGED", "Target song identity no longer matches the reviewed manifest.", item.song_id);
       }
       if (row.updated_at !== item.base_version) throw fail("STALE_VERSION", "Target song version no longer matches the reviewed manifest.", item.song_id);
-      const snapshot = { id: row.id, updated_at: row.updated_at, release_year: row.release_year,
+      const snapshot = { id: row.id, title: row.title, artist: row.artist_name, updated_at: row.updated_at, release_year: row.release_year,
         original_key: row.original_key, bpm: row.bpm,
         genres: currentAssignmentRows.get(item.song_id).genres, vibes: currentAssignmentRows.get(item.song_id).vibes };
       let regenerated;
