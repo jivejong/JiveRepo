@@ -12,7 +12,7 @@ API, PostgreSQL, and a Python pipeline for importing `.docx` chart collections.
 ## What the application does
 
 - Search the library by song title or artist.
-- Filter songs by categorized tags such as genre, era, feel, tempo, and vibe.
+- Filter songs by categorized tags such as genre, era, feel, and vibe.
 - Create, edit, and delete songs from the browser.
 - Render sectioned chord charts with chords aligned above lyrics.
 - Transpose a chart by half-step or whole-step and change its capo setting.
@@ -84,7 +84,10 @@ On the **Songs** screen:
 
 1. Type part of a title or artist into the search box.
 2. Select **Filter** to show the available tag categories.
-3. Select one or more tags to narrow the results; all selected tags must match.
+3. Select one or more tags to narrow the results. Tags selected within one
+   category (Genre, Vibe, or Era) are alternatives, so a song matches if it has
+   any of them; the categories combine, so a song must match every category
+   that has a selection.
    Genre and Feel values with the same name remain separate filters, and a
    secondary genre matches its Genre filter online and offline.
 4. Select a song row to open its chart.
@@ -464,7 +467,9 @@ Run the backup script from any working directory; it locates `app/docker-compose
 ./scripts/backup.sh --database ccm_backuptest --keep 7
 ```
 
-Restore requires an explicit confirmation because it replaces objects in the selected database. It first validates the archive and creates a separate safety backup. If that backup fails, restore stops. Safety backups are retained without pruning.
+Restore requires an explicit confirmation because it replaces objects in the selected database. It first validates the archive and creates a separate safety backup. If that backup fails, restore stops. Safety backups use the ordinary timestamped name, so they fall under the
+normal retention (the newest 14 per database) and are pruned once newer
+backups exist. Copy one elsewhere if it must be kept longer.
 
 ```powershell
 .\scripts\restore.ps1 -Path .\backups\chords-20261009-120000.dump -Force

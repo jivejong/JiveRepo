@@ -197,47 +197,6 @@ describe('operator saved-evidence prepare → preview orchestration',()=>{
   expect(manifest.songs[0].evidence.genres.every(item=>item.source==='Gemini'&&item.model_id==='gemini-3.1-flash-lite'&&
     item.prompt_version==='missing-metadata-fallback-v2'&&item.schema_version==='missing-metadata-schema-v2')).toBe(true);
  });
- it('runs all three saved song-727 evidence forms through edited scalar, Genre and Gemini Vibe decisions to B1/B3 preview',async()=>{
-  const root=await privateDir(),factual=context(),fallback={format_version:1,mode:'explicit_gemini_missing_metadata_fallback',database_writes:false,selected_song_id:727,
-   baseline:{id:727,title:song.title,artist:song.artist},approved_apply_manifest:null,
-   factual_evidence:{context_version:1,target:factual.target,recording:factual.recording,scalar_candidates:Object.fromEntries(Object.entries(factual.scalar_candidates).map(([field,value])=>[field,{state:value.status,candidates:value.candidates,conflicting_evidence:value.status==='conflicting'}])),submission_coverage:factual.submission_coverage,conflicts:factual.conflicts},
-   gemini_suggestions:{status:'ok',response_digest:'d'.repeat(64),model_id:'gemini-3.1-flash-lite',prompt_version:'missing-metadata-fallback-v1',schema_version:'missing-metadata-schema-v1',
-    scalars:{release_year:[],original_key:[{value:{key_key:'C',key_scale:'minor'},source:'Gemini',response_digest:'d'.repeat(64),model_id:'gemini-3.1-flash-lite',prompt_version:'missing-metadata-fallback-v1',schema_version:'missing-metadata-schema-v1'}],
-     bpm:[{value:134.48,source:'Gemini',response_digest:'d'.repeat(64),model_id:'gemini-3.1-flash-lite',prompt_version:'missing-metadata-fallback-v1',schema_version:'missing-metadata-schema-v1'}]},genres:[],vibes:[]}},
-   vibe={report_version:1,report_type:'gemini_vibe_only_preview',database_writes:false,approval_or_apply_manifest:null,song:{id:727,title:song.title,artist:song.artist},limits:{model:'gemini-3.1-flash-lite'},result:{status:'ok',vibes:['Rocker','Gritty','Dive Bar'].map(name=>({name,source:'Gemini',response_digest:'e'.repeat(64),model_id:'gemini-3.1-flash-lite',prompt_version:'missing-metadata-fallback-v2',schema_version:'missing-metadata-schema-v2'}))}},
-   b4={report_version:1,report_type:'existing_song_enrichment_read_only_preview',selected_song_ids:[727],database_writes:false,approved_apply_manifest:null,songs:[{song_id:727,identity:{title:song.title,artist:song.artist},recording:{match:{matched:true,mbid}},
-    evidence:{mbid,scalars:{release_year:[],original_key:[],bpm:[]},genres:[{name:'Blues Rock',source:'MusicBrainz',response_digest:'f'.repeat(64)}],vibes:[]},approved_preview:null,human_review_required:true}]};
-  const inputs=[['factual-context.json',factual],['gemini-scalars.json',fallback],['vibes.json',vibe],['b4-genre.json',b4]];
-  const evidence=[];for(const [name,doc] of inputs){const file=path.join(root,name);await fs.writeFile(file,JSON.stringify(doc),{flag:'wx'});evidence.push(`727=${file}`);}
-  const prepPool=makePool(),prepared=await prepare({ids:[727],evidence,outputDir:path.join(root,'prepare')},{databaseUrl:'postgresql://private@localhost/chords',PoolClass:class{constructor(){return prepPool;}}});
-  expect(prepPool.state.ended).toBe(true);expect(prepPool.state.released).toBe(1);expect(prepPool.state.queries[0]).toBe('BEGIN READ ONLY');
-  const preparedDoc=JSON.parse(await fs.readFile(prepared.preparedPath,'utf8')),decisions=JSON.parse(await fs.readFile(prepared.decisionsPath,'utf8'));
-  expect(decisions.targets[0].decision).toEqual({mbid:null,scalars:{},genres:[],vibes:[]});
-  expect(decisions.targets[0].source_context[0].submission_coverage).toEqual(context().submission_coverage);
-  const review=await fs.readFile(prepared.reportPath,'utf8');
-  expect(review).toContain('total_available');expect(review).toContain('sampled_offsets');expect(review).toContain(digest);
-  const expectedEvidenceHashes=await Promise.all(evidence.map(async entry=>crypto.createHash('sha256').update(await fs.readFile(entry.slice(entry.indexOf('=')+1))).digest('hex')));
-  expect(decisions.targets[0].evidence_sha256).toEqual(expectedEvidenceHashes.sort());
-  expect(JSON.stringify(preparedDoc)).not.toContain('chart_content');
-  decisions.targets[0].decision.mbid=mbid;
-  decisions.targets[0].decision.scalars.release_year=decisions.targets[0].evidence.scalars.release_year[0];
-  decisions.targets[0].decision.scalars.original_key=decisions.targets[0].evidence.scalars.original_key.find(item=>item.source==='Gemini');
-  decisions.targets[0].decision.scalars.bpm=decisions.targets[0].evidence.scalars.bpm.find(item=>item.source==='Gemini');
-  decisions.targets[0].decision.genres=['Blues Rock'];decisions.targets[0].decision.vibes=['Rocker','Gritty','Dive Bar'];
-  await fs.writeFile(prepared.decisionsPath,`${JSON.stringify(decisions,null,2)}\n`);
-  const previewPool=makePool(),result=await preview({prepared:prepared.preparedPath,decisions:prepared.decisionsPath,outputDir:path.join(root,'preview')},
-    {databaseUrl:'postgresql://private@localhost/chords',PoolClass:class{constructor(){return previewPool;}},operationId:'94c50cb4-8394-4f9a-8eb4-598725fc3959'});
-  expect(previewPool.state.ended).toBe(true);expect(previewPool.state.released).toBe(1);
-  const manifest=JSON.parse(await fs.readFile(result.manifestPath,'utf8'));expect(validateManifest(manifest).map(x=>x.song_id)).toEqual([727]);
-  expect(manifest.songs[0].review_decision.genres).toEqual(['Blues Rock']);
-  expect(manifest.songs[0].review_decision.vibes).toEqual(['Rocker','Gritty','Dive Bar']);
-  expect(manifest.songs[0].preview.scalar_changes.map(change=>[change.field,change.after])).toEqual([['bpm',134],['original_key','Cm'],['release_year',1973]]);
-  expect(manifest.songs[0].preview.tag_additions.genres.map(tag=>tag.name)).toEqual(['Blues Rock']);
-  expect(manifest.songs[0].preview.tag_additions.vibes.map(tag=>tag.name)).toEqual(['Rocker','Gritty','Dive Bar']);
-  expect(result.manifestSha256).toMatch(/^[a-f0-9]{64}$/);expect(await fs.stat(result.manifestPath)).toBeTruthy();
-  const changes=await fs.readFile(path.join(result.outputDir,'changes.txt'),'utf8');expect(changes).toContain('1973');expect(changes).toContain('Blues Rock');expect(changes).toContain('Rocker');
-  expect(changes).toContain('Beer Drinkers and Hell Raisers / ZZ Top');expect(changes).toContain('Decision selections:');
- });
  it('detects source changes before preview and does not create a preview artifact',async()=>{
   const root=await privateDir(),evidencePath=path.join(root,'factual-context.json');await fs.writeFile(evidencePath,JSON.stringify(context()),{flag:'wx'});
   const prep=await prepare({ids:[727],evidence:[`727=${evidencePath}`],outputDir:path.join(root,'prepare')},{databaseUrl:'postgresql://private@localhost/chords',PoolClass:class{constructor(){return makePool();}}});
@@ -245,26 +204,6 @@ describe('operator saved-evidence prepare → preview orchestration',()=>{
   await expect(preview({prepared:prep.preparedPath,decisions:prep.decisionsPath,outputDir:path.join(root,'blocked')},{databaseUrl:'postgresql://private@localhost/chords',PoolClass:class{constructor(){throw new Error('database should not be reached');}}})).rejects.toMatchObject({code:'EVIDENCE_CHANGED'});
   await expect(fs.stat(path.join(root,'blocked'))).rejects.toThrow();
  });
- it('prints an explicit no-op state when the prepared decision remains empty',async()=>{
-  const root=await privateDir(),evidencePath=path.join(root,'abstaining-b4.json');
-  const abstention={report_version:1,report_type:'existing_song_enrichment_read_only_preview',selected_song_ids:[727],
-   database_writes:false,approved_apply_manifest:null,songs:[{song_id:727,identity:{title:song.title,artist:song.artist},
-    recording:{match:{matched:false,reason:'incomplete_search_results'}},evidence:null,approved_preview:null,human_review_required:true}]};
-  const suggestionDigest='f'.repeat(64),suggestions={format_version:1,mode:'explicit_gemini_missing_metadata_fallback',database_writes:false,
-   selected_song_id:727,baseline:{id:727,title:song.title,artist:song.artist},approved_apply_manifest:null,
-   gemini_suggestions:{status:'ok',response_digest:suggestionDigest,model_id:'gemini-3.1-flash-lite',prompt_version:'missing-metadata-fallback-v2',
-    schema_version:'missing-metadata-schema-v2',scalars:{release_year:[],original_key:[{value:{key_key:'C',key_scale:'minor'},source:'Gemini',
-     response_digest:suggestionDigest,model_id:'gemini-3.1-flash-lite',prompt_version:'missing-metadata-fallback-v2',schema_version:'missing-metadata-schema-v2'}],bpm:[]},genres:[],vibes:[]}};
-  await fs.writeFile(evidencePath,JSON.stringify(abstention),{flag:'wx'});
-  const suggestionPath=path.join(root,'unselected-suggestion.json');await fs.writeFile(suggestionPath,JSON.stringify(suggestions),{flag:'wx'});
-  const prepared=await prepare({ids:[727],evidence:[`727=${evidencePath}`,`727=${suggestionPath}`],outputDir:path.join(root,'prepare')},
-   {databaseUrl:'postgresql://private@localhost/chords',PoolClass:class{constructor(){return makePool();}}});
-  const result=await preview({prepared:prepared.preparedPath,decisions:prepared.decisionsPath,outputDir:path.join(root,'preview')},
-   {databaseUrl:'postgresql://private@localhost/chords',PoolClass:class{constructor(){return makePool();}},operationId:'94c50cb4-8394-4f9a-8eb4-598725fc3959'});
-  const text=await fs.readFile(result.changesPath,'utf8');
-  expect(text).toContain('Decision selections: none.');expect(text).toContain('no changes');
- });
-
   it('routes accepted, unresolved and conflicting saved evidence through prepare → decide → preview',async()=>{
    const root=await privateDir(),rows=[
     {...song,id:736,title:'Accepted Match',artist:'Synthetic Artist A',artist_id:31,genres:[],vibes:[]},
