@@ -41,9 +41,9 @@ docker compose ps
 
 Open <http://localhost:3000>. The first build can take a few minutes. Both the
 app and database should report as healthy before you begin using it.
-The app applies pending database migrations before it starts listening. An
-existing database is adopted only when it matches the complete baseline; a
-partial or incompatible schema prevents startup with a diagnostic.
+The app applies pending database migrations before it starts listening. A
+database that already has application tables but no recorded migrations
+prevents startup with a diagnostic; it is never adopted.
 
 An `.env` file is optional for local use because Compose supplies development
 defaults. Run the following from `app/` only when you need local overrides and
@@ -430,9 +430,8 @@ loader. Check the current count with `curl http://localhost:3000/api/stats`.
 
 Migrations run before the API starts listening. Add the next numbered plain SQL
 file under `app/db/migrations/` (for example, `0003_add_song_field.sql`), then
-restart or rebuild the app. Existing databases that match `0001_baseline.sql`
-are recorded as having adopted that baseline without rerunning its DDL. A
-partial or incompatible schema fails startup and is not silently adopted.
+restart or rebuild the app. An existing database with application tables but
+no recorded migrations fails startup instead of being adopted.
 Editing `0001_baseline.sql` does not change an existing database; all future
 schema changes need a new numbered migration. Run migrations explicitly with
 `docker compose exec app npm --prefix /app/server run migrate`. Never recreate

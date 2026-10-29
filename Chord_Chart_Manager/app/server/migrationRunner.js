@@ -1,6 +1,5 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { validateBaseline } = require("./baselineValidation");
 
 const LOCK_KEY = [1128480077, 6]; // Application-specific namespace plus runner version.
 
@@ -127,18 +126,10 @@ async function runMigrationsWithClient(client, { migrationsDir } = {}) {
       }
     }
 
+    // FR-078: never adopt an existing schema; only an empty database is initialized.
     if (appliedVersions.length === 0 && await hasApplicationObjects(client)) {
-      await validateBaseline(client);
-      await client.query("BEGIN");
-      inTransaction = true;
-      await client.query(
-        "INSERT INTO public.schema_migrations(version,name) VALUES ($1,$2)",
-        [migrations[0].version, migrations[0].name]
-      );
-      await client.query("COMMIT");
-      inTransaction = false;
-      appliedVersions.push(migrations[0].version);
-      console.log("Adopted existing schema as migration 0001_baseline.");
+      throw new Error("Database has application tables but no recorded migrations. "
+        + "Restore it from a backup or start from an empty database.");
     }
 
     for (const migration of migrations) {

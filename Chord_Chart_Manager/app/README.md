@@ -124,17 +124,16 @@ curl http://localhost:3000/healthz
 curl http://localhost:3000/api/stats
 ```
 
-The app runs pending SQL migrations before listening. Existing databases adopt
-`0001_baseline.sql` only after the runner verifies the expected tables, columns,
-types, constraints, indexes, and triggers. A partial or incompatible schema
-fails without being silently adopted. Editing the baseline does not update an
+The app runs pending SQL migrations before listening. An empty database is
+initialized from `0001_baseline.sql`; a database with application tables but no
+recorded migrations stops startup with a diagnostic and is never adopted.
+Editing the baseline does not update an
 existing database; add the next numbered file under `app/db/migrations/` for
 future changes. Do not delete or recreate the volume to apply a migration.
 `0002_monotonic_song_version.sql` gives song updates a strictly increasing
 microsecond version, including when a writer waits for a row lock. The
-setlist timestamp trigger remains on its baseline function. Baseline-adoption
-validation runs only when no migration is recorded; databases already recording
-later migrations are checked against their migration history instead.
+setlist timestamp trigger remains on its baseline function. Databases that
+record migrations are checked against their migration history.
 
 Migration files are plain SQL applied inside a transaction owned by the runner.
 The runner pins its connection to `public` (with PostgreSQL built-ins resolved
