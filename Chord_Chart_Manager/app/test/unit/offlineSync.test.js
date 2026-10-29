@@ -6,6 +6,18 @@ import { sortSongs } from '../../src/lib/songSort.js';
 
 const version = '2026-10-10T12:00:00.000001Z';
 
+// The song EditView saves for an existing song opened from `cached`: the edits,
+// its base version, and unchanged flags that stay false once a queued edit
+// changed that field.
+function editorSave(cached, edits, changedFields) {
+  const unchanged = field => !changedFields.includes(field)
+    && (cached._sync ? cached._sync[`${field}_unchanged`] === true : true);
+  return { ...cached, ...edits, _sync: { ...cached._sync, operation: 'update',
+    base_updated_at: cached._sync?.base_updated_at ?? cached.updated_at ?? null,
+    chart_source_unchanged: unchanged('chart_source'), genres_unchanged: unchanged('genres'),
+    vibes_unchanged: unchanged('vibes') } };
+}
+
 describe('offline cache and push-then-pull sync', () => {
   it('omits unchanged chart source from queued updates and includes edited text', () => {
     const source = '[Verse]\nG D | C';
@@ -15,118 +27,12 @@ describe('offline cache and push-then-pull sync', () => {
       _sync: { chart_source_unchanged: false } }).chart_source).toBe(`${source} `);
   });
 
-  it('merges a stale offline metadata save onto the latest chart and rejects same-field conflicts atomically', async () => {
-    const id = 987640;
-    const source = 'Invented original chart';
-    const original = { id, title: 'Invented stale editor song', artist: 'Synthetic', bpm: 100,
-      chart_source: source, chart_content: { sections: [{ lines: [{ type: 'raw', text: source }] }] },
-      genres: [], vibes: [], updated_at: version };
-    const baseline = { title: original.title, artist: original.artist, bpm: original.bpm,
-      chart_source: source, chart_content: original.chart_content, updated_at: version };
-    const chartSource = 'Invented chart changed in tab A';
-    const chartContent = { sections: [{ lines: [{ type: 'raw', text: chartSource }] }] };
-    try {
-      await cache.cacheSongs([original]);
-      await cache.savePendingSong({ ...original, chart_source: chartSource, chart_content: chartContent,
-        _sync: { operation: 'update', base_updated_at: version, chart_source_unchanged: false } }, null,
-      { baseline, changedFields: ['chart_source'] });
-
-      const staleMetadata = await cache.savePendingSong({ ...original, bpm: 128,
-        _sync: { operation: 'update', base_updated_at: version, chart_source_unchanged: true } }, null,
-      { baseline, changedFields: ['bpm'] });
-      expect(staleMetadata).toMatchObject({ bpm: 128, chart_source: chartSource, chart_content: chartContent,
-        _sync: { operation: 'update', base_updated_at: version, chart_source_unchanged: false } });
-      const queued = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
-      expect(queued).toMatchObject({ entity: 'song', local_revision: 2 });
-      expect(queued.sent).toBeUndefined();
-
-      const beforeConflict = await cache.getCachedSong(id);
-      const queueBeforeConflict = await cache.getPendingMutations();
-      await expect(cache.savePendingSong({ ...original, chart_source: 'Invented stale competing chart',
-        chart_content: { sections: [] }, _sync: { operation: 'update', base_updated_at: version } }, null,
-      { baseline, changedFields: ['chart_source'] })).rejects.toThrow(/changed in another tab.*reload.*retry/i);
-      expect(await cache.getCachedSong(id)).toEqual(beforeConflict);
-      expect(await cache.getPendingMutations()).toEqual(queueBeforeConflict);
-    } finally {
-      await cache.clearDirty(id);
-      await cache.deleteCachedSong(id);
-    }
-  });
-
-  it('retains queued Genre intent across stale metadata saves and omits only unchanged Vibes', async () => {
-    const id = 987639;
-    const genre = { name: 'Invented queued Genre', is_primary: true };
-    const original = { id, title: 'Invented queued Genre song', artist: 'Synthetic', bpm: 100,
-      chart_source: 'Invented chart', chart_content: { sections: [] },
-      genres: [{ name: 'Invented old Genre', is_primary: true }], vibes: ['Invented old Vibe'], updated_at: version };
-    const baseline = { ...original };
-    try {
-      await cache.cacheSongs([original]);
-      await cache.savePendingSong({ ...original, genres: [genre], primary_genre: genre.name,
-        genre: genre.name, _sync: { operation: 'update', base_updated_at: version } }, null,
-      { baseline, changedFields: ['genres'] });
-      const staleMetadata = await cache.savePendingSong({ ...original, bpm: 127 }, null,
-        { baseline, changedFields: ['bpm'] });
-      expect(staleMetadata).toMatchObject({ bpm: 127, genres: [genre], vibes: ['Invented old Vibe'],
-        _sync: { operation: 'update', base_updated_at: version,
-          genres_unchanged: false, vibes_unchanged: true } });
-      const mutation = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
-      expect(mutation.local_revision).toBe(2);
-      expect(mutation.sent).toBeUndefined();
-
-      let sent;
-      const synced = await cache.syncWithServer({
-        library: async () => ({ songs: [{ ...staleMetadata, updated_at: '2026-10-10T12:00:00.000002Z', _sync: undefined }] }),
-        songs: { update: async (_songId, payload) => {
-          sent = payload;
-          return { ...staleMetadata, updated_at: '2026-10-10T12:00:00.000002Z', _sync: undefined };
-        } },
-        setlists: { all: async () => [] },
-      });
-      expect(synced.ok).toBe(true);
-      expect(sent).toMatchObject({ genres: [genre], bpm: 127, base_updated_at: version });
-      expect(sent).not.toHaveProperty('vibes');
-    } finally {
-      await cache.clearDirty(id);
-      await cache.deleteCachedSong(id);
-    }
-  });
-
-  it('rejects a same-category stale assignment and merges disjoint category edits atomically', async () => {
-    const id = 987638;
-    const original = { id, title: 'Invented stale tag editors', artist: 'Synthetic',
-      genres: [{ name: 'Invented Genre A', is_primary: true }], vibes: ['Invented Vibe A'], updated_at: version };
-    const baseline = { ...original };
-    try {
-      await cache.cacheSongs([original]);
-      const genreEdit = { ...original, genres: [{ name: 'Invented Genre B', is_primary: true }] };
-      await cache.savePendingSong(genreEdit, null, { baseline, changedFields: ['genres'] });
-      const beforeConflict = await cache.getCachedSong(id);
-      const queueBeforeConflict = await cache.getPendingMutations();
-      await expect(cache.savePendingSong({ ...original, genres: [{ name: 'Invented Genre C', is_primary: true }] }, null,
-        { baseline, changedFields: ['genres'] })).rejects.toThrow(/changed in another tab/i);
-      expect(await cache.getCachedSong(id)).toEqual(beforeConflict);
-      expect(await cache.getPendingMutations()).toEqual(queueBeforeConflict);
-
-      const vibeEdit = await cache.savePendingSong({ ...original, vibes: ['Invented Vibe B'] }, null,
-        { baseline, changedFields: ['vibes'] });
-      expect(vibeEdit.genres).toEqual(genreEdit.genres);
-      expect(vibeEdit.vibes).toEqual(['Invented Vibe B']);
-      expect(vibeEdit._sync).toMatchObject({ base_updated_at: version,
-        genres_unchanged: false, vibes_unchanged: false });
-    } finally {
-      await cache.clearDirty(id);
-      await cache.deleteCachedSong(id);
-    }
-  });
-
   it('keeps frozen category payload and base token during an in-flight update, then rebases its newer revision', async () => {
     const id = 987637;
     const original = { id, title: 'Invented in-flight tag revision', artist: 'Synthetic', bpm: 100,
       genres: [{ name: 'Invented in-flight Genre', is_primary: true }], vibes: ['Invented old Vibe'],
       chart_source: 'Invented chart bytes', chart_content: { sections: [{ lines: [{ text: 'Invented chart bytes' }] }] },
       updated_at: version };
-    const baseline = { ...original };
     const firstServer = { ...original, vibes: ['Invented sent Vibe'], updated_at: '2026-10-10T12:00:00.000004Z' };
     const finalServer = { ...firstServer, bpm: 123, updated_at: '2026-10-10T12:00:00.000005Z' };
     let release;
@@ -134,8 +40,7 @@ describe('offline cache and push-then-pull sync', () => {
     const startedPromise = new Promise(resolve => { started = resolve; });
     try {
       await cache.cacheSongs([original]);
-      await cache.savePendingSong({ ...original, vibes: ['Invented sent Vibe'] }, null,
-        { baseline, changedFields: ['vibes'] });
+      await cache.savePendingSong(editorSave(original, { vibes: ['Invented sent Vibe'] }, ['vibes']));
       const firstSync = cache.syncWithServer({
         library: async () => ({ songs: [firstServer] }),
         songs: { update: async (_songId, payload) => {
@@ -149,9 +54,8 @@ describe('offline cache and push-then-pull sync', () => {
       await startedPromise;
       const inFlight = await cache.getPendingMutations();
       const frozen = inFlight.find(item => String(item.id) === String(id));
-      await cache.savePendingSong({ ...original, vibes: ['Invented sent Vibe', 'Invented later Vibe'], bpm: 123,
-        _sync: { operation: 'update', base_updated_at: version } }, null,
-      { baseline: { ...baseline, vibes: ['Invented sent Vibe'] }, changedFields: ['vibes', 'bpm'] });
+      await cache.savePendingSong(editorSave(await cache.getCachedSong(id),
+        { vibes: ['Invented sent Vibe', 'Invented later Vibe'], bpm: 123 }, ['vibes', 'bpm']));
       const during = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
       expect(during).toMatchObject({ op_id: frozen.op_id, sent: true, sent_revision: frozen.sent_revision,
         sent_payload: frozen.sent_payload, local_revision: 2 });
@@ -261,16 +165,13 @@ describe('offline cache and push-then-pull sync', () => {
     const original = { id, title: 'Invented existing validation song', artist: 'Invented retained artist',
       bpm: 96, genres: [oldGenre], vibes: ['Invented retained Vibe'], chart_source: 'Invented preserved chart',
       chart_content: { sections: [{ lines: [{ text: 'Invented preserved chart' }] }] }, updated_at: version };
-    const initialBaseline = { ...original };
     const rejectedDraft = { ...original, title: 'Invented corrected existing title', genres: [rejectedGenre] };
-    const correctionBaseline = { ...original, ...rejectedDraft, updated_at: version };
     let updateCalls = 0;
     let finalServer;
     try {
       await cache.cacheSongs([original]);
-      await cache.savePendingSong(rejectedDraft, null, {
-        baseline: initialBaseline, changedFields: ['title', 'genres'],
-      });
+      await cache.savePendingSong(editorSave(original,
+        { title: rejectedDraft.title, genres: [rejectedGenre] }, ['title', 'genres']));
       const api = {
         library: async () => ({ songs: [finalServer || original] }),
         setlists: { all: async () => [] },
@@ -297,9 +198,7 @@ describe('offline cache and push-then-pull sync', () => {
         sent_payload: expect.objectContaining({ base_updated_at: version }) });
 
       const latest = await cache.getCachedSong(id);
-      await cache.savePendingSong({ ...latest, genres: [correctedGenre] }, null, {
-        baseline: correctionBaseline, changedFields: ['genres'],
-      });
+      await cache.savePendingSong(editorSave(latest, { genres: [correctedGenre] }, ['genres']));
       const correctedQueue = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
       expect(correctedQueue.op_id).not.toBe(rejectedQueue.op_id);
       expect(correctedQueue.rejected_code).toBeUndefined();
@@ -345,8 +244,9 @@ describe('offline cache and push-then-pull sync', () => {
       const dispatched = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
       const frozen = structuredClone(dispatched.sent_payload);
       const current = await cache.getCachedSong(id);
-      const corrected = await cache.savePendingSong({ ...current, genres: correction, bpm: 123 }, null,
-        operationType === 'update' ? { baseline: current, changedFields: ['genres', 'bpm'] } : null);
+      const corrected = await cache.savePendingSong(operationType === 'update'
+        ? editorSave(current, { genres: correction, bpm: 123 }, ['genres', 'bpm'])
+        : { ...current, genres: correction, bpm: 123 });
       expect(corrected).toMatchObject({ id, artist: base.artist, chart_source: base.chart_source,
         chart_content: base.chart_content, vibes: base.vibes, bpm: 123 });
       expect((await cache.getPendingMutations()).find(item => String(item.id) === String(id)).sent_payload).toEqual(frozen);
@@ -385,8 +285,8 @@ describe('offline cache and push-then-pull sync', () => {
       expect(failed.ok).toBe(false);
       const before = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
       const current = await cache.getCachedSong(id);
-      await cache.savePendingSong({ ...current, genres: [{ name: 'Invented later correction', is_primary: true }] }, null,
-        { baseline: current, changedFields: ['genres'] });
+      await cache.savePendingSong(editorSave(current,
+        { genres: [{ name: 'Invented later correction', is_primary: true }] }, ['genres']));
       const after = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
       expect(after).toMatchObject({ op_id: before.op_id, sent: true,
         sent_revision: before.sent_revision, sent_payload: before.sent_payload });
@@ -405,8 +305,6 @@ describe('offline cache and push-then-pull sync', () => {
     const original = { id, title: 'Invented in-flight stale editor', artist: 'Synthetic', bpm: 90,
       chart_source: source, chart_content: { sections: [{ lines: [{ type: 'raw', text: source }] }] },
       genres: [], vibes: [], updated_at: version };
-    const baseline = { title: original.title, artist: original.artist, bpm: original.bpm,
-      chart_source: source, chart_content: original.chart_content, updated_at: version };
     const ackVersion = '2026-10-10T12:00:00.000002Z';
     const finalVersion = '2026-10-10T12:00:00.000003Z';
     let releaseUpdate;
@@ -417,9 +315,8 @@ describe('offline cache and push-then-pull sync', () => {
       chart_content: { sections: [{ lines: [{ type: 'raw', text: chartSource }] }] }, updated_at: ackVersion };
     try {
       await cache.cacheSongs([original]);
-      await cache.savePendingSong({ ...original, chart_source: chartSource, chart_content: firstSaved.chart_content,
-        _sync: { operation: 'update', base_updated_at: version, chart_source_unchanged: false } }, null,
-      { baseline, changedFields: ['chart_source'] });
+      await cache.savePendingSong(editorSave(original,
+        { chart_source: chartSource, chart_content: firstSaved.chart_content }, ['chart_source']));
       const firstSync = cache.syncWithServer({
         library: async () => ({ songs: [firstSaved] }),
         songs: { update: async (_songId, payload) => {
@@ -432,11 +329,9 @@ describe('offline cache and push-then-pull sync', () => {
       });
       await started;
 
-      await cache.savePendingSong({ ...firstSaved, chart_source: changedChart,
-        chart_content: { sections: [{ lines: [{ type: 'raw', text: changedChart }] }] }, bpm: 120,
-        _sync: { operation: 'update', base_updated_at: version, chart_source_unchanged: false } }, null,
-      { baseline: { ...baseline, chart_source: chartSource, chart_content: firstSaved.chart_content },
-        changedFields: ['chart_source', 'bpm'] });
+      await cache.savePendingSong(editorSave(await cache.getCachedSong(id), { chart_source: changedChart,
+        chart_content: { sections: [{ lines: [{ type: 'raw', text: changedChart }] }] }, bpm: 120 },
+      ['chart_source', 'bpm']));
       const duringRequest = (await cache.getPendingMutations()).find(item => String(item.id) === String(id));
       expect(duringRequest).toMatchObject({ local_revision: 2, sent: true, sent_revision: 1,
         sent_payload: expect.objectContaining({ chart_source: chartSource, base_updated_at: version }) });

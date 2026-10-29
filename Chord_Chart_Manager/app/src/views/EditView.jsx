@@ -142,6 +142,11 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
     (category === 'Genre' ? genreInputRef : vibeInputRef).current?.focus();
   };
 
+  // A field counts as unchanged for sync only if this save left it alone and
+  // no earlier queued edit of this song changed it.
+  const unchangedForSync = (field, changedNow) =>
+    !changedNow && (song?._sync ? song._sync[`${field}_unchanged`] === true : true);
+
   const save = async () => {
     if (!form.title.trim()) { setError('Title is required'); return; }
     setSaving(true);
@@ -160,6 +165,11 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
         !sameEditValue(currentEditableValues[field], originalEditableValues.current[field]));
       if (payload.chart_source === originalChartSource.current) delete payload.chart_source;
       const preserveStructured = !Object.hasOwn(payload, 'chart_source');
+      const unchangedFlags = {
+        chart_source_unchanged: unchangedForSync('chart_source', !preserveStructured),
+        genres_unchanged: unchangedForSync('genres', changedFields.includes('genres')),
+        vibes_unchanged: unchangedForSync('vibes', changedFields.includes('vibes')),
+      };
       const primaryGenre = primaryGenreFromAssignments(payload.genres);
       if (payload.release_year !== null
           && (!Number.isInteger(payload.release_year) || payload.release_year < 1 || payload.release_year > 32767)) {
@@ -201,18 +211,10 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
             _sync: {
               operation: 'update',
               base_updated_at: song?._sync?.base_updated_at ?? song?.updated_at ?? null,
-              chart_source_unchanged: !Object.hasOwn(payload, 'chart_source')
-                && song?._sync?.chart_source_unchanged !== false,
+              ...unchangedFlags,
             },
           };
-          const savedLocal = await cache.savePendingSong(patched, null, {
-            baseline: {
-              ...originalEditableValues.current,
-              chart_content: originalChartContent.current,
-              updated_at: song?.updated_at ?? null,
-            },
-            changedFields,
-          });
+          const savedLocal = await cache.savePendingSong(patched);
           const result = await cache.syncWithServer({
             library: api.library, setlists: api.setlists, songs: api.songs,
           });
@@ -260,21 +262,10 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
             base_updated_at: operation === 'create'
               ? null
               : (song?._sync?.base_updated_at ?? song?.updated_at ?? null),
-            ...(operation === 'update'
-              ? { chart_source_unchanged: !Object.hasOwn(payload, 'chart_source')
-                && song?._sync?.chart_source_unchanged !== false }
-              : {}),
+            ...(operation === 'update' ? unchangedFlags : {}),
           },
         };
-        const editMerge = operation === 'update' ? {
-          baseline: {
-            ...originalEditableValues.current,
-            chart_content: originalChartContent.current,
-            updated_at: song?.updated_at ?? null,
-          },
-          changedFields,
-        } : null;
-        const savedLocal = await cache.savePendingSong(patched, patched._sync.operation_id, editMerge);
+        const savedLocal = await cache.savePendingSong(patched, patched._sync.operation_id);
         onSaved(savedLocal);
       }
     } catch (err) {

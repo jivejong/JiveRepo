@@ -198,63 +198,9 @@ function sameAssignmentValues(left, right, genre = false) {
   return sameEditValue(project(left), project(right));
 }
 
-function mergeExistingOfflineEdit(latest, submitted, pendingMutation, baseline, changedFields) {
-  if (!latest || latest._sync?.operation === 'delete') {
-    throw new Error('This song was removed or changed in another tab. Reload it and retry your save.');
-  }
-  const conflictingFields = changedFields.filter(field => !sameEditValue(latest[field], baseline[field]));
-  if (changedFields.includes('chart_source')
-      && !sameEditValue(latest.chart_content, baseline.chart_content)) {
-    conflictingFields.push('chart_source');
-  }
-  if (conflictingFields.length) {
-    throw new Error('This song changed in another tab. Reload it and retry your save.');
-  }
-
-  const merged = { ...latest };
-  for (const field of changedFields) {
-    if (field === 'chart_source') {
-      merged.chart_source = submitted.chart_source;
-      merged.chart_content = submitted.chart_content;
-    } else {
-      merged[field] = submitted[field];
-    }
-  }
-  if (changedFields.includes('genres')) {
-    merged.genre = submitted.genre;
-    merged.primary_genre = submitted.primary_genre;
-  }
-  if (changedFields.includes('vibes')) merged.feel = submitted.feel;
-  if (changedFields.includes('release_year')) merged.era = submitted.era;
-
-  const pendingUpdate = Boolean(pendingMutation)
-    && latest._sync?.operation !== 'create';
-  const chartChangePending = changedFields.includes('chart_source')
-    || latest._sync?.chart_source_unchanged === false
-    || (pendingUpdate && latest._sync?.chart_source_unchanged !== true);
-  const genresChangePending = changedFields.includes('genres')
-    || latest._sync?.genres_unchanged === false
-    || (pendingUpdate && latest._sync?.genres_unchanged !== true);
-  const vibesChangePending = changedFields.includes('vibes')
-    || latest._sync?.vibes_unchanged === false
-    || (pendingUpdate && latest._sync?.vibes_unchanged !== true);
-  merged._sync = {
-    ...latest._sync,
-    operation: 'update',
-    base_updated_at: latest._sync?.base_updated_at ?? latest.updated_at ?? baseline.updated_at ?? null,
-    chart_source_unchanged: !chartChangePending,
-    genres_unchanged: !genresChangePending,
-    vibes_unchanged: !vibesChangePending,
-  };
-  return merged;
-}
-
-// `editMerge` is used only by existing-song offline editor saves. The baseline
-// and changed field list let one readwrite transaction merge onto the latest
-// IndexedDB row and reject overlapping edits before touching either store.
-export async function savePendingSong(song, operationId = null, editMerge = null) {
+export async function savePendingSong(song, operationId = null) {
   await openDb();
-  return transact(['songs', 'meta'], 'readwrite', (transaction, setValue, fail) => {
+  return transact(['songs', 'meta'], 'readwrite', (transaction, setValue) => {
     const songs = transaction.objectStore('songs');
     const meta = transaction.objectStore('meta');
     const allSongsRequest = songs.getAll();
@@ -271,27 +217,13 @@ export async function savePendingSong(song, operationId = null, editMerge = null
       const queue = queueRequest.result?.value || [];
       let operation = queue.find(item => item.entity === 'song'
         && (String(item.id) === String(song.id) || String(item.id) === String(targetId)));
-      const latest = allSongs.find(item => String(item.id) === String(targetId));
-      let patch;
-      if (editMerge) {
-        if (redirectedId || !latest || latest._sync?.operation === 'create') {
-          return fail(new Error('This song changed in another tab. Reload it and retry your save.'));
-        }
-        const { baseline, changedFields } = editMerge;
-        try {
-          patch = mergeExistingOfflineEdit(latest, song, operation, baseline, changedFields);
-        } catch (error) {
-          return fail(error);
-        }
-      } else {
-        const current = redirectedId
-          ? allSongs.find(item => String(item.id) === String(redirectedId))
-          : null;
-        patch = current
-          ? { ...current, ...song, id: targetId,
-            _sync: { ...song._sync, operation: 'update', base_updated_at: current.updated_at } }
-          : song;
-      }
+      const current = redirectedId
+        ? allSongs.find(item => String(item.id) === String(redirectedId))
+        : null;
+      const patch = current
+        ? { ...current, ...song, id: targetId,
+          _sync: { ...song._sync, operation: 'update', base_updated_at: current.updated_at } }
+        : song;
       songs.put(patch);
       if (!operation) {
         operation = { entity: 'song', id: targetId, op_id: operationId || mutationId(), local_revision: 0 };
