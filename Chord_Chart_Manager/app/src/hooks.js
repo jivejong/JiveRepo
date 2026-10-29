@@ -92,10 +92,8 @@ export function useSongs(filters, online) {
           // Render any cached library immediately, then reconcile it with the
           // unfiltered server snapshot and pending mutation projections.
           void publishCachedFallback().catch(() => {});
-          // Fetch an unfiltered lightweight list. A pending edit may have
-          // moved a song into a filter even though its server version would
-          // not be present in a filtered response.
-          const result = await api.songs.search({});
+          // Fetch every song; filters apply locally so pending edits count.
+          const result = await api.songs.list();
           serverSongs = result.songs;
           cacheReads.invalidate();
           await publishOnline();

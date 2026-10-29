@@ -47,7 +47,7 @@ const del    = (path, body)  => request('DELETE', path, body);
 
 // ── Songs ────────────────────────────────────────────────────────────────────
 export const songs = {
-  search:    (params = {}) => get(`/api/songs?${new URLSearchParams(filterEmpty(params))}`),
+  list:      ()            => get('/api/songs'),
   get:       (id)          => get(`/api/songs/${id}`),
   create:    (data)        => post('/api/songs', data),
   update:    (id, data)    => put(`/api/songs/${id}`, data),
@@ -80,9 +80,3 @@ export const library = () => get('/api/export');
 // ── Stats & import ───────────────────────────────────────────────────────────
 export const stats  = () => get('/api/stats');
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function filterEmpty(obj) {
-  return Object.fromEntries(
-    Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== '')
-  );
-}
