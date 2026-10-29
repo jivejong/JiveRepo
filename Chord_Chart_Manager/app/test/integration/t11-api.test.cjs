@@ -226,6 +226,28 @@ test('FR-111 FR-063 song update and delete without a valid six-digit base are re
   }
 });
 
+test('FR-074 definition names are unique per category ignoring case and whitespace runs', async () => {
+  await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
+  const suffix = randomUUID();
+  const name = `T11 Unique Definition ${suffix}`;
+  const created = [];
+  try {
+    const genre = await json('POST', '/api/tag-definitions', { category: 'Genre', name });
+    assert.equal(genre.response.status, 201, JSON.stringify(genre.value));
+    created.push(['genres', genre.value.id]);
+    const variant = `  ${name.toLowerCase().replace(/ /g, '   ')}  `;
+    const duplicate = await json('POST', '/api/tag-definitions', { category: 'Genre', name: variant });
+    assert.equal(duplicate.response.status, 409, JSON.stringify(duplicate.value));
+    const vibe = await json('POST', '/api/tag-definitions', { category: 'Vibe', name: variant });
+    assert.equal(vibe.response.status, 201, 'a Genre and a Vibe may share a name');
+    assert.equal(vibe.value.name, name.toLowerCase(), 'stored names have whitespace runs collapsed');
+    created.push(['vibes', vibe.value.id]);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM public.genres WHERE lower(name)=lower($1)', [name])).rows[0].n, 1);
+  } finally {
+    for (const [table, id] of created) await pool.query(`DELETE FROM public.${table} WHERE id=$1`, [id]);
+  }
+});
+
 test('song, tag, setlist, and entry API contract on migrated ccm_test', async () => {
   await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
   assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'ccm_test',
@@ -634,10 +656,9 @@ test('existing definitions reject unknown/ambiguous assignment atomically and lo
       return saved;
     };
 
-    // Create locks name keys alphabetically (AAA then ZZZ). The old management
-    // path locked source ZZZ before replacement AAA, producing the reverse
-    // order. Hold the affected song so both application calls can be observed
-    // waiting on their real PostgreSQL lock before the barrier is released.
+    // Management holds both definition rows FOR UPDATE while it waits for the
+    // held song. The overlapping create is observed waiting on its FOR SHARE
+    // definition lock, and rejects once the reassignment commits.
     const targetA = await makeDefinition(`AAA lock target ${suffix}`);
     const sourceB = await makeDefinition(`ZZZ lock source ${suffix}`);
     const firstSong = await makeRaceSong(`${title} reassign race`,
@@ -657,8 +678,8 @@ test('existing definitions reject unknown/ambiguous assignment atomically and lo
     const overlappingCreate = dbExt.createSong({ title: `${title} overlapping create`,
       artist: `${artist} rejected overlapping create`, chart_source: 'Invented overlap chart',
       genres: [{ name: targetA.name, is_primary: true }, { name: sourceB.name, is_primary: false }] }, rejectedCreateOperation);
-    const createWait = await waitForObservedLockWait('pg_advisory_xact_lock(hashtext($1), hashtext($2))',
-      'overlapping A+B create name lock');
+    const createWait = await waitForObservedLockWait('WHERE id=ANY($1::int[]) ORDER BY id FOR SHARE',
+      'overlapping A+B create definition lock');
     assert.notEqual(managementWait.pid, createWait.pid, 'the blocked application operations use separate PostgreSQL sessions');
     await firstBlocker.query('COMMIT');
     firstBlocker.release();
@@ -681,7 +702,7 @@ test('existing definitions reject unknown/ambiguous assignment atomically and lo
     assert.notEqual(versionAfterReassign.toISOString(), firstSong.updated_at);
 
     // Deletion-first ordering uses the same barriers: management owns the
-    // definition key and row, the create is observed blocked there, and after
+    // definition row, the create is observed blocked there, and after
     // deletion commits the waiting assignment rejects with a full rollback.
     const deleteSource = await makeDefinition(`T11 deletion source ${suffix}`);
     const remaining = await makeDefinition(`T11 deletion remaining ${suffix}`);
@@ -703,7 +724,7 @@ test('existing definitions reject unknown/ambiguous assignment atomically and lo
     const deletionOrderedCreate = dbExt.createSong({ title: `${title} deletion-first create`,
       artist: `${artist} rejected deletion create`, chart_source: 'Invented deletion chart',
       genres: [{ name: deleteSource.name, is_primary: true }] }, rejectedDeleteCreateOperation);
-    const deletionCreateWait = await waitForObservedLockWait('pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+    const deletionCreateWait = await waitForObservedLockWait('WHERE id=ANY($1::int[]) ORDER BY id FOR SHARE',
       'assignment blocked behind definition deletion');
     assert.notEqual(deletionWait.pid, deletionCreateWait.pid);
     await secondBlocker.query('COMMIT');

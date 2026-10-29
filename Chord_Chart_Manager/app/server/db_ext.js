@@ -17,7 +17,7 @@ const { pool } = require("./db");
 const crypto = require("crypto");
 const { parseChartBody } = require("./chartParser");
 const {
-  definitionKey, lockTagDefinitionNames, normalizeDefinitionName, resolveTagDefinitionSet,
+  definitionKey, normalizeDefinitionName, resolveTagDefinitionSet,
 } = require("./tagDefinitionNames");
 
 function conflictError() {
@@ -458,7 +458,6 @@ async function createTagDefinition(category, rawName) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await lockTagDefinitionNames(client, category, [name]);
     const { rows } = await client.query(`INSERT INTO ${table}(name) VALUES($1) RETURNING id,name`, [name]);
     await client.query("COMMIT");
     return { ...rows[0], category, song_count: 0 };
@@ -481,7 +480,6 @@ async function mutateTagDefinition(category, id, mutation) {
     if (!source.rowCount) { const error = new Error("Definition not found."); error.status = 404; throw error; }
     const mode = mutation.mode;
     let replacementId = null;
-    let replacementName = null;
     if (!Object.hasOwn(mutation, "name")) {
       if (!['remove', 'reassign'].includes(mode)) {
         const error = new Error("Choose whether to remove these assignments or reassign them."); error.status = 400; throw error;
@@ -493,12 +491,9 @@ async function mutateTagDefinition(category, id, mutation) {
         }
         const replacement = await client.query(`SELECT name FROM ${table} WHERE id=$1`, [replacementId]);
         if (!replacement.rowCount) { const error = new Error("Replacement definition not found in this category."); error.status = 400; throw error; }
-        replacementName = replacement.rows[0].name;
       }
     }
     const renameName = Object.hasOwn(mutation, "name") ? cleanDefinitionName(mutation.name) : null;
-    const definitionNames = [source.rows[0].name, replacementName, renameName].filter(Boolean);
-    await lockTagDefinitionNames(client, category, definitionNames);
 
     const definitionIds = [...new Set([id, replacementId].filter(Number.isSafeInteger))].sort((a, b) => a - b);
     const lockedDefinitions = await client.query(
