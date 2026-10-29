@@ -15,7 +15,7 @@ function migrationDirectory(files) {
   return directory;
 }
 
-function fakeClient() {
+function fakeClient({ applicationObjects = 0 } = {}) {
   const queries = [];
   const applied = [];
   const tables = [];
@@ -39,7 +39,7 @@ function fakeClient() {
       if (/SELECT version,name FROM public\.schema_migrations/i.test(statement)) {
         return { rows: [...applied].sort((a, b) => a.version.localeCompare(b.version)) };
       }
-      if (/SELECT count\(\*\)::int AS count FROM pg_class/i.test(statement)) return { rows: [{ count: 0 }] };
+      if (/SELECT count\(\*\)::int AS count FROM pg_class/i.test(statement)) return { rows: [{ count: applicationObjects }] };
       if (/FAIL_MIGRATION/.test(statement)) {
         if (/CREATE TABLE migration_should_rollback/i.test(statement)) pendingTables.push('migration_should_rollback');
         throw new Error('fixture migration failure');
@@ -128,6 +128,19 @@ describe('migration runner', () => {
     expect(client.queries.filter((query) => query === 'COMMIT')).toHaveLength(commitCount + 1); // bookkeeping table transaction only
     expect(client.applied.map((row) => row.version)).toEqual(['0001', '0002']);
     expect(client.queries.filter((query) => /pg_advisory_unlock/.test(query))).toHaveLength(2);
+  });
+
+  it('FR-078 refuses an unrecorded database that already holds application tables', async () => {
+    const directory = migrationDirectory({
+      '0001_baseline.sql': 'CREATE TABLE migration_marker; ',
+      '0002_add_example.sql': 'SELECT 2;',
+    });
+    const client = fakeClient({ applicationObjects: 3 });
+    await expect(runMigrationsWithClient(client, { migrationsDir: directory }))
+      .rejects.toThrow(/has application tables but no recorded migrations/);
+    expect(client.applied).toEqual([]);
+    expect(client.tables).toEqual([]);
+    expect(client.queries.filter((query) => /pg_advisory_unlock/.test(query))).toHaveLength(1);
   });
 
   it('rolls back a failed migration without recording its version', async () => {
