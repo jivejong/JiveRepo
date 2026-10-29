@@ -283,15 +283,12 @@ Parsed JSON with a nonempty primary Genre and missing/invalid
 to reparse using the current parser; the loader does not infer provenance or
 discard that category.
 
-Apply first takes the app's sorted normalized-name advisory locks for Genre
-labels, then Vibe labels. For each normalized category/name key, it locks all
-matching definition rows in ascending ID order with `FOR SHARE`, then takes
-locks on the artist, song, and assignment tables in that order. It does not
+Apply first locks, for each normalized category/name key, all matching
+definition rows in ascending ID order with `FOR SHARE`, then takes locks on
+the artist, song, and assignment tables in that order. It does not
 table-lock the definition catalogs. The planner rechecks catalog resolution
-after acquiring these locks, so concurrent app definition
-create/rename/delete and assignment operations using the same name locks
-cannot introduce a normalized-name ambiguity between lookup and insert.
-Apply reruns the same identity and category planner under those locks.
+after acquiring these locks, so an existing definition cannot be renamed or
+deleted between lookup and insert. Apply reruns the same identity and category planner under those locks.
 The complete batch commits together or all inserted rows roll back. A
 preflight/collision or SQL failure stops the batch; there are no per-song
 savepoints or partial commits. There is intentionally no `--truncate` or

@@ -27,17 +27,6 @@ function definitionKey(value) {
   return normalizeDefinitionName(value).toLocaleLowerCase();
 }
 
-async function lockTagDefinitionNames(client, category, names) {
-  const keys = [...new Set(names.map(name => definitionKey(name)))].sort();
-  const tableKey = category;
-  for (const key of keys) {
-    await client.query(
-      'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
-      [`ccm-tag-definition:${tableKey}`, key],
-    );
-  }
-}
-
 function categoryTable(category) {
   const table = CATEGORY_TABLES[category];
   if (!table) {
@@ -54,7 +43,6 @@ async function resolveTagDefinitionSet(client, category, values) {
     const key = definitionKey(name);
     if (!byKey.has(key)) byKey.set(key, { ...item, name });
   }
-  await lockTagDefinitionNames(client, category, [...byKey.values()].map(item => item.name));
   const resolved = new Map();
   const table = categoryTable(category);
   const lookedUp = new Map();
@@ -94,7 +82,6 @@ module.exports = {
   categoryTable,
   definitionError,
   definitionKey,
-  lockTagDefinitionNames,
   normalizeDefinitionName,
   resolveTagDefinitionSet,
 };

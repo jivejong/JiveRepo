@@ -218,32 +218,12 @@ def _resolve_category(cur, category: str, label: str, *, lock=False):
     return {"status": "resolved", "id": rows[0][0], "name": rows[0][1]}
 
 
-def _lock_definition_names(cur, prepared: list[dict]) -> None:
-    """Take the same normalized-name advisory locks as the application.
-
-    This protects missing names as well as existing rows, so a concurrent
-    create/rename cannot introduce a normalized duplicate after resolution.
-    """
-    keys = set()
-    for entry in prepared:
-        for category, labels in (("Genre", entry["genres"]), ("Vibe", entry["vibes"])):
-            for label in labels:
-                normalized = re.sub(r"\s+", " ", label.strip()).lower()
-                keys.add((category, normalized))
-    for category, normalized in sorted(keys):
-        cur.execute(
-            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
-            (f"ccm-tag-definition:{category}", normalized),
-        )
-
-
 def _lock_matching_definitions(cur, prepared: list[dict]) -> None:
     """Lock matching catalog rows before app song/assignment locks.
 
-    Name advisory locks protect both present and absent names from app
-    create/rename/delete operations. Locking every current matching row in
-    id order mirrors the app's definition-row locks and keeps ambiguity
-    stable while the loader takes its later table locks.
+    Locking every current matching row in id order mirrors the app's
+    definition-row locks and keeps ambiguity stable while the loader takes
+    its later table locks.
     """
     table_for = {"Genre": "genres", "Vibe": "vibes"}
     keys = set()
@@ -342,7 +322,6 @@ def _blocked(plan):
 
 def _locked_apply_plan(cur, prepared: list[dict], failures: list[dict]) -> dict:
     """Acquire app-compatible locks, then resolve identities/catalog labels."""
-    _lock_definition_names(cur, prepared)
     _lock_matching_definitions(cur, prepared)
     cur.execute("LOCK TABLE " + ", ".join(f"public.{table}" for table in LOCK_TABLES)
                 + " IN SHARE ROW EXCLUSIVE MODE")
