@@ -969,6 +969,44 @@ test('stale setlist sync discards the whole local aggregate and shows the server
   expect(authoritative.songs).toHaveLength(0);
 });
 
+test('FR-106 the add-song picker offers a song already in the setlist, online and offline', async ({ page, context, request, t10Owned }) => {
+  const setlist = await createServerSetlist(request, t10Owned.setlistName, t10Owned);
+  const songResponse = await request.post('/api/songs', { data: {
+    title: t10Owned.titles[0], artist: 'T10 repeated song artist',
+    chart_source: 'Verse\nInvented repeated song fixture', operation_id: randomUUID(),
+  } });
+  expect(songResponse.ok()).toBeTruthy();
+  const song = await songResponse.json();
+  t10Owned.songIds.add(song.id);
+  const entries = page.locator('.song-title', { hasText: t10Owned.titles[0] });
+  const addOnce = async () => {
+    await page.getByRole('button', { name: 'Add song' }).click();
+    await page.locator('.setlist-form select').selectOption(String(song.id));
+    await page.getByRole('button', { name: 'Add to setlist' }).click();
+  };
+  const serverEntries = async () => (await (await request.get(`/api/setlists/${setlist.id}`)).json()).songs;
+
+  await page.goto('/');
+  await expect(page.getByPlaceholder('Search songs, artists…')).toBeVisible();
+  await page.getByRole('button', { name: 'Setlists' }).click();
+  await page.getByText(t10Owned.setlistName, { exact: true }).click();
+  await expect(page.locator('.topbar-title')).toHaveText(t10Owned.setlistName);
+  await addOnce();
+  await expect(entries).toHaveCount(1);
+  await addOnce();
+  await expect(entries).toHaveCount(2);
+  await expect.poll(async () => (await serverEntries()).length).toBe(2);
+
+  await context.setOffline(true);
+  await addOnce();
+  await expect(entries).toHaveCount(3);
+  await context.setOffline(false);
+  await expect.poll(async () => (await serverEntries()).length, { timeout: 20_000 }).toBe(3);
+  const synced = await serverEntries();
+  expect(synced.map(entry => entry.song_id)).toEqual([song.id, song.id, song.id]);
+  expect(new Set(synced.map(entry => entry.entry_id)).size).toBe(3);
+});
+
 test('a server-deleted song dependency conflicts without retaining the queued entry', async ({ page, context, request, t10Owned }) => {
   const setlist = await createServerSetlist(request, t10Owned.setlistName, t10Owned);
   const songResponse = await request.post('/api/songs', { data: {
