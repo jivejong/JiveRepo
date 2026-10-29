@@ -164,6 +164,31 @@ test('FR-013 release year, FR-064 song-create replay, FR-106 repeated setlist so
   }
 });
 
+test('FR-111 song update and delete without base_updated_at are rejected before any write', async () => {
+  await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
+  const suffix = randomUUID();
+  let songId = null;
+  try {
+    const created = await json('POST', '/api/songs', { title: `T11 required base ${suffix}`,
+      artist: `T11 required base artist ${suffix}`, chart_source: 'Verse\nInvented base fixture',
+      operation_id: randomUUID() });
+    assert.equal(created.response.status, 201, JSON.stringify(created.value));
+    songId = created.value.id;
+    const updateOperation = randomUUID();
+    const update = await json('PUT', `/api/songs/${songId}`, { bpm: 99, operation_id: updateOperation });
+    assert.equal(update.response.status, 400, JSON.stringify(update.value));
+    assert.equal((await pool.query('SELECT 1 FROM public.mutation_receipts WHERE operation_id=$1', [updateOperation])).rowCount, 0);
+    const remove = await json('DELETE', `/api/songs/${songId}`, {});
+    assert.equal(remove.response.status, 400, JSON.stringify(remove.value));
+    const after = await json('GET', `/api/songs/${songId}`);
+    assert.equal(after.response.status, 200);
+    assert.equal(after.value.bpm, created.value.bpm);
+    assert.equal(after.value.updated_at, created.value.updated_at);
+  } finally {
+    if (songId !== null) await pool.query('DELETE FROM public.songs WHERE id=$1', [songId]);
+  }
+});
+
 test('song, tag, setlist, and entry API contract on migrated ccm_test', async () => {
   await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
   assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'ccm_test',
