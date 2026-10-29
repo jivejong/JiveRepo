@@ -2,8 +2,8 @@
  * db.js — Postgres access for the chord API.
  *
  * A thin query layer, not an ORM: the schema is small and the queries are
- * specific (faceted search, era derived from release_year, genres/vibes
- * aggregated). Parameterized everywhere — no string interpolation into SQL.
+ * specific (era derived from release_year, genres/vibes aggregated).
+ * Parameterized everywhere — no string interpolation into SQL.
  */
 const { Pool } = require("pg");
 const { chartToText } = require("./chartParser");
@@ -12,68 +12,8 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-/* Faceted song search. Category values are OR-combined within Genre/Vibe/Era;
- * selected categories are AND-combined with each other and the text filters.
- * filters: { q, artist, genre, vibe, era }  (era like "1970s")
- * Returns lightweight rows for the list view (no chart_content). */
-async function searchSongs(filters = {}) {
-  const where = [];
-  const params = [];
-  const p = (v) => (params.push(v), `$${params.length}`);
-
-  if (filters.q) {
-    where.push(`(s.title ILIKE ${p("%" + filters.q + "%")}
-                 OR a.name ILIKE ${p("%" + filters.q + "%")})`);
-  }
-  if (filters.artist) where.push(`LOWER(a.name) = LOWER(${p(filters.artist)})`);
-
-  if (filters.genre) {
-    // song must be linked to this genre (primary or secondary)
-    where.push(`EXISTS (SELECT 1 FROM song_genres sg2 JOIN genres g2 ON g2.id=sg2.genre_id
-                        WHERE sg2.song_id=s.id AND LOWER(g2.name)=LOWER(${p(filters.genre)}))`);
-  }
-  if (filters.vibe) {
-    where.push(`EXISTS (SELECT 1 FROM song_vibes sv2 JOIN vibes v2 ON v2.id=sv2.vibe_id
-                        WHERE sv2.song_id=s.id AND LOWER(v2.name)=LOWER(${p(filters.vibe)}))`);
-  }
-  if (filters.era) {
-    // "1970s" -> decade start 1970, range [1970, 1980)
-    const decade = parseInt(filters.era, 10);
-    if (!Number.isNaN(decade)) {
-      where.push(`s.release_year >= ${p(decade)} AND s.release_year < ${p(decade + 10)}`);
-    }
-  }
-  const selectedByCategory = new Map();
-  for (const tag of filters.selectedTags || []) {
-    const category = tag.category === "Vibe" ? "Feel" : tag.category;
-    if (!selectedByCategory.has(category)) selectedByCategory.set(category, []);
-    selectedByCategory.get(category).push(tag.name.trim());
-  }
-  for (const [category, names] of selectedByCategory) {
-    const alternatives = names.map(name => {
-      if (category === "Genre") {
-        return `EXISTS (SELECT 1 FROM song_genres sg2 JOIN genres g2 ON g2.id=sg2.genre_id
-                         WHERE sg2.song_id=s.id AND LOWER(g2.name)=LOWER(${p(name)}))`;
-      }
-      if (category === "Feel") {
-        return `EXISTS (SELECT 1 FROM song_vibes sv2 JOIN vibes v2 ON v2.id=sv2.vibe_id
-                         WHERE sv2.song_id=s.id AND LOWER(v2.name)=LOWER(${p(name)}))`;
-      }
-      return `LOWER((s.release_year / 10 * 10)::text || 's') = LOWER(${p(name)})`;
-    });
-    if (alternatives.length) where.push(`(${alternatives.join(" OR ")})`);
-  }
-  // Existing name-only clients retain their across-category semantics, but
-  // every genre assignment (not just the primary one) participates.
-  for (const name of filters.legacyTags || []) {
-    const value = p(name);
-    where.push(`(EXISTS (SELECT 1 FROM song_genres sg2 JOIN genres g2 ON g2.id=sg2.genre_id
-                        WHERE sg2.song_id=s.id AND LOWER(g2.name)=LOWER(${value}))
-                 OR EXISTS (SELECT 1 FROM song_vibes sv2 JOIN vibes v2 ON v2.id=sv2.vibe_id
-                            WHERE sv2.song_id=s.id AND LOWER(v2.name)=LOWER(${value}))
-                 OR LOWER((s.release_year / 10 * 10)::text || 's') = LOWER(${value}))`);
-  }
-
+/* Every song as a lightweight row for the list view (no chart_content). */
+async function listSongs() {
   const sql = `
     SELECT s.id, s.title, a.name AS artist, s.created_at, s.performance_key, s.original_key,
            s.alt_key, s.capo_fret, s.bpm, s.release_year,
@@ -90,11 +30,10 @@ async function searchSongs(filters = {}) {
     LEFT JOIN genres pg ON pg.id = spg.genre_id
     LEFT JOIN song_vibes sv ON sv.song_id = s.id
     LEFT JOIN vibes v ON v.id = sv.vibe_id
-    ${where.length ? "WHERE " + where.join(" AND ") : ""}
     GROUP BY s.id, a.name, pg.name
     ORDER BY a.name, s.title
   `;
-  const { rows } = await pool.query(sql, params);
+  const { rows } = await pool.query(sql);
   return rows;
 }
 
@@ -170,4 +109,4 @@ async function exportAll() {
   return { exported_at: new Date().toISOString(), facets, songs: songs.rows };
 }
 
-module.exports = { pool, searchSongs, exportAll };
+module.exports = { pool, listSongs, exportAll };

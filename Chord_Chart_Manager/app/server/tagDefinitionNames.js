@@ -47,31 +47,6 @@ function categoryTable(category) {
   return table;
 }
 
-async function findTagDefinition(client, category, rawName) {
-  const name = normalizeDefinitionName(rawName, category);
-  const table = categoryTable(category);
-  await lockTagDefinitionNames(client, category, [name]);
-  const { rows } = await client.query(
-    `SELECT id, name FROM ${table}
-     WHERE lower(regexp_replace(btrim(name), '[[:space:]]+', ' ', 'g')) = lower($1)
-     ORDER BY id`, [name],
-  );
-  if (rows.length === 0) {
-    throw definitionError(422, 'UNKNOWN_TAG_DEFINITION', category,
-      `${category} definition “${name}” is no longer available. Choose an existing definition or remove the assignment.`);
-  }
-  if (rows.length > 1) {
-    throw definitionError(422, 'AMBIGUOUS_TAG_DEFINITION', category,
-      `Multiple ${category} definitions match “${name}”. Resolve the duplicate definitions before assigning it.`);
-  }
-  const locked = await client.query(`SELECT id,name FROM ${table} WHERE id=$1 FOR SHARE`, [rows[0].id]);
-  if (!locked.rowCount) {
-    throw definitionError(422, 'UNKNOWN_TAG_DEFINITION', category,
-      `${category} definition “${name}” is no longer available. Choose an existing definition or remove the assignment.`);
-  }
-  return { id: locked.rows[0].id, name: locked.rows[0].name };
-}
-
 async function resolveTagDefinitionSet(client, category, values) {
   const byKey = new Map();
   for (const item of values) {
@@ -119,7 +94,6 @@ module.exports = {
   categoryTable,
   definitionError,
   definitionKey,
-  findTagDefinition,
   lockTagDefinitionNames,
   normalizeDefinitionName,
   resolveTagDefinitionSet,

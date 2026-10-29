@@ -54,7 +54,7 @@ export default function SetlistView({ setlistId, online, onSync, onBack, onDelet
   useEffect(() => {
     let cancelled = false;
     cache.getCachedSongs().then(cached => { if (!cancelled) setAllSongs(cached || []); });
-    if (online) api.songs.search()
+    if (online) api.songs.list()
       .then(result => cache.cacheSongs(result.songs || []))
       .then(() => cache.getCachedSongs())
       .then(songs => { if (!cancelled) setAllSongs(songs || []); })

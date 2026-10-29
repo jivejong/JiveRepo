@@ -73,40 +73,9 @@ app.get("/api/export", async (_req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Song tags (map onto genres/vibes; Era is derived)
-app.post("/api/songs/:id/tags", async (req, res, next) => {
-  try {
-    const { name, category, base_updated_at } = req.body || {};
-    res.json(await dbx.addSongTag(parseInt(req.params.id, 10), name, category, base_updated_at));
-  } catch (e) { next(e); }
-});
-app.delete("/api/songs/:id/tags/:name", async (req, res, next) => {
-  try {
-    res.json(await dbx.removeSongTag(parseInt(req.params.id, 10),
-      req.params.name, req.body?.category, req.body?.base_updated_at));
-  } catch (e) { next(e); }
-});
-
-// Search — accepts q, artist, genre, vibe, era, and a comma-separated `tags`
-// list (tag names across categories, resolved against genre/vibe/era).
-app.get("/api/songs", async (req, res, next) => {
-  try {
-    const { q, artist, genre, vibe, era, tags, tag_filters } = req.query;
-    let selectedTags = [];
-    if (tag_filters !== undefined) {
-      try { selectedTags = JSON.parse(tag_filters); } catch { selectedTags = null; }
-      if (!Array.isArray(selectedTags) || selectedTags.some(tag =>
-        !tag || typeof tag.name !== "string" || !tag.name.trim() ||
-        !["Genre", "Feel", "Vibe", "Era"].includes(tag.category))) {
-        return res.status(400).json({ error: "tag_filters must be a list of Genre, Vibe, or Era names" });
-      }
-    }
-    const filters = { q, artist, genre, vibe, era, selectedTags,
-      legacyTags: tags ? String(tags).split(",").map(t => t.trim()).filter(Boolean) : [] };
-    const rows = await db.searchSongs(filters);
-    // shape to the app's response contract
-    res.json({ songs: rows.map(dbx.mapSongOut) });
-  } catch (e) { next(e); }
+// Every song for the list view (no chart_content); the client filters locally.
+app.get("/api/songs", async (_req, res, next) => {
+  try { res.json({ songs: (await db.listSongs()).map(dbx.mapSongOut) }); } catch (e) { next(e); }
 });
 
 app.get("/api/songs/:id", async (req, res, next) => {

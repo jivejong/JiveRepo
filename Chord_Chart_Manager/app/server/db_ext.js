@@ -19,7 +19,7 @@ const {
   parseChartBody, chartToText, isGeneratedSourceUnchanged, isGeneratedChartSource,
 } = require("./chartParser");
 const {
-  definitionKey, findTagDefinition, lockTagDefinitionNames, normalizeDefinitionName, resolveTagDefinitionSet,
+  definitionKey, lockTagDefinitionNames, normalizeDefinitionName, resolveTagDefinitionSet,
 } = require("./tagDefinitionNames");
 
 function conflictError() {
@@ -607,97 +607,6 @@ async function mutateTagDefinition(category, id, mutation) {
   } finally { client.release(); }
 }
 
-// ---------------------------------------------------------------- song tags
-
-// Add a tag to a song. Category routes to the right table: Genre -> genres
-// (secondary), Feel/Vibe -> vibes. Era is derived and not directly taggable.
-async function addSongTag(songId, name, category, baseUpdatedAt) {
-  const cat = String(category || "").toLowerCase();
-  if (!["genre", "feel", "vibe"].includes(cat)) {
-    const error = new Error("Only Genre or Vibe assignments are supported.");
-    error.status = 400;
-    error.code = "INVALID_TAG_INPUT";
-    error.category = category || undefined;
-    throw error;
-  }
-  const definitionCategory = cat === "genre" ? "Genre" : "Vibe";
-  const cleanName = normalizeDefinitionName(name, definitionCategory);
-  validateVersionToken(baseUpdatedAt, true);
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const current = await client.query(
-      `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
-       FROM songs WHERE id = $1`, [songId]);
-    if (!current.rows.length) {
-      const error = new Error("Song not found"); error.status = 404; throw error;
-    }
-    if (!sameVersion(current.rows[0].updated_at, baseUpdatedAt)) throw conflictError();
-    const definition = await findTagDefinition(client, definitionCategory, cleanName);
-    const locked = await client.query(
-      `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
-       FROM songs WHERE id = $1 FOR UPDATE`, [songId]);
-    if (!locked.rows.length) {
-      const error = new Error("Song not found"); error.status = 404; throw error;
-    }
-    if (!sameVersion(locked.rows[0].updated_at, baseUpdatedAt)) throw conflictError();
-    if (cat === "genre") {
-      await client.query(
-        `INSERT INTO song_genres (song_id, genre_id, is_primary)
-         VALUES ($1,$2,NOT EXISTS (SELECT 1 FROM song_genres WHERE song_id=$1 AND is_primary))
-         ON CONFLICT (song_id, genre_id) DO NOTHING`, [songId, definition.id]);
-    } else {
-      await client.query(
-        `INSERT INTO song_vibes (song_id, vibe_id) VALUES ($1,$2)
-         ON CONFLICT DO NOTHING`, [songId, definition.id]);
-    }
-    await client.query("UPDATE songs SET updated_at = now() WHERE id = $1", [songId]);
-    await client.query("COMMIT");
-  } catch (e) { await client.query("ROLLBACK"); throw e; }
-  finally { client.release(); }
-  return getSongFull(songId);
-}
-
-async function removeSongTag(songId, name, category, baseUpdatedAt) {
-  const cat = String(category || "").toLowerCase();
-  const cleanName = String(name || "").trim().replace(/\s+/g, " ");
-  if (!cleanName || !["genre", "feel", "vibe"].includes(cat)) {
-    const error = new Error("A tag name and Genre or Feel category are required");
-    error.status = 400;
-    throw error;
-  }
-  validateVersionToken(baseUpdatedAt, true);
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const locked = await client.query(
-      `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
-       FROM songs WHERE id = $1 FOR UPDATE`, [songId]);
-    if (!locked.rows.length) {
-      const error = new Error("Song not found"); error.status = 404; throw error;
-    }
-    if (!sameVersion(locked.rows[0].updated_at, baseUpdatedAt)) throw conflictError();
-    if (cat === "genre") {
-      await client.query(
-        `DELETE FROM song_genres sg USING genres g
-         WHERE sg.genre_id=g.id AND sg.song_id=$1 AND LOWER(g.name)=LOWER($2)`, [songId, cleanName]);
-      await client.query(
-        `UPDATE song_genres SET is_primary = true
-         WHERE song_id=$1 AND genre_id=(
-           SELECT genre_id FROM song_genres WHERE song_id=$1 ORDER BY genre_id LIMIT 1
-         ) AND NOT EXISTS (SELECT 1 FROM song_genres WHERE song_id=$1 AND is_primary)`, [songId]);
-    } else {
-      await client.query(
-        `DELETE FROM song_vibes sv USING vibes v
-         WHERE sv.vibe_id=v.id AND sv.song_id=$1 AND LOWER(v.name)=LOWER($2)`, [songId, cleanName]);
-    }
-    await client.query("UPDATE songs SET updated_at = now() WHERE id = $1", [songId]);
-    await client.query("COMMIT");
-  } catch (e) { await client.query("ROLLBACK"); throw e; }
-  finally { client.release(); }
-  return getSongFull(songId);
-}
-
 // ---------------------------------------------------------------- setlists
 
 async function listSetlists() {
@@ -749,5 +658,5 @@ async function getStats() {
 module.exports = {
   mapSongOut, getSongFull, createSong, updateSongFull, deleteSong,
   getTags, listManagedTagDefinitions, createTagDefinition, mutateTagDefinition,
-  addSongTag, removeSongTag, listSetlists, getSetlist, getStats,
+  listSetlists, getSetlist, getStats,
 };
