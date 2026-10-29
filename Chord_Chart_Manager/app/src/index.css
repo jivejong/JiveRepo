@@ -551,6 +551,13 @@ body {
 .empty-state p   { font-size: 14px; }
 
 /* ── Chart view ───────────────────────────────────────────────────────────── */
+/* One sticky block: on phones the title bar wraps taller than --topbar-height,
+   so a separately pinned meta bar would slide under it. */
+.chart-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
 .chart-topbar {
   min-height: var(--topbar-height);
   display: grid;
@@ -560,9 +567,6 @@ body {
   padding: var(--space-2) var(--space-4);
   background: var(--bg-raised);
   border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 10;
 }
 .chart-topbar.has-meta { grid-template-columns: auto minmax(0, 1fr) minmax(0, 42%) auto; }
 .chart-topbar-info { grid-column: 2; min-width: 0; }
@@ -599,9 +603,6 @@ body {
   align-items: center;
   flex-wrap: wrap;
   background: var(--bg-raised);
-  position: sticky;
-  top: var(--topbar-height);
-  z-index: 9;
 }
 
 .key-pill {
