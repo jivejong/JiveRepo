@@ -814,13 +814,12 @@ export async function getRedirectedSongId(id) {
   return redirects[id] ?? id;
 }
 
-async function pushPendingSongs(songApi, assertSyncOwned) {
+async function pushPendingSongs(songApi) {
   const songOperations = (await getPendingMutations()).filter(item => item.entity === 'song');
   const conflicts = [];
   let pushed = 0;
 
   for (const queued of songOperations) {
-    await assertSyncOwned();
     const songId = queued.id;
     let local = await getCachedSong(songId);
     if (!local) {
@@ -842,12 +841,10 @@ async function pushPendingSongs(songApi, assertSyncOwned) {
       if (operation === 'create') {
         const frozen = dispatch.operation.sent_payload;
         const saved = await songApi.create({ ...frozen, operation_id: dispatch.operation.op_id });
-        await assertSyncOwned();
         await acknowledgeSongCreate(songId, dispatch.operation.sent_revision || 0,
           dispatch.operation.op_id, saved);
       } else if (operation === 'delete') {
         await songApi.remove(songId, { base_updated_at: baseUpdatedAt });
-        await assertSyncOwned();
         await deleteCachedSong(songId);
       } else {
         const dispatchUpdate = await markSongUpdateDispatched(songId);
@@ -855,7 +852,6 @@ async function pushPendingSongs(songApi, assertSyncOwned) {
         dispatchedOperation = dispatchUpdate.operation;
         const sent = dispatchUpdate.operation.sent_payload;
         const saved = await songApi.update(songId, sent);
-        await assertSyncOwned();
         const replayLatest = saved._operation_replayed
           ? cleanServerSong(await songApi.get(songId))
           : null;
@@ -866,7 +862,6 @@ async function pushPendingSongs(songApi, assertSyncOwned) {
       if (operation === 'delete') await clearDirty(songId);
       pushed += 1;
     } catch (error) {
-      await assertSyncOwned();
       if (error.status === 422
           && ['UNKNOWN_TAG_DEFINITION', 'AMBIGUOUS_TAG_DEFINITION'].includes(error.code)
           && dispatchedOperation) {
@@ -1006,17 +1001,15 @@ async function markMutationSent(operationId) {
   });
 }
 
-async function pushPendingSetlists(setlistApi, assertSyncOwned) {
+async function pushPendingSetlists(setlistApi) {
   const conflicts = [];
   let pushed = 0;
   const attempted = new Set();
   while (true) {
-    await assertSyncOwned();
     const queue = (await getPendingMutations()).filter(item => item.entity === 'setlist');
     const candidate = queue.find(item => !attempted.has(item.op_id));
     if (!candidate) break;
     const operation = await markMutationSent(candidate.op_id);
-    await assertSyncOwned();
     attempted.add(operation.op_id);
     try {
       const setlistRedirects = await readRedirects('setlist_id_redirects');
@@ -1026,7 +1019,6 @@ async function pushPendingSetlists(setlistApi, assertSyncOwned) {
       const payload = resolveSetlistOperationIds(operation.type, operation.payload, {
         songs: songRedirects, entries: entryRedirects,
       });
-      await assertSyncOwned();
       const response = await setlistApi.mutate({
         operation_id: operation.op_id,
         setlist_id: operation.type === 'create' ? null : Number(wireSetlistId),
@@ -1034,12 +1026,10 @@ async function pushPendingSetlists(setlistApi, assertSyncOwned) {
         base_updated_at: operation.type === 'create' ? null : operation.base_updated_at,
         payload,
       });
-      await assertSyncOwned();
       await acknowledgeSetlistOperation(operation, response);
       pushed += 1;
     } catch (error) {
       if (error.status !== 404 && error.status !== 409) throw error;
-      await assertSyncOwned();
       const serverId = await discardSetlistAndRestore(operation, setlistApi);
       conflicts.push({ entity: 'setlist', id: serverId, name: operation.payload.name || '', operation: operation.type });
       // Discard every pending operation for this aggregate. Later work for
@@ -1050,100 +1040,30 @@ async function pushPendingSetlists(setlistApi, assertSyncOwned) {
   return { pushed, conflicts };
 }
 
-async function withSyncOwnership(callback) {
+// Web Locks keep two tabs from syncing at once. Without them, sync runs
+// unlocked; the single-device app needs no fallback lease (Q21-A).
+async function withSyncLock(callback) {
   if (typeof navigator !== 'undefined' && navigator.locks?.request) {
-    return navigator.locks.request('ccm-offline-sync', { mode: 'exclusive' },
-      () => callback(async () => {}));
+    return navigator.locks.request('ccm-offline-sync', { mode: 'exclusive' }, callback);
   }
-  const owner = mutationId();
-  const leaseKey = 'sync_lease';
-  const claim = async () => transact('meta', 'readwrite', (transaction, setValue) => {
-    const meta = transaction.objectStore('meta');
-    const request = meta.get(leaseKey);
-    request.onsuccess = () => {
-      const current = request.result?.value;
-      if (current && current.expires > Date.now() && current.owner !== owner) {
-        setValue({ fence: 0, waitMs: current.expires - Date.now() });
-        return;
-      }
-      const fence = (current?.fence || 0) + 1;
-      queueMetaValue(meta, leaseKey, { owner, fence, expires: Date.now() + 30000 });
-      setValue({ fence, waitMs: 0 });
-    };
-  });
-  let ownership = await claim();
-  let cancelled = false;
-  while (!ownership.fence && ownership.waitMs > 0 && !cancelled) {
-    // Each wait is bounded by the latest observed expiry. If the owner renews
-    // during that interval, claim() returns its new expiry and the waiter
-    // schedules one new timer. Navigation cancels the current timer/listener.
-    const ready = await new Promise(resolve => {
-      let finished = false;
-      const finish = value => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        if (typeof window !== 'undefined') window.removeEventListener('pagehide', onPageHide);
-        resolve(value);
-      };
-      const onPageHide = () => finish(false);
-      const timer = setTimeout(() => finish(true), Math.max(1, ownership.waitMs) + 50);
-      if (typeof window !== 'undefined') window.addEventListener('pagehide', onPageHide, { once: true });
-    });
-    if (!ready) { cancelled = true; break; }
-    ownership = await claim();
-  }
-  const fence = ownership.fence;
-  if (!fence) return { ok: false, error: 'Sync is already running in another tab.' };
-  const assertOwned = async () => {
-    const valid = await transact('meta', 'readonly', (transaction, setValue) => {
-      const request = transaction.objectStore('meta').get(leaseKey);
-      request.onsuccess = () => setValue(request.result?.value?.owner === owner
-        && request.result.value.fence === fence && request.result.value.expires > Date.now());
-    });
-    if (!valid) throw new Error('Sync ownership expired; a later sync owner will safely retry the pending operation.');
-  };
-  const heartbeat = setInterval(() => {
-    void transact('meta', 'readwrite', transaction => {
-      const meta = transaction.objectStore('meta');
-      const request = meta.get(leaseKey);
-      request.onsuccess = () => {
-        if (request.result?.value?.owner === owner && request.result.value.fence === fence) {
-          queueMetaValue(meta, leaseKey, { owner, fence, expires: Date.now() + 30000 });
-        }
-      };
-    });
-  }, 10000);
-  try { return await callback(assertOwned); }
-  finally {
-    clearInterval(heartbeat);
-    await transact('meta', 'readwrite', transaction => {
-      const meta = transaction.objectStore('meta');
-      const request = meta.get(leaseKey);
-      request.onsuccess = () => {
-        if (request.result?.value?.owner === owner && request.result.value.fence === fence) meta.delete(leaseKey);
-      };
-    });
-  }
+  return callback();
 }
 
 // Push pending tablet mutations first, then replace the cache with a fresh
 // server snapshot. This ordering prevents a pull from overwriting queued work.
 export async function syncWithServer({ library, setlists: setlistApi, songs: songApi }) {
-  return withSyncOwnership(async assertSyncOwned => {
+  return withSyncLock(async () => {
   try {
-    const pendingSongs = await pushPendingSongs(songApi, assertSyncOwned);
-    const pendingSetlists = await pushPendingSetlists(setlistApi, assertSyncOwned);
+    const pendingSongs = await pushPendingSongs(songApi);
+    const pendingSetlists = await pushPendingSetlists(setlistApi);
     const pending = {
       pushed: pendingSongs.pushed + pendingSetlists.pushed,
       conflicts: [...pendingSongs.conflicts, ...pendingSetlists.conflicts],
     };
-    await assertSyncOwned();
     const [lib, setlistSummaries] = await Promise.all([library(), setlistApi.all()]);
     const setlistList = await Promise.all((setlistSummaries || []).map(setlist =>
       Array.isArray(setlist.songs) ? setlist : setlistApi.get(setlist.id),
     ));
-    await assertSyncOwned();
     await Promise.all([
       replaceCachedSongs(lib.songs || []),
       replaceCachedSetlists(setlistList || []),
