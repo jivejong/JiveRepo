@@ -500,11 +500,6 @@ async function replaceCachedSetlists(setlistList) {
   });
 }
 
-export async function deleteCachedSetlist(id) {
-  await openDb();
-  return wrap(tx('setlists', 'readwrite').delete(id));
-}
-
 export async function getCachedSetlists() {
   await openDb();
   return (await wrap(tx('setlists').getAll())).filter(setlist => !setlist._deleted);
@@ -638,24 +633,10 @@ export async function markDirty(songId, operationId = null) {
   notifyCacheChange();
 }
 
-export async function getDirtySongs() {
-  const queue = await getPendingMutations();
-  return queue.filter(item => item.entity === 'song').map(item => item.id);
-}
-
 export async function clearDirty(songId) {
   await transact('meta', 'readwrite', transaction => {
     pendingQueueRequest(transaction.objectStore('meta'), queue => {
       queue.splice(0, queue.length, ...queue.filter(item => !(item.entity === 'song' && item.id === songId)));
-    });
-  });
-  notifyCacheChange();
-}
-
-export async function clearAllDirty() {
-  await transact('meta', 'readwrite', transaction => {
-    pendingQueueRequest(transaction.objectStore('meta'), queue => {
-      queue.splice(0, queue.length, ...queue.filter(item => item.entity !== 'song'));
     });
   });
   notifyCacheChange();
@@ -735,11 +716,6 @@ async function keepServerVersion(songId, songApi) {
     await deleteCachedSong(songId);
   }
   await clearDirty(songId);
-}
-
-async function rememberRedirect(localId, serverId) {
-  const redirects = (await getMeta('song_id_redirects')) || {};
-  await setMeta('song_id_redirects', { ...redirects, [localId]: serverId });
 }
 
 async function markSongCreateDispatched(songId) {
@@ -1290,9 +1266,6 @@ export async function syncWithServer({ library, setlists: setlistApi, songs: son
   }
   });
 }
-
-// Backward-compatible name for callers outside the React hooks.
-export const syncFromServer = syncWithServer;
 
 // ── Offline search ───────────────────────────────────────────────────────────
 

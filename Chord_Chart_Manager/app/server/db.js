@@ -98,33 +98,6 @@ async function searchSongs(filters = {}) {
   return rows;
 }
 
-/* One song with full chart_content and all genres/vibes. */
-async function getSong(id) {
-  const songQ = `
-    SELECT s.*, a.name AS artist,
-           (s.release_year / 10 * 10)::text || 's' AS era
-    FROM songs s JOIN artists a ON a.id = s.artist_id
-    WHERE s.id = $1`;
-  const { rows } = await pool.query(songQ, [id]);
-  if (!rows.length) return null;
-  const song = rows[0];
-
-  const genresQ = `
-    SELECT g.name, sg.is_primary FROM song_genres sg
-    JOIN genres g ON g.id = sg.genre_id WHERE sg.song_id = $1
-    ORDER BY sg.is_primary DESC, g.name`;
-  const vibesQ = `
-    SELECT v.name FROM song_vibes sv JOIN vibes v ON v.id = sv.vibe_id
-    WHERE sv.song_id = $1 ORDER BY v.name`;
-  const [g, v] = await Promise.all([
-    pool.query(genresQ, [id]),
-    pool.query(vibesQ, [id]),
-  ]);
-  song.genres = g.rows;
-  song.vibes = v.rows.map((r) => r.name);
-  return song;
-}
-
 /* Distinct facet values for the filter UI. */
 async function getFacets() {
   const [genres, vibes, artists, eras] = await Promise.all([
@@ -143,29 +116,9 @@ async function getFacets() {
   };
 }
 
-/* Write path: update the player-adjustable fields. Whitelisted columns only. */
-async function updateSong(id, patch) {
-  const allowed = ["performance_key", "capo_fret", "bpm", "chart_content"];
-  const sets = [];
-  const params = [];
-  for (const key of allowed) {
-    if (key in patch) {
-      params.push(key === "chart_content" ? JSON.stringify(patch[key]) : patch[key]);
-      sets.push(`${key} = $${params.length}`);
-    }
-  }
-  if (!sets.length) return getSong(id);
-  params.push(id);
-  await pool.query(
-    `UPDATE songs SET ${sets.join(", ")} WHERE id = $${params.length}`,
-    params
-  );
-  return getSong(id);
-}
-
 /* Everything the client needs to run fully offline, in 3 queries total
  * (not N+1): all songs with chart_content, plus genres and vibes stitched
- * in. Shape per song matches getSong() so the viewer needs no special-casing. */
+ * in. */
 async function exportAll() {
   const songsQ = `
     SELECT s.id, s.title, a.name AS artist, s.performance_key, s.preferred_key,
@@ -217,4 +170,4 @@ async function exportAll() {
   return { exported_at: new Date().toISOString(), facets, songs: songs.rows };
 }
 
-module.exports = { pool, searchSongs, getSong, getFacets, updateSong, exportAll };
+module.exports = { pool, searchSongs, getFacets, exportAll };
