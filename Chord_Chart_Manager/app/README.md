@@ -147,13 +147,8 @@ Migration files are plain SQL applied inside a transaction owned by the runner.
 The runner pins its connection to `public` (with PostgreSQL built-ins resolved
 from `pg_catalog`) before inspecting or applying schema changes. Keep application
 objects in `public`.
-Do not put `BEGIN`, `START TRANSACTION`, `COMMIT`/`END`, `ROLLBACK`/`ABORT`,
-`SAVEPOINT`, `RELEASE`, or `PREPARE TRANSACTION` in a migration. The validator
-lexes SQL comments, strings, quoted identifiers, and dollar-quoted routine
-bodies, so block delimiters and quoted keyword text are not mistaken for
-transaction commands. It rejects direct transaction commands inside routine
-bodies too. Migration files do not support dynamic SQL (`EXECUTE`) or procedure
-calls (`CALL`); keep transaction boundaries with the runner.
+Do not put transaction commands (`BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT` and
+the like) in a migration; keep transaction boundaries with the runner.
 Use regular files named
 `NNNN_lowercase_name.sql`; every `.sql` file in the migration directory is
 treated as a migration candidate.

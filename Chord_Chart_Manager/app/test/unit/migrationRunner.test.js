@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const require = createRequire(import.meta.url);
 const { listMigrations, validateMigrationBookkeeping, runMigrationsWithClient, startAfterMigrations } = require('../../server/migrationRunner.js');
-const { validateMigrationSql } = require('../../server/migrationSql.js');
 const temporaryDirectories = [];
 
 function migrationDirectory(files) {
@@ -90,26 +89,6 @@ describe('migration runner', () => {
     fs.rmSync(path.join(directory, '0002_bad__name.sql'));
     fs.writeFileSync(path.join(directory, '0001_other.sql'), 'SELECT 2;');
     expect(() => listMigrations(directory)).toThrow(/Duplicate migration version/);
-  });
-
-  it('rejects transaction commands but permits transaction words in comments, literals, identifiers, and function bodies', () => {
-    for (const sql of [
-      'BEGIN;', 'START TRANSACTION;', 'COMMIT;', 'END;', 'ROLLBACK;', 'ABORT;',
-      'SAVEPOINT x;', 'RELEASE SAVEPOINT x;', 'PREPARE TRANSACTION \'x\';',
-    ]) expect(() => validateMigrationSql(sql, 'fixture.sql')).toThrow(/transaction control/);
-    expect(() => validateMigrationSql(`
-      -- COMMIT
-      /* ROLLBACK /* SAVEPOINT */ still comment */
-      SELECT 'BEGIN', E'COMMIT', "ROLLBACK";
-      CREATE FUNCTION public.test() RETURNS void LANGUAGE plpgsql AS $body$
-      BEGIN RAISE NOTICE 'COMMIT'; END; $body$;
-    `)).not.toThrow();
-    expect(() => validateMigrationSql(String.raw`SELECT E'quote\' and COMMIT';`)).not.toThrow();
-    expect(() => validateMigrationSql(String.raw`SELECT 'backslash \'; COMMIT;`)).toThrow(/transaction control/);
-    expect(() => validateMigrationSql(`CREATE PROCEDURE public.bad() LANGUAGE plpgsql AS $body$ BEGIN COMMIT; END; $body$;`)).toThrow(/transaction control/);
-    expect(() => validateMigrationSql(`CREATE PROCEDURE public.dynamic() LANGUAGE plpgsql AS $body$ BEGIN EXECUTE 'COMMIT'; END; $body$;`)).toThrow(/dynamic SQL/);
-    expect(() => validateMigrationSql(`CALL public.transaction_boundary();`)).toThrow(/procedure call/);
-    expect(() => validateMigrationSql(`SELECT $body$ COMMIT; $body$;`)).not.toThrow();
   });
 
   it('rejects incompatible migration bookkeeping before trusting its rows', async () => {

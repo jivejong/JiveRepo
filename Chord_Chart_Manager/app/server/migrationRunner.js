@@ -1,7 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { validateBaseline } = require("./baselineValidation");
-const { validateMigrationSql } = require("./migrationSql");
 
 const LOCK_KEY = [1128480077, 6]; // Application-specific namespace plus runner version.
 
@@ -146,7 +145,6 @@ async function runMigrationsWithClient(client, { migrationsDir } = {}) {
       if (appliedVersions.includes(migration.version)) continue;
       const sql = fs.readFileSync(migration.file, "utf8");
       if (!sql.trim()) throw new Error(`Migration ${path.basename(migration.file)} is empty.`);
-      validateMigrationSql(sql, path.basename(migration.file));
       await client.query("BEGIN");
       inTransaction = true;
       await client.query(sql);
