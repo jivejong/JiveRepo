@@ -239,6 +239,8 @@ export default function ChartView({
     <div className="chart-view" style={{ '--chart-font-scale': chartScale }}>
     <div className="screen chart-scroll" ref={scrollRef} tabIndex={0} aria-label="Chart content"
       {...swipeHandlers} onScroll={onChartScroll}>
+      {/* Title and meta bars pin as one block, so the meta bar follows the title's real height. */}
+      <div className="chart-header">
       {/* Top bar */}
       <div className={`chart-topbar ${songMetadata.length ? 'has-meta' : ''}`}>
         <button className="icon-btn" onClick={onBack} aria-label="Back">
@@ -282,6 +284,7 @@ export default function ChartView({
             {inSetlist ? 'Save to setlist' : 'Save key'}
           </button>
         )}
+      </div>
       </div>
       {saveError && <div className="form-error" role="alert">{saveError}</div>}
 
