@@ -402,10 +402,8 @@ stored value changes to an existing spelling only when a suggestion is chosen.
 Use the arrow keys and Enter to select from the list, Escape to close it, or tap
 a suggestion on a touch screen. New artist names remain valid.
 Setlist conflict notices are stored in IndexedDB and remain visible after a
-later sync failure or reload. When Web Locks are unavailable, another tab
-waits to the active IndexedDB lease expiry and rechecks ownership and its
-fencing token. If the owner renewed the lease, it schedules another bounded
-wait; leaving the page cancels the current wait.
+later sync failure or reload. Web Locks keep two tabs from syncing at once;
+where a browser lacks them, sync runs without a cross-tab lock.
 
 Service workers require HTTPS, except on `localhost`. A separate tablet cannot
 use the secure-context exception by visiting `http://<computer-ip>:3000`.
