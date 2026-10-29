@@ -254,7 +254,7 @@ test('Bye Bye Love pipe groups occupy a dedicated row above lyrics', async ({ pa
 test('generated charts round-trip and keep anchors and colliding labels visible', async ({ page, request, context }) => {
   const suffix = crypto.randomUUID();
   const title = `T13a invented alignment ${suffix}`;
-  const songsResponse = await request.get('/api/songs?q=Already%20Gone');
+  const songsResponse = await request.get('/api/songs');
   expect(songsResponse.ok()).toBeTruthy();
   const artist = (await songsResponse.json()).songs.find(song => song.title === 'Already Gone')?.artist;
   expect(artist).toBeTruthy();

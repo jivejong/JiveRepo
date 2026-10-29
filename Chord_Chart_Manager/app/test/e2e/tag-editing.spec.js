@@ -288,8 +288,9 @@ test('Genre and Vibe edits work offline and stale sync keeps the server version'
     const beforeConflict = await apiSong();
     await page.getByRole('button', { name: 'Songs' }).click();
     await openSongEditor();
-    const serverChanged = await request.post(`/api/songs/${songId}/tags`, {
-      data: { name: serverVibe, category: 'Feel', base_updated_at: beforeConflict.updated_at },
+    const serverChanged = await request.put(`/api/songs/${songId}`, {
+      data: { vibes: [...beforeConflict.vibes, serverVibe], base_updated_at: beforeConflict.updated_at,
+        operation_id: randomUUID() },
     });
     expect(serverChanged.ok()).toBeTruthy();
     t09Fixture.recordSong(await serverChanged.json());
@@ -872,7 +873,7 @@ test('a rejected offline create is corrected in EditView and creates exactly one
       const serverSong = await createdResponse.json();
       expect(serverSong).toMatchObject({ title, artist: `T09 artist ${suffix}`,
         chart_source: chart, genres: [{ name: validGenre, is_primary: true }], vibes: [retainedVibe] });
-      const matching = await request.get(`/api/songs?q=${encodeURIComponent(title)}`);
+      const matching = await request.get('/api/songs');
       expect(matching.ok()).toBeTruthy();
       const exactSongs = (await matching.json()).songs.filter(song => song.title === title);
       expect(exactSongs).toHaveLength(1);
@@ -882,7 +883,7 @@ test('a rejected offline create is corrected in EditView and creates exactly one
       await expect(page.locator('.chart-topbar-title')).toHaveText(title);
     } finally {
       await context.setOffline(false).catch(() => {});
-      const matching = await request.get(`/api/songs?q=${encodeURIComponent(title)}`);
+      const matching = await request.get('/api/songs');
       if (matching.ok()) {
         for (const song of (await matching.json()).songs.filter(item => item.title === title)) {
           t09Fixture.songIds.add(song.id);
@@ -894,7 +895,7 @@ test('a rejected offline create is corrected in EditView and creates exactly one
 
 test('a delayed editor save cannot override Back or a newer editor session', async ({ page, request, t09Fixture }) => {
   const title = `T09 navigation race ${randomUUID()}`;
-  const sample = await request.get('/api/songs?q=Already%20Gone');
+  const sample = await request.get('/api/songs');
   expect(sample.ok()).toBeTruthy();
   const artist = (await sample.json()).songs.find(song => song.title === 'Already Gone')?.artist;
   expect(artist).toBeTruthy();

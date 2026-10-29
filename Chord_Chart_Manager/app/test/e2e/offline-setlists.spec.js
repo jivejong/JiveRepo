@@ -375,7 +375,7 @@ const test = base.extend({
 
       try {
       for (const title of fixture.titles) {
-        const response = await request.get(`/api/songs?q=${encodeURIComponent(title)}`);
+        const response = await request.get('/api/songs');
         if (!response.ok()) throw new Error(`Could not inspect T10 song ${title}: HTTP ${response.status()}`);
         const songs = (await response.json()).songs.filter(item => item.title === title);
         if (songs.length > 1) failures.push(new Error(`T10 fixture song title is not unique: ${title}`));
@@ -883,7 +883,7 @@ test('offline song creation verifies successful two-tab pulls and rejects a fail
     const after = await response.json();
     return after.songs.length === 2 && after.songs[0].title === t10Owned.titles[1];
   }).toBeTruthy();
-  const syncedSongResponse = await request.get(`/api/songs?q=${encodeURIComponent(t10Owned.titles[0])}`);
+  const syncedSongResponse = await request.get('/api/songs');
   expect(syncedSongResponse.ok()).toBeTruthy();
   const syncedSong = (await syncedSongResponse.json()).songs.find(song => song.title === t10Owned.titles[0]);
   expect(syncedSong?.bpm).toBe(137);
@@ -1271,7 +1271,7 @@ test('a lost song-create response replays its frozen body and maps dependent set
   });
   let songs;
   await expect.poll(async () => {
-    const response = await request.get(`/api/songs?q=${encodeURIComponent(title)}`);
+    const response = await request.get('/api/songs');
     if (!response.ok()) return false;
     songs = (await response.json()).songs.filter(song => song.title === title);
     return songs.length === 1 && songs[0].bpm === 123;
@@ -1322,7 +1322,7 @@ test('online editing of a pending local song preserves its ID redirect and later
   await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
   let serverSongs;
   await expect.poll(async () => {
-    const response = await request.get(`/api/songs?q=${encodeURIComponent(title)}`);
+    const response = await request.get('/api/songs');
     if (!response.ok()) return false;
     serverSongs = (await response.json()).songs.filter(song => song.title === title);
     return serverSongs.length === 1 && serverSongs[0].bpm === 123;
@@ -1474,7 +1474,7 @@ test('a lost song-update response replays its receipt and preserves a newer edit
   expect(requestBodies[1]).toEqual(requestBodies[0]);
   await syncNow.click();
   await expect.poll(async () => {
-    const response = await request.get(`/api/songs?q=${encodeURIComponent(title)}`);
+    const response = await request.get('/api/songs');
     return response.ok() && (await response.json()).songs.find(row => row.title === title)?.bpm === 222;
   }, { timeout: 20_000 }).toBeTruthy();
   expect(requestBodies[2].bpm).toBe(222);
@@ -1537,7 +1537,7 @@ test('a lost song-update response replays its receipt and preserves a newer edit
     return { bpm: row?.bpm, pending: state.queue.some(item => item.entity === 'song' && String(item.id) === String(row?.id)) };
   }, { title }), { timeout: 10_000 }).toEqual({ bpm: 222, pending: false });
   await expect(syncNow).toBeEnabled();
-  const authoritative = await request.get(`/api/songs?q=${encodeURIComponent(title)}`);
+  const authoritative = await request.get('/api/songs');
   expect((await authoritative.json()).songs.find(row => row.title === title)?.bpm).toBe(222);
 });
 
