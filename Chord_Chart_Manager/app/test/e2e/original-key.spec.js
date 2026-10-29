@@ -72,8 +72,9 @@ test('Original key stays separate from transposition, capo, and setlist override
     await expect(page.getByRole('button', { name: 'Save to setlist' })).toHaveCount(0);
     const serverSong = await (await request.get(`/api/songs/${knownId}`)).json();
     expect(serverSong.original_key).toBe('D');
-    const serverSetlist = await (await request.get(`/api/setlists/${setlistId}`)).json();
-    expect(serverSetlist.songs[0].transposed_key).not.toBe('E');
+    // The setlist save updates locally first and pushes afterwards, so wait for the server copy.
+    await expect.poll(async () => (await (await request.get(`/api/setlists/${setlistId}`)).json()).songs[0].transposed_key)
+      .not.toBe('E');
 
     await page.getByRole('button', { name: 'Back' }).click();
     await page.getByRole('button', { name: 'Songs' }).click();
