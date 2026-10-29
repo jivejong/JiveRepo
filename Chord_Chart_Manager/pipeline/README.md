@@ -1,9 +1,8 @@
 # Chord Chart Manager data pipeline
 
 The pipeline converts Word chord-chart documents into JSON. The loader is
-insert-only and enrichment stays a separate, later operation. The current
-legacy enrichment code uses MusicBrainz and GetSongBPM; it is not the approved
-Stage B workflow and must remain off for C1 chart import. The recommended
+insert-only and enrichment stays a separate, later operation. The pipeline has
+no enrichment tool at present; a rewrite is planned. The recommended
 workflow uses the Python 3.10 Compose service.
 
 ## Requirements
@@ -12,7 +11,6 @@ For the Docker workflow:
 
 - Docker Desktop or Docker Engine with Compose.
 - Source `.docx` files in `pipeline/docs/`.
-- Any MusicBrainz/GetSongBPM settings below apply only to the existing implementation; the approved replacement is not implemented.
 
 The container provides Python 3.10 and installs `requirements.txt`. It connects
 to the Compose database through the service name `db`, so no host-specific
@@ -76,11 +74,8 @@ loopback-published host port `localhost:15432` by default (`DB_PORT` in
 - `psycopg` from `requirements.txt` for the loader.
 - `MUSICBRAINZ_CONTACT` for
   [MusicBrainz](https://musicbrainz.org/) enrichment.
-- `GETSONGBPM_API_KEY` for
-  [GetSongBPM](https://getsongbpm.com/) enrichment.
 
-The parsers and enrichment HTTP clients otherwise use the Python standard
-library.
+The parsers otherwise use the Python standard library.
 
 ```bash
 python -m venv .venv
@@ -243,8 +238,7 @@ remain review warnings and do not by themselves block loading.
 
 ## 3. Keep enrichment separate
 
-`enrich_songs.py` remains legacy MusicBrainz/GetSongBPM code. Do not run it as
-part of C1 or treat its output as a chart-import requirement. Any enrichment
+Enrichment is not part of C1 chart import. Any enrichment
 must happen after the inserted charts are reviewed and accepted, under its own
 explicit task and current approved workflow. This loader does not call
 providers, infer missing metadata, or consume provider caches.
