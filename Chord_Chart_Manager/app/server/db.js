@@ -6,7 +6,6 @@
  * Parameterized everywhere — no string interpolation into SQL.
  */
 const { Pool } = require("pg");
-const { chartToText } = require("./chartParser");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -86,9 +85,6 @@ async function exportAll() {
 
   const byId = new Map();
   for (const s of songs.rows) {
-    if (!s.chart_source && s.chart_content) {
-      s.chart_source = chartToText(s.chart_content);
-    }
     s.genres = [];
     s.vibes = [];
     byId.set(s.id, s);

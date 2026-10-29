@@ -15,9 +15,7 @@
  */
 const { pool } = require("./db");
 const crypto = require("crypto");
-const {
-  parseChartBody, chartToText, isGeneratedSourceUnchanged, isGeneratedChartSource,
-} = require("./chartParser");
+const { parseChartBody } = require("./chartParser");
 const {
   definitionKey, lockTagDefinitionNames, normalizeDefinitionName, resolveTagDefinitionSet,
 } = require("./tagDefinitionNames");
@@ -287,19 +285,8 @@ async function updateSongFull(id, patch, operationId) {
     if (!sameVersion(locked.rows[0].updated_at, patch.base_updated_at)) {
       throw conflictError();
     }
-    const currentSource = locked.rows[0].chart_source;
-    const preserveChartContent = isGeneratedSourceUnchanged(
-      currentSource,
-      locked.rows[0].chart_content,
-      patch.chart_source,
-    );
-    if ("chart_source" in patch && patch.chart_source &&
-        (!currentSource || isGeneratedChartSource(currentSource)) &&
-        !isGeneratedChartSource(patch.chart_source)) {
-      const error = new Error("This chart uses generated structured source; keep its CCM line markers when editing.");
-      error.status = 400;
-      throw error;
-    }
+    // FR-021: resubmitting the stored chart text keeps chart_source and chart_content exactly.
+    const preserveChartContent = patch.chart_source === locked.rows[0].chart_source;
 
     if (patch.artist !== undefined) {
       const artistId = await getOrCreate(client, "artists", patch.artist || "Unknown");
@@ -410,10 +397,6 @@ async function getSongFull(id, queryable = pool) {
   song.genre = (g.rows.find((x) => x.is_primary) || g.rows[0] || {}).name || null;
   song.vibes = v.rows.map((r) => r.name);
   song.feel = song.vibes[0] || null;
-  // If a migrated song has structured content but no editable text yet, seed it.
-  if (!song.chart_source && song.chart_content) {
-    song.chart_source = chartToText(song.chart_content);
-  }
   return mapSongOut(song);
 }
 

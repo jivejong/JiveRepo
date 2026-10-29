@@ -5,7 +5,6 @@ const { requireIsolatedTarget, verifyHarnessIdentity } = require('../t11-guards.
 requireIsolatedTarget({ isolated: process.env.CCM_T11_ISOLATED,
   baseUrl: process.env.E2E_BASE_URL, runId: process.env.CCM_T11_RUN_ID });
 const { pool } = require('../../server/db.js');
-const { chartToText } = require('../../server/chartParser.js');
 const dbExt = require('../../server/db_ext.js');
 
 const base = process.env.E2E_BASE_URL;
@@ -76,7 +75,7 @@ async function waitForObservedLockWait(queryFragment, label, timeoutMs = 8_000) 
   throw new Error(`${label}: no blocked lock wait observed within ${timeoutMs}ms. Last candidate: ${JSON.stringify(observed)}`);
 }
 
-test('T13 imported-like NULL-source fixture stays NULL through no-op and metadata saves', async () => {
+test('FR-021 FR-107 a legacy NULL-source chart is returned as null and stays NULL through no-op and metadata saves', async () => {
   await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
   const fixture = await pool.query(`SELECT id, chart_content FROM public.songs
     WHERE title='Already Gone' AND chart_source IS NULL ORDER BY id`);
@@ -85,7 +84,7 @@ test('T13 imported-like NULL-source fixture stays NULL through no-op and metadat
   const before = await json('GET', `/api/songs/${id}`);
   assert.equal(before.response.status, 200);
   assert.deepEqual(before.value.chart_content, fixture.rows[0].chart_content);
-  assert.equal(before.value.chart_source, chartToText(fixture.rows[0].chart_content));
+  assert.equal(before.value.chart_source, null, 'no generated text is produced for a NULL source');
 
   const unchanged = await json('PUT', `/api/songs/${id}`, {
     chart_source: before.value.chart_source, base_updated_at: before.value.updated_at,
@@ -105,6 +104,37 @@ test('T13 imported-like NULL-source fixture stays NULL through no-op and metadat
   assert.equal(metadata.value.chart_source, before.value.chart_source);
   assert.equal((await pool.query('SELECT chart_source FROM public.songs WHERE id=$1', [id])
     ).rows[0].chart_source, null);
+});
+
+test('FR-021 FR-023 an ordinary chart is unchanged by opening it and by a metadata-only save', async () => {
+  await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
+  const suffix = randomUUID();
+  const chartSource = ['[Verse]', 'C   G', 'Invented ordinary line  ', '', '{Am}Invented second line', ''].join('\n');
+  let songId = null;
+  try {
+    const created = await json('POST', '/api/songs', { title: `T11 ordinary chart ${suffix}`,
+      artist: `T11 ordinary chart artist ${suffix}`, chart_source: chartSource, operation_id: randomUUID() });
+    assert.equal(created.response.status, 201, JSON.stringify(created.value));
+    songId = created.value.id;
+    const stored = async () => (await pool.query(
+      'SELECT chart_source, chart_content, updated_at FROM public.songs WHERE id=$1', [songId])).rows[0];
+    const before = await stored();
+    assert.equal(before.chart_source, chartSource);
+
+    const opened = await json('GET', `/api/songs/${songId}`);
+    assert.equal(opened.value.chart_source, chartSource);
+    assert.deepEqual(await stored(), before, 'opening a chart writes nothing');
+
+    const metadata = await json('PUT', `/api/songs/${songId}`, { chart_source: chartSource, bpm: 88,
+      base_updated_at: opened.value.updated_at, operation_id: randomUUID() });
+    assert.equal(metadata.response.status, 200, JSON.stringify(metadata.value));
+    const after = await stored();
+    assert.equal(after.chart_source, before.chart_source);
+    assert.deepEqual(after.chart_content, before.chart_content);
+    assert.equal(metadata.value.bpm, 88);
+  } finally {
+    if (songId !== null) await pool.query('DELETE FROM public.songs WHERE id=$1', [songId]);
+  }
 });
 
 test('FR-013 release year, FR-064 song-create replay, FR-106 repeated setlist song', async () => {

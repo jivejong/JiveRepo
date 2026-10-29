@@ -1,9 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { expect, test as base } from '@playwright/test';
-
-const require = createRequire(import.meta.url);
-const { chartToText } = require('../../server/chartParser.js');
 
 const test = base.extend({
   cachedOpenFixtures: [async ({ request, context }, use) => {
@@ -11,15 +7,12 @@ const test = base.extend({
     const prefix = `T12 Cached Open ${suffix}`;
     const titles = [`${prefix} A`, `${prefix} B`];
     const ids = [];
-    const chart = { sections: [{ label: 'Invented verse', lines: [
-      { type: 'lyric', text: 'Invented cached test line', confidence: 'high',
-        chords: [{ sym: 'C', pos: 0 }, { sym: 'G', pos: 8 }] },
-    ] }] };
+    const chartSource = '[Invented verse]\n{C}Invented{G} cached test line';
     try {
       for (const title of titles) {
         const created = await request.post('/api/songs', { data: {
           title, artist: `T12 synthetic artist ${suffix}`, chart_written_key: 'C',
-          chart_source: chartToText(chart),
+          chart_source: chartSource,
         } });
         if (!created.ok()) throw new Error(`T12 synthetic chart creation returned HTTP ${created.status()}.`);
         const song = await created.json();

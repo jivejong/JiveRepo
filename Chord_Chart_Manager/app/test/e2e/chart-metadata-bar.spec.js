@@ -1,28 +1,23 @@
-import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
-
-const require = createRequire(import.meta.url);
-const { chartToText } = require('../../server/chartParser.js');
+import { bracedLyric } from './chartText.js';
 
 test('chart metadata stays below title while scrolling and remains usable across themes and widths', async ({ page, request, context }) => {
   test.setTimeout(90000);
   const suffix = randomUUID();
   const title = `T23 metadata ${suffix}`;
   const beatbuddyText = 'Intro - Verse - Chorus - Verse - Chorus - Bridge - Final Chorus - Outro';
-  const content = { sections: [{ label: 'Invented section', lines: [
-    ...Array.from({ length: 34 }, (_, index) => ({
-      type: 'lyric', text: `Invented metadata scroll line ${index + 1} has no source lyrics`, confidence: 'high',
-      chords: index === 2
-        ? [{ sym: 'G', pos: 0 }, { sym: 'D', pos: 0 }, { sym: 'Am', pos: 36 }]
-        : [{ sym: 'G', pos: 0 }, { sym: 'D', pos: 20 }, { sym: 'Am', pos: 36 }],
-    })),
-    { type: 'spacer' },
-  ] }] };
+  const lyrics = Array.from({ length: 34 }, (_, index) => bracedLyric(
+    `Invented metadata scroll line ${index + 1} has no source lyrics`,
+    index === 2
+      ? [{ sym: 'G', pos: 0 }, { sym: 'D', pos: 0 }, { sym: 'Am', pos: 36 }]
+      : [{ sym: 'G', pos: 0 }, { sym: 'D', pos: 20 }, { sym: 'Am', pos: 36 }]));
+  // Ordinary text drops a trailing blank line, so the one spacer sits before the last lyric.
+  const chartSource = ['[Invented section]', ...lyrics.slice(0, -1), '', lyrics.at(-1)].join('\n');
   const created = await request.post('/api/songs', { data: {
     title, artist: `T23 synthetic ${suffix}`, chart_written_key: 'G', original_key: 'G', bpm: 96,
     beatbuddy_structure: beatbuddyText,
-    chart_source: chartToText(content),
+    chart_source: chartSource,
   } });
   expect(created.status()).toBe(201);
   const song = await created.json();

@@ -96,7 +96,9 @@ def validate_parser_diagnostics(songs: list[dict]) -> None:
                     f"line {warning.get('line', '?')}: {code} ({warning.get('reason', 'unspecified_reason')})"
                 )
         source = song.get("chart_source")
-        if source is None or (isinstance(source, str) and chart_parser.is_generated_chart_body(source)):
+        if source is None:
+            # FR-107: charts are stored only as ordinary text, so a song needs its source.
+            problems.append(f"[{index}] {song.get('title') or '(untitled)'}: chart_source_missing")
             continue
         if not isinstance(source, str):
             problems.append(f"[{index}] {song.get('title') or '(untitled)'}: chart_source_content_mismatch (ordinary_source_not_text)")

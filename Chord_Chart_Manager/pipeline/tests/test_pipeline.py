@@ -1346,46 +1346,6 @@ _DEFAULT_TAB_SETTINGS = (
 )
 
 
-def test_generated_chart_source_matches_the_app_line_contract(tmp_path: Path) -> None:
-    generated = [
-        "[[CCM-CHART:2]]",
-        "[[CCM-SECTION]]Verse \\[one]",
-        "[[CCM-PROGRESSION]]C G [[CCM-PROGRESSION-REPEAT:4]][[CCM-NOTE]]invented \\[\\[note]] cue",
-        "[[CCM-REPEAT:2]]Verse 1",
-        "[[CCM-RAW]]tab|--invented",
-        "[[CCM-LYRIC:low]]\\[\\[literal]] phrase[[CCM-CHORDS]][[C:0:C%23]][[C:0:G]][[C:18:Am]]",
-    ]
-    expected = {"sections": [{"label": "Verse [one]", "lines": [
-        {"type": "progression", "chords": ["C", "G"], "repeat": 4,
-         "note": "invented [[note]] cue"},
-        {"type": "repeat", "ref": "Verse 1", "times": 2},
-        {"type": "raw", "text": "tab|--invented"},
-        {"type": "lyric", "text": "[[literal]] phrase",
-         "chords": [{"sym": "C#", "pos": 0}, {"sym": "G", "pos": 0},
-                    {"sym": "Am", "pos": 18}], "confidence": "low"},
-    ]}]}
-
-    assert chart_parser.parse_generated_chart_body("\n".join(generated)) == expected
-    assert chart_parser.parse_generated_chart_body(
-        chart_parser.serialize_generated_chart(expected)
-    ) == expected
-
-    document = tmp_path / "generated.docx"
-    paragraphs = [
-        _heading("Generated Song – C", None, "Example Band", None, "C"),
-        *[_paragraph(line) for line in generated],
-    ]
-    xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        f"<w:body>{''.join(paragraphs)}<w:sectPr/></w:body></w:document>"
-    )
-    with zipfile.ZipFile(document, "w", compression=zipfile.ZIP_DEFLATED) as docx:
-        docx.writestr("word/document.xml", xml.encode("utf-8"))
-    parsed_song = chart_parser.parse_docx(str(document))[0]
-    assert parsed_song.chart_content == expected
-
-
 def test_blank_paragraphs_and_hard_breaks_keep_chart_spacing_separate(tmp_path: Path) -> None:
     document = tmp_path / "spacing.docx"
     paragraphs = [
@@ -1471,54 +1431,13 @@ def test_docx_text_breaks_preserve_terminal_separators_but_ignore_page_controls(
     ]
 
 
-def test_ccm_v1_v2_docx_and_python_roundtrip_preserve_columns_and_raw_spaces(tmp_path: Path) -> None:
+def test_ordinary_chord_columns_use_utf16_code_units() -> None:
     assert chart_parser.pair_space_aligned("C          G", "x")["chords"] == [
         {"sym": "C", "pos": 0}, {"sym": "G", "pos": 11},
     ]
     assert chart_parser.parse_inline_brace_line("{C}🎸{G}x")["chords"] == [
         {"sym": "C", "pos": 0}, {"sym": "G", "pos": 2},
     ]
-    v1 = ["[[CCM-CHART:1]]", "[[CCM-SECTION]]Verse",
-          "[[CCM-RAW]]raw text   ", "[[CCM-LYRIC:low]]A[[C:G]]B"]
-    v1_path = tmp_path / "legacy.docx"
-    _write_generated_docx(v1_path, v1)
-    parsed_v1 = chart_parser.parse_docx(str(v1_path))[0].chart_content
-    assert parsed_v1["sections"][0]["lines"] == [
-        {"type": "raw", "text": "raw text   "},
-        {"type": "lyric", "text": "AB", "chords": [{"sym": "G", "pos": 1}], "confidence": "low"},
-    ]
-
-    chart = {"sections": [{"label": "Unicode", "lines": [
-        {"type": "lyric", "text": "🎸x", "chords": [{"sym": "Am", "pos": 4}], "confidence": "high"},
-        {"type": "spacer"},
-        {"type": "raw", "text": "trailing   "},
-    ]}, {"label": "Chorus", "lines": [
-        {"type": "spacer"},
-        {"type": "raw", "text": "section content"},
-    ]}]}
-    source = chart_parser.serialize_generated_chart(chart)
-    assert chart_parser.parse_generated_chart_body(source) == chart
-    v2_path = tmp_path / "current.docx"
-    _write_generated_docx(v2_path, source.splitlines())
-    imported_v2 = chart_parser.parse_docx(str(v2_path))[0]
-    expected_plain = json.loads(json.dumps(chart, ensure_ascii=False))
-    expected_plain["sections"][0]["lines"][0]["confidence"] = "low"
-    assert imported_v2.chart_content == expected_plain
-    assert imported_v2.chart_source is None
-    assert imported_v2.warnings == [{
-        "code": "plain_text_body_unresolved", "section": "?", "line": "?",
-        "reason": "raw_line_not_recognized_by_ordinary_text_parser",
-    }]
-
-
-def _write_generated_docx(path: Path, generated: list[str]) -> None:
-    paragraphs = [_heading("Generated Song – C", None, "Example Band")]
-    paragraphs.extend(_paragraph(line) for line in generated)
-    xml = ('<?xml version="1.0" encoding="UTF-8"?>'
-           '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-           f"<w:body>{''.join(paragraphs)}<w:sectPr/></w:body></w:document>")
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as docx:
-        docx.writestr("word/document.xml", xml.encode("utf-8"))
 
 
 APP_TABLES = (
@@ -2011,6 +1930,9 @@ def test_cli_jsonb_failure_suppresses_chart_content_context(tmp_path: Path, monk
     artifact["chart_content"] = {"sections": [], "chart": sentinel + "\x00"}
     path = tmp_path / "sql-error-songs.json"
     path.write_text(json.dumps([artifact]), encoding="utf-8")
+    # Ordinary chart text cannot carry the NUL that makes PostgreSQL reject the
+    # JSONB, so skip the source/content preflight to reach the database error.
+    monkeypatch.setattr(loader, "validate_parser_diagnostics", lambda songs: None)
     monkeypatch.setattr(sys, "argv", ["load_songs.py", str(path), "--database-url", database_url])
 
     assert loader.main() == 1
@@ -2058,8 +1980,8 @@ def test_malformed_or_unsupported_diagnostic_versions_fail_closed(bad_version) -
 
 def test_version_one_low_confidence_warning_is_nonblocking() -> None:
     validate_parser_diagnostics([{
+        **_ordinary_source_artifact(),
         "title": "Synthetic ordinary warning",
-        "parser_diagnostics_version": 1,
         "warnings": [{"code": "space_alignment_low_confidence"}],
     }])
 
@@ -2103,19 +2025,25 @@ def test_direct_loader_rejects_source_content_mismatch_before_sql() -> None:
             load(NoSqlConnection(), [artifact], dry_run=dry_run)
 
 
-def test_ordinary_source_content_exact_match_and_legacy_ccm_are_accepted() -> None:
-    artifact = _ordinary_source_artifact()
-    validate_parser_diagnostics([artifact])
+def test_ordinary_source_content_exact_match_is_accepted() -> None:
+    validate_parser_diagnostics([_ordinary_source_artifact()])
 
+
+@pytest.mark.parametrize(("chart_source", "problem"), [
+    (None, "chart_source_missing"),
+    ("[[CCM-CHART:2]]\r\nOld\\n", "chart_source_content_mismatch"),
+], ids=["null", "ccm"])
+def test_missing_or_generated_chart_source_is_rejected(chart_source, problem) -> None:
     legacy_chart = {"sections": [{"label": "Old", "lines": [
         {"type": "lyric", "text": "old content", "chords": [],
          "confidence": "high"},
     ]}]}
-    validate_parser_diagnostics([{
-        "title": "Legacy CCM source", "chart_source": "[[CCM-CHART:2]]\r\nOld\\n",
-        "chart_content": legacy_chart, "parser_diagnostics_version": 1,
-        "warnings": [],
-    }])
+    with pytest.raises(ValueError, match=problem):
+        validate_parser_diagnostics([{
+            "title": "Legacy source", "chart_source": chart_source,
+            "chart_content": legacy_chart, "parser_diagnostics_version": 1,
+            "warnings": [],
+        }])
 
 
 @pytest.mark.parametrize("dry_run", [False, True], ids=["normal", "dry-run"])

@@ -2,9 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, CheckIcon, TrashIcon } from '../components/Icons';
 import * as api from '../lib/api';
 import * as cache from '../lib/cache';
-import {
-  isGeneratedChartSource, isGeneratedSourceUnchanged, parseChartBody,
-} from '../lib/chartParser';
+import { parseChartBody } from '../lib/chartParser';
 import { eraForYear, normalizeSongTags } from '../tagMutations';
 import { offlineSongCreatedAt, primaryGenreFromAssignments } from '../lib/offlineSongFields';
 import ArtistAutocomplete from '../components/ArtistAutocomplete';
@@ -161,19 +159,12 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
       const changedFields = EDITABLE_FIELDS.filter(field =>
         !sameEditValue(currentEditableValues[field], originalEditableValues.current[field]));
       if (payload.chart_source === originalChartSource.current) delete payload.chart_source;
-      const preserveStructured = !Object.hasOwn(payload, 'chart_source')
-        || isGeneratedSourceUnchanged(
-          originalChartSource.current, originalChartContent.current, payload.chart_source,
-        );
+      const preserveStructured = !Object.hasOwn(payload, 'chart_source');
       const primaryGenre = primaryGenreFromAssignments(payload.genres);
       if (payload.release_year !== null
           && (!Number.isInteger(payload.release_year) || payload.release_year < 1 || payload.release_year > 32767)) {
         setError('Release year must be a whole number from 1 to 32767');
         return;
-      }
-      if (song?.chart_source && isGeneratedChartSource(song.chart_source) &&
-          payload.chart_source && !isGeneratedChartSource(payload.chart_source)) {
-        throw new Error('This chart uses generated structured source; keep its CCM line markers when editing.');
       }
       if (online) {
         const isOfflineCreate = song?._sync?.operation === 'create';

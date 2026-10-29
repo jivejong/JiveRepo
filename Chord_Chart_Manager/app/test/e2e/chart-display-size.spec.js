@@ -1,26 +1,23 @@
-import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
-
-const require = createRequire(import.meta.url);
-const { chartToText } = require('../../server/chartParser.js');
+import { bracedLyric } from './chartText.js';
 
 test('five chart sizes persist offline and retain measured alignment across tablet layouts and themes', async ({ page, request, context }) => {
   test.setTimeout(90000);
   const suffix = randomUUID();
   const title = `T22 size ${suffix}`;
-  const content = { sections: [{ label: 'Invented verse', lines: [
-    ...Array.from({ length: 28 }, (_, index) => ({
-      type: 'lyric', text: `Synthetic size line ${index + 1} keeps invented text for alignment checks`, confidence: 'high',
-      chords: index === 1
+  const chartSource = [
+    '[Invented verse]',
+    ...Array.from({ length: 28 }, (_, index) => bracedLyric(
+      `Synthetic size line ${index + 1} keeps invented text for alignment checks`,
+      index === 1
         ? [{ sym: 'C', pos: 2 }, { sym: 'D', pos: 2 }, { sym: 'F#maj7', pos: 30 }]
-        : [{ sym: 'G', pos: 0 }, { sym: 'D', pos: 18 }, { sym: 'Am', pos: 34 }],
-    })),
-    { type: 'spacer' },
-    { type: 'progression', chords: ['G', 'D', 'Em', 'C'], repeat: 2 },
-  ] }] };
+        : [{ sym: 'G', pos: 0 }, { sym: 'D', pos: 18 }, { sym: 'Am', pos: 34 }])),
+    '',
+    'G D Em C',
+  ].join('\n');
   const created = await request.post('/api/songs', { data: {
-    title, artist: `T22 synthetic ${suffix}`, chart_written_key: 'G', chart_source: chartToText(content),
+    title, artist: `T22 synthetic ${suffix}`, chart_written_key: 'G', chart_source: chartSource,
   } });
   expect(created.status()).toBe(201);
   const song = await created.json();

@@ -1,10 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { expect, request as playwrightRequest, test } from '@playwright/test';
 import { contrastOverLayers } from '../../src/lib/colorContrast.js';
-
-const require = createRequire(import.meta.url);
-const { chartToText } = require('../../server/chartParser.js');
 
 const preferenceKey = 'ccm-theme-preference';
 
@@ -396,12 +392,10 @@ test('danger text meets contrast on effective surfaces in Light and Dark', async
 
 test('malformed-anchor warnings remain visible and themed in Light and Dark', async ({ page, request }) => {
   const title = `T16 Theme warning ${randomUUID()}`;
-  const chart = { sections: [{ label: 'Invented Verse', lines: [{
-    type: 'lyric', text: '\u{1F3B8}x invented warning sample',
-    chords: [{ sym: 'G', pos: 1 }, { sym: 'C', pos: 2 }],
-  }] }] };
+  // G's column 1 falls inside the emoji's surrogate pair; C sits on the space after x.
+  const chartSource = '[Invented Verse]\n G C\n\u{1F3B8}x invented warning sample';
   const created = await request.post('/api/songs', { data: {
-    title, artist: 'T16 synthetic test', chart_written_key: 'C', chart_source: chartToText(chart),
+    title, artist: 'T16 synthetic test', chart_written_key: 'C', chart_source: chartSource,
   } });
   expect(created.ok(), `warning fixture creation returned ${created.status()}`).toBeTruthy();
   const song = await created.json();
