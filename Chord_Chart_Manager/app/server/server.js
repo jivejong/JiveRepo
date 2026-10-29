@@ -34,15 +34,6 @@ app.get("/healthz", async (_req, res) => {
     res.status(503).json({ status: "db_unavailable" });
   }
 });
-app.get("/api/health", async (_req, res) => {
-  try { await db.pool.query("SELECT 1"); res.json({ status: "ok" }); }
-  catch { res.status(503).json({ status: "db_unavailable" }); }
-});
-
-app.get("/api/facets", async (_req, res, next) => {
-  try { res.json(await db.getFacets()); } catch (e) { next(e); }
-});
-
 app.get("/api/tags", async (_req, res, next) => {
   try { res.json(await dbx.getTags()); } catch (e) { next(e); }
 });
@@ -163,63 +154,6 @@ app.get("/api/setlists/:id", async (req, res, next) => {
     const sl = await dbx.getSetlist(parseInt(req.params.id, 10));
     if (!sl) return res.status(404).json({ error: "Setlist not found" });
     res.json(sl);
-  } catch (e) { next(e); }
-});
-app.post("/api/setlists", async (req, res, next) => {
-  try { res.status(201).json(await applySetlistMutation({ ...(req.body || {}), type: "create", payload: req.body || {} })); } catch (e) { next(e); }
-});
-app.put("/api/setlists/:id", async (req, res, next) => {
-  try { res.json(await applySetlistMutation({ ...(req.body || {}), type: "metadata", setlist_id: parseInt(req.params.id, 10), payload: req.body || {} })); }
-  catch (e) { next(e); }
-});
-app.delete("/api/setlists/:id", async (req, res, next) => {
-  try { res.json(await applySetlistMutation({ ...(req.body || {}), type: "delete", setlist_id: parseInt(req.params.id, 10), payload: {} })); } catch (e) { next(e); }
-});
-app.post("/api/setlists/:id/songs", async (req, res, next) => {
-  try { res.json(await applySetlistMutation({ ...(req.body || {}), type: "entry_add", setlist_id: parseInt(req.params.id, 10), payload: req.body || {} })); }
-  catch (e) { next(e); }
-});
-app.put("/api/setlists/:id/songs/:position", async (req, res, next) => {
-  try {
-    const setlistId = parseInt(req.params.id, 10);
-    const detail = await dbx.getSetlist(setlistId);
-    const entry = detail?.songs?.find(item => item.position === parseInt(req.params.position, 10));
-    if (!entry) return res.status(409).json({ error: "Setlist entry no longer exists; server state kept" });
-    const body = req.body || {};
-    res.json(await applySetlistMutation({ ...body, type: "entry_edit", setlist_id: setlistId,
-      payload: { ...body, entry_id: entry.entry_id } }));
-  } catch (e) { next(e); }
-});
-app.put("/api/setlists/:id/entries/:entryId", async (req, res, next) => {
-  try {
-    const body = req.body || {};
-    res.json(await applySetlistMutation({ ...body, type: "entry_edit",
-      setlist_id: parseInt(req.params.id, 10), payload: { ...body, entry_id: req.params.entryId } }));
-  } catch (e) { next(e); }
-});
-app.delete("/api/setlists/:id/entries/:entryId", async (req, res, next) => {
-  try {
-    const body = req.body || {};
-    res.json(await applySetlistMutation({ ...body, type: "entry_remove",
-      setlist_id: parseInt(req.params.id, 10), payload: { entry_id: req.params.entryId } }));
-  } catch (e) { next(e); }
-});
-app.delete("/api/setlists/:id/songs/:position", async (req, res, next) => {
-  try {
-    const setlistId = parseInt(req.params.id, 10);
-    const detail = await dbx.getSetlist(setlistId);
-    const entry = detail?.songs?.find(item => item.position === parseInt(req.params.position, 10));
-    if (!entry) return res.status(409).json({ error: "Setlist entry no longer exists; server state kept" });
-    const body = req.body || {};
-    res.json(await applySetlistMutation({ ...body, type: "entry_remove", setlist_id: setlistId,
-      payload: { entry_id: entry.entry_id } }));
-  } catch (e) { next(e); }
-});
-app.put("/api/setlists/:id/order", async (req, res, next) => {
-  try {
-    const body = req.body || {};
-    res.json(await applySetlistMutation({ ...body, type: "reorder", setlist_id: parseInt(req.params.id, 10),
-      payload: { entry_ids: body.entry_ids } }));
   } catch (e) { next(e); }
 });
 

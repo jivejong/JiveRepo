@@ -170,4 +170,4 @@ async function exportAll() {
   return { exported_at: new Date().toISOString(), facets, songs: songs.rows };
 }
 
-module.exports = { pool, searchSongs, getFacets, exportAll };
+module.exports = { pool, searchSongs, exportAll };
