@@ -98,7 +98,7 @@ test('artist suggestions use cached and local songs offline and preserve free te
     await context.setOffline(false);
     await expect.poll(queueEmpty, { timeout: 30_000 }).toBe(true);
     const titles = new Set(exactTitles);
-    const query = await request.get(`/api/songs?q=${encodeURIComponent(prefix)}`);
+    const query = await request.get('/api/songs');
     expect(query.ok()).toBeTruthy();
     const synced = (await query.json()).songs.filter(song => titles.has(song.title));
     expect(synced.filter(song => song.title !== touchTitle)).toHaveLength(4);
@@ -133,7 +133,7 @@ test('artist suggestions use cached and local songs offline and preserve free te
     await expect(touchPage.locator('.chart-topbar-title')).toHaveText(touchTitle);
     await touchContext.setOffline(false);
     await expect.poll(async () => {
-      const response = await request.get(`/api/songs?q=${encodeURIComponent(touchTitle)}`);
+      const response = await request.get('/api/songs');
       return response.ok() && (await response.json()).songs.some(song => song.title === touchTitle && song.artist === candidateArtist);
     }, { timeout: 30_000 }).toBe(true);
   } catch (error) {
@@ -147,7 +147,7 @@ test('artist suggestions use cached and local songs offline and preserve free te
     }
     const ids = new Set(seededIds);
     try {
-      const response = await request.get(`/api/songs?q=${encodeURIComponent(prefix)}`);
+      const response = await request.get('/api/songs');
       if (!response.ok()) throw new Error(`Could not locate task-owned T20 songs: HTTP ${response.status()}`);
       for (const song of (await response.json()).songs) if (exactTitles.includes(song.title)) ids.add(song.id);
     } catch (error) { cleanupErrors.push(error); }

@@ -337,7 +337,7 @@ test('online filters overlay pending create, edit, and delete projections until 
     await page.unroute('**/api/songs**').catch(error => { primaryError ||= error; });
     const cleanupErrors = [];
     try {
-      const query = await cleanupRequest.get(`/api/songs?q=${encodeURIComponent(prefix)}`);
+      const query = await cleanupRequest.get('/api/songs');
       if (!query.ok()) throw new Error(`Could not locate T18 pending fixtures during cleanup: HTTP ${query.status()}.`);
       for (const song of (await query.json()).songs) if (song.title.startsWith(prefix)) ids.push(song.id);
     } catch (error) { cleanupErrors.push(error); }

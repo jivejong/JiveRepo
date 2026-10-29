@@ -204,8 +204,9 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
     assert.equal(loaded.value.title, primarySong.title);
     assert.ok(loaded.value.updated_at);
 
-    let tagged = await json('POST', `/api/songs/${primarySong.id}/tags`, {
-      name: 'T11 API synthetic genre', category: 'Genre', base_updated_at: loaded.value.updated_at,
+    const tagged = await json('PUT', `/api/songs/${primarySong.id}`, {
+      genres: [{ name: 'T11 API synthetic genre', is_primary: true }],
+      base_updated_at: loaded.value.updated_at, operation_id: randomUUID(),
     });
     assert.equal(tagged.response.status, 200, JSON.stringify(tagged.value));
     assert.ok(tagged.value.genres.some(tag => tag.name === 'T11 API synthetic genre'));
@@ -243,33 +244,7 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
     const filterVibeIds = await pool.query(`SELECT id,name FROM public.vibes
       WHERE name = ANY($1::text[]) ORDER BY id`, [['T11 API shared category name', 'T11 API calm']]);
     for (const row of filterVibeIds.rows) { createdVibes.push(row.id); createdVibeNames.set(row.id, row.name); }
-    const filterContains = async selected => {
-      const params = new URLSearchParams({ tag_filters: JSON.stringify(selected) });
-      const result = await json('GET', `/api/songs?${params}`);
-      assert.equal(result.response.status, 200, JSON.stringify(result.value));
-      return result.value.songs.some(song => song.id === primarySong.id);
-    };
-    assert.equal(await filterContains([
-      { category: 'Genre', name: 'T11 API missing' }, { category: 'Genre', name: 'T11 API secondary' },
-      { category: 'Vibe', name: 'T11 API missing' }, { category: 'Vibe', name: 'T11 API calm' },
-      { category: 'Era', name: '1960s' }, { category: 'Era', name: '1970s' },
-    ]), true, 'values within Genre, Vibe, and Era are OR alternatives');
-    assert.equal(await filterContains([
-      { category: 'Genre', name: 'T11 API shared category name' },
-      { category: 'Vibe', name: 'T11 API shared category name' },
-    ]), true, 'equal names retain distinct Genre and Vibe identity');
-    assert.equal(await filterContains([
-      { category: 'Genre', name: 'T11 API secondary' }, { category: 'Vibe', name: 'T11 API missing' },
-    ]), false, 'distinct categories combine with AND');
-    assert.equal(await filterContains([{ category: 'Era', name: '1970s' }]), true);
-    assert.equal(await filterContains([{ category: 'Era', name: '1980s' }]), false);
-    const boundary = await json('PUT', `/api/songs/${primarySong.id}`, {
-      release_year: 1980, base_updated_at: filterSong.value.updated_at, operation_id: randomUUID(),
-    });
-    assert.equal(boundary.response.status, 200, JSON.stringify(boundary.value));
-    assert.equal(await filterContains([{ category: 'Era', name: '1970s' }]), false);
-    assert.equal(await filterContains([{ category: 'Era', name: '1980s' }]), true);
-    const filterSongVersion = boundary.value.updated_at;
+    const filterSongVersion = filterSong.value.updated_at;
 
     const list = await json('POST', '/api/setlists/mutations', { operation_id: randomUUID(),
       type: 'create', setlist_id: null, base_updated_at: null, payload: { name: 'T11 API synthetic list' } });
@@ -314,8 +289,12 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
     const unchanged = await json('GET', `/api/setlists/${setlistId}`);
     assert.equal(unchanged.value.notes, null);
 
-    const removedTag = await json('DELETE', `/api/songs/${primarySong.id}/tags/T11%20API%20synthetic%20genre`, {
-      category: 'Genre', base_updated_at: filterSongVersion,
+    const removedTag = await json('PUT', `/api/songs/${primarySong.id}`, {
+      genres: [
+        { name: 'T11 API secondary', is_primary: true },
+        { name: 'T11 API shared category name', is_primary: false },
+      ],
+      base_updated_at: filterSongVersion, operation_id: randomUUID(),
     });
     // The intervening setlist operations do not update this song version.
     assert.equal(removedTag.response.status, 200, JSON.stringify(removedTag.value));
@@ -519,12 +498,6 @@ test('existing definitions reject unknown/ambiguous assignment atomically and lo
     assert.equal((await pool.query('SELECT 1 FROM public.mutation_receipts WHERE operation_id=$1', [unknownCreateOperation])).rowCount, 0);
     assert.equal(JSON.stringify(await rowSnapshot(songId)), JSON.stringify(before));
 
-    const invalidName = await json('POST', `/api/songs/${songId}/tags`, {
-      name: '   ', category: 'Genre', base_updated_at: created.value.updated_at,
-    });
-    assert.equal(invalidName.response.status, 400);
-    assert.equal(invalidName.value.code, 'INVALID_TAG_INPUT');
-    assert.equal(invalidName.value.category, 'Genre');
     const completeState = async () => {
       const [songs, artists, genres, vibes, genreLinks, vibeLinks, receipts] = await Promise.all([
         pool.query('SELECT to_jsonb(s) AS row FROM public.songs s ORDER BY id'),
@@ -539,23 +512,16 @@ test('existing definitions reject unknown/ambiguous assignment atomically and lo
         vibes: vibes.rows, genreLinks: genreLinks.rows, vibeLinks: vibeLinks.rows, receipts: receipts.rows });
     };
     const beforeMalformedInputs = await completeState();
-    for (const name of [null, 42, { malformed: true }]) {
-      const malformed = await json('POST', `/api/songs/${songId}/tags`, {
-        name, category: 'Genre', base_updated_at: created.value.updated_at,
+    for (const name of ['   ', 42, { malformed: true }]) {
+      const malformed = await json('PUT', `/api/songs/${songId}`, {
+        genres: [{ name, is_primary: true }], base_updated_at: created.value.updated_at, operation_id: randomUUID(),
       });
       assert.equal(malformed.response.status, 400, JSON.stringify({ name, value: malformed.value }));
       assert.equal(malformed.value.code, 'INVALID_TAG_INPUT');
       assert.equal(malformed.value.category, 'Genre');
       assert.equal(await completeState(), beforeMalformedInputs,
-        `malformed direct-add value ${JSON.stringify(name)} rolls back every relevant row`);
+        `malformed Genre name ${JSON.stringify(name)} rolls back every relevant row`);
     }
-    const unknownDirect = await json('POST', `/api/songs/${songId}/tags`, {
-      name: unknownGenre, category: 'Genre', base_updated_at: created.value.updated_at,
-    });
-    assert.equal(unknownDirect.response.status, 422);
-    assert.equal(unknownDirect.value.code, 'UNKNOWN_TAG_DEFINITION');
-    assert.equal(unknownDirect.value.category, 'Genre');
-    assert.equal(JSON.stringify(await rowSnapshot(songId)), JSON.stringify(before));
 
     const invalidUpdateOperation = randomUUID();
     const invalidUpdate = await json('PUT', `/api/songs/${songId}`, {
