@@ -1321,7 +1321,8 @@ def test_batch_report_surfaces_tab_diagnostic_without_lyrics(tmp_path: Path) -> 
     assert songs[0]["parser_diagnostics_version"] == 1
     assert songs[0]["primary_genre"] == "invented"
     assert songs[0]["primary_genre_source"] == "filename_fallback"
-    assert loader._explicit_categories(songs[0])[0] == []
+    # FR-109: without a cover page, the filename Genre is the primary candidate.
+    assert loader._explicit_categories(songs[0]) == (["invented"], [], "invented")
 
 
 def _write_tab_guard_docx(path: Path) -> None:
@@ -1645,7 +1646,7 @@ def test_insert_only_loader_preview_skip_collisions_atomicity_and_concurrency() 
         conn.commit()
 
         # A new row carries only explicit metadata; managed definitions are
-        # referenced by canonical IDs and all assignments stay non-primary.
+        # referenced by canonical IDs, and the cover-page Genre is primary (FR-109).
         with conn.cursor() as cur:
             cur.execute("INSERT INTO genres(name) VALUES (%s),(%s),(%s)",
                         ("T13 Ambiguous  Genre", "T13 Ambiguous Genre", "T13 Genre Only"))
@@ -1674,7 +1675,7 @@ def test_insert_only_loader_preview_skip_collisions_atomicity_and_concurrency() 
             assert row == ("T13 C1 new song", None, "D", "G", None, 2, None, None,
                            "Verse-Chorus", "[Verse]\n", {"sections": [{"label": "Verse", "lines": []}]})
             cur.execute("SELECT g.name,sg.is_primary FROM song_genres sg JOIN genres g ON g.id=sg.genre_id WHERE sg.song_id=%s ORDER BY g.name", (new_id,))
-            assert cur.fetchall() == [("T13 pytest seed genre", False)]
+            assert cur.fetchall() == [("T13 pytest seed genre", True)]
             cur.execute("SELECT v.name FROM song_vibes sv JOIN vibes v ON v.id=sv.vibe_id WHERE sv.song_id=%s", (new_id,))
             assert cur.fetchall() == [("T13 Vibe Only",)]
         conn.commit()
@@ -1691,8 +1692,28 @@ def test_insert_only_loader_preview_skip_collisions_atomicity_and_concurrency() 
         fallback_result = load(conn, [fallback_input])
         fallback_id = fallback_result["inserted"][0]["song_id"]
         with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM song_genres WHERE song_id=%s", (fallback_id,))
-            assert cur.fetchone()[0] == 0
+            # FR-109: without a cover page, the filename Genre is the primary.
+            cur.execute("SELECT g.name,sg.is_primary FROM song_genres sg JOIN genres g ON g.id=sg.genre_id WHERE sg.song_id=%s", (fallback_id,))
+            assert cur.fetchall() == [("T13 pytest seed genre", True)]
+        conn.commit()
+
+        unmatched_input = _valid_insert(
+            "T13 C1 unmatched primary", "T13 C1 unmatched artist", "unmatched.docx",
+            primary_genre="T13 Unmatched Primary", primary_genre_source="cover_page",
+            additional_genres=["T13 Genre Only"],
+        )
+        genres_before_unmatched = _table_contents(conn)["genres"]
+        conn.commit()
+        unmatched_result = load(conn, [unmatched_input])
+        # FR-114: an unmatched primary is reported, never created, and no primary is set.
+        assert [(item["category"], item["label"]) for item in unmatched_result["unresolved_categories"]] == [
+            ("Genre", "T13 Unmatched Primary")]
+        unmatched_id = unmatched_result["inserted"][0]["song_id"]
+        with conn.cursor() as cur:
+            cur.execute("SELECT g.name,sg.is_primary FROM song_genres sg JOIN genres g ON g.id=sg.genre_id WHERE sg.song_id=%s", (unmatched_id,))
+            assert cur.fetchall() == [("T13 Genre Only", False)]
+        conn.commit()
+        assert _table_contents(conn)["genres"] == genres_before_unmatched
         conn.commit()
 
         rerun_before = _table_contents(conn)
@@ -1949,7 +1970,9 @@ def test_primary_genre_provenance_is_explicit(source: str) -> None:
                          primary_genre="Rock", primary_genre_source=source)
     prepared, failures = loader._validate_batch([song])
     assert not failures
-    assert prepared[0]["genres"] == (["Rock"] if source == "cover_page" else [])
+    # FR-109: either provenance supplies the primary Genre.
+    assert prepared[0]["genres"] == ["Rock"]
+    assert prepared[0]["primary_genre"] == "Rock"
 
 
 def test_ambiguous_artist_resolution_is_explicit() -> None:
