@@ -52,17 +52,11 @@ export const songs = {
   create:    (data)        => post('/api/songs', data),
   update:    (id, data)    => put(`/api/songs/${id}`, data),
   remove:    (id, data)    => del(`/api/songs/${id}`, data),
-  addTag:    (id, name, category, base_updated_at) =>
-    post(`/api/songs/${id}/tags`, { name, category, base_updated_at }),
-  removeTag: (id, name, category, base_updated_at) =>
-    del(`/api/songs/${id}/tags/${encodeURIComponent(name)}`, { category, base_updated_at }),
-  getTags:   (id)          => get(`/api/songs/${id}/tags`),
 };
 
 // ── Tags ─────────────────────────────────────────────────────────────────────
 export const tags = {
   all:    ()                       => get('/api/tags'),
-  update: (name, data)             => put(`/api/tags/${encodeURIComponent(name)}`, data),
 };
 
 export const tagDefinitions = {
@@ -76,16 +70,7 @@ export const tagDefinitions = {
 export const setlists = {
   all:         ()               => get('/api/setlists'),
   get:         (id)             => get(`/api/setlists/${id}`),
-  create:      (data)           => post('/api/setlists', data),
-  update:      (id, data)       => put(`/api/setlists/${id}`, data),
-  remove:      (id)             => del(`/api/setlists/${id}`),
-  addSong:     (id, data)       => post(`/api/setlists/${id}/songs`, data),
-  updateSong:  (id, position, data) => put(`/api/setlists/${id}/songs/${position}`, data),
-  removeSong:  (id, position)   => del(`/api/setlists/${id}/songs/${position}`),
-  reorder:     (id, songIds)    => put(`/api/setlists/${id}/order`, { songIds }),
   mutate:      operation       => post('/api/setlists/mutations', operation),
-  updateEntry: (id, entryId, data) => put(`/api/setlists/${id}/entries/${entryId}`, data),
-  removeEntry: (id, entryId, data) => del(`/api/setlists/${id}/entries/${entryId}`, data),
 };
 
 // ── Full library export (for offline sync) ────────────────────────────────────
@@ -94,7 +79,6 @@ export const library = () => get('/api/export');
 
 // ── Stats & import ───────────────────────────────────────────────────────────
 export const stats  = () => get('/api/stats');
-export const health = () => get('/api/health');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function filterEmpty(obj) {
