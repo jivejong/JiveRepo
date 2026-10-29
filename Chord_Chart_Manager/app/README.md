@@ -324,10 +324,8 @@ song can be corrected in EditView and retried under a new operation ID while
 retaining its local ID, chart, and unrelated metadata. An uncertain network
 attempt keeps its frozen payload and is never unfrozen by this correction path.
 Song version tokens use UTC with six fractional digits and are compared as
-exact strings. Older queued three-digit tokens are ambiguous and receive 409;
-the queued request is sent first, then server-wins recovery refreshes the
-authoritative song and the subsequent pull refreshes the library. No pending
-edit is cleared before that response. Direct assignment routes also require
+exact strings. A missing or malformed token, including an older three-digit
+one, is rejected with 400. Direct assignment routes also require
 `base_updated_at`: `POST /api/songs/:id/tags` accepts `{name, category,
 base_updated_at}`; `DELETE /api/songs/:id/tags/:name` accepts `{category,
 base_updated_at}` in its JSON body. `category` is `Genre` or `Feel` (`Vibe`

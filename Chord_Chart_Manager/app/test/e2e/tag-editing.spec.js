@@ -156,16 +156,15 @@ test('Genre and Vibe edits work offline and stale sync keeps the server version'
   const offlineVibe = `T09 offline vibe ${suffix}`;
   const conflictVibe = `T09 discarded tablet vibe ${suffix}`;
   const serverVibe = `T09 server vibe ${suffix}`;
-  const legacyVibe = `T09 rejected legacy vibe ${suffix}`;
   const fixtureNames = new Set([onlineGenre, retainedGenre, offlineExistingGenre, offlineVibe,
-    conflictVibe, serverVibe, legacyVibe]);
+    conflictVibe, serverVibe]);
   let songId;
   t09Fixture.tagNames = fixtureNames;
   for (const name of [onlineGenre, retainedGenre, offlineExistingGenre]) {
     const definition = await request.post('/api/tag-definitions', { data: { category: 'Genre', name } });
     expect(definition.status()).toBe(201);
   }
-  for (const name of [offlineVibe, conflictVibe, serverVibe, legacyVibe]) {
+  for (const name of [offlineVibe, conflictVibe, serverVibe]) {
     const definition = await request.post('/api/tag-definitions', { data: { category: 'Vibe', name } });
     expect(definition.status()).toBe(201);
   }
@@ -309,76 +308,6 @@ test('Genre and Vibe edits work offline and stale sync keeps the server version'
     expect(finalSong.vibes).not.toContain(conflictVibe);
     expect(finalSong.vibes).toContain(offlineVibe);
     expect(finalSong.updated_at > beforeConflict.updated_at).toBeTruthy();
-
-    await syncNow();
-    const legacyToken = finalSong.updated_at.replace(/\.(\d{3})\d{3}Z$/, '.$1Z');
-    await page.evaluate(async ({ id, token }) => {
-      const db = await new Promise((resolve, reject) => {
-        const open = indexedDB.open('chart-manager', 1);
-        open.onsuccess = () => resolve(open.result);
-        open.onerror = () => reject(open.error);
-      });
-      await new Promise((resolve, reject) => {
-        const transaction = db.transaction('songs', 'readwrite');
-        const store = transaction.objectStore('songs');
-        const get = store.get(id);
-        get.onsuccess = () => {
-          if (!get.result) { reject(new Error('Cached fixture song missing')); return; }
-          store.put({ ...get.result, updated_at: token });
-        };
-        transaction.oncomplete = resolve;
-        transaction.onerror = () => reject(transaction.error);
-      });
-      db.close();
-    }, { id: songId, token: legacyToken });
-    await page.getByRole('button', { name: 'Songs' }).click();
-    await context.setOffline(true);
-    await openSongEditor();
-    await page.getByRole('combobox', { name: 'Add Vibe' }).fill(legacyVibe);
-    await page.getByRole('option', { name: legacyVibe, exact: true }).click();
-    await saveAndWaitForChart();
-    await goHome();
-    const queued = await page.evaluate(async id => {
-      const db = await new Promise((resolve, reject) => {
-        const open = indexedDB.open('chart-manager', 1);
-        open.onsuccess = () => resolve(open.result);
-        open.onerror = () => reject(open.error);
-      });
-      const read = store => new Promise((resolve, reject) => {
-        const request = db.transaction(store).objectStore(store).get(store === 'songs' ? id : 'pending_mutations');
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
-      const song = await read('songs');
-      const dirty = await read('meta');
-      db.close();
-      return { base: song?._sync?.base_updated_at,
-        dirty: dirty?.value?.some(item => item.entity === 'song' && item.id === id) };
-    }, songId);
-    expect(queued).toEqual({ base: legacyToken, dirty: true });
-    const legacyConflict = page.waitForResponse(response =>
-      response.url().endsWith(`/api/songs/${songId}`)
-        && response.request().method() === 'PUT' && response.status() === 409);
-    await context.setOffline(false);
-    await legacyConflict;
-    await page.getByRole('button', { name: 'Settings' }).click();
-    await expect(page.getByText(/tablet change was replaced/i)).toBeVisible();
-    const authoritative = await apiSong();
-    expect(authoritative.vibes).not.toContain(legacyVibe);
-    await expect.poll(async () => page.evaluate(async id => {
-      const db = await new Promise((resolve, reject) => {
-        const open = indexedDB.open('chart-manager', 1);
-        open.onsuccess = () => resolve(open.result);
-        open.onerror = () => reject(open.error);
-      });
-      const song = await new Promise((resolve, reject) => {
-        const get = db.transaction('songs').objectStore('songs').get(id);
-        get.onsuccess = () => resolve(get.result);
-        get.onerror = () => reject(get.error);
-      });
-      db.close();
-      return { updated_at: song?.updated_at, vibes: song?.vibes, pending: !!song?._sync };
-    }, songId)).toEqual({ updated_at: authoritative.updated_at, vibes: authoritative.vibes, pending: false });
 });
 
 test('EditView uses assigned chips and existing definitions with stable primary promotion and Cancel',

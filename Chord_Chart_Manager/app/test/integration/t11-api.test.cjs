@@ -194,7 +194,7 @@ test('FR-013 release year, FR-064 song-create replay, FR-106 repeated setlist so
   }
 });
 
-test('FR-111 song update and delete without base_updated_at are rejected before any write', async () => {
+test('FR-111 FR-063 song update and delete without a valid six-digit base are rejected before any write', async () => {
   await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
   const suffix = randomUUID();
   let songId = null;
@@ -210,6 +210,13 @@ test('FR-111 song update and delete without base_updated_at are rejected before 
     assert.equal((await pool.query('SELECT 1 FROM public.mutation_receipts WHERE operation_id=$1', [updateOperation])).rowCount, 0);
     const remove = await json('DELETE', `/api/songs/${songId}`, {});
     assert.equal(remove.response.status, 400, JSON.stringify(remove.value));
+    // FR-063 (Q21-A): only six-digit tokens are valid; a legacy three-digit token is malformed.
+    const threeDigit = created.value.updated_at.replace(/\.(\d{3})\d{3}Z$/, '.$1Z');
+    const legacyUpdate = await json('PUT', `/api/songs/${songId}`, { bpm: 99, base_updated_at: threeDigit,
+      operation_id: randomUUID() });
+    assert.equal(legacyUpdate.response.status, 400, JSON.stringify(legacyUpdate.value));
+    const legacyDelete = await json('DELETE', `/api/songs/${songId}`, { base_updated_at: threeDigit });
+    assert.equal(legacyDelete.response.status, 400, JSON.stringify(legacyDelete.value));
     const after = await json('GET', `/api/songs/${songId}`);
     assert.equal(after.response.status, 200);
     assert.equal(after.value.bpm, created.value.bpm);
