@@ -285,7 +285,7 @@ Chord_Chart_Manager/
 |   |-- db/migrations/       canonical baseline and numbered SQL migrations
 |   |-- test/unit/           Vitest parser and transposition tests
 |   `-- test/e2e/            Playwright browser smoke tests
-|-- pipeline/                .docx parser, enrichment, and database loader
+|-- pipeline/                .docx parser and database loader
 |-- infra/                   proposed Kubernetes/Terraform design
 `-- README.md                this guide
 ```
@@ -406,7 +406,7 @@ Preview is read-only and reports proposed inserts, exact skips, identity
 collisions, unresolved categories, and parser/validation failures without
 printing chart bodies. Apply takes transaction locks, rechecks the same plan,
 and commits the whole batch or rolls back every inserted row. An exact rerun
-inserts zero songs. Do not use legacy enrichment as part of this workflow.
+inserts zero songs.
 Parsed JSON with a nonempty primary Genre but no explicit Genre provenance is
 rejected before connecting to the database; reparse it with the current parser.
 See the [pipeline guide](pipeline/README.md) for identity and category rules,
@@ -415,7 +415,7 @@ the isolated test harness, and host-Python workflows.
 Source charts and generated JSON may contain copyrighted lyrics and are ignored
 by Git. Do not commit them or enrichment credentials.
 
-Do not remove GetSongBPM attribution if previously sourced data may remain in use; verify data provenance first. Stage B's accepted results, remaining exceptions and the one-document C1 boundary are recorded in [the current handoff](docs/STAGE_B_CLOSEOUT_STAGE_C1_HANDOFF_2026-10-20.md).
+Stage B's accepted results, remaining exceptions and the one-document C1 boundary are recorded in [the current handoff](docs/STAGE_B_CLOSEOUT_STAGE_C1_HANDOFF_2026-10-20.md).
 
 ## Troubleshooting
 
@@ -482,211 +482,6 @@ backups exist. Copy one elsewhere if it must be kept longer.
 ```
 
 To schedule a backup, create a Windows Task Scheduler action using `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\path\to\Chord_Chart_Manager\scripts\backup.ps1"`, or add a Linux cron entry such as `0 2 * * * /path/to/Chord_Chart_Manager/scripts/backup.sh >> /path/to/backup.log 2>&1`. These are examples only; no scheduled job is created.
-
-## Existing-song enrichment operator workflow
-
-The bounded Stage B CLI consumes saved, validated evidence. Provider acquisition remains in the existing B4/Gemini
-preview commands; this workflow never calls providers. `prepare` captures a fresh READ ONLY song/catalog baseline
-and validates saved evidence. `decide` deterministically selects only missing values with one unconflicted
-B1-normalized scalar value and all uniquely resolved, category-correct missing Genre/Vibe definitions. It writes
-the existing decision schema plus a separate per-field decision report. `preview` rechecks the exact baseline and
-evidence hashes, rebuilds the B1 preview and writes an exclusive, canonical B3 manifest. Outputs belong under
-ignored `backups/`. Chart bodies, lyrics, credentials, and raw provider responses do not enter the decisions or
-decision report.
-
-The accepted best-effort policy fills missing fields from valid, unconflicted factual evidence, then from
-attributed Gemini estimates when factual evidence is unavailable and the estimate is bound to the exact song
-identity. An unresolved MusicBrainz recording identity does not prevent the one bounded Gemini request. That
-request contains only the exact title/artist, missing scalar field names, and currently unassigned managed
-Genre/Vibe definitions; it contains no chart or lyrics. Null-MBID changes are accepted only when every selected
-value has validated Gemini provenance for that song. Unverified factual values cannot use this route. The
-workflow adds uniquely matched managed Genre/Vibe labels and preserves populated values, assignments, primary
-Genre and chart/source. Any source conflict, invalid candidate, or distinct normalized scalar values abstain;
-the workflow never selects a primary Genre. New Genres remain secondary when the song has no primary. Decisions
-select only evidence already referenced by `prepared-v1.json`;
-it does not make provider requests or write song rows. Fresh backup/actual restore proof, exact versions, replay
-and transactional preservation remain mandatory for main writes. The separate T28 cohort runner can acquire saved
-evidence for an explicitly declared cohort and then feeds each batch through this same operator path.
-
-All production cohort and explicit Gemini fallback commands share the private
-`backups/stage-b-gemini-spend-ledger-v1.json` ledger. On first use it conservatively
-seeds retained Gemini attempt counts from valid cohort checkpoints, saved Gemini
-reports, and the known legacy Genre/Vibe reports with nested attempt counts. Each dispatch reserves the maximum permitted request cost first; interrupted
-reservations remain charged. The gate checks the pinned `gemini-3.1-flash-lite`
-standard paid rates, a 16,384-byte input allowance reserved as up to 16,384 input
-tokens, 1,024 output tokens, the response cap, and timeout. At those pinned rates
-each call reserves 5,632 micro-USD. The ledger refuses corrupt or changed seed
-artifacts, an unverifiable policy, or any call that would cross $2. Cached responses
-do not reserve spend because they make no provider request. The ledger stores only
-reservation metadata and hashes, never credentials or responses. Review the pinned
-official [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) before
-changing its model, rates, or bounds; do not edit or delete the ledger to reset the cap.
-
-From `Chord_Chart_Manager/`, convert a saved explicit-recording trial. The converter validates the actual saved
-trial structure and refuses to overwrite an existing file:
-
-```powershell
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
-node .\app\scripts\convert-factual-trial.cjs `
-  .\backups\missing-original-key-727-explicit-20261016T060723865Z-decf8925-8d99-4bb6-83c7-05c1d6fb8d79\trial-v1.json `
-  ".\backups\gemini-factual-context-727-$stamp.json"
-```
-
-The version 1 artifact binds target identity to a validated recording MBID/identity, preserves each scalar's
-source, value, response digest and submission reference, records total AcousticBrainz submissions and sampled
-offsets, and records conflict state. Historical provider provenance stays as recorded.
-
-Pass saved evidence to `prepare`; these concrete inputs include the song-727 factual context, successful scalar
-report, Vibe-only report, and Genre-only report:
-
-```powershell
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
-$prepare = node .\app\scripts\operator-song-enrichment.cjs prepare `
-  --song-ids 727 `
-  --evidence "727=.\backups\gemini-factual-context-727-20261019-e24383eb9d854db2b84fb9d1240fed4a.json" `
-  --evidence "727=.\backups\gemini-manual-727-f95b438160024b4686d745f0447e4dd7\report-v1.json" `
-  --evidence "727=.\backups\gemini-vibe-only-727-2026-10-19T21-18-32-230Z-10213d05-77b1-4e53-8248-04e333d89044\report-v1.json" `
-  --evidence "727=.\backups\gemini-genre-only-727-2026-10-20T04-25-56-564Z-cc7084d6-5272-4b0f-bdea-7aa4549175a5\report-v1.json" `
-  --output-dir ".\backups\stage-b-prepare-727-$stamp" | ConvertFrom-Json
-code $prepare.decisionsPath
-```
-
-Open the returned `decisions-v1.json`. Every selection is empty by default. Select a scalar by copying its complete
-candidate object (value, source, digest, and submission reference or Gemini model/prompt/schema provenance); select
-tag additions by exact candidate name. A recording MBID also starts unselected; set `decision.mbid` to the exact
-validated `evidence.mbid` only after reviewing that recording/title equivalence (for song 727, the user-recorded
-review allows that explicit choice). Select only candidates supported by the chosen operating policy. The review report lists the exact
-song version, evidence hashes, source context, coverage/conflicts, and candidate provenance.
-
-For automatic best-effort decisions from saved validated evidence, run `decide` against the same prepared
-artifact. It rechecks source hashes, current song identities/versions, and definitions in a read-only transaction,
-then creates a decisions file and a reason report in a new ignored directory:
-
-```powershell
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
-$automatic = node .\app\scripts\operator-song-enrichment.cjs decide `
-  --prepared $prepare.preparedPath `
-  --output-dir ".\backups\stage-b-decisions-$stamp" | ConvertFrom-Json
-```
-
-Use `$automatic.decisionsPath` with the existing `preview` command below. Review the separate
-`decision-report-v1.json` for stable selected/preserved/abstained reasons. The decisions file retains exact
-validated candidate objects and provenance. Rerunning with the same prepared artifact and unchanged evidence
-produces the same decisions. A changed evidence hash or baseline refuses and requires a new `prepare`.
-
-Then create a new preview directory and review `changes.txt`, `preview-v1.json`, and the exact manifest/hash:
-
-```powershell
-$preview = node .\app\scripts\operator-song-enrichment.cjs preview `
-  --prepared $prepare.preparedPath --decisions $automatic.decisionsPath `
-  --output-dir ".\backups\stage-b-preview-727-$stamp" | ConvertFrom-Json
-```
-
-Any evidence, definition, or song-version drift stops preview and requires a fresh prepare. A no-op is valid and
-does not advance a song version.
-
-Main application is separate and explicit; neither preparation nor preview applies changes. Coordinate pending
-offline edits first; existing stale offline edits continue to follow server-wins handling. No browser storage is
-inspected or changed. Main apply refuses when migration `0004` is absent; applying that migration is a separate,
-explicitly reviewed deployment operation. The restore proof covers all application tables, including
-`song_enrichment_runs`; PostgreSQL sequences and browser/external state are excluded. The proof command makes a
-fresh backup, restores to a new owner-marked scratch database, checks complete database-side row hashes, drops the
-owned database, and verifies its absence:
-
-```powershell
-$proof = node .\app\scripts\verify-main-enrichment-backup.cjs `
-  --expected-database chords `
-  --manifest $preview.manifestPath --manifest-sha256 $preview.manifestSha256 | ConvertFrom-Json
-```
-
-Only after separately reviewing the proof and unchanged complete snapshot, the main operator command is:
-
-```powershell
-node .\app\scripts\apply-main-song-enrichment.cjs `
-  --apply-main --expected-database chords `
-  --manifest $preview.manifestPath --manifest-sha256 $preview.manifestSha256 `
-  --target-ids 727 --restore-proof $proof.proofPath
-```
-
-### Resumable cohort evidence acquisition (T28)
-
-`app/scripts/acquire-song-enrichment-cohort.cjs` accepts only an operator-created private manifest under ignored
-`backups/`. The JSON shape is `{ "cohort_manifest_version": 1, "cohort_id": "...", "songs": [{ "song_id": 123,
-"title": "...", "artist": "..." }] }`. Its exact IDs and identities must match a fresh read-only baseline; it never discovers songs. It
-acquires sequential batches of at most 10 and passes each batch through the existing `prepare` → T27 `decide` →
-`preview` validators. It creates no application-data writes and never calls apply.
-
-For a fresh, separately authorized provider run, choose a new ignored output directory and an explicit ignored
-persistent cache directory. Resume with the same manifest, output directory, and cache directory; the runner rejects
-changed baseline, cache, evidence, or checkpoint hashes instead of refreshing them. The provider client keeps the
-accepted request/response/token limits and shared MusicBrainz pacing; the runner caps factual calls at 12 per song
-(120 per full ten-song batch) by default and Gemini at one request per song. `--factual-attempts-per-song N`
-can lower the factual cap to an integer from 1 through 12. The selected cap is bound into the checkpoint; resuming
-with a different cap is refused. For example, when replacing a run that already spent 3 factual attempts on song
-736, a three-song replacement with `N=9` permits at most 27 new factual attempts and 30 cumulative attempts;
-song 736 can reach at most 12. This is a ceiling, not a prediction of actual calls, and a valid cache entry is reused
-only on an exact unexpired key match; the cache does not guarantee a hit. Each actual batch is capped at its song
-count times `N`. Checkpoints record request intent before transport,
-so interrupted requests stay uncertain and consume their attempt. Exceptions list only song IDs and stable reason
-codes. Checkpoints, decisions, and summaries contain no chart bodies, lyrics, credentials, or raw provider responses.
-Checkpoints also persist a safe active stage and fatal reason. Failed or interrupted runs refuse automatic resume;
-inspect metadata and request counts, then use a separately reviewed recovery disposition. Checkpoints from an older
-state-machine version are rejected unchanged. Do not reset counters, remove a stop marker, or retry an uncertain request.
-
-For an approved Lite cohort that must skip the failed factual-provider path,
-add `--gemini-only`. This mode accepts only a `lite-` cohort, makes no
-MusicBrainz or AcousticBrainz calls, and reserves zero factual attempts. It
-records factual acquisition as `not_attempted_due_to_provider_failure` and
-binds the checkpoint to the selected mode. The existing Gemini fallback still
-uses exact database title/artist, missing scalar fields, and unassigned managed
-Genre/Vibe definitions within the same request limits and shared $2 spend
-ledger; chart text and lyrics are excluded. Exclude songs with earlier Gemini
-reservations, including uncertain ID 755. The CLI checks the shared ledger
-before a fresh Gemini-only run and refuses a target with any prior reservation;
-it also fails closed if retained spend cannot be attributed to song IDs. The
-ledger's locked reservation gate rejects duplicate song IDs across runs. Use validated saved Gemini evidence
-through `prepare` → T27 `decide` → `preview` rather than redispatching it, and
-do not re-enrich populated values.
-
-The one-time Lite recovery path accepts a private `--gemini-recovery-authorization`
-file only with `--gemini-only`. It is pinned in code to IDs 735, 736, 737, 738,
-and 755; every prior reservation and retained checkpoint/report hash must match
-the authorization exactly. The ledger records the recovery parent and authorization
-hash, so a second recovery call for any of those IDs is refused. This exception
-does not permit recovery for another song or a third attempt. Songs without a
-prior reservation in the same explicitly bounded cohort continue through the
-ordinary one-request gate.
-
-Before the cohort reaches its database baseline or spend ledger, the CLI performs
-a non-generating Gemini egress preflight: DNS lookup, verified TLS, then an
-unauthenticated GET to the API host. It sends no API key, prompt, or generating
-POST. A connect-time `EACCES` stops with `GEMINI_EGRESS_ENVIRONMENT_BLOCKED`;
-use the already reviewed outside-sandbox execution path. The CLI never switches
-execution environments itself.
-
-Example invocation (documentation only; it does not authorize provider acquisition):
-
-```powershell
-node .\app\scripts\acquire-song-enrichment-cohort.cjs `
-  --live-read-only `
-  --manifest .\backups\<private-cohort-manifest>.json `
-  --output-dir .\backups\<new-private-run-directory> `
-  --cache-dir .\backups\stage-b-provider-cache `
-  --factual-attempts-per-song 9
-```
-
-Append `--gemini-only` only for an explicitly approved eligible Lite cohort
-whose factual provider path is being skipped. It does not bypass the live
-read-only preflight or evidence, preview, and apply validation.
-
-Keep the same output and cache paths when resuming. A completed batch emits a read-only preview manifest for later
-review and backup/restore gates; it is never applied by this runner.
-
-It requires explicit opt-in, exact private manifest/proof paths and hashes, the exact target set, and no more than
-25 songs. It checks database identity and migration before receipt lookup. A matching committed receipt replays
-without the old proof archive; a new operation must pass fresh proof and complete snapshot checks inside the
-serializable transaction before writes. If the proof file is unavailable, the command can still attempt receipt
-replay, while a new operation is refused before writes. No main apply is authorized by this documentation.
 
 ## Current validation status
 
