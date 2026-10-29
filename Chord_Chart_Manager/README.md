@@ -373,7 +373,9 @@ insert-only: an exact existing title/artist/source match is reported and
 skipped, while duplicate identities and same-title/artist entries from another
 source stop the batch for review. A rerun does not refresh charts or metadata.
 Genre/Vibe definitions must already exist; unresolved labels are reported and
-left unassigned. Filename-derived Genres are never assigned. Keep enrichment
+left unassigned. The cover-page Genre, or without a cover page the filename
+Genre, becomes the song's primary Genre when it matches an existing Genre;
+otherwise it is reported and no primary is set. Keep enrichment
 separate and off during C1 chart import.
 
 1. Put source `.docx` files in `pipeline/docs/`.

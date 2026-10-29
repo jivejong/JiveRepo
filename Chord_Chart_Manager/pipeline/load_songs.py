@@ -130,20 +130,16 @@ def _normalized_identity(song: dict) -> tuple[str, str, str | None]:
     return title.lower(), artist.strip().lower(), source
 
 
-def _explicit_categories(song: dict) -> tuple[list[str], list[str]]:
-    # A filename-derived parser fallback remains visible in songs.json but is
-    # never promoted to a managed Genre assignment.
-    genres = []
-    if song.get("primary_genre_source") == "cover_page":
-        primary = song.get("primary_genre")
-        if primary:
-            genres.append(primary)
+def _explicit_categories(song: dict) -> tuple[list[str], list[str], str | None]:
+    # FR-109: the cover-page Genre, or else the filename Genre, is the primary.
+    primary = song.get("primary_genre") or None
+    genres = [primary] if primary else []
     extra = song.get("additional_genres", [])
     vibes = song.get("vibes", [])
     if not isinstance(extra, list) or not isinstance(vibes, list):
         raise ValueError("additional_genres and vibes must be arrays when present")
     genres.extend(extra)
-    return genres, vibes
+    return genres, vibes, primary
 
 
 def _validate_batch(songs: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -184,13 +180,14 @@ def _validate_batch(songs: list[dict]) -> tuple[list[dict], list[dict]]:
             if "primary_genre_source" in song and song["primary_genre_source"] not in (
                     None, "cover_page", "filename_fallback"):
                 raise ValueError("primary_genre_source must be cover_page or filename_fallback")
-            genres, vibes = _explicit_categories(song)
+            genres, vibes, primary_genre = _explicit_categories(song)
             for kind, values in (("Genre", genres), ("Vibe", vibes)):
                 for value in values:
                     if not isinstance(value, str) or not value.strip():
                         raise ValueError(f"{kind} labels must be nonempty strings")
             prepared.append({"index": index, "song": song, "title": title, "artist": artist,
-                             "source": source, "genres": genres, "vibes": vibes})
+                             "source": source, "genres": genres, "vibes": vibes,
+                             "primary_genre": primary_genre})
         except Exception as exc:
             failures.append({"index": index, "title": song.get("title", "(untitled)"),
                              "reason": str(exc)})
@@ -318,11 +315,14 @@ def _plan(cur, prepared: list[dict], failures: list[dict], *, lock_definitions=F
             plan["blocking_collisions"].append({**identity, "reason": "ambiguous_artist", "matches": artist_resolution["matches"]})
             continue
         cats = []
+        primary_genre_id = None
         for kind, labels in (("Genre", entry["genres"]), ("Vibe", entry["vibes"])):
             resolved = []
             for label in labels:
                 match = _resolve_category(cur, kind, label, lock=lock_definitions)
                 if match["status"] == "resolved":
+                    if kind == "Genre" and label == entry["primary_genre"] and primary_genre_id is None:
+                        primary_genre_id = match["id"]
                     if all(row["id"] != match["id"] for row in resolved):
                         resolved.append(match)
                 else:
@@ -331,7 +331,8 @@ def _plan(cur, prepared: list[dict], failures: list[dict], *, lock_definitions=F
             cats.append(resolved)
         plan["proposed_inserts"].append({**identity, "entry": entry,
                                         "artist_resolution": artist_resolution,
-                                        "genres": cats[0], "vibes": cats[1]})
+                                        "genres": cats[0], "vibes": cats[1],
+                                        "primary_genre_id": primary_genre_id})
     return plan
 
 
@@ -405,8 +406,8 @@ def _insert_song(cur, item: dict) -> int:
     cur.execute(f"INSERT INTO public.songs ({columns}) VALUES ({placeholders}) RETURNING id", values)
     song_id = cur.fetchone()[0]
     for genre in item["genres"]:
-        cur.execute("INSERT INTO public.song_genres(song_id,genre_id,is_primary) VALUES (%s,%s,false)",
-                    (song_id, genre["id"]))
+        cur.execute("INSERT INTO public.song_genres(song_id,genre_id,is_primary) VALUES (%s,%s,%s)",
+                    (song_id, genre["id"], genre["id"] == item["primary_genre_id"]))
     for vibe in item["vibes"]:
         cur.execute("INSERT INTO public.song_vibes(song_id,vibe_id) VALUES (%s,%s)",
                     (song_id, vibe["id"]))

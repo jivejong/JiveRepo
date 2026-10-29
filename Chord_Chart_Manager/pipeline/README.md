@@ -274,9 +274,10 @@ rerunning a committed batch inserts zero rows for them. It does not create or
 rename Genre/Vibe definitions. Explicit categories resolve by the app's
 category-specific normalization (trim and collapse whitespace, then
 case-insensitive exact comparison). Missing or ambiguous labels are reported
-and left unassigned; resolved Genre assignments are non-primary. A Genre from
-the source filename is retained as provenance in parsed JSON but is not
-assigned. No primary Genre is inferred.
+and left unassigned. The parsed `primary_genre` (from the cover page, or from
+the source filename without one) becomes the primary Genre when it resolves;
+other Genre assignments are non-primary. An unresolved primary is reported and
+no primary is set.
 Parsed JSON with a nonempty primary Genre and missing/invalid
 `primary_genre_source` is rejected before database access with an instruction
 to reparse using the current parser; the loader does not infer provenance or
