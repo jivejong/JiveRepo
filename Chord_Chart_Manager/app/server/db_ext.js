@@ -596,8 +596,8 @@ async function listSetlists() {
   return rows;
 }
 
-async function getSetlist(id) {
-  const { rows } = await pool.query(
+async function getSetlist(id, queryable = pool) {
+  const { rows } = await queryable.query(
     `SELECT sl.id, sl.name, to_char(sl.gig_date,'YYYY-MM-DD') AS gig_date, sl.notes, sl.created_at,
             to_char(sl.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,
             COALESCE((

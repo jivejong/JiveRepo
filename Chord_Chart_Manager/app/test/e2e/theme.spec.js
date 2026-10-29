@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { expect, request as playwrightRequest, test } from '@playwright/test';
-import { contrastOverLayers } from '../../src/lib/colorContrast.js';
+import { contrastOverLayers } from '../colorContrast.js';
 
 const preferenceKey = 'ccm-theme-preference';
 

@@ -1,3 +1,5 @@
+import { primaryGenreFromAssignments } from './offlineSongFields.js';
+
 export const SONG_SORTS = Object.freeze([
   { value: 'title', label: 'Title' },
   { value: 'created_at', label: 'Date added' },
@@ -48,10 +50,7 @@ function primaryGenre(song) {
     return typeof song.primary_genre === 'string' && song.primary_genre.trim() ? song.primary_genre : null;
   }
   const genres = Array.isArray(song.genres) ? song.genres : [];
-  if (genres.length) {
-    const primary = genres.find(item => item && typeof item === 'object' && item.is_primary);
-    return primary?.name || null;
-  }
+  if (genres.length) return primaryGenreFromAssignments(genres);
   return typeof song.genre === 'string' && song.genre.trim() ? song.genre : null;
 }
 

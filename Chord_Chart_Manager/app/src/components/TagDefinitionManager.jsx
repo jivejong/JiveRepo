@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft } from './Icons';
 import * as api from '../lib/api';
 import * as cache from '../lib/cache';
+import { MANAGED_TAG_DEFINITIONS_CACHE_KEY as DEFINITION_CACHE_KEY } from '../lib/managedTagDefinitions';
 
-const DEFINITION_CACHE_KEY = 'managed_tag_definitions';
 const isUnavailableRequest = reason => reason instanceof TypeError
   || /failed to fetch|network request failed|load failed/i.test(reason?.message || '');
 

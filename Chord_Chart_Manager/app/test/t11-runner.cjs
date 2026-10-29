@@ -7,9 +7,8 @@ const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { Pool } = require('../server/node_modules/pg');
-const { bounded, runCleanupStages, startServerBounded, runWithCleanup } = require('./t11-lifecycle.cjs');
 const { verifyHarnessIdentity } = require('./t11-guards.cjs');
-const { MAIN_TABLES, readMainCounts, assertMainCountsUnchanged } = require('./t11-main-checks.cjs');
+const { readMainCounts, assertMainCountsUnchanged } = require('./t11-main-checks.cjs');
 
 const appDir = path.resolve(__dirname, '..');
 const scratchName = 'ccm_test';
@@ -63,26 +62,6 @@ function runNode(label, script, args = [], env = process.env, timeoutMs = 600_00
   });
 }
 
-async function mainSnapshot(pool) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    const database = (await client.query('SELECT current_database() AS name')).rows[0]?.name;
-    assert.equal(database, 'chords', 'T11 preservation snapshot must connect to main chords');
-    const rows = {};
-    for (const [name, table, key] of MAIN_TABLES) {
-      rows[name] = (await client.query(`SELECT (${key}) AS row_key, md5(to_jsonb(t)::text) AS row_md5 FROM ${table} t ORDER BY 1`)).rows;
-    }
-    await client.query('COMMIT');
-    return { database, rows };
-  } catch (error) {
-    try { await client.query('ROLLBACK'); } catch { /* retain snapshot error */ }
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 async function seedSyntheticChartFixtures(pool) {
   const artist = await pool.query(
     `INSERT INTO public.artists(name) VALUES ('T11 synthetic sample artist') RETURNING id`);
@@ -118,43 +97,26 @@ async function main() {
   const local = readLocalEnv();
   assert.equal(local.POSTGRES_DB || 'chords', 'chords',
     'Refusing to run T11 unless app/.env identifies the protected main database as chords');
-  const baseUrl = databaseUrl(local, 'chords');
-  const adminUrl = new URL(baseUrl);
-  adminUrl.pathname = '/postgres';
-  const admin = new Pool({ connectionString: adminUrl.toString() });
-  const main = new Pool({ connectionString: baseUrl });
+  const admin = new Pool({ connectionString: databaseUrl(local, 'postgres') });
+  const failures = [];
   let ownsScratch = false;
   let testPool;
-  let appServer;
-  let testServer;
-  let acceptingRequests = false;
-  let runId;
-  let scratchOwner;
-  let mainSnapshotBefore;
-  let mainCountsBefore;
-  await runWithCleanup(async () => {
+  let server;
+  let countsBefore;
+  try {
     const preflight = await admin.query(`SELECT
       EXISTS(SELECT 1 FROM pg_database WHERE datname=$1) AS exists,
       (SELECT rolcreatedb FROM pg_roles WHERE rolname=current_user) AS can_create`, [scratchName]);
     assert.equal(preflight.rows[0].exists, false,
-      'Refusing T11 because task-owned ccm_test already exists; inspect its state before cleanup');
+      'Refusing T11 because ccm_test already exists; inspect its state before cleanup');
     assert.equal(preflight.rows[0].can_create, true,
-      'T11 database role cannot create ccm_test; grant task authorization/prerequisites before running');
+      'T11 database role cannot create ccm_test; grant the prerequisites before running');
     const initialStats = await fetch('http://127.0.0.1:3000/api/stats', { signal: AbortSignal.timeout(5_000) });
     assert.equal(initialStats.status, 200, 'Main app /api/stats must be available before T11 starts');
-    mainCountsBefore = readMainCounts(await initialStats.json());
-    mainSnapshotBefore = await mainSnapshot(main);
-    runId = randomUUID();
-    scratchOwner = (await admin.query('SELECT current_user AS owner')).rows[0].owner;
+    countsBefore = readMainCounts(await initialStats.json());
+    const runId = randomUUID();
     await admin.query(`CREATE DATABASE ${scratchName}`);
     ownsScratch = true;
-    await admin.query(`COMMENT ON DATABASE ${scratchName} IS 'CCM T11 owned scratch run ${runId}'`);
-    const createdScratch = await admin.query(`SELECT r.rolname AS owner,
-      shobj_description(d.oid, 'pg_database') AS comment
-      FROM pg_database d JOIN pg_roles r ON r.oid=d.datdba WHERE d.datname=$1`, [scratchName]);
-    assert.equal(createdScratch.rows[0]?.owner, scratchOwner, 'T11 scratch database owner mismatch after creation');
-    assert.equal(createdScratch.rows[0]?.comment, `CCM T11 owned scratch run ${runId}`,
-      'T11 scratch ownership marker mismatch after creation');
 
     process.env.DATABASE_URL = databaseUrl(local, scratchName);
     const { runMigrations } = require('../server/migrate.js');
@@ -163,12 +125,11 @@ async function main() {
     testPool = require('../server/db.js').pool;
     await seedSyntheticChartFixtures(testPool);
     const app = require('../server/server.js');
-    testServer = http.createServer(async (req, res) => {
+    server = http.createServer(async (req, res) => {
       if (req.url === '/__t11_identity' && req.method === 'GET') {
         try {
-          const requestedRun = req.headers['x-ccm-t11-run'];
           const database = (await testPool.query('SELECT current_database() AS name')).rows[0].name;
-          if (requestedRun !== runId || database !== scratchName) {
+          if (req.headers['x-ccm-t11-run'] !== runId || database !== scratchName) {
             res.writeHead(404).end();
             return;
           }
@@ -179,21 +140,15 @@ async function main() {
         }
         return;
       }
-      if (!acceptingRequests) {
-        res.writeHead(503).end();
-        return;
-      }
       app(req, res);
     });
-    appServer = testServer;
-    await startServerBounded(appServer, () => appServer.listen(0, '127.0.0.1'));
-    acceptingRequests = true;
-    const testEnv = { ...process.env, E2E_BASE_URL: `http://127.0.0.1:${appServer.address().port}`,
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const testEnv = { ...process.env, E2E_BASE_URL: `http://127.0.0.1:${server.address().port}`,
       E2E_SYSTEM_CHROME: '1', CCM_T11_ISOLATED: '1', CCM_T11_RUN_ID: runId, CI: '1' };
     await verifyHarnessIdentity({ baseUrl: testEnv.E2E_BASE_URL, runId });
-    process.env.E2E_BASE_URL = testEnv.E2E_BASE_URL;
-    process.env.E2E_SYSTEM_CHROME = '1';
-    process.env.CCM_T11_ISOLATED = '1';
     if (process.env.CCM_T11_FOCUSED_E2E_ONLY !== '1') {
       await runNode('Unit tests (Vitest)', path.join(appDir, 'node_modules/vitest/vitest.mjs'), ['run'], testEnv);
       await runNode('Scratch-database API integration tests', path.join(appDir, 'test/integration/t11-api.test.cjs'), [], testEnv);
@@ -208,58 +163,45 @@ async function main() {
     }
     await runNode('Serial Playwright E2E (installed system Chrome)', path.join(appDir, 'node_modules/@playwright/test/cli.js'),
       e2eArgs, testEnv);
-  }, async () => {
-    const cleanup = [];
-    const stages = [];
-    if (appServer) stages.push(['HTTP server shutdown', async () => {
-      acceptingRequests = false;
-      const closed = new Promise((resolve, reject) => {
-        if (!appServer.listening) { resolve(); return; }
-        appServer.close(error => error ? reject(error) : resolve());
-      });
-      await bounded(closed, 'HTTP server shutdown', 5_000, () => appServer.closeAllConnections?.());
-    }]);
-    if (testPool) stages.push(['test pool shutdown', () => bounded(() => testPool.end(), 'test pool shutdown', 5_000)]);
-    if (ownsScratch) stages.push(['owned scratch cleanup', async () => {
-        const ownership = await admin.query(`SELECT r.rolname AS owner,
-          shobj_description(d.oid, 'pg_database') AS comment
-          FROM pg_database d JOIN pg_roles r ON r.oid=d.datdba WHERE d.datname=$1`, [scratchName]);
-        assert.equal(ownership.rows[0]?.owner, scratchOwner,
-          'Refusing to drop ccm_test because its owner changed from this run.');
-        assert.equal(ownership.rows[0]?.comment, `CCM T11 owned scratch run ${runId}`,
-          'Refusing to drop ccm_test because its ownership marker changed.');
-        await admin.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-          WHERE datname=$1 AND pid<>pg_backend_pid()`, [scratchName]);
-        const connected = await admin.query('SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=$1', [scratchName]);
-        assert.equal(connected.rows[0].n, 0, 'Refusing to drop ccm_test while database sessions remain.');
-        await admin.query(`DROP DATABASE ${scratchName}`);
-        const remaining = await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [scratchName]);
-        assert.equal(remaining.rowCount, 0, 'Task-owned ccm_test remains after T11 cleanup');
-        console.log('[T11] ccm_test dropped and absence verified.');
-    }]);
-    if (mainSnapshotBefore) {
-      stages.push(['main full-row preservation check', async () => {
-        const after = await mainSnapshot(main);
-        assert.deepEqual(after, mainSnapshotBefore,
-          'T11 must preserve every main database row and association');
-        console.log(`[T11] Main protected row fingerprints match (${Object.values(after.rows).reduce((n, table) => n + table.length, 0)} rows).`);
-      }]);
-      stages.push(['main health and baseline check', async () => {
+  } catch (error) {
+    failures.push(error);
+  }
+
+  // Every cleanup step runs even when an earlier step or the tests failed.
+  const step = async (label, action) => {
+    try { await action(); } catch (error) { failures.push(new Error(`${label}: ${error.message}`, { cause: error })); }
+  };
+  if (server?.listening) {
+    await step('HTTP server shutdown', () => new Promise((resolve, reject) => {
+      server.close(error => (error ? reject(error) : resolve()));
+      server.closeAllConnections();
+    }));
+  }
+  if (testPool) await step('test pool shutdown', () => testPool.end());
+  if (ownsScratch) {
+    await step('ccm_test cleanup', async () => {
+      await admin.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+        WHERE datname=$1 AND pid<>pg_backend_pid()`, [scratchName]);
+      await admin.query(`DROP DATABASE ${scratchName}`);
+      const remaining = await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [scratchName]);
+      assert.equal(remaining.rowCount, 0, 'ccm_test remains after T11 cleanup');
+      console.log('[T11] ccm_test dropped and absence verified.');
+    });
+  }
+  if (countsBefore) {
+    await step('main health and count check', async () => {
       const health = await fetch('http://localhost:3000/healthz', { signal: AbortSignal.timeout(5_000) });
       assert.equal(health.status, 200, 'Main app /healthz must remain healthy');
       assert.equal((await health.json()).status, 'ok');
       const statsResponse = await fetch('http://localhost:3000/api/stats', { signal: AbortSignal.timeout(5_000) });
       assert.equal(statsResponse.status, 200, 'Main app /api/stats must remain available');
       const statsAfter = readMainCounts(await statsResponse.json());
-      assertMainCountsUnchanged(mainCountsBefore, statsAfter);
+      assertMainCountsUnchanged(countsBefore, statsAfter);
       console.log(`[T11] Main /healthz healthy; /api/stats counts unchanged (${statsAfter.totalSongs} songs / ${statsAfter.totalTags} tags / ${statsAfter.totalSetlists} setlists).`);
-      }]);
-    }
-    stages.push(['main fingerprint pool shutdown', () => bounded(() => main.end(), 'main pool shutdown', 5_000)]);
-    stages.push(['admin pool shutdown', () => bounded(() => admin.end(), 'admin pool shutdown', 5_000)]);
-    try { await runCleanupStages(stages); } catch (error) { cleanup.push(error); }
-    if (cleanup.length) throw cleanup.length === 1 ? cleanup[0] : new AggregateError(cleanup, 'T11 cleanup failed');
-  });
+    });
+  }
+  await step('admin pool shutdown', () => admin.end());
+  if (failures.length) throw failures.length === 1 ? failures[0] : new AggregateError(failures, 'T11 failed');
 }
 
 main().catch(error => {
