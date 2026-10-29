@@ -209,9 +209,6 @@ export default function SetlistView({ setlistId, online, onSync, onBack, onDelet
   if (loading) return <div className="loading">Loading…</div>;
   if (!setlist) return <div className="loading">Setlist not found</div>;
 
-  const songIds = new Set(songs.map(song => String(song.song_id)));
-  const availableSongs = allSongs.filter(song => !songIds.has(String(song.id)));
-
   return (
     <div className="screen">
       <div className="topbar">
@@ -304,7 +301,7 @@ export default function SetlistView({ setlistId, online, onSync, onBack, onDelet
               onChange={event => setEntry(prev => ({ ...prev, song_id: event.target.value }))}
             >
               <option value="">Choose a song…</option>
-              {availableSongs.map(song => (
+              {allSongs.map(song => (
                 <option key={song.id} value={song.id}>{song.title} — {song.artist}</option>
               ))}
             </select>
@@ -344,13 +341,10 @@ export default function SetlistView({ setlistId, online, onSync, onBack, onDelet
           <button
             className="btn btn-primary btn-full"
             onClick={addSong}
-            disabled={busy || !availableSongs.length}
+            disabled={busy || !allSongs.length}
           >
             Add to setlist
           </button>
-          {!availableSongs.length && (
-            <div className="form-help">Every song is already in this setlist.</div>
-          )}
         </div>
       )}
 
