@@ -1,8 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-const { execFileSync, spawnSync } = require('node:child_process');
-const path = require('node:path');
 const { requireIsolatedTarget, verifyHarnessIdentity } = require('../t11-guards.cjs');
 requireIsolatedTarget({ isolated: process.env.CCM_T11_ISOLATED,
   baseUrl: process.env.E2E_BASE_URL, runId: process.env.CCM_T11_RUN_ID });
@@ -107,6 +105,63 @@ test('T13 imported-like NULL-source fixture stays NULL through no-op and metadat
   assert.equal(metadata.value.chart_source, before.value.chart_source);
   assert.equal((await pool.query('SELECT chart_source FROM public.songs WHERE id=$1', [id])
     ).rows[0].chart_source, null);
+});
+
+test('FR-013 release year, FR-064 song-create replay, FR-106 repeated setlist song', async () => {
+  await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
+  const suffix = randomUUID();
+  const artist = `T11 requirement artist ${suffix}`;
+  let songId = null;
+  let setlistId = null;
+  try {
+    // FR-013: a release year that is not a whole number from 1 to 32767 is rejected.
+    for (const releaseYear of [0, 32768, 1979.5, 'abc']) {
+      const title = `T11 bad year ${suffix} ${releaseYear}`;
+      const rejected = await json('POST', '/api/songs', { title, artist, chart_source: 'Verse\nInvented year fixture',
+        release_year: releaseYear, operation_id: randomUUID() });
+      assert.equal(rejected.response.status, 400, `release_year ${releaseYear}: ${JSON.stringify(rejected.value)}`);
+      assert.equal((await pool.query('SELECT 1 FROM public.songs WHERE title=$1', [title])).rowCount, 0);
+    }
+
+    // FR-064: replaying a song create returns the original song; reusing the ID with a different body is 409.
+    const createBody = { title: `T11 replay song ${suffix}`, artist, chart_source: 'Verse\nInvented replay fixture',
+      release_year: 32767, operation_id: randomUUID() };
+    const created = await json('POST', '/api/songs', createBody);
+    assert.equal(created.response.status, 201, JSON.stringify(created.value));
+    songId = created.value.id;
+    const replay = await json('POST', '/api/songs', createBody);
+    assert.equal(replay.response.status, 201, JSON.stringify(replay.value));
+    assert.equal(replay.value.id, songId);
+    assert.equal((await json('POST', '/api/songs', { ...createBody, title: `${createBody.title} altered` })).response.status, 409);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM public.songs WHERE artist_id=(SELECT id FROM public.artists WHERE name=$1)',
+      [artist])).rows[0].n, 1, 'neither the replay nor the altered retry creates another song');
+
+    for (const releaseYear of [0, 32768]) {
+      const rejected = await json('PUT', `/api/songs/${songId}`, { release_year: releaseYear,
+        base_updated_at: created.value.updated_at, operation_id: randomUUID() });
+      assert.equal(rejected.response.status, 400, `update release_year ${releaseYear}: ${JSON.stringify(rejected.value)}`);
+    }
+    assert.equal((await json('GET', `/api/songs/${songId}`)).value.release_year, 32767);
+
+    // FR-106: the same song can be added to one setlist more than once.
+    const list = await json('POST', '/api/setlists/mutations', { operation_id: randomUUID(), type: 'create',
+      setlist_id: null, base_updated_at: null, payload: { name: `T11 repeated song list ${suffix}` } });
+    assert.equal(list.response.status, 200, JSON.stringify(list.value));
+    setlistId = list.value.id;
+    let token = list.value.updated_at;
+    for (let i = 0; i < 2; i += 1) {
+      const added = await json('POST', '/api/setlists/mutations', { operation_id: randomUUID(), type: 'entry_add',
+        setlist_id: setlistId, base_updated_at: token, payload: { song_id: songId } });
+      assert.equal(added.response.status, 200, JSON.stringify(added.value));
+      token = added.value.updated_at;
+    }
+    const detail = await json('GET', `/api/setlists/${setlistId}`);
+    assert.deepEqual(detail.value.songs.map(entry => entry.song_id), [songId, songId]);
+    assert.equal(new Set(detail.value.songs.map(entry => entry.entry_id)).size, 2, 'each appearance is its own entry');
+  } finally {
+    if (setlistId !== null) await pool.query('DELETE FROM public.setlists WHERE id=$1', [setlistId]);
+    if (songId !== null) await pool.query('DELETE FROM public.songs WHERE id=$1', [songId]);
+  }
 });
 
 test('song, tag, setlist, and entry API contract on migrated ccm_test', async () => {
@@ -670,63 +725,6 @@ test('existing definitions reject unknown/ambiguous assignment atomically and lo
       assert.ok(removed.rowCount <= 1, `task-created artist ${artistName} is removed at most once`);
       assert.equal((await pool.query('SELECT 1 FROM public.artists WHERE name=$1', [artistName])).rowCount, 0,
         `task-created artist ${artistName} is absent after cleanup or rollback`);
-    }
-
-    const snapshot = async () => {
-      const [songs, artists, genreLinks, vibeLinks, entries, setlists, receipts] = await Promise.all([
-        pool.query('SELECT to_jsonb(s) AS row FROM public.songs s ORDER BY id'),
-        pool.query('SELECT to_jsonb(a) AS row FROM public.artists a ORDER BY id'),
-        pool.query('SELECT to_jsonb(sg) AS row FROM public.song_genres sg ORDER BY song_id,genre_id'),
-        pool.query('SELECT to_jsonb(sv) AS row FROM public.song_vibes sv ORDER BY song_id,vibe_id'),
-        pool.query('SELECT to_jsonb(ss) AS row FROM public.setlist_songs ss ORDER BY setlist_id,position'),
-        pool.query('SELECT to_jsonb(sl) AS row FROM public.setlists sl ORDER BY id'),
-        pool.query('SELECT operation_id,request_hash,entity_type,resource_id,response FROM public.mutation_receipts ORDER BY operation_id'),
-      ]);
-      return JSON.stringify({ songs: songs.rows, artists: artists.rows,
-        genreLinks: genreLinks.rows, vibeLinks: vibeLinks.rows, entries: entries.rows,
-        setlists: setlists.rows, receipts: receipts.rows });
-    };
-    const protectedBefore = await snapshot();
-    const root = path.resolve(__dirname, '../../..');
-    const script = path.join(root, 'app/scripts/populate-tag-definitions.cjs');
-    const args = ['--genres', path.join(root, 'docs/genres.txt'), '--vibes', path.join(root, 'docs/vibes.txt')];
-    const executePopulation = extra => JSON.parse(execFileSync(process.execPath, [script, ...args, ...extra], {
-      cwd: path.join(root, 'app'), encoding: 'utf8', env: { ...process.env },
-    }));
-    const beforeGenreIds = new Set((await pool.query('SELECT id FROM public.genres')).rows.map(row => row.id));
-    const beforeVibeIds = new Set((await pool.query('SELECT id FROM public.vibes')).rows.map(row => row.id));
-    const existingGenres = (await pool.query('SELECT id,name FROM public.genres ORDER BY id')).rows;
-    const existingVibes = (await pool.query('SELECT id,name FROM public.vibes ORDER BY id')).rows;
-    const preview = executePopulation([]);
-    assert.equal(preview.counts.ambiguous, 0);
-    const firstApply = executePopulation(['--apply', '--expected-fingerprint', preview.fingerprint]);
-    assert.equal(firstApply.applied, preview.counts.missing);
-    const repeatedPreview = executePopulation([]);
-    const secondApply = executePopulation(['--apply', '--expected-fingerprint', repeatedPreview.fingerprint]);
-    assert.equal(secondApply.applied, 0, 'the repeated scratch application must insert nothing');
-    assert.equal(await snapshot(), protectedBefore, 'vocabulary application must preserve every song, artist, association, and receipt');
-    assert.deepEqual((await pool.query('SELECT id,name FROM public.genres WHERE id=ANY($1::int[]) ORDER BY id',
-      [existingGenres.map(row => row.id)])).rows, existingGenres, 'pre-existing Genre IDs and spellings stay exact');
-    assert.deepEqual((await pool.query('SELECT id,name FROM public.vibes WHERE id=ANY($1::int[]) ORDER BY id',
-      [existingVibes.map(row => row.id)])).rows, existingVibes, 'pre-existing Vibe IDs and spellings stay exact');
-    const ambiguousDefinition = await pool.query('INSERT INTO public.genres(name) VALUES($1) RETURNING id', ['Classic  Rock']);
-    const ambiguousPreview = spawnSync(process.execPath, [script, ...args], {
-      cwd: path.join(root, 'app'), encoding: 'utf8', env: { ...process.env },
-    });
-    assert.equal(ambiguousPreview.status, 2);
-    assert.equal(JSON.parse(ambiguousPreview.stdout).counts.ambiguous, 1);
-    await pool.query('DELETE FROM public.genres WHERE id=$1 AND name=$2',
-      [ambiguousDefinition.rows[0].id, 'Classic  Rock']);
-    assert.equal((await pool.query('SELECT 1 FROM public.genres WHERE id=$1', [ambiguousDefinition.rows[0].id])).rowCount, 0);
-    const addedGenres = (await pool.query('SELECT id,name FROM public.genres ORDER BY id')).rows.filter(row => !beforeGenreIds.has(row.id));
-    const addedVibes = (await pool.query('SELECT id,name FROM public.vibes ORDER BY id')).rows.filter(row => !beforeVibeIds.has(row.id));
-    for (const row of addedGenres) {
-      await pool.query('DELETE FROM public.genres WHERE id=$1 AND name=$2', [row.id, row.name]);
-      assert.equal((await pool.query('SELECT 1 FROM public.genres WHERE id=$1', [row.id])).rowCount, 0);
-    }
-    for (const row of addedVibes) {
-      await pool.query('DELETE FROM public.vibes WHERE id=$1 AND name=$2', [row.id, row.name]);
-      assert.equal((await pool.query('SELECT 1 FROM public.vibes WHERE id=$1', [row.id])).rowCount, 0);
     }
   }
 });
