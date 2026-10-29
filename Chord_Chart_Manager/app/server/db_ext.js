@@ -30,8 +30,7 @@ function conflictError() {
 }
 
 function sameVersion(current, expected) {
-  if (expected === null || expected === undefined) return true; // Legacy ordinary CRUD may omit a base.
-  validateVersionToken(expected);
+  validateVersionToken(expected, true);
   // Older queued millisecond tokens are ambiguous even when their millisecond
   // matches. Let the existing 409/server-wins sync path refresh the cache.
   return EXACT_VERSION.test(expected) && current === expected;
@@ -230,6 +229,7 @@ async function createSong(patch, operationId = null) {
 }
 
 async function updateSongFull(id, patch, operationId) {
+  validateVersionToken(patch.base_updated_at, true); // FR-111: every song update carries its base version.
   const genres = Object.hasOwn(patch, "genres") ? normalizeTagSet(patch.genres, "Genres") : null;
   const vibes = Object.hasOwn(patch, "vibes") ? normalizeTagSet(patch.vibes, "Vibes") : null;
   if (genres?.length) {
@@ -355,6 +355,7 @@ async function updateSongFull(id, patch, operationId) {
 }
 
 async function deleteSong(id, baseUpdatedAt = null) {
+  validateVersionToken(baseUpdatedAt, true); // FR-111: every song delete carries its base version.
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
