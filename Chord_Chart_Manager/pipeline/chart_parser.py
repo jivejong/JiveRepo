@@ -870,190 +870,6 @@ def is_tab_line(text: str) -> bool:
 # --------------------------------------------------------------------------
 
 _INLINE_BRACE_RE = re.compile(r"\{([^}]*)\}")
-_GENERATED_HEADER = "[[CCM-CHART:2]]"
-_LEGACY_GENERATED_HEADER = "[[CCM-CHART:1]]"
-_DOCX_SPACER_MARKER = "\x00CCM-DOCX-SPACER\x00"
-
-
-def _unescape_generated_text(text: str) -> str:
-    return re.sub(r"\\([\\\[nr])", lambda m: {
-        "n": "\n", "r": "\r", "\\": "\\", "[": "[",
-    }[m.group(1)], text)
-
-
-def _parse_generated_lyric(text: str, confidence: str) -> dict:
-    chords = []
-    lyric = []
-    i = 0
-    while i < len(text):
-        if text[i] == "\\" and i + 1 < len(text):
-            escaped = text[i + 1]
-            lyric.append("\n" if escaped == "n" else "\r" if escaped == "r" else escaped)
-            i += 2
-        elif text.startswith("[[C:", i):
-            end = text.find("]]", i + 4)
-            if end < 0:
-                raise ValueError("Generated chart has an incomplete chord anchor marker")
-            try:
-                symbol = unquote_to_bytes(text[i + 4:end]).decode("utf-8")
-            except (UnicodeDecodeError, ValueError) as exc:
-                raise ValueError("Generated chart has an invalid chord anchor marker") from exc
-            if not is_chord_token(symbol):
-                raise ValueError("Generated chart has an invalid chord symbol")
-            chords.append({"sym": clean_text(symbol), "pos": _column_length("".join(lyric))})
-            i = end + 2
-        else:
-            lyric.append(text[i])
-            i += 1
-    return {"type": "lyric", "text": "".join(lyric), "chords": chords,
-            "confidence": confidence}
-
-
-def _parse_generated_lyric_v2(text: str, confidence: str) -> dict:
-    delimiter = "[[CCM-CHORDS]]"
-    split_at = text.rfind(delimiter)
-    if split_at < 0:
-        raise ValueError("Generated lyric is missing its chord list")
-    lyric = _unescape_generated_text(text[:split_at])
-    encoded = text[split_at + len(delimiter):]
-    chords = []
-    cursor = 0
-    marker_re = re.compile(r"\[\[C:(\d+):([^\]]*)\]\]")
-    for match in marker_re.finditer(encoded):
-        if encoded[cursor:match.start()].strip():
-            raise ValueError("Generated lyric has invalid chord data")
-        try:
-            symbol = unquote_to_bytes(match.group(2)).decode("utf-8")
-            position = int(match.group(1))
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise ValueError("Generated lyric has an invalid chord anchor") from exc
-        if position < 0 or position > 9007199254740991 or not is_chord_token(symbol):
-            raise ValueError("Generated lyric has an invalid chord anchor")
-        chords.append({"sym": clean_text(symbol), "pos": position})
-        cursor = match.end()
-    if encoded[cursor:].strip():
-        raise ValueError("Generated lyric has invalid chord data")
-    return {"type": "lyric", "text": lyric, "chords": chords,
-            "confidence": confidence}
-
-
-def parse_generated_chart_body(text: str) -> dict:
-    """Parse the versioned editable representation emitted by chartToText()."""
-    lines = text.splitlines()
-    if not lines:
-        raise ValueError("Generated chart is empty")
-    header = lines.pop(0)
-    version2 = header == _GENERATED_HEADER
-    if header not in (_GENERATED_HEADER, _LEGACY_GENERATED_HEADER):
-        raise ValueError("Generated chart must start with a supported CCM header")
-    if lines and lines[-1] == "":
-        lines.pop()
-    sections = []
-    current = None
-    for line in lines:
-        if line.startswith("[[CCM-SECTION]]"):
-            if current and current["lines"] and current["lines"][-1].get("type") == "spacer":
-                current["lines"].pop()
-            label = _unescape_generated_text(line[len("[[CCM-SECTION]]"):])
-            current = {"label": label or None, "lines": []}
-            sections.append(current)
-            continue
-        if current is None:
-            raise ValueError("Generated chart line appears before its section marker")
-        lyric_match = re.fullmatch(r"\[\[CCM-LYRIC:(high|low)\]\](.*)", line)
-        if lyric_match:
-            parser = _parse_generated_lyric_v2 if version2 else _parse_generated_lyric
-            current["lines"].append(parser(lyric_match.group(2), lyric_match.group(1)))
-            continue
-        progression_match = re.fullmatch(r"\[\[CCM-PROGRESSION\]\](.*)", line)
-        if progression_match:
-            body = progression_match.group(1)
-            note_index = body.find("[[CCM-NOTE]]")
-            note = None
-            if note_index >= 0:
-                note = _unescape_generated_text(body[note_index + len("[[CCM-NOTE]]"):])
-                body = body[:note_index]
-            repeat = re.search(r"\[\[CCM-PROGRESSION-REPEAT:(\d+)\]\]$", body)
-            if repeat:
-                body = body[:repeat.start()]
-            chords = body.split()
-            if any(not is_chord_token(chord) for chord in chords):
-                raise ValueError("Generated progression contains an invalid chord token")
-            parsed = {"type": "progression", "chords": chords}
-            if repeat:
-                parsed["repeat"] = int(repeat.group(1))
-            if note_index >= 0:
-                parsed["note"] = note
-            current["lines"].append(parsed)
-            continue
-        repeat_match = re.fullmatch(r"\[\[CCM-REPEAT(?::(\d+))?\]\](.*)", line)
-        if repeat_match:
-            parsed = {"type": "repeat", "ref": _unescape_generated_text(repeat_match.group(2))}
-            if repeat_match.group(1):
-                parsed["times"] = int(repeat_match.group(1))
-            current["lines"].append(parsed)
-            continue
-        if line.startswith("[[CCM-RAW]]"):
-            current["lines"].append({"type": "raw",
-                                     "text": _unescape_generated_text(line[len("[[CCM-RAW]]"):])})
-            continue
-        if line == "[[CCM-SPACER]]":
-            if not current["lines"] or current["lines"][-1].get("type") != "spacer":
-                current["lines"].append({"type": "spacer"})
-            continue
-        raise ValueError("Generated chart contains a missing or unsupported line marker")
-    return {"sections": sections}
-
-
-def _escape_generated_text(text: str) -> str:
-    return (str(text or "").replace("\\", "\\\\").replace("[", "\\[")
-            .replace("\r", "\\r").replace("\n", "\\n"))
-
-
-def serialize_generated_chart(chart: dict) -> str:
-    """Serialize CCM v2; lyric positions are zero-based UTF-16 code units."""
-    out = [_GENERATED_HEADER]
-    for section in chart.get("sections", []):
-        out.append("[[CCM-SECTION]]" + _escape_generated_text(section.get("label") or ""))
-        for line in section.get("lines", []):
-            kind = line.get("type")
-            if kind == "lyric":
-                confidence = "low" if line.get("confidence") == "low" else "high"
-                anchors = []
-                for chord in line.get("chords", []):
-                    pos = chord.get("pos")
-                    if not isinstance(pos, int) or pos < 0 or pos > 9007199254740991:
-                        raise ValueError("Chord column must be a non-negative safe integer UTF-16 column")
-                    symbol = quote(chord.get("sym", ""), safe="-_.!~*'()")
-                    anchors.append((pos, f"[[C:{pos}:{symbol}]]"))
-                anchors.sort(key=lambda anchor: anchor[0])
-                encoded = "".join(value for _, value in anchors)
-                out.append(f"[[CCM-LYRIC:{confidence}]]{_escape_generated_text(line.get('text', ''))}[[CCM-CHORDS]]{encoded}")
-            elif kind == "progression":
-                body = " ".join(line.get("chords", []))
-                if line.get("repeat") is not None:
-                    body += (" " if body else "") + f"[[CCM-PROGRESSION-REPEAT:{line['repeat']}]]"
-                if "note" in line:
-                    body += "[[CCM-NOTE]]" + _escape_generated_text(line["note"])
-                out.append("[[CCM-PROGRESSION]]" + body)
-            elif kind == "repeat":
-                times = f":{line['times']}" if line.get("times") is not None else ""
-                out.append(f"[[CCM-REPEAT{times}]]" + _escape_generated_text(line.get("ref", "")))
-            elif kind == "raw":
-                out.append("[[CCM-RAW]]" + _escape_generated_text(line.get("text", "")))
-            elif kind == "spacer":
-                out.append("[[CCM-SPACER]]")
-            else:
-                raise ValueError(f"Unsupported chart line type: {kind}")
-    return "\n".join(out) + "\n"
-
-
-def is_generated_chart_body(text: str) -> bool:
-    return any(text.startswith(header + newline)
-               for header in (_GENERATED_HEADER, _LEGACY_GENERATED_HEADER)
-               for newline in ("\n", "\r\n"))
-
-
 def parse_inline_brace_line(text: str) -> dict:
     """
     "{D}Well she was an {E7}American girl" ->
@@ -1337,9 +1153,6 @@ def parse_songs(paragraphs: list[Paragraph],
     cur: Optional[Song] = None
     cur_section: Optional[dict] = None
     pending_chord_line: Optional[Paragraph] = None  # retain OOXML tabs until pairing
-    generated_mode = False
-    generated_header = _GENERATED_HEADER
-    generated_lines: list[str] = []
     chart_started = False
     inline_section_tails: dict[int, str] = {}
     song_inline_tails: dict[int, dict[int, str]] = {}
@@ -1363,20 +1176,6 @@ def parse_songs(paragraphs: list[Paragraph],
         if cur_section is None:
             cur_section = _new_section(None)
             cur.chart_content["sections"].append(cur_section)
-
-    def flush_generated():
-        nonlocal generated_mode, generated_header, generated_lines, cur_section, chart_started
-        if generated_mode and cur is not None:
-            lines = list(generated_lines)
-            while lines and lines[-1] == _DOCX_SPACER_MARKER:
-                lines.pop()
-            lines = ["[[CCM-SPACER]]" if line == _DOCX_SPACER_MARKER else line for line in lines]
-            generated = parse_generated_chart_body("\n".join([generated_header, *lines]))
-            cur.chart_content["sections"].extend(generated["sections"])
-            cur_section = generated["sections"][-1] if generated["sections"] else None
-            chart_started = any(section["lines"] for section in generated["sections"])
-        generated_mode = False
-        generated_lines = []
 
     def start_section(label: Optional[str], inline_style: Optional[str] = None):
         nonlocal cur_section, chart_started
@@ -1429,7 +1228,6 @@ def parse_songs(paragraphs: list[Paragraph],
                     f"paragraph={unresolved_preheading.source_index} "
                     f"span={unresolved_preheading.source_span_index or 1}")
             flush_pending_as_progression()
-            flush_generated()
             if cur_section and cur_section["lines"] and cur_section["lines"][-1].get("type") == "spacer":
                 cur_section["lines"].pop()
             ti = _parse_structural_title(p)
@@ -1495,16 +1293,6 @@ def parse_songs(paragraphs: list[Paragraph],
                 stripped = txt.strip()
                 if not stripped:
                     continue
-
-        if stripped in (_GENERATED_HEADER, _LEGACY_GENERATED_HEADER):
-            flush_pending_as_progression()
-            generated_mode = True
-            generated_header = stripped
-            generated_lines = []
-            continue
-        if generated_mode:
-            generated_lines.append(_DOCX_SPACER_MARKER if not raw_text.strip() else raw_text)
-            continue
 
         if _TAB in p.text and p.tab_layout_error:
             cur.warnings.append({
@@ -1796,7 +1584,6 @@ def parse_songs(paragraphs: list[Paragraph],
             "pre_heading_chart_content_unresolved "
             f"paragraph={unresolved_preheading.source_index} "
             f"span={unresolved_preheading.source_span_index or 1}")
-    flush_generated()
     # Use the same ordered/literal decision for a final chord-only paragraph
     # as for one flushed by a section or song boundary.  The old special-case
     # progression conversion reordered punctuation and collapsed spacing.

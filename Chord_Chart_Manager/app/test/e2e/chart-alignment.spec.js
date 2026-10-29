@@ -1,8 +1,5 @@
-import { createRequire } from 'node:module';
 import { expect, test } from '@playwright/test';
-
-const require = createRequire(import.meta.url);
-const { chartToText } = require('../../server/chartParser.js');
+import { bracedLyric, chordRow } from './chartText.js';
 
 async function deleteExactSyntheticSong(request, songId) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -251,7 +248,7 @@ test('Bye Bye Love pipe groups occupy a dedicated row above lyrics', async ({ pa
   });
   await expectChordRowsAboveLyrics(page, revisions);
 });
-test('generated charts round-trip and keep anchors and colliding labels visible', async ({ page, request, context }) => {
+test('chart anchors and colliding labels stay visible through unchanged, edited and offline saves', async ({ page, request, context }) => {
   const suffix = crypto.randomUUID();
   const title = `T13a invented alignment ${suffix}`;
   const songsResponse = await request.get('/api/songs');
@@ -267,24 +264,25 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     { type: 'lyric', text: longLyric, confidence: 'low',
       chords: [{ sym: 'G', pos: 8 }, { sym: 'C', pos: 26 }, { sym: 'D', pos: 43 }] },
     { type: 'spacer' },
-    { type: 'lyric', text: overlapLyric, confidence: 'low', chords: [
+    { type: 'lyric', text: overlapLyric, confidence: 'high', chords: [
       { sym: 'C', pos: 5 }, { sym: 'G', pos: 11 }, { sym: 'Am', pos: 21 },
       { sym: 'F', pos: 22 }, { sym: 'Dm', pos: 22 }, { sym: 'E7', pos: 22 },
     ] },
     { type: 'lyric', text: transposeLyric, confidence: 'high',
       chords: [{ sym: 'C', pos: 5 }, { sym: 'D', pos: 6 }] },
-    { type: 'lyric', text: 'end', confidence: 'high',
+    { type: 'lyric', text: 'end', confidence: 'low',
       chords: [{ sym: 'Am', pos: longLyric.length + 5 }] },
     { type: 'progression', chords: ['C', 'G'], repeat: 2, note: 'invented progression note' },
     { type: 'repeat', ref: 'Verse 1', times: 2 },
-    { type: 'raw', text: 'tab|--invented-text' },
+    { type: 'raw', text: 'e|--invented-text' },
   ] }, { label: 'Invented Chorus', lines: [
     { type: 'spacer' },
     { type: 'lyric', text: 'Invented second section line', chords: [], confidence: 'high' },
   ] }, { label: 'Invented Verse 2', lines: [
     { type: 'lyric', text: 'Invented third section line', chords: [], confidence: 'high' },
-    { type: 'lyric', text: unicodeLyric, confidence: 'high', chords: [
-      { sym: 'C', pos: 1 }, { sym: 'D', pos: 2 }, { sym: 'E', pos: 3 }, { sym: 'F', pos: 10 },
+    // Ordinary chord rows need a space between chords, so no chord sits at column 2 here.
+    { type: 'lyric', text: unicodeLyric, confidence: 'low', chords: [
+      { sym: 'C', pos: 1 }, { sym: 'E', pos: 3 }, { sym: 'F', pos: 10 },
     ] },
     { type: 'lyric', text: 'Invented same-position collision row', confidence: 'high', chords: [
       { sym: 'G', pos: 5 }, { sym: 'D', pos: 5 },
@@ -293,7 +291,28 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
       { sym: 'G', pos: 2 }, { sym: 'D', pos: 2 }, { sym: 'C', pos: 5 },
     ] },
   ] }] };
-  const source = chartToText(structured);
+  // Ordinary chart text for `structured`: chord rows above lyrics, or inline
+  // {chords} where several chords share a column.
+  const [verse, , verse2] = structured.sections;
+  const source = [
+    '[Invented Verse]',
+    chordRow(verse.lines[0].chords), longLyric,
+    '',
+    bracedLyric(overlapLyric, verse.lines[2].chords),
+    bracedLyric(transposeLyric, verse.lines[3].chords),
+    chordRow(verse.lines[4].chords), 'end',
+    'C G 2x invented progression note',
+    '(Verse 1) x2',
+    'e|--invented-text',
+    '[Invented Chorus]',
+    '',
+    'Invented second section line',
+    '[Invented Verse 2]',
+    'Invented third section line',
+    chordRow(verse2.lines[1].chords), unicodeLyric,
+    bracedLyric(verse2.lines[2].text, verse2.lines[2].chords),
+    bracedLyric(verse2.lines[3].text, verse2.lines[3].chords),
+  ].join('\n');
   let songId;
   try {
     const created = await request.post('/api/songs', {
@@ -301,9 +320,10 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     });
     expect(created.ok()).toBeTruthy();
     songId = (await created.json()).id;
+    expect((await (await request.get(`/api/songs/${songId}`)).json()).chart_content).toEqual(structured);
     const persistedUnicode = await (await request.get(`/api/songs/${songId}`)).json();
     expect(persistedUnicode.chart_content.sections[2].lines[1].chords.map(chord => chord.pos))
-      .toEqual([1, 2, 3, 10]);
+      .toEqual([1, 3, 10]);
 
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto('/');
@@ -366,12 +386,11 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
       });
     });
     const expectUnicodeAnchorsAligned = measured => {
-      expect(measured.map(anchor => anchor.position)).toEqual([1, 2, 3, 10]);
+      expect(measured.map(anchor => anchor.position)).toEqual([1, 3, 10]);
       expect(measured[0].warning).toBe('inside-surrogate-pair');
-      expect(measured[2].warning).toBe('inside-grapheme');
+      expect(measured[1].warning).toBe('inside-grapheme');
       expect(Math.abs(measured[0].delta)).toBeLessThan(1);
       expect(Math.abs(measured[1].delta)).toBeLessThan(1);
-      expect(measured[2].delta).toBeNull();
       expect(measured[0].chord.length).toBeGreaterThan(0);
       expect(measured.every(anchor => anchor.visible)).toBeTruthy();
     };
@@ -430,7 +449,6 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     await page.evaluate(async () => { await document.fonts.ready; });
     await expect.poll(async () => measureUnicodeAnchors()).toMatchObject([
       { position: 1, warning: 'inside-surrogate-pair' },
-      { position: 2, warning: null },
       { position: 3, warning: 'inside-grapheme' },
       { position: 10, warning: null },
     ]);
@@ -477,9 +495,9 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     expect(introducedCollision.groups[0].position).toBe(5);
     const unicodeAfterTranspose = await measureUnicodeAnchors();
     expectUnicodeAnchorsAligned(unicodeAfterTranspose);
-    expect(unicodeAfterTranspose.map(anchor => anchor.chord)).toEqual(['Db', 'Eb', 'F', 'Gb']);
-    expectLabelsDistinct(await inspectLabels(page.locator('.chart-line').nth(6)), ['Db', 'Eb', 'F', 'Gb'],
-      ['Db', 'Eb | F', 'Gb']);
+    expect(unicodeAfterTranspose.map(anchor => anchor.chord)).toEqual(['Db', 'F', 'Gb']);
+    expectLabelsDistinct(await inspectLabels(page.locator('.chart-line').nth(6)), ['Db', 'F', 'Gb'],
+      ['Db', 'F', 'Gb']);
     const samePosition = await inspectLabels(measuredRows[5]);
     expectLabelsDistinct(samePosition, ['Ab', 'Eb'], ['Ab | Eb']);
     expect(samePosition.groups[0].position).toBe(5);
@@ -612,14 +630,6 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     }));
 
     const initial = await (await request.get(`/api/songs/${songId}`)).json();
-    const lossy = await request.put(`/api/songs/${songId}`, {
-      data: { chart_source: source.replace('[[CCM-CHART:2]]\n', ''),
-        base_updated_at: initial.updated_at },
-    });
-    expect(lossy.status()).toBe(400);
-    const afterRejected = await (await request.get(`/api/songs/${songId}`)).json();
-    expect(afterRejected.chart_content).toEqual(initial.chart_content);
-    expect(afterRejected.updated_at).toBe(initial.updated_at);
 
     await page.getByRole('button', { name: 'Edit' }).click();
     const editor = page.locator('.form-textarea');
@@ -668,9 +678,9 @@ test('generated charts round-trip and keep anchors and colliding labels visible'
     await search.fill(title);
     await page.getByText(title, { exact: true }).click();
     await page.getByRole('button', { name: 'Edit' }).click();
-    const offlineSource = saved.chart_source.replace('overlapping', 'stacked');
+    const offlineSource = saved.chart_source.replace('remain', 'stay');
     const offlineExpected = structuredClone(saved.chart_content);
-    offlineExpected.sections[0].lines[2].text = overlapLyric.replace('overlapping', 'stacked');
+    offlineExpected.sections[0].lines[2].text = overlapLyric.replace('remain', 'stay');
     await context.setOffline(true);
     await expect(page.getByText(/changes saved locally/i)).toBeVisible();
     const offlineEditor = page.locator('.form-textarea');

@@ -7,9 +7,6 @@ if (!parser) {
 }
 
 export const parseChartBody = parser.parseChartBody;
-export const chartToText = parser.chartToText;
-export const isGeneratedSourceUnchanged = parser.isGeneratedSourceUnchanged;
-export const isGeneratedChartSource = parser.isGeneratedChartSource;
 export const isDecoratedChordLine = parser.isDecoratedChordLine;
 export const decoratedChordTokenSpans = parser.decoratedChordTokenSpans;
 export const decoratedChordAnalysis = parser.decoratedChordAnalysis;

@@ -19,14 +19,8 @@ The app owns schema initialization and applies migrations before listening;
 start the app once before running the pipeline against a fresh volume. The
 pipeline does not define or apply a separate schema.
 
-The pipeline parser also recognizes the app's versioned generated chart source
-(`[[CCM-CHART:2]]`) when such text is present in a document, and the DOCX path
-also accepts legacy v1. Explicit section and line markers preserve progression,
-repeat, raw, spacer, and lyric/chord structure. Version 2 stores lyric text
-separately from numeric chord columns, so lyric edits do not shift later anchors.
-Columns are zero-based UTF-16 code units, matching JavaScript string indices;
-anchors past lyric end are retained. Generated raw-line trailing spaces are
-significant and preserved. Ordinary Word chart parsing ignores paragraph-spacing
+Chord columns are zero-based UTF-16 code units, matching JavaScript string
+indices; anchors past lyric end are retained. Ordinary Word chart parsing ignores paragraph-spacing
 attributes but preserves explicit empty paragraphs inside songs as spacer lines;
 blank padding outside song boundaries is ignored. Manual Word line breaks split
 chart text into separate lines. Text-wrapping `w:br` and `w:cr` controls split
@@ -222,12 +216,11 @@ strictly typed exact Python chart-object equality with supplied `chart_content` 
 database connection or write. Equality includes section/line types, text,
 chord symbols and order, UTF-16 positions, repeat/progression fields, spacers,
 raw content, and confidence fields; no fields are dropped or normalized to
-make a mismatch pass. Null sources and explicit CCM v1/v2 generated sources
-remain supported legacy paths and are not subjected to the ordinary-text
-comparison. The existing shared JavaScript parser derives `chart_content`
+make a mismatch pass. A song without a `chart_source` is rejected
+(`chart_source_missing`), and CCM generated text is no longer recognized, so it
+fails the comparison. The existing shared JavaScript parser derives `chart_content`
 from ordinary source on app load/save. Title, artist, key, BPM, genre, and
-other metadata extraction remain unchanged. Existing stored CCM v1/v2 sources
-are not converted by this change.
+other metadata extraction remain unchanged.
 The loader rejects a batch containing an unresolved Word-tab or plain-text
 body warning before opening the database or creating artists, genres, or
 vibes. This also applies to `--dry-run`. Parsed artifacts made before this guard (including

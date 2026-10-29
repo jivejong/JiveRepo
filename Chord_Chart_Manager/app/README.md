@@ -61,12 +61,8 @@ at its first chord's measured lyric position; noncolliding chords keep their own
 measured anchors. Symbols within a group share that first display anchor while
 their stored positions remain unchanged.
 
-When the server synthesizes editable text from `chart_content`, it writes a
-versioned `[[CCM-CHART:2]]` representation. Section, lyric, progression, repeat,
-raw, and explicit spacer lines have markers. Each lyric stores escaped text followed
-by a chord list with a zero-based UTF-16 code-unit column and percent-encoded symbol,
-such as `[[CCM-CHORDS]][[C:8:G]][[C:26:C%23]]`. Changing lyric length therefore
-does not move its chord anchors. Anchors beyond the lyric end remain valid and
+Charts are stored and edited only as ordinary chart text. Chord positions are
+zero-based UTF-16 code-unit columns. Anchors beyond the lyric end remain valid and
 reserve horizontal row width. Stored columns remain UTF-16 offsets, while the
 renderer measures the corresponding rendered lyric grapheme boundary with a
 DOM text range; it does not assume one UTF-16 unit equals one visible `ch`.
@@ -78,13 +74,10 @@ its measured rendered-to-layout scale and containing-block origin, so CSS zoom,
 row borders, and horizontal scrolling do not change stored columns.
 When an old or malformed offset falls inside a surrogate pair or combining
 grapheme, the chord is shown at that grapheme's leading edge and marked with a
-tooltip. The stored offset is not changed. Literal backslashes and marker-opening brackets
-are escaped. The shared JavaScript parser and pipeline's Python parser support
-version 2 and continue to read legacy version 1 generated text. Existing
-human-authored chart text without the header keeps its syntax. Keep generated
-line markers when editing; incomplete markup is rejected instead of being
-reinterpreted as ordinary chart text. An unchanged chart source preserves the
-current structured content on online and offline saves.
+tooltip. The stored offset is not changed. An unchanged chart source preserves the
+current structured content on online and offline saves. A legacy song without
+chart text opens with an empty editor, and a metadata-only save keeps its
+structured content.
 
 An explicit empty chart paragraph is stored as a spacer line and rendered in
 normal layout flow, so it contributes to scrolling and element-based height
@@ -248,8 +241,7 @@ cd server && npm audit --omit=dev
   removable while additions are disabled. Era is read-only and derived from
   `release_year` by decade. Release years must be whole numbers from 1 to 32767.
 - Chart bodies use the existing textarea and ordinary chart-text parser for
-  editing and rendering. Existing CCM v1/v2 chart sources remain supported and
-  are not converted as part of ingestion or UI changes. Newly ingested DOCX
+  editing and rendering. Newly ingested DOCX
   charts store a readable plain-text body; title and other metadata continue to
   use the existing metadata fields and parser.
 - Chart edits use the existing versioned online save and offline sync flow. An

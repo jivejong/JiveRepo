@@ -1,9 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { expect, test as base } from '@playwright/test';
-
-const require = createRequire(import.meta.url);
-const { chartToText } = require('../../server/chartParser.js');
+import { bracedLyric } from './chartText.js';
 
 const test = base.extend({
   t15Fixtures: [async ({ request, context }, use) => {
@@ -36,20 +33,19 @@ test('auto-scroll is manual, timed, continues through manual scrolling, and is c
   const suffix = randomUUID();
   const titles = [`T15 Auto Scroll ${suffix} A`, `T15 Auto Scroll ${suffix} B`];
   const longLine = `Invented lyric line ${'carefully '.repeat(18)}`;
-  const chart = { sections: [{ label: 'Invented Verse', lines: [
-    ...Array.from({ length: 34 }, (_, index) => ({ type: 'lyric',
-      text: `Invented ${index + 1} ${longLine}`, chords: [] })),
-    { type: 'lyric', text: longLine, chords: [
+  const chartSource = [
+    '[Invented Verse]',
+    ...Array.from({ length: 34 }, (_, index) => `Invented ${index + 1} ${longLine}`),
+    bracedLyric(longLine, [
       { sym: 'C', pos: 0 }, { sym: 'G', pos: 0 }, { sym: 'F', pos: 70 }, { sym: 'D', pos: 95 },
-    ] },
-    { type: 'spacer' },
-    ...Array.from({ length: 12 }, (_, index) => ({ type: 'lyric',
-      text: `After separator ${index + 1}`, chords: [] })),
-  ] }] };
+    ]),
+    '',
+    ...Array.from({ length: 12 }, (_, index) => `After separator ${index + 1}`),
+  ].join('\n');
   for (const title of titles) {
     const created = await request.post('/api/songs', { data: {
       title, artist: 'T15 invented test artist', chart_written_key: 'C',
-      chart_source: chartToText(chart),
+      chart_source: chartSource,
     } });
     expect(created.ok(), `fixture creation returned ${created.status()}`).toBeTruthy();
     t15Fixtures.record((await created.json()).id);
