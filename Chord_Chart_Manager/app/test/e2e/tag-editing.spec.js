@@ -147,7 +147,7 @@ const test = base.extend({
   }, { timeout: 60_000 }],
 });
 
-test('Genre and Vibe edits work offline and stale sync keeps the server version', async ({ page, request, context, t09Fixture }) => {
+test('FR-015 FR-057 FR-062 Genre and Vibe edits work offline and stale sync keeps the server version', async ({ page, request, context, t09Fixture }) => {
   const suffix = randomUUID();
   const title = `T09 synthetic tag check ${suffix}`;
   const onlineGenre = `T09 online genre ${suffix}`;
@@ -310,7 +310,7 @@ test('Genre and Vibe edits work offline and stale sync keeps the server version'
     expect(finalSong.updated_at > beforeConflict.updated_at).toBeTruthy();
 });
 
-test('EditView uses assigned chips and existing definitions with stable primary promotion and Cancel',
+test('FR-015 FR-017 EditView uses assigned chips and existing definitions with stable primary promotion and Cancel',
   async ({ page, request, t09Fixture }) => {
     const suffix = randomUUID();
     const primary = `T09 primary ${suffix}`;
@@ -473,7 +473,7 @@ test('EditView uses assigned chips and existing definitions with stable primary 
     expect(saved.genres).toEqual([{ name: primary, is_primary: true }]);
   });
 
-test('offline export ordering promotes the first name-ordered secondary and re-add leaves it primary',
+test('FR-017 offline export ordering promotes the first name-ordered secondary and re-add leaves it primary',
   async ({ page, request, context, t09Fixture }) => {
     const suffix = randomUUID();
     const primary = `T09 order primary ${suffix}`;
@@ -525,7 +525,7 @@ test('offline export ordering promotes the first name-ordered secondary and re-a
     await context.setOffline(false);
   });
 
-test('an offline metadata-only save queues no Genre or Vibe change and the push omits them', async ({ page, request, context, t09Fixture }) => {
+test('FR-015 FR-057 an offline metadata-only save queues no Genre or Vibe change and the push omits them', async ({ page, request, context, t09Fixture }) => {
   const suffix = randomUUID();
   const title = `T09 offline metadata ${suffix}`;
   const genre = `T09 offline kept genre ${suffix}`;
@@ -568,7 +568,7 @@ test('an offline metadata-only save queues no Genre or Vibe change and the push 
   expect(saved.vibes).toEqual([vibe]);
 });
 
-test('definition load failure keeps assigned chips and permits metadata-only Save', async ({ page, request, t09Fixture }) => {
+test('FR-015 definition load failure keeps assigned chips and permits metadata-only Save', async ({ page, request, t09Fixture }) => {
   const suffix = randomUUID();
   const title = `T09 failed definitions ${suffix}`;
   const genre = `T09 retained ${suffix}`;
@@ -615,7 +615,7 @@ test('definition load failure keeps assigned chips and permits metadata-only Sav
   expect(saved.release_year).toBe(1987);
 });
 
-test('managed definition options can be selected by touch', async ({ browser, request, t09Fixture }) => {
+test('FR-015 managed definition options can be selected by touch', async ({ browser, request, t09Fixture }) => {
   const suffix = randomUUID();
   const genre = `T09 touch Genre ${suffix}`;
   const title = `T09 touch picker ${suffix}`;
@@ -652,7 +652,7 @@ test('managed definition options can be selected by touch', async ({ browser, re
   }
 });
 
-test('a rejected offline create is corrected in EditView and creates exactly one server song',
+test('FR-016 FR-059 a rejected offline create is corrected in EditView and creates exactly one server song',
   async ({ page, request, context, t09Fixture }) => {
     const suffix = randomUUID();
     const staleGenre = `T09 removed Genre ${suffix}`;
@@ -779,7 +779,7 @@ test('a rejected offline create is corrected in EditView and creates exactly one
     }
   });
 
-test('a delayed editor save cannot override Back or a newer editor session', async ({ page, request, t09Fixture }) => {
+test('FR-011 a delayed editor save cannot override Back or a newer editor session', async ({ page, request, t09Fixture }) => {
   const title = `T09 navigation race ${randomUUID()}`;
   const sample = await request.get('/api/songs');
   expect(sample.ok()).toBeTruthy();

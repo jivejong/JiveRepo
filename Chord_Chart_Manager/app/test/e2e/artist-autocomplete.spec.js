@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 
-test('artist suggestions use cached and local songs offline and preserve free text through sync', async ({ page, context, request, browser }) => {
+test('FR-019 artist suggestions use cached and local songs offline and preserve free text through sync', async ({ page, context, request, browser }) => {
   const suffix = randomUUID();
   const prefix = `T20 ${suffix}`;
   const candidateArtist = `The T20 Artist ${suffix}`;

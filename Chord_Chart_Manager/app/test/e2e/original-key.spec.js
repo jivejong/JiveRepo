@@ -1,7 +1,7 @@
 import { expect, test, request as apiRequest } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 
-test('Original key stays separate from transposition, capo, and setlist overrides', async ({ page, request, context }) => {
+test('FR-037 FR-054 Original key stays separate from transposition, capo, and setlist overrides', async ({ page, request, context }) => {
   const suffix = randomUUID();
   const knownTitle = `T21 Original key ${suffix}`;
   const missingTitle = `T21 Unknown key ${suffix}`;

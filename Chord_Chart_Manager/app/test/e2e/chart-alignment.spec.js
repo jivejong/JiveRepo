@@ -200,7 +200,7 @@ async function expectChordRowsAboveLyrics(page, previousRevisions = null) {
   return third;
 }
 
-test('Bye Bye Love pipe groups occupy a dedicated row above lyrics', async ({ page }) => {
+test('FR-027 Bye Bye Love pipe groups occupy a dedicated row above lyrics', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/');
   await page.evaluate(async () => { await document.fonts.ready; });
@@ -248,7 +248,7 @@ test('Bye Bye Love pipe groups occupy a dedicated row above lyrics', async ({ pa
   });
   await expectChordRowsAboveLyrics(page, revisions);
 });
-test('chart anchors and colliding labels stay visible through unchanged, edited and offline saves', async ({ page, request, context }) => {
+test('FR-021 FR-024 FR-027 FR-031 chart anchors and colliding labels stay visible through unchanged, edited and offline saves', async ({ page, request, context }) => {
   const suffix = crypto.randomUUID();
   const title = `T13a invented alignment ${suffix}`;
   const songsResponse = await request.get('/api/songs');
@@ -749,7 +749,7 @@ test('chart anchors and colliding labels stay visible through unchanged, edited 
   }
 });
 
-test('ordinary chart blanks survive online and offline save, sync, and reopen', async ({ page, request, context }) => {
+test('FR-029 FR-057 ordinary chart blanks survive online and offline save, sync, and reopen', async ({ page, request, context }) => {
   const title = `T13a invented ordinary spacing ${crypto.randomUUID()}`;
   const source = '[Verse]\nC   G\nInvented first line.\n\n\nInvented second line.\n\n[Chorus]\n\nInvented refrain line.\n\n';
   let songId;

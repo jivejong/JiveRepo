@@ -8,29 +8,29 @@ import {
 } from '../../transpose.js';
 
 describe('transposeChord', () => {
-  it('preserves chord quality while moving root and slash bass', () => {
+  it('FR-032 preserves chord quality while moving root and slash bass', () => {
     expect(transposeChord('Cmaj7/E', 2, 'D')).toBe('Dmaj7/F#');
   });
 
-  it('spells flat target keys with flats', () => {
+  it('FR-032 spells flat target keys with flats', () => {
     expect(transposeChord('A#', 0, 'Bb')).toBe('Bb');
   });
 });
 
 describe('key helpers', () => {
-  it('computes a signed shortest key delta', () => {
+  it('FR-032 computes a signed shortest key delta', () => {
     expect(keyDelta('G', 'A')).toBe(2);
     expect(keyDelta('C', 'B')).toBe(-1);
   });
 
-  it('derives conventional displayed and sounding keys', () => {
+  it('FR-033 derives conventional displayed and sounding keys', () => {
     expect(keyAfter('G', 3)).toBe('Bb');
     expect(soundingKey('D', 2)).toBe('E');
   });
 });
 
 describe('transposeChart', () => {
-  it('transposes lyric and progression chords without changing lyrics', () => {
+  it('FR-032 transposes lyric and progression chords without changing lyrics', () => {
     const input = {
       sections: [{
         label: 'Verse',

@@ -159,13 +159,14 @@ confirmation first.
 
 ### Build and use a setlist
 
-Setlist changes require an online connection.
+Setlist changes work offline too: they are saved on the device and sent at
+the next sync.
 
 1. Open **Setlists** and select **+**.
 2. Enter a name and, optionally, a gig date and notes.
 3. Open the new setlist and select **Add song**.
 4. Choose a song and optionally record a key override, capo override, and
-   performance note.
+   performance note. A song can appear in a setlist more than once.
 5. Use the up/down controls to change the order, or the trash control to remove
    a song from the setlist.
 6. Select a song row to open its chart. Swipe left and right to follow the
@@ -182,10 +183,8 @@ The setlist row displays its saved key/capo override and performance note.
 Opening an entry applies its key/capo overrides, with each missing field
 falling back to the song's preferred key or default capo. Adjust the chart and
 choose **Save to setlist** to update that entry only; the song's defaults and
-chart source are unchanged. This write requires a connection. Cached setlists
-retain entry overrides for offline chart reading, but setlist writes are not
-queued offline yet (T10). All setlist changes require a connection to the app
-server.
+chart source are unchanged. Offline, this and every other setlist change is
+saved on the device and sent at the next sync.
 
 ## Offline use and synchronization
 
@@ -283,10 +282,11 @@ Chord_Chart_Manager/
 |   |-- src/                 screens, components, hooks, cache, and API client
 |   |-- server/              Express routes, database access, chart parser
 |   |-- db/migrations/       canonical baseline and numbered SQL migrations
-|   |-- test/unit/           Vitest parser and transposition tests
-|   `-- test/e2e/            Playwright browser smoke tests
+|   |-- test/unit/           Vitest unit tests (parser, sync, setlists, sorting)
+|   |-- test/integration/    API tests against the scratch ccm_test database
+|   `-- test/e2e/            Playwright browser tests
 |-- pipeline/                .docx parser and database loader
-|-- infra/                   proposed Kubernetes/Terraform design
+|-- infra/                   proposed Kubernetes/Terraform design (untracked)
 `-- README.md                this guide
 ```
 
@@ -486,17 +486,20 @@ To schedule a backup, create a Windows Task Scheduler action using `powershell.e
 
 ## Current validation status
 
-T02 baseline verification on 2026-10-09 passed the production image/Vite build,
-unit tests (2 files, 7 tests), and Playwright E2E (1 test). The browser
-assertions checked Songs-screen controls. After the computer crash, the existing
-`app_pgdata` volume remained attached; TCP authentication passed, both
-containers were healthy, and `/healthz` plus `/api/stats` returned HTTP 200.
-The stack remains running. Unit/E2E checks were completed before the crash; after
-restart, TCP, health, and endpoints were checked again.
+Verified on 2026-10-29 at the end of the simplification refactor:
 
-T02 validated the baseline and Songs screen only. It did not verify complete
-offline workflows, a real corpus import, or live enrichment. Earlier feature
-checks recorded in the engineering history are historical and were not part of
-T02.
+- `npm.cmd run test:t11` passed the production build, 153 unit tests, 9 API
+  integration tests, and 52 serial Playwright E2E tests against a scratch
+  `ccm_test` database, which was dropped afterwards. The main app stayed
+  healthy and its `/api/stats` counts were unchanged.
+- The pipeline image passed 112 pytest tests against a scratch
+  `ccm_loader_c1_*` database.
+
+Every test name (or, for pytest, the comment above it) starts with the
+requirement IDs it covers, from `docs/REQUIREMENTS.md`.
+
+Not yet verified: a full real-corpus import (FR-099), the physical-tablet
+checklist (FR-100), and enrichment, which was removed and is to be rewritten
+(FR-092, FR-093, FR-101 to FR-115).
 
 More implementation detail is available in [app/README.md](app/README.md), and the current development checkpoint is recorded in [HANDOFF.md](docs/HANDOFF.md).

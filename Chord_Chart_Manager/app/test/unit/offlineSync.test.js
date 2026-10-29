@@ -19,7 +19,7 @@ function editorSave(cached, edits, changedFields) {
 }
 
 describe('offline cache and push-then-pull sync', () => {
-  it('omits unchanged chart source from queued updates and includes edited text', () => {
+  it('FR-021 omits unchanged chart source from queued updates and includes edited text', () => {
     const source = '[Verse]\nG D | C';
     expect(cache.editablePayload({ chart_source: source,
       _sync: { chart_source_unchanged: true } })).not.toHaveProperty('chart_source');
@@ -27,7 +27,7 @@ describe('offline cache and push-then-pull sync', () => {
       _sync: { chart_source_unchanged: false } }).chart_source).toBe(`${source} `);
   });
 
-  it('keeps frozen category payload and base token during an in-flight update, then rebases its newer revision', async () => {
+  it('FR-061 FR-064 keeps frozen category payload and base token during an in-flight update, then rebases its newer revision', async () => {
     const id = 987637;
     const original = { id, title: 'Invented in-flight tag revision', artist: 'Synthetic', bpm: 100,
       genres: [{ name: 'Invented in-flight Genre', is_primary: true }], vibes: ['Invented old Vibe'],
@@ -89,7 +89,7 @@ describe('offline cache and push-then-pull sync', () => {
     }
   });
 
-  it('corrects a definitively rejected local create and retries once with its local ID and unrelated fields intact', async () => {
+  it('FR-016 FR-059 corrects a definitively rejected local create and retries once with its local ID and unrelated fields intact', async () => {
     const localId = cache.makeLocalSongId();
     const initialOperationId = cache.makeMutationId();
     const local = { id: localId, title: 'Invented rejected create', artist: 'Invented retained artist', bpm: 111,
@@ -157,7 +157,7 @@ describe('offline cache and push-then-pull sync', () => {
     }
   });
 
-  it('corrects a definitively rejected existing update without changing its original server base token', async () => {
+  it('FR-016 corrects a definitively rejected existing update without changing its original server base token', async () => {
     const id = 987635;
     const oldGenre = { name: 'Invented pre-rejection Genre', is_primary: true };
     const rejectedGenre = { name: 'Invented missing Genre', is_primary: true };
@@ -272,7 +272,7 @@ describe('offline cache and push-then-pull sync', () => {
     }
   });
 
-  it('keeps a frozen dispatched payload after an uncertain network result and a local correction', async () => {
+  it('FR-064 keeps a frozen dispatched payload after an uncertain network result and a local correction', async () => {
     const id = 987633;
     const original = { id, title: 'Invented uncertain correction', artist: 'Synthetic', bpm: 90,
       genres: [{ name: 'Invented uncertain Genre', is_primary: true }], vibes: ['Invented retained Vibe'],
@@ -297,7 +297,7 @@ describe('offline cache and push-then-pull sync', () => {
     }
   });
 
-  it('rebases edits made while an earlier offline revision awaits acknowledgement', async () => {
+  it('FR-061 FR-064 rebases edits made while an earlier offline revision awaits acknowledgement', async () => {
     const id = 987641;
     const source = 'Invented original in-flight chart';
     const chartSource = 'Invented first chart revision';
@@ -368,7 +368,7 @@ describe('offline cache and push-then-pull sync', () => {
     }
   });
 
-  it('keeps a real offline creation timestamp through cache edits and replaces it with the server timestamp on acknowledgement', async () => {
+  it('FR-069 keeps a real offline creation timestamp through cache edits and replaces it with the server timestamp on acknowledgement', async () => {
     const id = cache.makeLocalSongId();
     const localCreatedAt = '2026-10-11T12:00:00.000Z';
     let clockCalls = 0;
@@ -423,7 +423,7 @@ describe('offline cache and push-then-pull sync', () => {
     }
   });
 
-  it('uses server created_at when a newer edit lands during an in-flight create, then syncs that edit after reload', async () => {
+  it('FR-069 uses server created_at when a newer edit lands during an in-flight create, then syncs that edit after reload', async () => {
     const localId = cache.makeLocalSongId();
     const localCreatedAt = '2026-10-11T12:00:00.000Z';
     const serverCreatedAt = '2026-10-11T12:07:43.123Z';
@@ -495,7 +495,7 @@ describe('offline cache and push-then-pull sync', () => {
     }
   });
 
-  it('sorts offline primary Genre changes and explicit clears from the cached projection through sync', async () => {
+  it('FR-006 FR-017 sorts offline primary Genre changes and explicit clears from the cached projection through sync', async () => {
     const id = 987655;
     const original = { id, title: 'Invented genre edit song', artist: 'T17 synthetic', primary_genre: 'Rock',
       genre: 'Rock', genres: [{ name: 'Rock', is_primary: true }], vibes: [], updated_at: version };
@@ -540,7 +540,7 @@ describe('offline cache and push-then-pull sync', () => {
     }
   });
 
-  it('pushes a local song before dependent setlist work, maps IDs, then pulls', async () => {
+  it('FR-059 FR-061 pushes a local song before dependent setlist work, maps IDs, then pulls', async () => {
     const localSongId = cache.makeLocalSongId();
     const localSong = { id: localSongId, title: 'Invented offline sync song', artist: 'T11 synthetic',
       chart_source: 'Invented verse\nInvented lyric', _sync: { operation: 'create', operation_id: cache.makeMutationId() } };
@@ -585,7 +585,7 @@ describe('offline cache and push-then-pull sync', () => {
     expect(lists.map(list => list.name)).toContain('T11 synthetic list');
   });
 
-  it('cancels an unsent local song create and its queued edits on delete', async () => {
+  it('FR-020 cancels an unsent local song create and its queued edits on delete', async () => {
     const id = cache.makeLocalSongId();
     await cache.savePendingSong({ id, title: 'Invented cancelled song', artist: 'T11 synthetic',
       _sync: { operation: 'create', operation_id: cache.makeMutationId() } });
@@ -594,7 +594,7 @@ describe('offline cache and push-then-pull sync', () => {
     expect((await cache.getPendingMutations()).filter(item => String(item.id) === id)).toEqual([]);
   });
 
-  it('queues deletion of an existing song and clears it only after server acknowledgement', async () => {
+  it('FR-020 FR-057 queues deletion of an existing song and clears it only after server acknowledgement', async () => {
     const id = 7412;
     const saved = { id, title: 'Invented persisted song', artist: 'T11 synthetic', updated_at: version };
     await cache.cacheSongs([saved]);
@@ -626,7 +626,7 @@ describe('offline cache and push-then-pull sync', () => {
     }
   });
 
-  it('keeps push before pull and applies server-wins after a 409', async () => {
+  it('FR-061 FR-062 keeps push before pull and applies server-wins after a 409', async () => {
     const id = 7401;
     const server = { id, title: 'Authoritative server title', artist: 'T11 synthetic', updated_at: version };
     await cache.savePendingSong({ ...server, title: 'Stale offline title',
@@ -645,7 +645,7 @@ describe('offline cache and push-then-pull sync', () => {
     expect((await cache.getPendingMutations()).some(item => String(item.id) === String(id))).toBe(false);
   });
 
-  it('signals exact-pull completion only after metadata transactions commit', async () => {
+  it('FR-061 signals exact-pull completion only after metadata transactions commit', async () => {
     const originalWindow = globalThis.window;
     const testWindow = new EventTarget();
     testWindow.__CCM_TEST_OBSERVE_SYNC_PULL__ = true;

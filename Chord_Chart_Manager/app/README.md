@@ -322,19 +322,13 @@ retaining its local ID, chart, and unrelated metadata. An uncertain network
 attempt keeps its frozen payload and is never unfrozen by this correction path.
 Song version tokens use UTC with six fractional digits and are compared as
 exact strings. A missing or malformed token, including an older three-digit
-one, is rejected with 400. Direct assignment routes also require
-`base_updated_at`: `POST /api/songs/:id/tags` accepts `{name, category,
-base_updated_at}`; `DELETE /api/songs/:id/tags/:name` accepts `{category,
-base_updated_at}` in its JSON body. `category` is `Genre` or `Feel` (`Vibe`
-is an alias). Missing or malformed tokens return 400; stale or ambiguous
-tokens return 409. The song filter sends `tag_filters` as a JSON list of
-`{category,name}` values. Within Genre, Vibe (the API's legacy `Feel`
+one, is rejected with 400; a stale token returns 409. Song filters run on the
+device against the cached library. Within Genre, Vibe (the API's legacy `Feel`
 category), or Era, selected values are alternatives (OR); selected categories
 combine with AND. Genre matches primary and secondary assignments. Vibe
 matches any assigned vibe. Era is derived from `release_year` by decade;
 missing years do not match. The opening-screen All control clears only its
-category, while Clear all removes every active category filter. These rules
-are the same for server search and the offline IndexedDB cache.
+category, while Clear all removes every active category filter.
 
 **Settings → Manage Genres / Manage Vibes** opens one category at a time and
 shows shared definitions with current song-usage counts. The last successful
@@ -369,32 +363,6 @@ secondary preserves the selected primary, and re-adding a former primary after
 promotion leaves it secondary. Full-song reads and offline export use the same
 `is_primary DESC, name` order, so sync and reopen retain the same promotion.
 
-Stage A's prior full guarded run on 2026-10-14 passed the production build,
-157 unit tests, 3 API integration tests, and 51 serial system-Chrome E2E tests.
-A later focused guarded run for the combobox and offline-export regressions
-also passed the build, 157 unit tests, 3 API integration tests, and the 2
-selected serial E2E tests. The harness removed its owned scratch database and
-verified its absence after both runs. The focused run matched the exact rows,
-versions, sources, and documented associations for the eight protected
-Sample.docx songs; this evidence does not fingerprint every main-database
-record. Main health stayed healthy and aggregate counts remained 11 songs, 5
-tags, and 0 setlists. The vocabulary rehearsal ran only in scratch; the utility
-restricts application to owner-marked scratch storage. Those guarded test runs
-left live definitions and songs unchanged. The Sol Medium review is clear;
-the user accepted the new tag system ("The new tag system works") and
-confirmed the populated choices. T24 is Done under explicit closeout authorization.
-Physical tablet acceptance is tracked separately.
-
-The separately authorized initial vocabulary population added 43 Genres and
-40 Vibes on 2026-10-14, reusing Classic Rock and Pop unchanged. Current totals
-are 45 Genres and 40 Vibes; the repeated live read-only preview has zero missing,
-ambiguous, or spelling-collision entries. A fresh full backup was verified by
-an owned scratch restore. The focused population integration rehearsal passed,
-including lossless large-number preservation and rollback checks, followed by
-clear Sol Medium re-review. Exact existing-definition and protected-row checks
-passed before commit and afterward. Browser storage was not opened or synced.
-The user accepted the population result: "They are in there. We're good."
-Stage A/T24 is complete.
 The Artist field in song create/edit offers a short case-insensitive prefix
 list drawn from songs in the local cache, including pending and locally created
 songs. Suggestions also work offline. Typing remains ordinary free text; the
@@ -442,22 +410,21 @@ app/
 
 ## Current validation status
 
-T02 on 2026-10-09 passed the production image/Vite build, unit tests (2 files,
-7 tests), and Playwright E2E (1 test). The browser assertions checked Songs
-screen controls. After the computer crash, the existing volume remained
-attached; TCP authentication passed, both containers were healthy, and
-`/healthz` and `/api/stats` returned HTTP 200. Unit/E2E were completed before
-the crash; TCP, health, and endpoints were repeated after restart.
+Verified on 2026-10-29 at the end of the simplification refactor:
 
-T02 did not validate full offline workflows, real corpus import, or live
-enrichment. Earlier feature checks in project history are historical and were
-not part of T02.
+- `npm.cmd run test:t11` passed the production build, 153 unit tests, 9 API
+  integration tests, and 52 serial Playwright E2E tests against a scratch
+  `ccm_test` database, which was dropped afterwards. The main app stayed
+  healthy and its `/api/stats` counts were unchanged.
+- The pipeline image passed 112 pytest tests against a scratch
+  `ccm_loader_c1_*` database.
 
-The later normal user-run T11 passed the current build, 362 unit, 3 API,
-21 enrichment and 51 browser tests. Its owned scratch database was removed
-and absence verified; eight Sample fingerprints plus main health/counts
-were preserved. This harness result is separate from the accepted live
-applications' fresh backup, actual restore proof and postchecks.
+Every test name (or, for pytest, the comment above it) starts with the
+requirement IDs it covers, from `docs/REQUIREMENTS.md`.
+
+Not yet verified: a full real-corpus import (FR-099), the physical-tablet
+checklist (FR-100), and enrichment, which was removed and is to be rewritten
+(FR-092, FR-093, FR-101 to FR-115).
 
 ## Deployment
 

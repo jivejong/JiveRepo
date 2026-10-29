@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import { bracedLyric } from './chartText.js';
 
-test('five chart sizes persist offline and retain measured alignment across tablet layouts and themes', async ({ page, request, context }) => {
+test('FR-044 five chart sizes persist offline and retain measured alignment across tablet layouts and themes', async ({ page, request, context }) => {
   test.setTimeout(90000);
   const suffix = randomUUID();
   const title = `T22 size ${suffix}`;

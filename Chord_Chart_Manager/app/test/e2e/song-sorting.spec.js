@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
-test('song sorting is consistent from cache offline and survives reload', async ({ page, context, request }) => {
+test('FR-006 song sorting is consistent from cache offline and survives reload', async ({ page, context, request }) => {
   const suffix = randomUUID();
   const prefix = `T17 sort ${suffix}`;
   const fixtures = [

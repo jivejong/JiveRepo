@@ -13,7 +13,7 @@ const orderedRowCases = JSON.parse(readFileSync(
   new URL('../../../pipeline/tests/fixtures/ordered_chord_rows.json', import.meta.url), 'utf8'));
 
 describe('shared chart parser', () => {
-  it('parses sections and chord-over-lyric lines', () => {
+  it('FR-025 parses sections and chord-over-lyric lines', () => {
     expect(parseChartBody('[Verse]\nG      C\nAmazing grace\n')).toEqual({
       sections: [{
         label: 'Verse',
@@ -27,7 +27,7 @@ describe('shared chart parser', () => {
     });
   });
 
-  it('preserves normalized internal blank lines in ordinary chart text', () => {
+  it('FR-029 preserves normalized internal blank lines in ordinary chart text', () => {
     const parsed = parseChartBody('\n[Verse]\n\nC   G\nInvented first line\n\n\nInvented second line\n\n[Chorus]\nInvented chorus line\n\n');
     expect(parsed.sections).toEqual([
       { label: 'Verse', lines: [
@@ -50,7 +50,7 @@ describe('shared chart parser', () => {
     expect(chordBeforeBlank.sections[0].lines.map(line => line.type)).toEqual(['progression', 'spacer', 'lyric']);
   });
 
-  it('preserves lyric and raw trailing spaces in ordinary chart text', () => {
+  it('FR-025 preserves lyric and raw trailing spaces in ordinary chart text', () => {
     expect(parseChartBody('[Verse]\nC    G\nInvented line  \ne|--0-2--  \n')).toEqual({
       sections: [{ label: 'Verse', lines: [
         { type: 'lyric', text: 'Invented line  ',
@@ -60,7 +60,7 @@ describe('shared chart parser', () => {
     });
   });
 
-  it('parses inline brace chords', () => {
+  it('FR-025 parses inline brace chords', () => {
     const chart = parseChartBody('[Chorus]\n{C}Sing {G}loud\n');
 
     expect(chart.sections[0].lines[0]).toEqual({
@@ -71,7 +71,7 @@ describe('shared chart parser', () => {
     });
   });
 
-  it('parses the ordinary plain-text body shape emitted by DOCX ingestion', () => {
+  it('FR-025 FR-083 parses the ordinary plain-text body shape emitted by DOCX ingestion', () => {
     const source = '[Verse]\nC G 4x ending cue\n(Chorus) x2\ne|--0-2--\n'
       + '{C}{G}🎸echo  \n        Am\ntail\n';
     expect(parseChartBody(source)).toEqual({ sections: [{ label: 'Verse', lines: [
@@ -87,7 +87,7 @@ describe('shared chart parser', () => {
       .toBe('lyric');
   });
 
-  it('keeps decorated chord-only rows literal and transposes only clear chord tokens in place', () => {
+  it('FR-034 keeps decorated chord-only rows literal and transposes only clear chord tokens in place', () => {
     const source = 'G  D | C G | Em F | G';
     const parsed = parseChartBody(source);
     expect(parsed.sections[0].lines).toEqual([{ type: 'raw', text: source }]);
@@ -120,7 +120,7 @@ describe('shared chart parser', () => {
     expect(unresolved).toEqual(ambiguousChart);
   });
 
-  it('matches the shared Python ordered-row recognition and chord spans', () => {
+  it('FR-025 FR-034 NFR-012 matches the shared Python ordered-row recognition and chord spans', () => {
     for (const fixture of orderedRowCases) {
       const text = fixture.analysis_text || fixture.text;
       expect(isDecoratedChordLine(text), fixture.text).toBe(fixture.literal);
@@ -152,7 +152,7 @@ describe('shared chart parser', () => {
     }
   });
 
-  it('preserves and transposes interleaved bracketed section tails in place', () => {
+  it('FR-034 preserves and transposes interleaved bracketed section tails in place', () => {
     const source = '[Intro] | G | % | Em | % | 2X';
     const tail = ' | G | % | Em | % | 2X';
     const expected = ' | A | % | F#m | % | 2X';
@@ -167,7 +167,7 @@ describe('shared chart parser', () => {
     expect(afterOther).toBe(beforeOther);
   });
 
-  it('transposes ordered raw chord spans while preserving punctuation and opaque annotations', () => {
+  it('FR-034 transposes ordered raw chord spans while preserving punctuation and opaque annotations', () => {
     const cases = [
       ['G - C', 'A - D'],
       ['G – C', 'A – D'],
@@ -212,7 +212,7 @@ describe('shared chart parser', () => {
     expect(transposeDecoratedRawLines(ambiguous, symbol => `X${symbol}`)).toEqual(ambiguous);
   });
 
-  it('keeps literal chord spans attached to the following lyric', () => {
+  it('FR-025 keeps literal chord spans attached to the following lyric', () => {
     const source = '  C - G/D  (4x)  \n  lyric placeholder  ';
     const parsed = parseChartBody(source);
     const [raw, lyric] = parsed.sections[0].lines;
@@ -230,7 +230,7 @@ describe('shared chart parser', () => {
     expect(moved.sections[0].lines[1].text).toBe(lyric.text);
   });
 
-  it('does not transpose prose, section labels, tablature, or raw lines without a clear pipe chart pattern', () => {
+  it('FR-034 does not transpose prose, section labels, tablature, or raw lines without a clear pipe chart pattern', () => {
     const prose = 'G is the first letter; D is another';
     const chart = parseChartBody(`[Chorus]\n${prose}\ne|--0-2-3--|\n`);
     expect(chart.sections[0].label).toBe('Chorus');
@@ -238,7 +238,7 @@ describe('shared chart parser', () => {
     expect(transposeDecoratedRawLines(chart, symbol => `X${symbol}`)).toEqual(chart);
   });
 
-  it('uses UTF-16 columns for ordinary chord positions', () => {
+  it('FR-025 FR-031 uses UTF-16 columns for ordinary chord positions', () => {
     const ordinary = parseChartBody('[Verse]\nC          G\nx');
     expect(ordinary.sections[0].lines[0].chords.map(chord => chord.pos)).toEqual([0, 11]);
     expect(parseChartBody('[Verse]\n{C}🎸{G}x').sections[0].lines[0].chords)

@@ -12,7 +12,7 @@ afterEach(async () => {
 });
 
 describe('offline categorized filters', () => {
-  it('overlays pending create/update/delete on a full server list before applying filters', () => {
+  it('FR-002 FR-057 overlays pending create/update/delete on a full server list before applying filters', () => {
     const server = [
       { id: 1, title: 'Changed into match', artist: 'Artist', genres: [{ name: 'Old', is_primary: true }], vibes: [], release_year: 1978 },
       { id: 2, title: 'Changed out of match', artist: 'Artist', genres: [{ name: 'Target', is_primary: true }], vibes: ['Calm'], release_year: 1978 },
@@ -37,7 +37,7 @@ describe('offline categorized filters', () => {
     expect(server[1].genres[0].name).toBe('Target');
   });
 
-  it('filters cached pending edits and local songs with online-equivalent OR/AND semantics', async () => {
+  it('FR-002 FR-003 filters cached pending edits and local songs with online-equivalent OR/AND semantics', async () => {
     const suffix = `T18 ${Date.now()} ${Math.random()}`;
     const records = [
       { id: `local-${suffix}-edited`, title: `${suffix} edited`, genres: [

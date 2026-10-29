@@ -10,13 +10,13 @@ describe('managed tag definition autocomplete', () => {
     { id: 5, name: 'Indie' },
   ];
 
-  it('normalizes surrounding and repeated whitespace for matching', () => {
+  it('FR-015 normalizes surrounding and repeated whitespace for matching', () => {
     expect(normalizeDefinitionName('  classic   rock  ')).toBe('classic rock');
     expect(matchingTagDefinitions(definitions, '  ROCK  ').map(item => item.name))
       .toEqual(['Rock', 'Classic Rock', 'Pop Rock', 'Soft Rock']);
   });
 
-  it('puts prefix matches first and applies stable alphabetical and id ordering', () => {
+  it('FR-015 puts prefix matches first and applies stable alphabetical and id ordering', () => {
     const matches = matchingTagDefinitions([
       { id: 9, name: 'Pop Rock' }, { id: 3, name: 'Pop Rock' },
       { id: 8, name: 'Popular' }, { id: 4, name: 'Rock Pop' },
@@ -25,7 +25,7 @@ describe('managed tag definition autocomplete', () => {
       .toEqual(['Pop Rock:3', 'Pop Rock:9', 'Popular:8', 'Rock Pop:4']);
   });
 
-  it('excludes selected definitions and returns no options for an empty query', () => {
+  it('FR-015 excludes selected definitions and returns no options for an empty query', () => {
     expect(matchingTagDefinitions(definitions, 'rock', [' classic  rock ']).map(item => item.name))
       .toEqual(['Rock', 'Pop Rock', 'Soft Rock']);
     expect(matchingTagDefinitions(definitions, '   ')).toEqual([]);

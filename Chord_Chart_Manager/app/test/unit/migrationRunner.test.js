@@ -58,7 +58,7 @@ afterEach(() => {
 });
 
 describe('migration runner', () => {
-  it('does not begin listening when migration startup fails', async () => {
+  it('FR-078 does not begin listening when migration startup fails', async () => {
     const listen = vi.fn();
     await expect(startAfterMigrations(
       async () => { throw new Error('migration blocked startup'); },
@@ -67,7 +67,7 @@ describe('migration runner', () => {
     expect(listen).not.toHaveBeenCalled();
   });
 
-  it('sorts numbered SQL files and rejects malformed names or sequence gaps', () => {
+  it('FR-078 sorts numbered SQL files and rejects malformed names or sequence gaps', () => {
     const directory = migrationDirectory({
       '0001_baseline.sql': 'SELECT 1;',
       '0002_add_example.sql': 'SELECT 2;',
@@ -79,7 +79,7 @@ describe('migration runner', () => {
     expect(() => listMigrations(directory)).toThrow(/Invalid migration filename/);
   });
 
-  it('rejects uppercase SQL candidates and duplicate migration numbers', () => {
+  it('FR-078 rejects uppercase SQL candidates and duplicate migration numbers', () => {
     const directory = migrationDirectory({ '0001_baseline.sql': 'SELECT 1;' });
     fs.writeFileSync(path.join(directory, '0002_add.SQL'), 'SELECT 2;');
     expect(() => listMigrations(directory)).toThrow(/Invalid migration filename/);
@@ -91,7 +91,7 @@ describe('migration runner', () => {
     expect(() => listMigrations(directory)).toThrow(/Duplicate migration version/);
   });
 
-  it('rejects incompatible migration bookkeeping before trusting its rows', async () => {
+  it('FR-078 rejects incompatible migration bookkeeping before trusting its rows', async () => {
     const client = {
       async query(sql) {
         if (/SELECT c\.relkind/.test(sql)) return { rowCount: 1, rows: [{ relkind: 'r' }] };
@@ -108,7 +108,7 @@ describe('migration runner', () => {
     await expect(validateMigrationBookkeeping(client)).rejects.toThrow(/incompatible structure/);
   });
 
-  it('locks, applies pending files in separate transactions, and skips applied files on repeat', async () => {
+  it('FR-078 locks, applies pending files in separate transactions, and skips applied files on repeat', async () => {
     const directory = migrationDirectory({
       '0001_baseline.sql': 'CREATE TABLE migration_marker; ',
       '0002_example.sql': 'SELECT 2;',
@@ -137,7 +137,7 @@ describe('migration runner', () => {
     expect(client.queries.filter((query) => /pg_advisory_unlock/.test(query))).toHaveLength(1);
   });
 
-  it('rolls back a failed migration without recording its version', async () => {
+  it('FR-078 rolls back a failed migration without recording its version', async () => {
     const directory = migrationDirectory({
       '0001_baseline.sql': 'SELECT 1;',
       '0002_failing.sql': 'CREATE TABLE migration_should_rollback; SELECT FAIL_MIGRATION;',

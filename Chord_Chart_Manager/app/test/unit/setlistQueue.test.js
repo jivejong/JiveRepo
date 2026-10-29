@@ -11,7 +11,7 @@ const make = (type, setlistId = 'local-list', payload = {}, sent = false) => ({
 });
 
 describe('typed setlist queue rules', () => {
-  it('coalesces metadata into an unsent create and preserves omitted versus null fields', () => {
+  it('FR-058 coalesces metadata into an unsent create and preserves omitted versus null fields', () => {
     const queue = [make('create', 'local-list', { name: 'First', notes: 'keep' })];
     enqueueSetlistOperation(queue, make('metadata', 'local-list', { name: 'Second' }));
     enqueueSetlistOperation(queue, make('metadata', 'local-list', { notes: null }));
@@ -19,7 +19,7 @@ describe('typed setlist queue rules', () => {
     expect(queue[0].payload).toEqual({ name: 'Second', notes: null });
   });
 
-  it('coalesces same-entry edits without changing explicit zero or null', () => {
+  it('FR-058 coalesces same-entry edits without changing explicit zero or null', () => {
     const queue = [make('entry_edit', '42', { entry_id: '7', capo_fret: 0 })];
     enqueueSetlistOperation(queue, make('entry_edit', '42', { entry_id: '7', transposed_key: 'D' }));
     enqueueSetlistOperation(queue, make('entry_edit', '42', { entry_id: '7', capo_fret: null }));
@@ -27,7 +27,7 @@ describe('typed setlist queue rules', () => {
     expect(queue[0].payload).toEqual({ entry_id: '7', capo_fret: null, transposed_key: 'D' });
   });
 
-  it('cancels an unsent local add/remove and removes that ID from pending reorder snapshots', () => {
+  it('FR-058 cancels an unsent local add/remove and removes that ID from pending reorder snapshots', () => {
     const queue = [
       make('entry_add', 'local-list', { entry_id: 'local-entry-a', song_id: 2 }),
       make('reorder', 'local-list', { entry_ids: ['local-entry-a', 'local-entry-b'] }),
@@ -37,7 +37,7 @@ describe('typed setlist queue rules', () => {
     expect(queue[0].payload.entry_ids).toEqual(['local-entry-b']);
   });
 
-  it('cancels edits that depend on an unsent add when that entry is removed', () => {
+  it('FR-058 cancels edits that depend on an unsent add when that entry is removed', () => {
     const queue = [
       make('entry_add', 'local-list', { entry_id: 'local-entry-a', song_id: 9 }),
       make('entry_edit', 'local-list', { entry_id: 'local-entry-a', capo_fret: 0 }),
@@ -50,7 +50,7 @@ describe('typed setlist queue rules', () => {
     ]);
   });
 
-  it('retains a dispatched add, its edits, and the later remove while outcome is uncertain', () => {
+  it('FR-058 retains a dispatched add, its edits, and the later remove while outcome is uncertain', () => {
     const queue = [make('entry_add', 'local-list', { entry_id: 'local-entry-a', song_id: 9 }, true)];
     enqueueSetlistOperation(queue, make('entry_edit', 'local-list', { entry_id: 'local-entry-a', capo_fret: 0 }));
     enqueueSetlistOperation(queue, make('entry_remove', 'local-list', { entry_id: 'local-entry-a' }));
@@ -61,7 +61,7 @@ describe('typed setlist queue rules', () => {
     ]);
   });
 
-  it('places the latest reorder after intervening adds and leaves sent envelopes immutable', () => {
+  it('FR-058 places the latest reorder after intervening adds and leaves sent envelopes immutable', () => {
     const sent = make('reorder', '42', { entry_ids: ['1'] }, true);
     const queue = [sent, make('entry_add', '42', { entry_id: 'local-entry', song_id: 'local-song' }),
       make('reorder', '42', { entry_ids: ['1'] })];
@@ -71,21 +71,21 @@ describe('typed setlist queue rules', () => {
     expect(queue[2].payload.entry_ids).toEqual(['1', 'local-entry']);
   });
 
-  it('cancels an unsent local setlist create and all its dependents when deleted', () => {
+  it('FR-058 cancels an unsent local setlist create and all its dependents when deleted', () => {
     const queue = [make('create'), make('entry_add', 'local-list', { entry_id: 'local-entry' })];
     const result = enqueueSetlistOperation(queue, make('delete'));
     expect(result.cancelledLocalSetlist).toBe(true);
     expect(queue).toEqual([]);
   });
 
-  it('rebases only same-setlist operations and discards the entire conflicting aggregate', () => {
+  it('FR-058 FR-062 rebases only same-setlist operations and discards the entire conflicting aggregate', () => {
     const queue = [make('metadata', '12'), make('entry_edit', '12'), make('metadata', '13')];
     rebaseSetlistOperations(queue, '12', 'v2-exact');
     expect(queue.map(item => item.base_updated_at)).toEqual(['v2-exact', 'v2-exact', 'v1']);
     expect(discardSetlistOperations(queue, 12)).toEqual([queue[2]]);
   });
 
-  it('resolves local song and entry IDs and rejects an unresolved song dependency', () => {
+  it('FR-058 FR-059 resolves local song and entry IDs and rejects an unresolved song dependency', () => {
     expect(resolveSetlistOperationIds('entry_add', {
       song_id: 'local-song', entry_id: 'local-entry', capo_fret: 0,
     }, { songs: { 'local-song': 19 } })).toEqual({ song_id: 19, entry_id: 'local-entry', capo_fret: 0 });

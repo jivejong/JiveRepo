@@ -5,7 +5,7 @@ const source = '[Verse] G - C  / D \\ Em * (4x)';
 const originalTail = source.slice(source.indexOf(']') + 1);
 const transposedTail = ' A - D  / E \\ F#m * (4x)';
 
-test('renders ordered chord punctuation and spacing literally, including transposition',
+test('FR-025 FR-034 renders ordered chord punctuation and spacing literally, including transposition',
   async ({ page, request }) => {
     const title = `T26 ordered raw row ${randomUUID()}`;
     const created = await request.post('/api/songs', { data: {
