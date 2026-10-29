@@ -1,6 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { requireIsolatedTarget, verifyHarnessIdentity } = require('../t11-guards.cjs');
 requireIsolatedTarget({ isolated: process.env.CCM_T11_ISOLATED,
   baseUrl: process.env.E2E_BASE_URL, runId: process.env.CCM_T11_RUN_ID });
@@ -8,6 +12,7 @@ const { pool } = require('../../server/db.js');
 const dbExt = require('../../server/db_ext.js');
 
 const base = process.env.E2E_BASE_URL;
+const projectRoot = path.resolve(__dirname, '../../..');
 assert.ok(base, 'T11 harness must provide the isolated E2E_BASE_URL');
 const createdSongs = [];
 const createdSetlists = [];
@@ -248,7 +253,91 @@ test('FR-074 definition names are unique per category ignoring case and whitespa
   }
 });
 
-test('song, tag, setlist, and entry API contract on migrated ccm_test', async () => {
+// The backup/restore scripts, run as an operator would: PowerShell on Windows, bash elsewhere.
+function runOperatorScript(name, { win, sh }) {
+  const windows = process.platform === 'win32';
+  const script = path.join(projectRoot, 'scripts', `${name}.${windows ? 'ps1' : 'sh'}`);
+  return windows
+    ? spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, ...win],
+      { encoding: 'utf8', timeout: 120_000 })
+    : spawnSync('bash', [script, ...sh], { encoding: 'utf8', timeout: 120_000 });
+}
+
+test('FR-089 FR-090 backup writes a verified ccm_test archive and keeps the newest; restore refuses unconfirmed or empty input', async () => {
+  await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
+  const backupDir = path.join(projectRoot, 'backups');
+  const ccmTestDumps = () => (fs.existsSync(backupDir) ? fs.readdirSync(backupDir) : [])
+    .filter(name => /^ccm_test-\d{8}-\d{6}\.dump$/.test(name)).sort();
+  assert.deepEqual(ccmTestDumps(), [], 'refusing to prune pre-existing ccm_test backups');
+  const songCount = async () => (await pool.query('SELECT count(*)::int AS n FROM public.songs')).rows[0].n;
+  const emptyArchive = path.join(os.tmpdir(), `ccm-t11-empty-${randomUUID()}.dump`);
+  fs.writeFileSync(emptyArchive, '');
+  try {
+    const archives = [];
+    for (let run = 0; run < 2; run += 1) {
+      if (run) await new Promise(resolve => setTimeout(resolve, 1_100)); // archive names are per second
+      const backup = runOperatorScript('backup', { win: ['-Database', 'ccm_test', '-Keep', '1'],
+        sh: ['--database', 'ccm_test', '--keep', '1'] });
+      assert.equal(backup.status, 0, `backup failed: ${backup.stderr}`);
+      const archive = backup.stdout.trim().split(/\r?\n/).at(-1);
+      assert.match(path.basename(archive), /^ccm_test-\d{8}-\d{6}\.dump$/);
+      assert.ok(fs.statSync(archive).size > 0, 'backup archive is nonempty');
+      archives.push(path.basename(archive));
+    }
+    assert.deepEqual(ccmTestDumps(), [archives[1]], 'retention keeps only the newest ccm_test archive');
+
+    const before = await songCount();
+    const latest = path.join(backupDir, archives[1]);
+    const unconfirmed = runOperatorScript('restore', { win: ['-Path', latest, '-Database', 'ccm_test'],
+      sh: ['--file', latest, '--database', 'ccm_test'] });
+    assert.notEqual(unconfirmed.status, 0);
+    assert.match(unconfirmed.stderr, /restore refused/i);
+    const empty = runOperatorScript('restore', { win: ['-Path', emptyArchive, '-Database', 'ccm_test', '-Force'],
+      sh: ['--file', emptyArchive, '--database', 'ccm_test', '--yes'] });
+    assert.notEqual(empty.status, 0);
+    assert.match(empty.stderr, /empty/i);
+    assert.equal(await songCount(), before, 'refused restores change nothing');
+    assert.deepEqual(ccmTestDumps(), [archives[1]], 'refused restores take no safety backup');
+  } finally {
+    fs.rmSync(emptyArchive, { force: true });
+    for (const name of ccmTestDumps()) fs.rmSync(path.join(backupDir, name));
+  }
+});
+
+test('FR-049 a setlist key override must be a supported key name', async () => {
+  await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
+  const suffix = randomUUID();
+  let songId = null;
+  let setlistId = null;
+  try {
+    const song = await json('POST', '/api/songs', { title: `T11 key override ${suffix}`,
+      artist: `T11 key override artist ${suffix}`, chart_source: 'Verse\nInvented key line', operation_id: randomUUID() });
+    assert.equal(song.response.status, 201, JSON.stringify(song.value));
+    songId = song.value.id;
+    const list = await json('POST', '/api/setlists/mutations', { operation_id: randomUUID(), type: 'create',
+      setlist_id: null, base_updated_at: null, payload: { name: `T11 key override list ${suffix}` } });
+    assert.equal(list.response.status, 200, JSON.stringify(list.value));
+    setlistId = list.value.id;
+    const mutate = (type, payload, token) => json('POST', '/api/setlists/mutations', { operation_id: randomUUID(),
+      type, setlist_id: setlistId, base_updated_at: token, payload });
+    for (const key of ['H', 'Cmaj', 'c#', 'Xm']) {
+      const rejected = await mutate('entry_add', { song_id: songId, transposed_key: key }, list.value.updated_at);
+      assert.equal(rejected.response.status, 400, `entry_add ${key}: ${JSON.stringify(rejected.value)}`);
+    }
+    const added = await mutate('entry_add', { song_id: songId, transposed_key: 'Bbm' }, list.value.updated_at);
+    assert.equal(added.response.status, 200, JSON.stringify(added.value));
+    assert.equal(added.value.songs[0].transposed_key, 'Bbm');
+    const rejectedEdit = await mutate('entry_edit', { entry_id: added.value.songs[0].entry_id, transposed_key: 'B#m7' },
+      added.value.updated_at);
+    assert.equal(rejectedEdit.response.status, 400, JSON.stringify(rejectedEdit.value));
+    assert.equal((await json('GET', `/api/setlists/${setlistId}`)).value.songs[0].transposed_key, 'Bbm');
+  } finally {
+    if (setlistId !== null) await pool.query('DELETE FROM public.setlists WHERE id=$1', [setlistId]);
+    if (songId !== null) await pool.query('DELETE FROM public.songs WHERE id=$1', [songId]);
+  }
+});
+
+test('FR-011 FR-048 FR-050 FR-062 FR-073 song, tag, setlist, and entry API contract on migrated ccm_test', async () => {
   await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
   assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'ccm_test',
     'T11 API integration tests must target only ccm_test');
@@ -534,7 +623,7 @@ test('song, tag, setlist, and entry API contract on migrated ccm_test', async ()
   }
 });
 
-test('existing definitions reject unknown/ambiguous assignment atomically and lock assignment against deletion', async () => {
+test('FR-016 FR-073 existing definitions reject unknown/ambiguous assignment atomically and lock assignment against deletion', async () => {
   await verifyHarnessIdentity({ baseUrl: base, runId: process.env.CCM_T11_RUN_ID });
   assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, 'ccm_test');
   const suffix = randomUUID();

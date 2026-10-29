@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 // service worker that could satisfy requests before Playwright sees them.
 test.use({ serviceWorkers: 'block' });
 
-test('late category load cannot update a different management view', async ({ page, context }) => {
+test('FR-071 late category load cannot update a different management view', async ({ page, context }) => {
   const requestId = randomUUID();
   const leakedName = `T19 stale Genre ${randomUUID()}`;
   let releaseHeld;
@@ -75,7 +75,7 @@ test('late category load cannot update a different management view', async ({ pa
   }
 });
 
-test('Settings manages Genre and Vibe definitions with explicit assignment decisions', async ({ page, request, context }) => {
+test('FR-071 FR-072 FR-073 Settings manages Genre and Vibe definitions with explicit assignment decisions', async ({ page, request, context }) => {
   const suffix = randomUUID();
   const sourceName = `T19 source ${suffix}`;
   const targetName = `T19 target ${suffix}`;

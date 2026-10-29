@@ -27,7 +27,7 @@ async function openSong(page, title) {
   await expect(page.locator('.chart-topbar-title')).toHaveText(title);
 }
 
-test('online save preserves decorated chord order through storage, API, transpose, and reopen',
+test('FR-025 FR-034 online save preserves decorated chord order through storage, API, transpose, and reopen',
   async ({ page, request }) => {
     const title = `T13 online chord order ${randomUUID()}`;
     const song = await createSong(request, title);
@@ -63,7 +63,7 @@ test('online save preserves decorated chord order through storage, API, transpos
     }
   });
 
-test('offline metadata save preserves legacy structure, then chart edit syncs and reopens literally',
+test('FR-021 FR-057 offline metadata save preserves legacy structure, then chart edit syncs and reopens literally',
   async ({ page, context, request }) => {
   const title = `T13 offline chord order ${randomUUID()}`;
   const song = await createSong(request, title, source);
@@ -146,7 +146,7 @@ test('offline metadata save preserves legacy structure, then chart edit syncs an
   }
 });
 
-test('saving a legacy decorated source refreshes structure, then reload renders and transposes it',
+test('FR-025 FR-034 saving a legacy decorated source refreshes structure, then reload renders and transposes it',
   async ({ page, request }) => {
     const title = `T13 legacy chord order ${randomUUID()}`;
     const song = await createSong(request, title, source);

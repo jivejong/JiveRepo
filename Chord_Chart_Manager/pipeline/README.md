@@ -91,9 +91,7 @@ Before processing real data:
 
 1. Put source `.docx` files in `pipeline/docs/`.
 2. Run the parser and review `pipeline/parsed_out/report.json`.
-3. Parsing and direct loading need no enrichment credentials. If using the
-   current legacy enrichment code, preserve an existing `app/.env`; create it
-   from `app/.env.example` only if it is absent.
+3. Parsing and direct loading need no API credentials.
 4. Dry-run the loader before a real database load.
 
 T14 keeps enrichment off.
@@ -327,6 +325,7 @@ absence afterward, and never point the test at `chords`.
 
 ## Current validation status
 
-T02 did not run the pipeline or validate enrichment. Historical checks reported
-parser, simulated batch, mocked enrichment, and loader checks. A real-document
-corpus run and live enrichment remain pending. T14 remains enrichment-off.
+On 2026-10-29 the pipeline image passed 112 pytest tests against a scratch
+`ccm_loader_c1_*` database; each test is tagged with its requirement IDs. A
+real-document corpus run (FR-099) remains pending, and the pipeline has no
+enrichment step until the rewrite.

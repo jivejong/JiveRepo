@@ -102,6 +102,7 @@ def _synthetic_docx(path: Path) -> None:
     _write_docx(path, paragraphs)
 
 
+# FR-079 FR-080
 def test_parser_extracts_metadata_and_song_boundaries(tmp_path: Path) -> None:
     document = tmp_path / "synthetic.docx"
     _synthetic_docx(document)
@@ -138,6 +139,7 @@ def test_parser_extracts_metadata_and_song_boundaries(tmp_path: Path) -> None:
     assert second_lines[1]["text"] == "Invented refrain line."
 
 
+# FR-083
 def test_docx_pipe_chord_row_retains_literal_source_order(tmp_path: Path) -> None:
     document = tmp_path / "synthetic_pipe_chord.docx"
     _write_docx(document, [
@@ -171,6 +173,7 @@ def test_docx_pipe_chord_row_retains_literal_source_order(tmp_path: Path) -> Non
     assert "[[CCM-" not in song.chart_source
 
 
+# FR-083
 def test_ordinary_source_keeps_pipe_rows_raw_and_plain_body_round_trips() -> None:
     source = "[Verse]\nG D (hold Am) | Em F x2 | C\n"
     chart = chart_parser.parse_ordinary_chart_source(source)
@@ -188,6 +191,7 @@ def test_ordinary_source_keeps_pipe_rows_raw_and_plain_body_round_trips() -> Non
     assert not chart_parser.is_decorated_chord_line("e|--0-2-3--|")
 
 
+# FR-083 NFR-012
 def test_ordered_chord_rows_match_shared_fixture_and_preserve_literal_source() -> None:
     cases = json.loads((Path(__file__).parent / "fixtures" / "ordered_chord_rows.json").read_text())
     for case in cases:
@@ -223,6 +227,7 @@ def test_ordered_chord_rows_match_shared_fixture_and_preserve_literal_source() -
             assert first == {"type": "progression", "chords": ["G", "C", "G"]}
 
 
+# FR-083
 def test_bracketed_section_tail_preserves_interleaved_bars_and_transposes_spans() -> None:
     source = "[Intro] | G | % | Em | % | 2X"
     heading = chart_parser.Paragraph("Section Tail Fixture – G\x01Artist", None,
@@ -238,6 +243,7 @@ def test_bracketed_section_tail_preserves_interleaved_bars_and_transposes_spans(
     ]
 
 
+# FR-083
 def test_tabbed_decorated_chord_rows_keep_literal_order_and_round_trip() -> None:
     heading = chart_parser.Paragraph("Tabbed Ordered Row – G\x01Artist", None,
                                      outline_level=1)
@@ -251,6 +257,7 @@ def test_tabbed_decorated_chord_rows_keep_literal_order_and_round_trip() -> None
     assert chart_parser.parse_ordinary_chart_source(song.chart_source) == song.chart_content
 
 
+# FR-082
 def test_opening_metadata_is_bounded_and_separate_from_performance_key() -> None:
     heading = chart_parser.Paragraph("Go Your Own Way – G (Bb)\x01Fleetwood Mac", None,
                                      outline_level=1, source_index=1)
@@ -279,6 +286,7 @@ def test_opening_metadata_is_bounded_and_separate_from_performance_key() -> None
     assert "Capo 2 is a lyric-like body phrase" in later.chart_source
 
 
+# FR-082
 @pytest.mark.parametrize("annotation", ["A-120", "A - 120", "A \u2013 120"])
 def test_opening_original_key_bpm_accepts_bounded_separator_spacing(annotation: str) -> None:
     heading = chart_parser.Paragraph("Metadata spacing \u2013 G\x01Band", None,
@@ -295,6 +303,7 @@ def test_opening_original_key_bpm_accepts_bounded_separator_spacing(annotation: 
     assert not song.warnings
 
 
+# FR-082 FR-084
 def test_opening_key_bpm_conflict_preserves_annotation_and_blocks_loader() -> None:
     heading = chart_parser.Paragraph("Metadata conflict \u2013 G\x01Band\x01E", None,
                                      outline_level=1, source_index=51)
@@ -316,6 +325,7 @@ def test_opening_key_bpm_conflict_preserves_annotation_and_blocks_loader() -> No
         validate_parser_diagnostics([chart_parser.song_to_dict(song)])
 
 
+# FR-083 FR-084
 def test_mixed_raw_chord_row_pairs_with_following_lyric_and_reports_partial_token() -> None:
     heading = chart_parser.Paragraph("Literal Pair \u2013 G\x01Band", None,
                                      outline_level=1, source_index=60)
@@ -345,6 +355,7 @@ def test_mixed_raw_chord_row_pairs_with_following_lyric_and_reports_partial_toke
         validate_parser_diagnostics([chart_parser.song_to_dict(song)])
 
 
+# FR-083
 def test_chord_like_substring_inside_unsupported_token_is_not_a_span() -> None:
     analysis = chart_parser.ordered_chord_analysis("C - G - D/Guitar5x")
     assert [span["symbol"] for span in analysis["spans"]] == ["C", "G"]
@@ -353,6 +364,7 @@ def test_chord_like_substring_inside_unsupported_token_is_not_a_span() -> None:
     assert not analysis["partial_transposition"]
 
 
+# FR-082 FR-084
 def test_conflicting_opening_metadata_stays_visible_and_blocks_loader() -> None:
     heading = chart_parser.Paragraph("Conflict – G (Bb)\x01Band", None,
                                      outline_level=1, source_index=11)
@@ -368,6 +380,7 @@ def test_conflicting_opening_metadata_stays_visible_and_blocks_loader() -> None:
         validate_parser_diagnostics([chart_parser.song_to_dict(song)])
 
 
+# FR-082 FR-084
 @pytest.mark.parametrize(("heading", "bb_value", "expected_capo", "expected_key", "expected_bpm",
                           "reason", "paragraph"), [
     ("Capo Conflict – G (A)\x01Band", " Intro-V-C | capo 3 | E-120",
@@ -397,6 +410,7 @@ def test_conflicting_bb_metadata_retains_complete_value_and_blocks_loader(
         validate_parser_diagnostics([chart_parser.song_to_dict(song)])
 
 
+# FR-080
 def test_only_effective_outline_headings_start_songs(tmp_path: Path) -> None:
     document = tmp_path / "heading-only-boundaries.docx"
     nonheading = _styled_paragraph(
@@ -457,6 +471,7 @@ def test_only_effective_outline_headings_start_songs(tmp_path: Path) -> None:
     assert chart_parser.parse_ordinary_chart_source(songs[0].chart_source) == body
 
 
+# FR-080
 def test_nonheading_bold_and_tabs_do_not_create_song_boundaries(tmp_path: Path) -> None:
     document = tmp_path / "nonheading-formatting.docx"
     bold_title = _styled_paragraph(
@@ -485,6 +500,7 @@ def test_nonheading_bold_and_tabs_do_not_create_song_boundaries(tmp_path: Path) 
         "Bold Title", "Inherited Bold Title", "Paragraph Mark", "Tabbed Title", "Possible Band"))
 
 
+# FR-080
 def test_outline_heading_levels_and_direct_overrides_define_boundaries(tmp_path: Path) -> None:
     document = tmp_path / "word-outline-boundaries.docx"
     styles = (
@@ -526,6 +542,7 @@ def test_outline_heading_levels_and_direct_overrides_define_boundaries(tmp_path:
     assert "Direct Body - A" in json.dumps(songs[0].chart_content, ensure_ascii=False)
 
 
+# FR-080
 def test_default_paragraph_style_can_supply_heading_without_pstyle(tmp_path: Path) -> None:
     document = tmp_path / "default-heading-no-pstyle.docx"
     styles = (
@@ -551,6 +568,7 @@ def test_default_paragraph_style_can_supply_heading_without_pstyle(tmp_path: Pat
         songs[0].chart_content, ensure_ascii=False)
 
 
+# FR-080 FR-084
 def test_chart_like_content_before_first_heading_blocks_with_location(tmp_path: Path) -> None:
     document = tmp_path / "preheading-chart.docx"
     _write_docx(document, [_paragraph("[Verse] C G"), _heading("Song - C", None, "Band")])
@@ -559,6 +577,7 @@ def test_chart_like_content_before_first_heading_blocks_with_location(tmp_path: 
         chart_parser.parse_docx(str(document))
 
 
+# FR-080
 def test_explicit_page_break_splits_spans_without_creating_song_boundaries(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     document = tmp_path / "interior-page-break.docx"
@@ -609,6 +628,7 @@ def test_explicit_page_break_splits_spans_without_creating_song_boundaries(
     assert all(source_index is None for source_index, _ in internal_round_trip_title_spans)
 
 
+# FR-083
 def test_section_tail_separate_fallback_checks_full_chart_including_confidence(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     document = tmp_path / "section-tail-fallback.docx"
@@ -645,6 +665,7 @@ def test_section_tail_separate_fallback_checks_full_chart_including_confidence(
                for section in reparsed["sections"] for line in section["lines"])
 
 
+# FR-080
 def test_structural_title_without_artist_keeps_artist_missing(tmp_path: Path) -> None:
     document = tmp_path / "missing-artist-heading.docx"
     _write_docx(document, [
@@ -661,6 +682,7 @@ def test_structural_title_without_artist_keeps_artist_missing(tmp_path: Path) ->
     assert songs[0].warnings == []
 
 
+# FR-081
 def test_parenthesized_heading_key_sets_capo_without_becoming_artist(tmp_path: Path) -> None:
     document = tmp_path / "parenthesized-capo-key.docx"
     _write_docx(document, [
@@ -686,6 +708,7 @@ def test_parenthesized_heading_key_sets_capo_without_becoming_artist(tmp_path: P
                for song in songs)
 
 
+# FR-081
 def test_parenthesized_heading_key_with_incompatible_quality_is_blocking(tmp_path: Path) -> None:
     document = tmp_path / "unresolved-capo-key.docx"
     _write_docx(document, [
@@ -703,6 +726,7 @@ def test_parenthesized_heading_key_with_incompatible_quality_is_blocking(tmp_pat
         validate_parser_diagnostics([chart_parser.song_to_dict(song)])
 
 
+# FR-080
 def test_structural_heading_unresolved_fields_are_reported_without_inference(tmp_path: Path) -> None:
     document = tmp_path / "unresolved-heading.docx"
     heading = _heading("Candidate Title – G/C", None, "Known Band")
@@ -730,6 +754,7 @@ def test_structural_heading_unresolved_fields_are_reported_without_inference(tmp
         validate_parser_diagnostics([chart_parser.song_to_dict(songs[1])])
 
 
+# FR-081
 def test_single_unsupported_slash_key_heading_keeps_boundary_and_location(tmp_path: Path) -> None:
     document = tmp_path / "single-unsupported-key.docx"
     _write_docx(document, [
@@ -758,6 +783,7 @@ def test_single_unsupported_slash_key_heading_keeps_boundary_and_location(tmp_pa
         validate_parser_diagnostics([chart_parser.song_to_dict(songs[1])])
 
 
+# FR-080
 def test_artist_only_and_supported_key_headings_keep_existing_metadata(tmp_path: Path) -> None:
     document = tmp_path / "supported-headings.docx"
     _write_docx(document, [
@@ -783,6 +809,7 @@ def test_artist_only_and_supported_key_headings_keep_existing_metadata(tmp_path:
             song.chart_content)
 
 
+# FR-083
 @pytest.mark.parametrize("paragraphs,expected_source,expected_type", [
     ([_paragraph("[Verse] direction 2x")], "[Verse] direction 2x\n", "raw"),
     ([_paragraph("[Intro] C D | Em F x2")], "[Intro] C D | Em F x2\n", "raw"),
@@ -808,6 +835,7 @@ def test_section_tails_keep_readable_exact_round_trips(
     assert chart_parser.parse_ordinary_chart_source(song.chart_source) == song.chart_content
 
 
+# FR-083 FR-084
 def test_curly_apostrophe_tabbed_lyric_keeps_blocking_warning_without_proven_metrics(
         tmp_path: Path) -> None:
     document = tmp_path / "curly-apostrophe-tab.docx"
@@ -830,6 +858,7 @@ def test_curly_apostrophe_tabbed_lyric_keeps_blocking_warning_without_proven_met
         validate_parser_diagnostics([chart_parser.song_to_dict(song)])
 
 
+# FR-083
 def test_supported_mixed_tabs_normalize_to_plain_text_without_blocking(tmp_path: Path) -> None:
     document = tmp_path / "mixed-tabs.docx"
     paragraphs = [
@@ -860,6 +889,7 @@ def test_supported_mixed_tabs_normalize_to_plain_text_without_blocking(tmp_path:
     validate_parser_diagnostics([artifact])
 
 
+# FR-083
 def test_paragraph_tab_stops_do_not_change_text_anchors_or_diagnostics(tmp_path: Path) -> None:
     plain = tmp_path / "without-stops.docx"
     with_stops = tmp_path / "with-stops.docx"
@@ -881,6 +911,7 @@ def test_paragraph_tab_stops_do_not_change_text_anchors_or_diagnostics(tmp_path:
     assert plain_song.warnings == stop_song.warnings == []
 
 
+# FR-083
 def test_tab_stops_and_inserted_tabs_preserve_only_actual_tabs(tmp_path: Path) -> None:
     without_stops = tmp_path / "actual-tabs.docx"
     with_stops = tmp_path / "actual-tabs-and-stops.docx"
@@ -908,6 +939,7 @@ def test_tab_stops_and_inserted_tabs_preserve_only_actual_tabs(tmp_path: Path) -
     assert stop_song.chart_source == plain_song.chart_source
 
 
+# FR-083 FR-084
 def test_unsupported_tabbed_font_still_blocks_load(tmp_path: Path) -> None:
     document = tmp_path / "unsupported-font.docx"
     chord = _word_tab_paragraph("C", None, "G", None, "D").replace("Courier New", "Arial")
@@ -924,6 +956,7 @@ def test_unsupported_tabbed_font_still_blocks_load(tmp_path: Path) -> None:
         validate_parser_diagnostics([chart_parser.song_to_dict(song)])
 
 
+# FR-083
 def test_explicit_left_tab_stop_and_indent_are_measured_from_paragraph_origin(tmp_path: Path) -> None:
     document = tmp_path / "explicit-tab.docx"
     chord = _word_tab_paragraph("C", None, "G").replace(
@@ -940,6 +973,7 @@ def test_explicit_left_tab_stop_and_indent_are_measured_from_paragraph_origin(tm
     assert song.warnings == []
 
 
+# FR-083
 def test_tab_physical_width_scales_by_font_size_before_mapping_to_lyric_columns(tmp_path: Path) -> None:
     document = tmp_path / "scaled-courier-tab.docx"
     chord = _word_tab_paragraph("C", None, "G", font_size=22)
@@ -954,6 +988,7 @@ def test_tab_physical_width_scales_by_font_size_before_mapping_to_lyric_columns(
     assert song.warnings == []
 
 
+# FR-083
 def test_tab_mapping_rounds_physical_chord_start_once_for_10pt_over_8pt(tmp_path: Path) -> None:
     document = tmp_path / "single-round-courier-tab.docx"
     chord = _word_tab_paragraph("C", None, "G", font_size=20)
@@ -969,6 +1004,7 @@ def test_tab_mapping_rounds_physical_chord_start_once_for_10pt_over_8pt(tmp_path
     assert song.warnings == []
 
 
+# FR-083
 def test_character_style_font_metrics_are_resolved_for_supported_tabs(tmp_path: Path) -> None:
     document = tmp_path / "character-style-metrics.docx"
     chord = _word_tab_paragraph("C", None, "G").replace(
@@ -991,6 +1027,7 @@ def test_character_style_font_metrics_are_resolved_for_supported_tabs(tmp_path: 
     ]
 
 
+# FR-083 FR-084
 @pytest.mark.parametrize("explicit_style", [False, True], ids=["default-style", "explicit-style"])
 def test_default_and_explicit_paragraph_style_spacing_block_tabs(
         tmp_path: Path, explicit_style: bool) -> None:
@@ -1016,6 +1053,7 @@ def test_default_and_explicit_paragraph_style_spacing_block_tabs(
     }]
 
 
+# FR-083 FR-084
 @pytest.mark.parametrize(("style_kind", "style_xml", "paragraph_style"), [
     ("paragraph_missing", "", '<w:pPr><w:pStyle w:val="Absent"/></w:pPr>'),
     ("paragraph_cycle",
@@ -1068,6 +1106,7 @@ def test_unresolved_relevant_style_chains_block_tab_normalization(
     }]
 
 
+# FR-083
 def test_valid_default_paragraph_style_inheritance_supports_tabs(tmp_path: Path) -> None:
     document = tmp_path / "default-paragraph-style.docx"
     inherited_runs = re.compile(r"<w:rPr>.*?</w:rPr>")
@@ -1090,6 +1129,7 @@ def test_valid_default_paragraph_style_inheritance_supports_tabs(tmp_path: Path)
     ]
 
 
+# FR-083
 def test_unresolved_style_on_unrelated_tab_free_text_does_not_block(tmp_path: Path) -> None:
     document = tmp_path / "tab-free-missing-style.docx"
     text = _paragraph("ordinary invented phrase")
@@ -1104,6 +1144,7 @@ def test_unresolved_style_on_unrelated_tab_free_text_does_not_block(tmp_path: Pa
     assert song.chart_content["sections"][0]["lines"][0]["text"] == "ordinary invented phrase"
 
 
+# FR-083 FR-084
 @pytest.mark.parametrize(("style_xml", "lyric_style"), [
     ('<w:style w:type="paragraph" w:styleId="Normal" w:default="1">'
      '<w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>'
@@ -1136,6 +1177,7 @@ def test_unresolved_lyric_style_chain_blocks_tabbed_pairing(
     }]
 
 
+# FR-083 FR-084
 @pytest.mark.parametrize(("formatting", "reason"), [
     ('<w:spacing w:val="20"/>', "unsupported_tabbed_paragraph_spacing"),
     ('<w:w w:val="90"/>', "unsupported_tabbed_paragraph_scaling"),
@@ -1175,6 +1217,7 @@ def test_inherited_tab_width_changes_are_blocking(
     }]
 
 
+# FR-083 FR-084
 def test_mixed_run_sizes_in_a_tabbed_paragraph_remain_blocking(tmp_path: Path) -> None:
     document = tmp_path / "mixed-run-sizes.docx"
     chord = _word_tab_paragraph("C", None, "G").replace(
@@ -1191,6 +1234,7 @@ def test_mixed_run_sizes_in_a_tabbed_paragraph_remain_blocking(tmp_path: Path) -
     }]
 
 
+# FR-083
 def test_nested_run_containers_preserve_inline_text_tabs_and_breaks(tmp_path: Path) -> None:
     document = tmp_path / "nested-runs.docx"
     nested = ('<w:p><w:hyperlink><w:r><w:t>before</w:t></w:r></w:hyperlink>'
@@ -1202,6 +1246,7 @@ def test_nested_run_containers_preserve_inline_text_tabs_and_breaks(tmp_path: Pa
     )
 
 
+# FR-083
 def test_tab_free_docx_keeps_existing_space_aligned_anchors(tmp_path: Path) -> None:
     document = tmp_path / "tab-free.docx"
     paragraphs = [
@@ -1231,6 +1276,7 @@ def test_tab_free_docx_keeps_existing_space_aligned_anchors(tmp_path: Path) -> N
     assert song.warnings == []
 
 
+# FR-083
 def test_plain_text_body_preserves_structures_collisions_unicode_and_trailing_spaces() -> None:
     chart = {"sections": [{"label": "Verse", "lines": [
         {"type": "progression", "chords": ["C", "G"], "repeat": 4,
@@ -1258,6 +1304,7 @@ def test_plain_text_body_preserves_structures_collisions_unicode_and_trailing_sp
     assert reparsed.chart_source == source
 
 
+# FR-083 FR-084
 def test_unsupported_tabs_in_a_progression_are_reported_too(tmp_path: Path) -> None:
     document = tmp_path / "unsupported-progression-tab.docx"
     chord = _word_tab_paragraph("C", None, "G").replace("Courier New", "Arial")
@@ -1274,6 +1321,7 @@ def test_unsupported_tabs_in_a_progression_are_reported_too(tmp_path: Path) -> N
     }]
 
 
+# FR-083 FR-084
 def test_plain_text_body_blocks_unsupported_raw_and_ambiguous_layout() -> None:
     source, error = chart_parser.plain_text_chart_body({"sections": [{"label": None, "lines": [
         {"type": "raw", "text": "freeform note that ordinary parser calls lyrics"},
@@ -1282,6 +1330,7 @@ def test_plain_text_body_blocks_unsupported_raw_and_ambiguous_layout() -> None:
     assert error == "raw_line_not_recognized_by_ordinary_text_parser"
 
 
+# FR-083 NFR-012
 def test_progression_repeat_detection_matches_ordinary_parser_contract() -> None:
     paragraphs = [
         chart_parser.Paragraph("Synthetic progression – C\x01Artist", None,
@@ -1300,6 +1349,7 @@ def test_progression_repeat_detection_matches_ordinary_parser_contract() -> None
     assert song.warnings == []
 
 
+# FR-079 FR-109
 def test_batch_report_surfaces_tab_diagnostic_without_lyrics(tmp_path: Path) -> None:
     docs = tmp_path / "docs"
     output = tmp_path / "out"
@@ -1347,6 +1397,7 @@ _DEFAULT_TAB_SETTINGS = (
 )
 
 
+# FR-029 FR-083
 def test_blank_paragraphs_and_hard_breaks_keep_chart_spacing_separate(tmp_path: Path) -> None:
     document = tmp_path / "spacing.docx"
     paragraphs = [
@@ -1381,6 +1432,7 @@ def test_blank_paragraphs_and_hard_breaks_keep_chart_spacing_separate(tmp_path: 
     assert [line["type"] for line in sections[1]["lines"]] == ["lyric"]
 
 
+# FR-083
 def test_docx_text_breaks_preserve_terminal_separators_but_ignore_page_controls(tmp_path: Path) -> None:
     document = tmp_path / "break-boundaries.docx"
     paragraphs = [
@@ -1432,6 +1484,7 @@ def test_docx_text_breaks_preserve_terminal_separators_but_ignore_page_controls(
     ]
 
 
+# FR-083 NFR-012
 def test_ordinary_chord_columns_use_utf16_code_units() -> None:
     assert chart_parser.pair_space_aligned("C          G", "x")["chords"] == [
         {"sym": "C", "pos": 0}, {"sym": "G", "pos": 11},
@@ -1574,6 +1627,7 @@ def _valid_insert(title: str, artist: str, source: str | None, **metadata) -> di
     }
 
 
+# FR-085 FR-086 FR-087 FR-109 FR-114
 def test_insert_only_loader_preview_skip_collisions_atomicity_and_concurrency() -> None:
     with psycopg.connect(_scratch_database_url(), autocommit=False) as conn:
         with conn.cursor() as cur:
@@ -1791,6 +1845,7 @@ def test_insert_only_loader_preview_skip_collisions_atomicity_and_concurrency() 
     assert sum(result["counts"]["exact_skips"] for result in results) == 1
 
 
+# FR-084
 def test_legacy_loader_artifact_fails_closed_before_database_access() -> None:
     class NoSqlConnection:
         def cursor(self):
@@ -1800,6 +1855,7 @@ def test_legacy_loader_artifact_fails_closed_before_database_access() -> None:
         load(NoSqlConnection(), [{"title": "Legacy artifact"}], dry_run=False)
 
 
+# FR-084 FR-109
 def test_nonempty_primary_genre_without_provenance_rejects_before_database_access() -> None:
     class NoSqlConnection:
         def cursor(self):
@@ -1814,6 +1870,7 @@ def test_nonempty_primary_genre_without_provenance_rejects_before_database_acces
     assert "reparse with the current parser" in message
 
 
+# FR-085
 def test_cli_jsonb_failure_suppresses_chart_content_context(tmp_path: Path, monkeypatch, capsys) -> None:
     sentinel = "PRIVATE_CHART_CONTEXT_SENTINEL"
     database_url = _scratch_database_url()
@@ -1846,6 +1903,7 @@ def test_cli_jsonb_failure_suppresses_chart_content_context(tmp_path: Path, monk
     assert sentinel not in error
 
 
+# FR-109
 @pytest.mark.parametrize("source", ["cover_page", "filename_fallback"])
 def test_primary_genre_provenance_is_explicit(source: str) -> None:
     song = _valid_insert("Explicit genre origin", "Origin Artist", "origin.docx",
@@ -1857,6 +1915,7 @@ def test_primary_genre_provenance_is_explicit(source: str) -> None:
     assert prepared[0]["primary_genre"] == "Rock"
 
 
+# FR-086
 def test_ambiguous_artist_resolution_is_explicit() -> None:
     class MultipleArtists:
         def execute(self, query, params):
@@ -1873,6 +1932,7 @@ def test_ambiguous_artist_resolution_is_explicit() -> None:
     ]}
 
 
+# FR-084
 @pytest.mark.parametrize("bad_version", [None, True, 1.0, "1", 0, 2, -1])
 def test_malformed_or_unsupported_diagnostic_versions_fail_closed(bad_version) -> None:
     with pytest.raises(ValueError, match="parser_diagnostics_version"):
@@ -1883,6 +1943,7 @@ def test_malformed_or_unsupported_diagnostic_versions_fail_closed(bad_version) -
         }])
 
 
+# FR-084
 def test_version_one_low_confidence_warning_is_nonblocking() -> None:
     validate_parser_diagnostics([{
         **_ordinary_source_artifact(),
@@ -1902,6 +1963,7 @@ def _ordinary_source_artifact() -> dict:
     }
 
 
+# FR-084
 @pytest.mark.parametrize("mismatch", ["anchor", "anchor_json_type", "line_type", "confidence"])
 def test_ordinary_source_content_mismatches_fail_preflight(mismatch) -> None:
     artifact = _ordinary_source_artifact()
@@ -1918,6 +1980,7 @@ def test_ordinary_source_content_mismatches_fail_preflight(mismatch) -> None:
         validate_parser_diagnostics([artifact])
 
 
+# FR-084
 def test_direct_loader_rejects_source_content_mismatch_before_sql() -> None:
     class NoSqlConnection:
         def cursor(self):
@@ -1930,10 +1993,12 @@ def test_direct_loader_rejects_source_content_mismatch_before_sql() -> None:
             load(NoSqlConnection(), [artifact], dry_run=dry_run)
 
 
+# FR-084
 def test_ordinary_source_content_exact_match_is_accepted() -> None:
     validate_parser_diagnostics([_ordinary_source_artifact()])
 
 
+# FR-107
 @pytest.mark.parametrize(("chart_source", "problem"), [
     (None, "chart_source_missing"),
     ("[[CCM-CHART:2]]\r\nOld\\n", "chart_source_content_mismatch"),
@@ -1951,6 +2016,7 @@ def test_missing_or_generated_chart_source_is_rejected(chart_source, problem) ->
         }])
 
 
+# FR-084
 @pytest.mark.parametrize("dry_run", [False, True], ids=["normal", "dry-run"])
 def test_cli_source_content_mismatch_rejected_before_database_connection(
         dry_run: bool, tmp_path: Path, monkeypatch, capsys) -> None:
@@ -1971,6 +2037,7 @@ def test_cli_source_content_mismatch_rejected_before_database_connection(
     assert "chart_source_content_mismatch" in capsys.readouterr().err
 
 
+# FR-084
 @pytest.mark.parametrize("warnings_field", [
     pytest.param({}, id="omitted"),
     pytest.param({"warnings": None}, id="null"),
@@ -1988,6 +2055,7 @@ def test_direct_loader_rejects_missing_or_malformed_warnings_before_sql(warnings
         load(NoSqlConnection(), [artifact], dry_run=False)
 
 
+# FR-084 FR-085
 @pytest.mark.parametrize("artifact", [
     {"title": "Synthetic legacy", "warnings": []},
     {"title": "Synthetic unresolved", "parser_diagnostics_version": 1,

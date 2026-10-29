@@ -438,7 +438,7 @@ async function mutateSetlist(request, type, id, token, payload) {
 test.describe('offline and online song deletes', () => {
 test.use({ serviceWorkers: 'block' });
 
-test('deleting a persisted song offline queues and acknowledges the delete after reconnect', async ({ page, context, request, t10Owned }) => {
+test('FR-020 FR-057 deleting a persisted song offline queues and acknowledges the delete after reconnect', async ({ page, context, request, t10Owned }) => {
   const title = `T11 offline delete ${t10Owned.suffix}`;
   const created = await request.post('/api/songs', { data: {
     title, artist: 'T11 invented delete artist', chart_written_key: 'C',
@@ -542,7 +542,7 @@ test('FR-111 an online editor delete of a stale song keeps the server version an
 });
 });
 
-test('stale setlist sync discards the whole local aggregate and shows the server version', async ({ page, context, request, t10Owned }) => {
+test('FR-058 FR-062 stale setlist sync discards the whole local aggregate and shows the server version', async ({ page, context, request, t10Owned }) => {
   const name = t10Owned.setlistName;
   const setlist = await createServerSetlist(request, name, t10Owned);
   await page.goto('/');
@@ -607,7 +607,7 @@ test('FR-106 the add-song picker offers a song already in the setlist, online an
   expect(new Set(synced.map(entry => entry.entry_id)).size).toBe(3);
 });
 
-test('a server-deleted song dependency conflicts without retaining the queued entry', async ({ page, context, request, t10Owned }) => {
+test('FR-058 FR-062 a server-deleted song dependency conflicts without retaining the queued entry', async ({ page, context, request, t10Owned }) => {
   const setlist = await createServerSetlist(request, t10Owned.setlistName, t10Owned);
   const songResponse = await request.post('/api/songs', { data: {
     title: t10Owned.titles[0], artist: 'T10 dependency fixture artist',
@@ -639,7 +639,7 @@ test('a server-deleted song dependency conflicts without retaining the queued en
   expect(authoritative.songs).toHaveLength(0);
 });
 
-test('a lost song-create response replays its frozen body and maps dependent setlist entries', async ({ page, context, request, t10Owned }) => {
+test('FR-059 FR-064 a lost song-create response replays its frozen body and maps dependent setlist entries', async ({ page, context, request, t10Owned }) => {
   await page.goto('/');
   await expect(page.getByPlaceholder('Search songs, artists…')).toBeVisible();
   await context.setOffline(true);
@@ -856,7 +856,7 @@ test('a lost song-create response replays its frozen body and maps dependent set
   expect(songs[0].id).toBe(mappedSongId);
 });
 
-test('online editing of a pending local song preserves its ID redirect and later field update', async ({ page, context, request, t10Owned }) => {
+test('FR-059 online editing of a pending local song preserves its ID redirect and later field update', async ({ page, context, request, t10Owned }) => {
   await page.goto('/');
   await expect(page.getByPlaceholder('Search songs, artists…')).toBeVisible();
   await context.setOffline(true);
@@ -907,7 +907,7 @@ test('online editing of a pending local song preserves its ID redirect and later
   expect(serverSongs[0].id).toBeGreaterThan(0);
 });
 
-test('a lost song-update response replays its receipt and preserves a newer edit across reload', async ({ page, context, request, t10Owned }) => {
+test('FR-064 a lost song-update response replays its receipt and preserves a newer edit across reload', async ({ page, context, request, t10Owned }) => {
   const title = t10Owned.titles[0];
   const created = await request.post('/api/songs', { data: {
     operation_id: randomUUID(), title, artist: 'T10 revision fixture artist',
@@ -1118,7 +1118,7 @@ test('a lost song-update response replays its receipt and preserves a newer edit
   expect((await authoritative.json()).songs.find(row => row.title === title)?.bpm).toBe(222);
 });
 
-test('setlist conflicts stay visible after a later unrelated push failure and reload', async ({ page, context, request, t10Owned }) => {
+test('FR-068 setlist conflicts stay visible after a later unrelated push failure and reload', async ({ page, context, request, t10Owned }) => {
   const first = await createServerSetlist(request, `${t10Owned.setlistName} A`, t10Owned);
   const second = await createServerSetlist(request, `${t10Owned.setlistName} B`, t10Owned);
   await page.goto('/');
@@ -1166,7 +1166,7 @@ test('setlist conflicts stay visible after a later unrelated push failure and re
 test.describe('T10 cache reconciliation teardown', () => {
 test.use({ serviceWorkers: 'block' });
 
-test('fixture teardown waits for cache reconciliation after a delayed create acknowledgement', async ({ page, context, t10Owned }) => {
+test('NFR-010 fixture teardown waits for cache reconciliation after a delayed create acknowledgement', async ({ page, context, t10Owned }) => {
   t10Owned.settleBudgetMs = 100;
   t10Owned.requirePullAfterCreate = true;
   t10Owned.targetPullId = randomUUID();
@@ -1259,7 +1259,7 @@ test('fixture teardown waits for cache reconciliation after a delayed create ack
 });
 });
 
-test('fixture teardown catches a create that commits after the test body ends', async ({ page, request, t10Owned }) => {
+test('NFR-010 fixture teardown catches a create that commits after the test body ends', async ({ page, request, t10Owned }) => {
   t10Owned.settleBudgetMs = 100;
   t10Owned.requireLateCommit = true;
   let requestStarted;

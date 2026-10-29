@@ -27,7 +27,7 @@ const test = base.extend({
   }, { timeout: 60_000 }],
 });
 
-test('auto-scroll is manual, timed, continues through manual scrolling, and is cleaned up', async ({ page, request, context, t15Fixtures }) => {
+test('FR-040 FR-041 FR-042 auto-scroll is manual, timed, continues through manual scrolling, and is cleaned up', async ({ page, request, context, t15Fixtures }) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.message));
   const suffix = randomUUID();

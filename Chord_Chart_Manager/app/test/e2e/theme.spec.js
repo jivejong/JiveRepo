@@ -118,7 +118,7 @@ async function expectSettledChart(page) {
   return second;
 }
 
-test('System follows device changes, explicit themes persist, and theme switching preserves chart layout', async ({ page, context }) => {
+test('FR-043 System follows device changes, explicit themes persist, and theme switching preserves chart layout', async ({ page, context }) => {
   await page.emulateMedia({ colorScheme: 'light' });
   await page.goto('/');
   await expectTheme(page, 'light');
@@ -205,7 +205,7 @@ test('System follows device changes, explicit themes persist, and theme switchin
   await page.getByRole('button', { name: 'Pause auto-scroll' }).click();
 });
 
-test('invalid or unavailable stored preference safely falls back to System', async ({ page }) => {
+test('FR-043 invalid or unavailable stored preference safely falls back to System', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.addInitScript(key => localStorage.setItem(key, 'sepia'), preferenceKey);
   await page.goto('/');
@@ -229,7 +229,7 @@ test('invalid or unavailable stored preference safely falls back to System', asy
   await blocked.close();
 });
 
-test('theme tokens cover setlist and edit views, with task-owned fixture cleanup', async ({ page, request }) => {
+test('FR-043 theme tokens cover setlist and edit views, with task-owned fixture cleanup', async ({ page, request }) => {
   const name = `T16 Theme view ${randomUUID()}`;
   const created = await request.post('/api/setlists/mutations', { data: {
     operation_id: randomUUID(), type: 'create', setlist_id: null,
@@ -273,7 +273,7 @@ test('theme tokens cover setlist and edit views, with task-owned fixture cleanup
   }
 });
 
-test('danger text meets contrast on effective surfaces in Light and Dark', async ({ page, context, request }) => {
+test('FR-043 danger text meets contrast on effective surfaces in Light and Dark', async ({ page, context, request }) => {
   const suffix = randomUUID();
   const setlistName = `T16 Contrast setlist ${suffix}`;
   const songTitle = `T16 Contrast song ${suffix}`;
@@ -390,7 +390,7 @@ test('danger text meets contrast on effective surfaces in Light and Dark', async
   }
 });
 
-test('malformed-anchor warnings remain visible and themed in Light and Dark', async ({ page, request }) => {
+test('FR-031 FR-043 malformed-anchor warnings remain visible and themed in Light and Dark', async ({ page, request }) => {
   const title = `T16 Theme warning ${randomUUID()}`;
   // G's column 1 falls inside the emoji's surrogate pair; C sits on the space after x.
   const chartSource = '[Invented Verse]\n G C\n\u{1F3B8}x invented warning sample';

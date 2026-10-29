@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('the production app shell loads', async ({ page }) => {
+test('FR-075 the production app shell loads', async ({ page }) => {
   await page.goto('/');
 
   await expect(page.getByPlaceholder('Search songs, artists…')).toBeVisible();

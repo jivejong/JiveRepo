@@ -21,7 +21,7 @@ function makeStorage() {
 }
 
 describe('cached chart opening', () => {
-  it('reports an initial cache read exception instead of calling it a conditional refusal', async () => {
+  it('FR-066 reports an initial cache read exception instead of calling it a conditional refusal', async () => {
     const diagnostics = [];
     let reads = 0;
     const result = await loadChartSong(959999, {
@@ -48,7 +48,7 @@ describe('cached chart opening', () => {
     expect(diagnostics[0]).not.toMatch(/conditional write was declined/i);
   });
 
-  it('ignores stale asynchronous list projections after a newer request starts', async () => {
+  it('FR-066 ignores stale asynchronous list projections after a newer request starts', async () => {
     const gate = createLatestRequestGate();
     let resolveOld;
     const oldRead = new Promise(resolve => { resolveOld = resolve; });
@@ -67,7 +67,7 @@ describe('cached chart opening', () => {
     expect(state).toEqual({ songs: ['newer search'], loading: false, error: null });
   });
 
-  it('normalizes a successful IndexedDB miss and caches the first online chart for offline reopen', async () => {
+  it('FR-066 normalizes a successful IndexedDB miss and caches the first online chart for offline reopen', async () => {
     const id = 960000 + Math.floor(Math.random() * 10000);
     const remote = { id, title: 'Synthetic first-open chart', updated_at: 'v1' };
     const diagnostics = [];
@@ -95,7 +95,7 @@ describe('cached chart opening', () => {
     }
   });
 
-  it('does not overwrite a song inserted by another tab between the miss read and conditional write', async () => {
+  it('FR-066 does not overwrite a song inserted by another tab between the miss read and conditional write', async () => {
     const id = 961000 + Math.floor(Math.random() * 10000);
     const remote = { id, title: 'Synthetic stale response', updated_at: 'v1' };
     const intervening = { id, title: 'Synthetic other-tab edit', updated_at: 'v2',
@@ -122,7 +122,7 @@ describe('cached chart opening', () => {
     }
   });
 
-  it('applies a successful background refresh when the request-start snapshot is unchanged', async () => {
+  it('FR-066 applies a successful background refresh when the request-start snapshot is unchanged', async () => {
     const remote = deferred();
     const started = deferred();
     let cached = { id: 41, title: 'Unchanged cached snapshot', updated_at: 'v1' };
@@ -148,7 +148,7 @@ describe('cached chart opening', () => {
     expect(displayed).toEqual(['Unchanged cached snapshot', 'Refreshed server snapshot']);
   });
 
-  it('publishes cached content before a slow refresh and preserves an edit queued during it', async () => {
+  it('FR-066 publishes cached content before a slow refresh and preserves an edit queued during it', async () => {
     const remote = deferred();
     const refreshStarted = deferred();
     const cached = { id: 42, title: 'Invented cached chart', updated_at: 'v1' };
@@ -174,7 +174,7 @@ describe('cached chart opening', () => {
     expect(displayed).toEqual(['Invented cached chart', 'Invented pending edit']);
   });
 
-  it('does not make a server request when offline or when a queued mutation exists', async () => {
+  it('FR-066 does not make a server request when offline or when a queued mutation exists', async () => {
     const cached = { id: 42, title: 'Invented offline chart' };
     let remoteCalls = 0;
     const readCached = async () => cached;
@@ -194,7 +194,7 @@ describe('cached chart opening', () => {
     expect(remoteCalls).toBe(0);
   });
 
-  it('never publishes a queued song deletion', async () => {
+  it('FR-066 never publishes a queued song deletion', async () => {
     const deleted = { id: 42, title: 'Deleted synthetic chart',
       _sync: { operation: 'delete', base_updated_at: '2026-10-11T12:00:00.123456Z' } };
     const displayed = [];
@@ -212,7 +212,7 @@ describe('cached chart opening', () => {
     expect(remoteCalls).toBe(0);
   });
 
-  it('removes the unchanged cached song after an authoritative 404', async () => {
+  it('FR-066 removes the unchanged cached song after an authoritative 404', async () => {
     const cached = { id: 42, title: 'Deleted synthetic chart',
       updated_at: '2026-10-11T12:00:00.123456Z' };
     const displayed = [];
@@ -234,7 +234,7 @@ describe('cached chart opening', () => {
     expect(displayed).toEqual(['Deleted synthetic chart', null]);
   });
 
-  it('does not reject if cache cleanup itself fails after a 404', async () => {
+  it('FR-066 does not reject if cache cleanup itself fails after a 404', async () => {
     const cached = { id: 4200, title: 'Cached chart', updated_at: 'v1' };
     const displayed = [];
     const diagnostics = [];
@@ -268,7 +268,7 @@ describe('cached chart opening', () => {
     expect(reopened).toEqual([null]);
   });
 
-  it('keeps invalidation suppression across a fresh loader runtime without storing chart content', async () => {
+  it('FR-066 keeps invalidation suppression across a fresh loader runtime without storing chart content', async () => {
     const cached = { id: 4201, title: 'Private synthetic chart', updated_at: 'v1' };
     const storage = makeStorage();
     const first = await loadChartSong(4201, {
@@ -297,7 +297,7 @@ describe('cached chart opening', () => {
     expect(storage.getItem('ccm-invalidated-song:4201')).toBe('v1');
   });
 
-  it('shows changed versions and pending edits instead of suppressing them', async () => {
+  it('FR-066 shows changed versions and pending edits instead of suppressing them', async () => {
     const storage = makeStorage();
     storage.setItem('ccm-invalidated-song:4202', 'v1');
     const newer = { id: 4202, title: 'New clean version', updated_at: 'v2' };
@@ -325,7 +325,7 @@ describe('cached chart opening', () => {
     expect(storage.getItem('ccm-invalidated-song:4202')).toBeNull();
   });
 
-  it('clears a persisted invalidation marker after a valid background refresh', async () => {
+  it('FR-066 clears a persisted invalidation marker after a valid background refresh', async () => {
     const cached = { id: 4203, title: 'Invalidated cached version', updated_at: 'v1' };
     const remote = { id: 4203, title: 'Valid refreshed version', updated_at: 'v2' };
     const storage = makeStorage();
@@ -362,7 +362,7 @@ describe('cached chart opening', () => {
     expect(offlineDisplayed).toEqual(['Valid refreshed version']);
   });
 
-  it('keeps the exact invalidated snapshot hidden after reload when online revalidation fails', async () => {
+  it('FR-066 keeps the exact invalidated snapshot hidden after reload when online revalidation fails', async () => {
     const cached = { id: 4207, title: 'Invalidated stale chart', updated_at: 'v1' };
     const storage = makeStorage();
     storage.setItem('ccm-invalidated-song:4207', 'v1');
@@ -380,7 +380,7 @@ describe('cached chart opening', () => {
     expect(storage.getItem('ccm-invalidated-song:4207')).toBe('v1');
   });
 
-  it('reports actionable diagnostics when persistent suppression storage fails', async () => {
+  it('FR-066 reports actionable diagnostics when persistent suppression storage fails', async () => {
     const cached = { id: 4204, title: 'Synthetic stale chart', updated_at: 'v1' };
     const diagnostics = [];
     const failingStorage = {
@@ -401,7 +401,7 @@ describe('cached chart opening', () => {
     expect(diagnostics.some(message => /only for this runtime; reconnect and refresh before reloading/i.test(message))).toBe(true);
   });
 
-  it('reports when acquiring the browser localStorage property throws', async () => {
+  it('FR-066 reports when acquiring the browser localStorage property throws', async () => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
@@ -423,7 +423,7 @@ describe('cached chart opening', () => {
     }
   });
 
-  it('distinguishes unavailable browser storage from failed storage access', async () => {
+  it('FR-066 distinguishes unavailable browser storage from failed storage access', async () => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
     delete globalThis.localStorage;
     const diagnostics = [];
@@ -470,7 +470,7 @@ describe('cached chart opening', () => {
     expect(displayed).not.toContain(remote.title);
   });
 
-  it('retains stale suppression and reports a handled diagnostic when refreshed cache write fails', async () => {
+  it('FR-066 retains stale suppression and reports a handled diagnostic when refreshed cache write fails', async () => {
     const cached = { id: 4211, title: 'Stale cached chart', updated_at: 'v1' };
     const remote = { id: 4211, title: 'Accepted remote chart', updated_at: 'v2' };
     const storage = makeStorage();
@@ -530,7 +530,7 @@ describe('cached chart opening', () => {
     expect(displayed).toEqual(['Request-start chart', expectedTitle]);
   });
 
-  it('preserves a clean version written immediately after deletion succeeds', async () => {
+  it('FR-066 preserves a clean version written immediately after deletion succeeds', async () => {
     const initial = { id: 4205, title: 'Original synthetic chart',
       updated_at: '2026-10-11T12:00:00.123456Z' };
     const newer = { id: 4205, title: 'Newer synthetic chart',
@@ -551,7 +551,7 @@ describe('cached chart opening', () => {
     expect(displayed).toEqual([initial.updated_at, newer.updated_at]);
   });
 
-  it('preserves a pending edit written immediately after deletion succeeds', async () => {
+  it('FR-066 preserves a pending edit written immediately after deletion succeeds', async () => {
     const initial = { id: 4206, title: 'Original synthetic chart', updated_at: 'v1' };
     const pending = { ...initial, title: 'Pending synthetic edit',
       _sync: { operation: 'update', base_updated_at: 'v1' } };
@@ -571,7 +571,7 @@ describe('cached chart opening', () => {
     expect(displayed).toEqual(['Original synthetic chart', 'Pending synthetic edit']);
   });
 
-  it('preserves and displays a newer clean cache snapshot when an older request returns 404', async () => {
+  it('FR-066 preserves and displays a newer clean cache snapshot when an older request returns 404', async () => {
     const held = deferred();
     const initial = { id: 43, title: 'Request-start snapshot', updated_at: 'v1' };
     const newer = { id: 43, title: 'Newer clean snapshot', updated_at: 'v2' };
@@ -595,7 +595,7 @@ describe('cached chart opening', () => {
     expect(current).toEqual(newer);
   });
 
-  it('does not restore a song removed while its successful request was held', async () => {
+  it('FR-066 does not restore a song removed while its successful request was held', async () => {
     const held = deferred();
     const cached = { id: 42, title: 'Removed during request', updated_at: 'v1' };
     let current = cached;
@@ -615,7 +615,7 @@ describe('cached chart opening', () => {
     expect(displayed).toEqual(['Removed during request', null]);
   });
 
-  it('keeps a newer acknowledged full-precision cache version over a held response', async () => {
+  it('FR-066 keeps a newer acknowledged full-precision cache version over a held response', async () => {
     const held = deferred();
     const initial = { id: 42, title: 'Initial', updated_at: '2026-10-11T12:00:00.123456Z' };
     const newer = { id: 42, title: 'Newer acknowledged version',
@@ -638,7 +638,7 @@ describe('cached chart opening', () => {
     expect(displayed).toEqual(['Initial', 'Newer acknowledged version']);
   });
 
-  it('retains pending local edits when a not-found response races with the edit', async () => {
+  it('FR-066 retains pending local edits when a not-found response races with the edit', async () => {
     const held = deferred();
     const cached = { id: 42, title: 'Original', updated_at: 'v1' };
     const pending = { ...cached, title: 'Pending edit',
@@ -660,7 +660,7 @@ describe('cached chart opening', () => {
     expect(displayed).toEqual(['Original', 'Pending edit']);
   });
 
-  it('conditionally removes only the same clean cache snapshot after a 404', async () => {
+  it('FR-066 conditionally removes only the same clean cache snapshot after a 404', async () => {
     const id = 970000 + Math.floor(Math.random() * 10000);
     const original = { id, title: 'Synthetic conditional delete',
       updated_at: '2026-10-11T12:00:00.123456Z' };
@@ -686,7 +686,7 @@ describe('cached chart opening', () => {
     }
   });
 
-  it('atomically replaces only the exact request-start cache snapshot', async () => {
+  it('FR-066 atomically replaces only the exact request-start cache snapshot', async () => {
     const id = 980000 + Math.floor(Math.random() * 10000);
     const original = { id, title: 'Synthetic cached version', updated_at: 'v1' };
     const intervening = { id, title: 'Synthetic newer cache version', updated_at: 'v2' };

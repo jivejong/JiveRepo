@@ -3,12 +3,12 @@ import { buildCachedTagOptions, eraForYear, matchesSongTagFilters, normalizeSong
 import { editablePayload } from '../../src/lib/cache.js';
 
 describe('tag editing data', () => {
-  it('trims and collapses whitespace and removes case-insensitive duplicates', () => {
+  it('FR-015 trims and collapses whitespace and removes case-insensitive duplicates', () => {
     expect(normalizeTagNames(['  Indie   Rock ', 'indie rock', 'Alt Pop']))
       .toEqual(['Indie Rock', 'Alt Pop']);
   });
 
-  it('preserves the selected primary genre while normalizing assignments', () => {
+  it('FR-017 FR-018 preserves the selected primary genre while normalizing assignments', () => {
     expect(normalizeSongTags([
       { name: '  Indie  ', is_primary: false },
       { name: ' Rock ', is_primary: true },
@@ -19,14 +19,14 @@ describe('tag editing data', () => {
     });
   });
 
-  it('derives Era from an exact release year and leaves missing years unset', () => {
+  it('FR-005 FR-014 derives Era from an exact release year and leaves missing years unset', () => {
     expect(eraForYear(1977)).toBe('1970s');
     expect(eraForYear('2003')).toBe('2000s');
     expect(eraForYear('')).toBeNull();
     expect(eraForYear('not a year')).toBeNull();
   });
 
-  it('carries complete tag sets in song updates and preserves omitted fields', () => {
+  it('FR-015 carries complete tag sets in song updates and preserves omitted fields', () => {
     const complete = editablePayload({ genres: [], vibes: [], release_year: null });
     expect(complete.genres).toEqual([]);
     expect(complete.vibes).toEqual([]);
@@ -47,7 +47,7 @@ describe('tag editing data', () => {
     expect(createPayload).toMatchObject({ genres: [], vibes: [] });
   });
 
-  it('keeps cached unassigned category values available and adds offline values from songs', () => {
+  it('FR-002 FR-056 keeps cached unassigned category values available and adds offline values from songs', () => {
     const options = buildCachedTagOptions([
       { genres: [{ name: 'New Genre', is_primary: true }], vibes: ['Offline Vibe'], release_year: 2003 },
     ], { genres: ['Existing Genre'], vibes: ['Existing Vibe'], eras: ['1970s'] });
@@ -58,7 +58,7 @@ describe('tag editing data', () => {
     expect(options).toContainEqual(expect.objectContaining({ name: '1970s', category: 'Era', song_count: 0 }));
   });
 
-  it('keeps secondary genres and equal names in different categories distinct', () => {
+  it('FR-003 FR-004 keeps secondary genres and equal names in different categories distinct', () => {
     const song = {
       genres: [{ name: 'Rock', is_primary: true }, { name: 'Shared', is_primary: false }],
       vibes: ['Shared'], release_year: 2003,
@@ -74,7 +74,7 @@ describe('tag editing data', () => {
       [{ category: 'Era', name: '2000s' }])).toBe(false);
   });
 
-  it('uses OR within each selected category, AND across categories, and derives Era at decade boundaries', () => {
+  it('FR-002 FR-005 uses OR within each selected category, AND across categories, and derives Era at decade boundaries', () => {
     const song = {
       genres: [{ name: 'Primary', is_primary: true }, { name: 'Secondary', is_primary: false }],
       vibes: ['Calm', 'Driving'], release_year: 1980,

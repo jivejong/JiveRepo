@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import { bracedLyric } from './chartText.js';
 
-test('chart metadata stays below title while scrolling and remains usable across themes and widths', async ({ page, request, context }) => {
+test('FR-030 chart metadata stays below title while scrolling and remains usable across themes and widths', async ({ page, request, context }) => {
   test.setTimeout(90000);
   const suffix = randomUUID();
   const title = `T23 metadata ${suffix}`;

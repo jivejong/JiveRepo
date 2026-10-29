@@ -24,7 +24,7 @@ async function cleanupOwnedRows(initialArtistIds, initialReceiptIds, songIds, ar
   } catch (error) { cleanupErrors.push(error); }
 }
 
-test('combined category filters work from cache offline and chart swipe follows filtered title order', async ({ page, context, request }) => {
+test('FR-002 FR-007 combined category filters work from cache offline and chart swipe follows filtered title order', async ({ page, context, request }) => {
   const initialArtistIds = new Set((await testDatabase.query('SELECT id FROM public.artists')).rows.map(row => row.id));
   const initialReceiptIds = new Set((await testDatabase.query('SELECT operation_id FROM public.mutation_receipts')).rows.map(row => row.operation_id));
   const suffix = randomUUID();
@@ -182,7 +182,7 @@ test('combined category filters work from cache offline and chart swipe follows 
   if (primaryError) throw primaryError;
 });
 
-test('online filters overlay pending create, edit, and delete projections until acknowledgement', async ({ page, context, request }) => {
+test('FR-002 FR-057 online filters overlay pending create, edit, and delete projections until acknowledgement', async ({ page, context, request }) => {
   const initialArtistIds = new Set((await testDatabase.query('SELECT id FROM public.artists')).rows.map(row => row.id));
   const initialReceiptIds = new Set((await testDatabase.query('SELECT operation_id FROM public.mutation_receipts')).rows.map(row => row.operation_id));
   const suffix = randomUUID();

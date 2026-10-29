@@ -106,7 +106,7 @@ async function installHeldListFetch(page) {
   });
 }
 
-test('cached charts open promptly on song selection, swipe, and browser-offline navigation',
+test('FR-038 FR-066 cached charts open promptly on song selection, swipe, and browser-offline navigation',
   async ({ page, context, cachedOpenFixtures }) => {
     const { ids, prefix, titles } = cachedOpenFixtures;
     const started = new Set();
@@ -190,7 +190,7 @@ test('cached charts open promptly on song selection, swipe, and browser-offline 
       await context.setOffline(false).catch(() => {});
     }
   });
-test('cached song list appears before an unreachable online request and on browser-offline navigation',
+test('FR-056 FR-066 cached song list appears before an unreachable online request and on browser-offline navigation',
   async ({ page, context, cachedOpenFixtures }) => {
     const { prefix, titles } = cachedOpenFixtures;
     await page.goto('/');
@@ -234,7 +234,7 @@ test('cached song list appears before an unreachable online request and on brows
     await context.setOffline(false);
   });
 
-test('successful new-song save caches the first chart open for a later offline reopen',
+test('FR-056 FR-066 successful new-song save caches the first chart open for a later offline reopen',
   async ({ page, context, request }) => {
     const suffix = randomUUID();
     const title = `T12 first-open save ${suffix}`;
@@ -292,7 +292,7 @@ test('successful new-song save caches the first chart open for a later offline r
     }
   });
 
-test('clears prior search rows for a successful empty cache projection while the server request is held',
+test('FR-001 FR-066 clears prior search rows for a successful empty cache projection while the server request is held',
   async ({ page, cachedOpenFixtures }) => {
     const { prefix, titles } = cachedOpenFixtures;
     await installHeldListFetch(page);
@@ -311,7 +311,7 @@ test('clears prior search rows for a successful empty cache projection while the
     await page.evaluate(() => window.__t13ListRelease.splice(0).forEach(release => release()));
   });
 
-test('clears the final matching cached row when a pending delete arrives during a held list request',
+test('FR-001 FR-066 clears the final matching cached row when a pending delete arrives during a held list request',
   async ({ page, cachedOpenFixtures }) => {
     const { prefix, titles, ids } = cachedOpenFixtures;
     await installHeldListFetch(page);
@@ -333,7 +333,7 @@ test('clears the final matching cached row when a pending delete arrives during 
     await page.evaluate(() => window.__t13ListRelease.splice(0).forEach(release => release()));
   });
 
-test('rapid search changes keep the newest cached projection while all server responses are held',
+test('FR-001 FR-066 rapid search changes keep the newest cached projection while all server responses are held',
   async ({ page, cachedOpenFixtures }) => {
     const { prefix, titles } = cachedOpenFixtures;
     await installHeldListFetch(page);
@@ -353,7 +353,7 @@ test('rapid search changes keep the newest cached projection while all server re
     await page.evaluate(() => window.__t13ListRelease.splice(0).forEach(release => release()));
   });
 
-test('late cache fallback after a failed older search cannot replace the newer search',
+test('FR-001 FR-066 late cache fallback after a failed older search cannot replace the newer search',
   async ({ page, cachedOpenFixtures }) => {
     const { prefix, titles } = cachedOpenFixtures;
     await page.addInitScript(() => {

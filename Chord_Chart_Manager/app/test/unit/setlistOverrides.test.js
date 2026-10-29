@@ -12,43 +12,43 @@ const song = {
 };
 
 describe('setlist entry starting performance', () => {
-  it('uses both entry overrides when present', () => {
+  it('FR-053 uses both entry overrides when present', () => {
     expect(resolveStartingPerformance(song, {
       transposed_key: 'A', capo_fret: 5,
     })).toEqual({ key: 'A', capo: 5 });
   });
 
-  it('uses the song default capo when only the key is overridden', () => {
+  it('FR-053 uses the song default capo when only the key is overridden', () => {
     expect(resolveStartingPerformance(song, {
       transposed_key: 'Bb', capo_fret: null,
     })).toEqual({ key: 'Bb', capo: 3 });
   });
 
-  it('uses the song preferred key when only the capo is overridden', () => {
+  it('FR-053 uses the song preferred key when only the capo is overridden', () => {
     expect(resolveStartingPerformance(song, {
       transposed_key: null, capo_fret: 4,
     })).toEqual({ key: 'G', capo: 4 });
   });
 
-  it('falls back to preferred key and capo when there are no overrides', () => {
+  it('FR-053 falls back to preferred key and capo when there are no overrides', () => {
     expect(resolveStartingPerformance(song, {
       transposed_key: null, capo_fret: null,
     })).toEqual({ key: 'G', capo: 3 });
   });
 
-  it('preserves an explicit zero capo override', () => {
+  it('FR-053 preserves an explicit zero capo override', () => {
     expect(resolveStartingPerformance(song, {
       transposed_key: null, capo_fret: 0,
     })).toEqual({ key: 'G', capo: 0 });
   });
 
-  it('uses written key and capo zero when song preferences are absent', () => {
+  it('FR-053 uses written key and capo zero when song preferences are absent', () => {
     expect(resolveStartingPerformance({ chart_written_key: 'Eb' })).toEqual({
       key: 'Eb', capo: 0,
     });
   });
 
-  it('resolves each destination entry as a new reset baseline', () => {
+  it('FR-053 resolves each destination entry as a new reset baseline', () => {
     const destinations = [
       { transposed_key: 'C', capo_fret: 0 },
       { transposed_key: null, capo_fret: 6 },
@@ -60,7 +60,7 @@ describe('setlist entry starting performance', () => {
 });
 
 describe('performance save target', () => {
-  it('saves setlist context to the specific setlist entry', () => {
+  it('FR-054 saves setlist context to the specific setlist entry', () => {
     expect(buildPerformanceSaveTarget({
       song,
       setlistId: 9,
@@ -73,7 +73,7 @@ describe('performance save target', () => {
     });
   });
 
-  it('keeps song-list saves on the song preference fields', () => {
+  it('FR-036 keeps song-list saves on the song preference fields', () => {
     expect(buildPerformanceSaveTarget({ song }, 'A', 2)).toEqual({
       kind: 'song',
       songId: 42,

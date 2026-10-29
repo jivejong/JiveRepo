@@ -24,7 +24,7 @@ function makeScroller({ top = 0, height = 100, viewport = 20 } = {}) {
 }
 
 describe('auto-scroll timing', () => {
-  it('keeps the documented speed range, step, and default', () => {
+  it('FR-040 keeps the documented speed range, step, and default', () => {
     expect([AUTO_SCROLL_MIN_SPEED, AUTO_SCROLL_MAX_SPEED, AUTO_SCROLL_STEP,
       AUTO_SCROLL_DEFAULT_SPEED]).toEqual([5, 40, 5, 10]);
     expect(clampAutoScrollSpeed(3)).toBe(5);
@@ -32,7 +32,7 @@ describe('auto-scroll timing', () => {
     expect(clampAutoScrollSpeed(17)).toBe(15);
   });
 
-  it('moves by elapsed seconds, changes rate, and resumes at the current position', () => {
+  it('FR-040 moves by elapsed seconds, changes rate, and resumes at the current position', () => {
     const frames = makeFrames();
     const target = makeScroller();
     const controller = createAutoScrollController(frames);
@@ -50,7 +50,7 @@ describe('auto-scroll timing', () => {
     expect(target.scrollTop).toBe(20);
   });
 
-  it('treats an active 10-second frame gap as suspended time, then resumes normally', () => {
+  it('FR-042 treats an active 10-second frame gap as suspended time, then resumes normally', () => {
     const frames = makeFrames();
     const target = makeScroller();
     const controller = createAutoScrollController(frames);
@@ -67,7 +67,7 @@ describe('auto-scroll timing', () => {
     expect(AUTO_SCROLL_FRAME_GAP_RESET_MS).toBe(1000);
   });
 
-  it('clamps at the bottom, reports end, and stops scheduling', () => {
+  it('FR-042 clamps at the bottom, reports end, and stops scheduling', () => {
     const frames = makeFrames();
     const bottomValues = [];
     const target = makeScroller({ top: 75, height: 100, viewport: 20 });
@@ -97,7 +97,7 @@ describe('auto-scroll timing', () => {
       expect(target.scrollTop).toBe(to + 1);
     });
 
-  it('stops at a manually reached bottom without snapping back', () => {
+  it('FR-041 FR-042 stops at a manually reached bottom without snapping back', () => {
     const frames = makeFrames();
     const target = makeScroller({ top: 20, height: 1000, viewport: 100 });
     const bottomValues = [];
@@ -113,7 +113,7 @@ describe('auto-scroll timing', () => {
     expect(bottomValues.at(-1)).toBe(true);
   });
 
-  it('retains fractional distance when a browser rounds scrollTop writes', () => {
+  it('FR-040 retains fractional distance when a browser rounds scrollTop writes', () => {
     const frames = makeFrames();
     let roundedTop = 0;
     const target = {
@@ -129,7 +129,7 @@ describe('auto-scroll timing', () => {
     expect(target.scrollTop).toBeGreaterThan(10);
   });
 
-  it('keeps elapsed movement consistent across frame rates with rounded scrollTop writes', () => {
+  it('FR-040 keeps elapsed movement consistent across frame rates with rounded scrollTop writes', () => {
     for (const framesPerSecond of [24, 30, 60, 120]) {
       const frames = makeFrames();
       let roundedTop = 0;
@@ -150,7 +150,7 @@ describe('auto-scroll timing', () => {
     }
   });
 
-  it('resets the baseline on hidden-page pause and only resumes after explicit Start', () => {
+  it('FR-042 resets the baseline on hidden-page pause and only resumes after explicit Start', () => {
     const frames = makeFrames();
     const target = makeScroller();
     const controller = createAutoScrollController(frames);
@@ -167,7 +167,7 @@ describe('auto-scroll timing', () => {
     expect(target.scrollTop).toBe(2);
   });
 
-  it('uses current chart height while running and stops at a newly shortened bottom', () => {
+  it('FR-042 uses current chart height while running and stops at a newly shortened bottom', () => {
     const frames = makeFrames();
     const target = makeScroller({ top: 20, height: 1000, viewport: 100 });
     const controller = createAutoScrollController(frames);
@@ -186,7 +186,7 @@ describe('auto-scroll timing', () => {
     expect(frames.count).toBe(0);
   });
 
-  it('does not duplicate frames and cleans up on stop or short charts', () => {
+  it('FR-040 does not duplicate frames and cleans up on stop or short charts', () => {
     const frames = makeFrames();
     const target = makeScroller();
     const controller = createAutoScrollController(frames);
@@ -199,7 +199,7 @@ describe('auto-scroll timing', () => {
     expect(controller.start(makeScroller({ height: 20, viewport: 20 }))).toBe(false);
   });
 
-  it('classifies vertical keys without intercepting modified shortcuts', () => {
+  it('FR-041 classifies vertical keys without intercepting modified shortcuts', () => {
     expect(isVerticalScrollKey({ key: 'PageDown' })).toBe(true);
     expect(isVerticalScrollKey({ key: ' ', shiftKey: false })).toBe(true);
     expect(isVerticalScrollKey({ key: 'ArrowDown', ctrlKey: true })).toBe(false);
