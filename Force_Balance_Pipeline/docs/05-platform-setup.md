@@ -1697,9 +1697,9 @@ The checkpoint (doc 07, Phase 7): the agent decides a real incident A after the 
   python edge/probe_ctl.py --host <DESKTOP_IP> mode CONNECTED --for-seconds 15000
   ```
   (4 h 10 min; it expires by itself and the schedule resumes, so never use `--indefinite`). If a scheduled window was already running, the override ends it and the buffered scans drain through BURST. If the seed of the running probe is ever known (a probe started with `--mode-schedule-seed N`), its windows for a UTC day number `D` (days since the epoch) are `ModeSchedule(seed=N).windows_for_day(D)`, as epoch-second `(start, end, mode)` triples.
-- T0 must not put any step in the 03:xx UTC hour (the agent and ForceServe skip it): T0 between :15 and :25 past hour H with H from 04 to 23 UTC, so that H+1, H+2 and H+3 are never 03 (H = 00 to 03 is out).
+- T0 must not put any step in the 03:xx UTC hour (the agent and ForceServe skip it): inject A between :02 and :10 past hour H (it must land before the :15 scan), and B exactly one hour later, never in the same hour (two incidents built in the same hour are decided together, leaving no open incident). H runs from 04 to 23 UTC, so that H+1, H+2 and H+3 are never 03 (H = 00 to 03 is out). If the 03:xx UTC hour falls after A's decision, B stays open about two hours (the agent skips 03:xx).
 
-**2. T0 (between :15 and :25 past hour H): planet A.** Pick a sector that is not Mustafar or Dathomir (doc 04); the example is `geonosis` (Outer Rim):
+**2. T0 (between :02 and :10 past hour H): planet A.** Pick a sector that is not Mustafar or Dathomir (doc 04); the example is `geonosis` (Outer Rim):
 
 ```bash
 python edge/probe_ctl.py --host <DESKTOP_IP> inject geonosis sith_presence
@@ -1726,6 +1726,8 @@ python edge/probe_ctl.py --host <DESKTOP_IP> inject kamino force_drain
 | (H+2):12 | A's deployment and B's incident are on the dashboard |
 | (H+2):13 to (H+3):10 | **the manual-reject window**: A's Jedi are deployed and B is open and undecided |
 | (H+3):11 | the agent decides B |
+
+Deviation note (2026-10-29): this table was written for T0 = H:20 and B injected at (H+1):20. The first checkpoint run injected B in the same hour as A and both were decided together at 02:11Z, so the table is now read as offsets from T0 with A and B an hour apart, as step 1 says.
 
 The form's "Yoda decides at HH:MM UTC" for B (from `agent_first_seen`) shows (H+3):11 during the window.
 

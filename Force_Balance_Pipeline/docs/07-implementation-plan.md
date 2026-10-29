@@ -320,6 +320,9 @@ the incident appear with its signature, and the deployment log populate. Then de
 different planet and confirm the constraint layer rejects an already-deployed Jedi. Record both as
 a GIF.
 
+**Checkpoint status: passed (2026-10-29).** The agent decided two real incidents (geonosis `sith_presence` and kamino `force_drain`) at 02:11Z, one cycle after it first saw them at 01:11Z, and a manual deploy to alderaan naming kamino's plo_koon was rejected at 02:14Z (`jedi_unavailable`, among five reasons) and wrote nothing.
+The GIF was recorded by Jong and its location is still to be added; the evidence, the explanation of the five reasons and three follow-ups are in `docs/ENGINEERING-LOG.md`, "Round 13c".
+
 **Decisions:** doc 01 D4 (amended), doc 05 "Serving (Phase 7)", doc 06 "User-initiated deployment" and "Re-escalation".
 
 **Display rules:** the ETA formula is unchanged and the countdown targets `released_at`; a deployment whose `disturbance_id` no longer matches an incident (identities can shift on a full refresh) shows an "orphaned" badge and is not dropped; buffer depth shows "n/a" (`silver_source_health.buffer_depth` is always NULL); a Yoda voice for rationales is Phase 8.
