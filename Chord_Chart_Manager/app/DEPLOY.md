@@ -25,6 +25,4 @@ combined application image or adopt the plan's separate nginx web and Express
 API images. Do not treat the split-image topology as already implemented.
 
 Any tablet deployment must keep the client and relative `/api` routes on one
-trusted HTTPS origin so the service worker can control the application. If
-GetSongBPM-enriched data is used, add the service's required visible backlink
-to the React UI before release.
+trusted HTTPS origin so the service worker can control the application.
