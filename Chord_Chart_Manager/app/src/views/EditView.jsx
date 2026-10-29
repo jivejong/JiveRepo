@@ -297,24 +297,30 @@ export default function EditView({ song, online, onBack, onSaved, onDeleted }) {
     if (!confirm(`Delete "${song.title}"? This cannot be undone.`)) return;
     setDeleting(true);
     try {
-      if (online) {
-        await api.songs.remove(song.id);
-        onDeleted(song.id);
+      if (song._sync?.operation === 'create') {
+        await cache.cancelPendingLocalSong(song.id);
       } else {
-        if (song._sync?.operation === 'create') {
-          await cache.cancelPendingLocalSong(song.id);
-        } else {
-          await cache.updateCachedSong({
-            ...song,
-            _sync: {
-              operation: 'delete',
-              base_updated_at: song._sync?.base_updated_at ?? song.updated_at ?? null,
-            },
+        // Queue the delete with its version so a stale delete keeps the server copy (FR-111).
+        await cache.updateCachedSong({
+          ...song,
+          _sync: {
+            operation: 'delete',
+            base_updated_at: song._sync?.base_updated_at ?? song.updated_at ?? null,
+          },
+        });
+        await cache.markDirty(song.id);
+        if (online) {
+          const result = await cache.syncWithServer({
+            library: api.library, setlists: api.setlists, songs: api.songs,
           });
-          await cache.markDirty(song.id);
+          if (!result.ok) throw new Error(result.error || 'The song delete remains queued for sync.');
+          if (result.conflicts?.some(conflict => String(conflict.id) === String(song.id))
+              && await cache.getCachedSong(song.id)) {
+            throw new Error('The server song changed; its version was kept.');
+          }
         }
-        onDeleted(song.id);
       }
+      onDeleted(song.id);
     } catch (err) {
       setError(err.message);
       setDeleting(false);

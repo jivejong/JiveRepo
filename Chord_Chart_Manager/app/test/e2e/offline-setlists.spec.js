@@ -940,6 +940,66 @@ test('deleting a persisted song offline queues and acknowledges the delete after
   await context.setOffline(false);
   await expect.poll(async () => (await request.get(`/api/songs/${song.id}`)).status()).toBe(404);
 });
+
+async function openEditorForNewServerSong(page, request, t10Owned, title) {
+  const created = await request.post('/api/songs', { data: {
+    title, artist: 'T11 invented delete artist', chart_written_key: 'C',
+    chart_source: 'Invented delete verse\nInvented delete line', operation_id: randomUUID(),
+  } });
+  expect(created.status()).toBe(201);
+  const song = await created.json();
+  t10Owned.songIds.add(song.id);
+  await page.goto('/');
+  await page.getByPlaceholder('Search songs, artists…').fill(title);
+  await page.getByText(title, { exact: true }).click();
+  await expect(page.locator('.chart-line').first()).toBeVisible();
+  await page.getByRole('button', { name: 'Edit' }).click();
+  return song;
+}
+
+async function cachedSongState(page, songId) {
+  return page.evaluate(async id => {
+    const db = await new Promise((resolve, reject) => {
+      const opening = indexedDB.open('chart-manager');
+      opening.onerror = () => reject(opening.error);
+      opening.onsuccess = () => resolve(opening.result);
+    });
+    const state = await new Promise((resolve, reject) => {
+      const transaction = db.transaction(['songs', 'meta']);
+      const songRequest = transaction.objectStore('songs').get(id);
+      const queueRequest = transaction.objectStore('meta').get('pending_mutations');
+      transaction.oncomplete = () => resolve({ cached: Boolean(songRequest.result),
+        queued: (queueRequest.result?.value || []).some(item => item.entity === 'song' && Number(item.id) === id) });
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+    return state;
+  }, songId);
+}
+
+test('FR-111 an online editor delete of a current song removes it from the server and the device', async ({ page, request, t10Owned }) => {
+  const song = await openEditorForNewServerSong(page, request, t10Owned, `T11 online delete ${t10Owned.suffix}`);
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('.btn-danger').click();
+  await expect(page.getByPlaceholder('Search songs, artists…')).toBeVisible();
+  expect((await request.get(`/api/songs/${song.id}`)).status()).toBe(404);
+  await expect.poll(() => cachedSongState(page, song.id)).toEqual({ cached: false, queued: false });
+});
+
+test('FR-111 an online editor delete of a stale song keeps the server version and reports it', async ({ page, request, t10Owned }) => {
+  const song = await openEditorForNewServerSong(page, request, t10Owned, `T11 stale delete ${t10Owned.suffix}`);
+  const serverEdit = await request.put(`/api/songs/${song.id}`, { data: {
+    bpm: 141, base_updated_at: song.updated_at, operation_id: randomUUID(),
+  } });
+  expect(serverEdit.ok()).toBeTruthy();
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('.btn-danger').click();
+  await expect(page.getByText('The server song changed; its version was kept.')).toBeVisible();
+  const kept = await request.get(`/api/songs/${song.id}`);
+  expect(kept.status()).toBe(200);
+  expect((await kept.json()).bpm).toBe(141);
+  await expect.poll(() => cachedSongState(page, song.id)).toEqual({ cached: true, queued: false });
+});
 });
 
 test('stale setlist sync discards the whole local aggregate and shows the server version', async ({ page, context, request, t10Owned }) => {
