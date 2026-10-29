@@ -28,17 +28,14 @@ function conflictError() {
 }
 
 function sameVersion(current, expected) {
-  validateVersionToken(expected, true);
-  // Older queued millisecond tokens are ambiguous even when their millisecond
-  // matches. Let the existing 409/server-wins sync path refresh the cache.
-  return EXACT_VERSION.test(expected) && current === expected;
+  validateVersionToken(expected);
+  return current === expected;
 }
 
-const EXACT_VERSION = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
-const VERSION_PARTS = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3}|\d{6})Z$/;
-function validateVersionToken(value, required = false) {
+// FR-063: version tokens are UTC timestamps with exactly six fractional digits.
+const VERSION_PARTS = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.\d{6}Z$/;
+function validateVersionToken(value) {
   if (value === null || value === undefined) {
-    if (!required) return;
     const error = new Error("base_updated_at is required");
     error.status = 400;
     throw error;
@@ -49,7 +46,7 @@ function validateVersionToken(value, required = false) {
   const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   if (!parts || year < 1 || month < 1 || month > 12 || day < 1 || day > days[month - 1] ||
       hour > 23 || minute > 59 || second > 59) {
-    const error = new Error("base_updated_at must be a UTC timestamp token with 3 or 6 fractional digits");
+    const error = new Error("base_updated_at must be a UTC timestamp token with 6 fractional digits");
     error.status = 400;
     throw error;
   }
@@ -227,7 +224,7 @@ async function createSong(patch, operationId = null) {
 }
 
 async function updateSongFull(id, patch, operationId) {
-  validateVersionToken(patch.base_updated_at, true); // FR-111: every song update carries its base version.
+  validateVersionToken(patch.base_updated_at); // FR-111: every song update carries its base version.
   const genres = Object.hasOwn(patch, "genres") ? normalizeTagSet(patch.genres, "Genres") : null;
   const vibes = Object.hasOwn(patch, "vibes") ? normalizeTagSet(patch.vibes, "Vibes") : null;
   if (genres?.length) {
@@ -342,7 +339,7 @@ async function updateSongFull(id, patch, operationId) {
 }
 
 async function deleteSong(id, baseUpdatedAt = null) {
-  validateVersionToken(baseUpdatedAt, true); // FR-111: every song delete carries its base version.
+  validateVersionToken(baseUpdatedAt); // FR-111: every song delete carries its base version.
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
