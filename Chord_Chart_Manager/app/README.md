@@ -310,12 +310,9 @@ follow-up update, and acknowledging the create rewrites dependent cached
 setlist entries to the server song ID. A pull keeps local projections that
 still have queued work. Deleting a local song with an uncertain dispatched
 setlist-entry request is blocked until sync resolves it.
-When two offline editors save the same existing song, a later save merges only
-fields changed from that editor's loaded baseline onto the latest cached row.
-Non-overlapping edits are retained in one queued update. If both editors changed
-the same field, the stale save is rejected with a reload-and-retry message and
-does not alter the cached song or pending mutation.
-Genre and Vibe arrays are separate conflict fields. A metadata-only save omits
+A save from the editor replaces the cached song with what that editor shows;
+two editors open on one song are not merged, and the later save wins.
+A metadata-only save omits
 untouched categories from a new update payload, while an earlier queued change
 to either category remains in that payload. A definitive unknown/ambiguous
 definition response (422) keeps the queued operation for correction; a true

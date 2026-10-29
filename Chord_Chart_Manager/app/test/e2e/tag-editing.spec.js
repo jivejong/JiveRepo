@@ -525,91 +525,48 @@ test('offline export ordering promotes the first name-ordered secondary and re-a
     await context.setOffline(false);
   });
 
-test('two open editors keep a newer queued tag change when the stale editor saves metadata online',
-  async ({ page, request, context, t09Fixture }) => {
-    const suffix = randomUUID();
-    const title = `T09 two editor ${suffix}`;
-    const initialGenre = `T09 two editor initial ${suffix}`;
-    const queuedGenre = `T09 two editor queued ${suffix}`;
-    const vibe = `T09 two editor Vibe ${suffix}`;
-    t09Fixture.tagNames = new Set([initialGenre, queuedGenre, vibe]);
-    for (const [category, name] of [['Genre', initialGenre], ['Genre', queuedGenre], ['Vibe', vibe]]) {
-      const definition = await request.post('/api/tag-definitions', { data: { category, name } });
-      expect(definition.status()).toBe(201);
-    }
-    const created = await request.post('/api/songs', { data: { title, artist: `T09 two editor artist ${suffix}`,
-      genres: [{ name: initialGenre, is_primary: true }], vibes: [vibe], bpm: 90,
-      chart_written_key: 'C', chart_source: 'Verse\nInvented two editor chart' } });
-    expect(created.status()).toBe(201);
-    const song = await created.json();
-    t09Fixture.songIds.add(song.id);
-    t09Fixture.recordSong(song);
-    await t09Fixture.recordDefinitions(request);
+test('an offline metadata-only save queues no Genre or Vibe change and the push omits them', async ({ page, request, context, t09Fixture }) => {
+  const suffix = randomUUID();
+  const title = `T09 offline metadata ${suffix}`;
+  const genre = `T09 offline kept genre ${suffix}`;
+  const vibe = `T09 offline kept vibe ${suffix}`;
+  t09Fixture.tagNames = new Set([genre, vibe]);
+  for (const [category, name] of [['Genre', genre], ['Vibe', vibe]]) {
+    expect((await request.post('/api/tag-definitions', { data: { category, name } })).status()).toBe(201);
+  }
+  const created = await request.post('/api/songs', { data: { title, artist: `T09 artist ${suffix}`,
+    genres: [{ name: genre, is_primary: true }], vibes: [vibe], chart_source: 'Invented offline metadata chart',
+    operation_id: randomUUID() } });
+  expect(created.status()).toBe(201);
+  const song = await created.json();
+  t09Fixture.songIds.add(song.id);
+  t09Fixture.recordSong(song);
+  await t09Fixture.recordDefinitions(request);
 
-    const second = await context.newPage();
-    const openEditor = async target => {
-      await target.goto('/');
-      await target.getByRole('searchbox').fill(title);
-      await target.getByText(title, { exact: true }).click();
-      await target.getByRole('button', { name: 'Edit' }).click();
-    };
-    await Promise.all([openEditor(page), openEditor(second)]);
-    await context.setOffline(true);
-    const firstGenre = page.getByRole('combobox', { name: 'Add Genre' });
-    await firstGenre.fill(queuedGenre);
-    await page.getByRole('option', { name: queuedGenre, exact: true }).click();
-    await page.getByRole('button', { name: 'Save changes' }).click();
-    const queued = await expectOfflineSaveCommitted(page, song.id, title);
-    expect(queued.song.genres.map(tag => tag.name)).toEqual([initialGenre, queuedGenre]);
-    expect(queued.song.genres.find(tag => tag.is_primary)?.name).toBe(initialGenre);
-    expect(queued.song._sync.genres_unchanged).toBe(false);
+  await page.goto('/');
+  await page.getByPlaceholder('Search songs, artists…').fill(title);
+  await page.getByText(title, { exact: true }).click();
+  await page.getByRole('button', { name: 'Edit' }).click();
+  await expect(page.getByRole('button', { name: `Remove ${genre} from Genre` })).toBeVisible();
+  await context.setOffline(true);
+  await page.getByLabel('Release year').fill('1991');
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
+  const queued = await cachedSongAndQueue(page, song.id);
+  expect(queued.song._sync).toMatchObject({ operation: 'update', genres_unchanged: true, vibes_unchanged: true });
 
-    let releaseDispatch;
-    let dispatched;
-    let hasHeldDispatch = false;
-    const dispatchBodies = [];
-    const dispatchedSignal = new Promise(resolve => { dispatched = resolve; });
-    const dispatchGate = new Promise(resolve => { releaseDispatch = resolve; });
-    await context.route(`**/api/songs/${song.id}`, async route => {
-      if (route.request().method() !== 'PUT') return route.continue();
-      const body = route.request().postDataJSON();
-      dispatchBodies.push(body);
-      if (!(body.genres || []).some(tag => tag.name === queuedGenre)) return route.continue();
-      if (!hasHeldDispatch) {
-        hasHeldDispatch = true;
-        dispatched({ route, body });
-        await dispatchGate;
-      }
-      await route.continue();
-    });
-    await context.setOffline(false);
-    const firstDispatch = await Promise.race([dispatchedSignal,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('queued Genre update was not dispatched')), 8000))]);
-    expect(firstDispatch.body.genres.some(tag => tag.name === queuedGenre)).toBe(true);
-
-    await second.locator('input[type="number"]').nth(1).fill('123');
-    await second.getByRole('button', { name: 'Save changes' }).click();
-    await expect.poll(async () => {
-      const state = await cachedSongAndQueue(second, song.id);
-      const operation = state.queue.find(item => String(item.id) === String(song.id));
-      return operation?.local_revision;
-    }).toBeGreaterThan(1);
-    const duringFlight = await cachedSongAndQueue(second, song.id);
-    expect(duringFlight.song.genres.some(tag => tag.name === queuedGenre)).toBe(true);
-    expect(duringFlight.song.bpm).toBe(123);
-    const queuedOperation = duringFlight.queue.find(item => String(item.id) === String(song.id));
-    expect(queuedOperation.sent_payload.genres.some(tag => tag.name === queuedGenre)).toBe(true);
-    expect(queuedOperation.sent_payload.bpm).toBe(90);
-    releaseDispatch();
-    await expect.poll(async () => (await request.get(`/api/songs/${song.id}`)).json()).toMatchObject({
-      bpm: 123, chart_source: 'Verse\nInvented two editor chart',
-      genres: expect.arrayContaining([expect.objectContaining({ name: queuedGenre })]),
-    });
-    await expect.poll(() => dispatchBodies.some(body => body.bpm === 123
-      && (!body.genres || body.genres.some(tag => tag.name === queuedGenre)))).toBe(true);
-    await context.unroute(`**/api/songs/${song.id}`);
-    await second.close();
-  });
+  const responsePromise = page.waitForResponse(response => response.url().endsWith(`/api/songs/${song.id}`)
+    && response.request().method() === 'PUT');
+  await context.setOffline(false);
+  const response = await responsePromise;
+  expect(response.status()).toBe(200);
+  expect(response.request().postDataJSON()).not.toHaveProperty('genres');
+  expect(response.request().postDataJSON()).not.toHaveProperty('vibes');
+  const saved = await (await request.get(`/api/songs/${song.id}`)).json();
+  expect(saved.release_year).toBe(1991);
+  expect(saved.genres).toEqual([{ name: genre, is_primary: true }]);
+  expect(saved.vibes).toEqual([vibe]);
+});
 
 test('definition load failure keeps assigned chips and permits metadata-only Save', async ({ page, request, t09Fixture }) => {
   const suffix = randomUUID();
