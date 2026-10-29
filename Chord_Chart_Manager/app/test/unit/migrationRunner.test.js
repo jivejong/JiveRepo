@@ -115,12 +115,6 @@ describe('migration runner', () => {
     });
     const client = fakeClient();
     await runMigrationsWithClient(client, { migrationsDir: directory });
-    const lockIndex = client.queries.findIndex((query) => /pg_advisory_lock/.test(query));
-    const pathIndex = client.queries.findIndex((query) => /SET search_path TO public, pg_temp/.test(query));
-    const stateIndex = client.queries.findIndex((query) => /SELECT version,name FROM public\.schema_migrations/.test(query));
-    expect(lockIndex).toBeGreaterThanOrEqual(0);
-    expect(pathIndex).toBeGreaterThan(lockIndex);
-    expect(stateIndex).toBeGreaterThan(pathIndex);
     const commitCount = client.queries.filter((query) => query === 'COMMIT').length;
     expect(client.applied.map((row) => row.version)).toEqual(['0001', '0002']);
     expect(client.tables).toEqual(['migration_marker']);

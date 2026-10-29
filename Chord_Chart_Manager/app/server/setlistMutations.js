@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const { pool } = require("./db");
+const { getSetlist: readSetlist } = require("./db_ext");
 
 const KEY_NAMES = ["C", "B#", "C#", "Db", "D", "D#", "Eb", "E", "Fb", "E#", "F", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B", "Cb"];
 const VALID_KEYS = new Set([...KEY_NAMES, ...KEY_NAMES.map(key => `${key}m`)]);
@@ -83,26 +84,10 @@ function validateEntryPatch(payload, allowed, allowEmpty = false) {
   return values;
 }
 
+// Mutation responses (and their stored receipts) also carry song_count.
 async function getSetlist(client, id) {
-  const { rows } = await client.query(
-    `SELECT sl.id, sl.name, to_char(sl.gig_date,'YYYY-MM-DD') AS gig_date, sl.notes, sl.created_at,
-            to_char(sl.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
-       FROM public.setlists sl WHERE sl.id = $1`, [id]);
-  if (!rows.length) return null;
-  const setlist = rows[0];
-  const entries = await client.query(
-    `SELECT ss.id::text AS entry_id, ss.position, ss.transposed_key, ss.capo_fret,
-            ss.notes, s.id AS song_id, s.title, a.name AS artist,
-            s.performance_key AS chart_written_key, s.capo_fret AS default_capo,
-            s.bb_structure AS beatbuddy_structure, s.bpm,
-            (SELECT v.name FROM public.song_vibes sv JOIN public.vibes v ON v.id=sv.vibe_id
-             WHERE sv.song_id = s.id ORDER BY v.name LIMIT 1) AS feel
-       FROM public.setlist_songs ss
-       JOIN public.songs s ON s.id = ss.song_id
-       JOIN public.artists a ON a.id = s.artist_id
-      WHERE ss.setlist_id = $1 ORDER BY ss.position`, [id]);
-  setlist.songs = entries.rows;
-  setlist.song_count = entries.rowCount;
+  const setlist = await readSetlist(id, client);
+  if (setlist) setlist.song_count = setlist.songs.length;
   return setlist;
 }
 

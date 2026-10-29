@@ -199,8 +199,8 @@ The full T11 command builds the client, runs unit and scratch-database API tests
 then runs the serial Playwright suite against a task-owned `ccm_test` database.
 It requires the local PostgreSQL settings from `app/.env`, refuses to run if
 `ccm_test` already exists, initializes it with the migration runner, and drops
-only the database it created after verifying cleanup and the protected main
-database fingerprints. Playwright uses installed system Chrome (`channel: chrome`)
+only the database it created. It then checks that the main app is healthy and
+its `/api/stats` counts are unchanged. Playwright uses installed system Chrome (`channel: chrome`)
 for this command; install Chrome before running it.
 
 ```powershell

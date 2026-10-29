@@ -3,7 +3,7 @@ import {
   applyTheme, getSystemPrefersDark, readThemePreference, resolveTheme,
   subscribeToSystemTheme, THEME_COLORS, THEME_STORAGE_KEY, writeThemePreference,
 } from '../../src/lib/theme.js';
-import { compositeColor, contrastOverLayers, contrastRatio } from '../../src/lib/colorContrast.js';
+import { compositeColor, contrastOverLayers, contrastRatio } from '../colorContrast.js';
 
 describe('CSS color contrast', () => {
   it('matches known opaque contrast ratios', () => {

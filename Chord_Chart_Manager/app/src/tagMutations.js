@@ -1,3 +1,5 @@
+import { primaryGenreFromAssignments } from './lib/offlineSongFields.js';
+
 export function normalizeTagNames(values = []) {
   if (!Array.isArray(values)) throw new Error('Tags must be a list');
   const seen = new Set();
@@ -15,7 +17,7 @@ export function normalizeTagNames(values = []) {
 }
 
 export function normalizeSongTags(genres = [], vibes = []) {
-  const primary = genres.find(tag => typeof tag === 'object' && tag?.is_primary)?.name;
+  const primary = primaryGenreFromAssignments(genres);
   const genreNames = normalizeTagNames(genres);
   const primaryKey = String(primary || '').trim().toLocaleLowerCase();
   return {
