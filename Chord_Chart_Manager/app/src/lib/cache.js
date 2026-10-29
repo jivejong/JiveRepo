@@ -112,28 +112,12 @@ function queueMetaValue(meta, key, value) { meta.put({ key, value, updatedAt: Da
 
 function pendingQueueRequest(meta, callback, deferPersist = false) {
   const queueRequest = meta.get('pending_mutations');
-  const legacyRequest = meta.get('dirty_songs');
-  let queue;
-  let legacy;
-  let done = 0;
-  const ready = () => {
-    done += 1;
-    if (done !== 2) return;
-    queue ||= { key: 'pending_mutations', value: [] };
+  queueRequest.onsuccess = () => {
+    const queue = queueRequest.result || { key: 'pending_mutations', value: [] };
     if (!Array.isArray(queue.value)) queue.value = [];
-    if (legacy?.value?.length) {
-      for (const id of legacy.value) {
-        if (!queue.value.some(item => item.entity === 'song' && item.id === id)) {
-          queue.value.push({ entity: 'song', id, op_id: mutationId() });
-        }
-      }
-      meta.delete('dirty_songs');
-    }
     callback(queue.value, () => queueMetaValue(meta, 'pending_mutations', queue.value));
     if (!deferPersist) queueMetaValue(meta, 'pending_mutations', queue.value);
   };
-  queueRequest.onsuccess = () => { queue = queueRequest.result; ready(); };
-  legacyRequest.onsuccess = () => { legacy = legacyRequest.result; ready(); };
 }
 
 function cleanServerSong(song) {
