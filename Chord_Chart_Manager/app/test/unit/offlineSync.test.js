@@ -645,6 +645,74 @@ describe('offline cache and push-then-pull sync', () => {
     expect((await cache.getPendingMutations()).some(item => String(item.id) === String(id))).toBe(false);
   });
 
+  it('FR-061 FR-062 FR-111 applies server-wins when a queued update is rejected with 400', async () => {
+    const id = 7402;
+    const server = { id, title: 'Authoritative rejected-update title', artist: 'T11 synthetic', updated_at: version };
+    await cache.savePendingSong({ ...server, title: 'Old-format offline title',
+      _sync: { operation: 'update', base_updated_at: version } });
+    const order = [];
+    try {
+      const result = await cache.syncWithServer({
+        library: async () => { order.push('pull'); return { songs: [server] }; },
+        songs: { update: async () => { order.push('push'); const error = new Error('base_updated_at is required'); error.status = 400; throw error; },
+          get: async () => server },
+        setlists: { all: async () => [] },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.conflicts).toEqual([expect.objectContaining({ id, operation: 'update' })]);
+      expect(order).toEqual(['push', 'pull']);
+      expect((await cache.getCachedSong(id)).title).toBe(server.title);
+      expect((await cache.getPendingMutations()).some(item => String(item.id) === String(id))).toBe(false);
+    } finally {
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
+  it('FR-061 FR-062 FR-111 keeps the server copy when a queued delete is rejected with 400', async () => {
+    const id = 7403;
+    const server = { id, title: 'Authoritative rejected-delete title', artist: 'T11 synthetic', updated_at: version };
+    await cache.cacheSongs([server]);
+    await cache.updateCachedSong({ ...server, _sync: { operation: 'delete', base_updated_at: '2026-10-10T12:00:00.001Z' } });
+    await cache.markDirty(id);
+    try {
+      const result = await cache.syncWithServer({
+        library: async () => ({ songs: [server] }),
+        songs: { remove: async () => { const error = new Error('base_updated_at must be a UTC timestamp token with 6 fractional digits'); error.status = 400; throw error; },
+          get: async () => server },
+        setlists: { all: async () => [] },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.conflicts).toEqual([expect.objectContaining({ id, operation: 'delete' })]);
+      const cached = await cache.getCachedSong(id);
+      expect(cached.title).toBe(server.title);
+      expect(cached._sync).toBeUndefined();
+      expect((await cache.getPendingMutations()).some(item => Number(item.id) === id)).toBe(false);
+    } finally {
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
+  it('FR-059 FR-061 keeps a queued local create when the server rejects it with 400', async () => {
+    const id = cache.makeLocalSongId();
+    await cache.savePendingSong({ id, title: 'Invented rejected create', artist: 'T11 synthetic',
+      _sync: { operation: 'create', operation_id: cache.makeMutationId() } });
+    try {
+      const result = await cache.syncWithServer({
+        library: async () => ({ songs: [] }),
+        songs: { create: async () => { const error = new Error('title is required'); error.status = 400; throw error; } },
+        setlists: { all: async () => [] },
+      });
+      expect(result.ok).toBe(false);
+      expect(await cache.getCachedSong(id)).toBeDefined();
+      expect((await cache.getPendingMutations()).some(item => String(item.id) === String(id))).toBe(true);
+    } finally {
+      await cache.clearDirty(id);
+      await cache.deleteCachedSong(id);
+    }
+  });
+
   it('FR-061 signals exact-pull completion only after metadata transactions commit', async () => {
     const originalWindow = globalThis.window;
     const testWindow = new EventTarget();
