@@ -2360,6 +2360,68 @@ A read-only review of everything since the Phase 6 close (`eb2fc86..df77fb7`, 97
 
 Report: handoffs/phase-7/review-report.md (gitignored)
 
+**Commits:** AK `20ea66c`.
+
+### Round 16 (2026-10-30): review fixes
+
+The fix round from the Phase 7 review (`handoffs/phase-7/review-report.md`, gitignored). Baseline before the first edit: agent 566, serving 185, edge 553 (1 skipped), ingest 387, intake 384, intake node 205, dashboard 46, Pester 23 + 23 + 26. ForceAgent and ForceServe were disabled before the first edit and enabled after all suites passed.
+
+**Decisions.**
+- Finding 2, option a: the agent's prod poll gate is now only "Job 1 has a new successful run since the stored run id" (`gate=new_run | no_new_run | dev | none`); the pending-id trigger is gone. An incident first seen at an even-hour :11 cycle is decided at the next even-hour :11 cycle, so every decision falls in Job 1's warm window and is published by the same hour's :12 ForceServe run. The human-first window is now about 2 hours (was about 59 minutes). The 30-minute first-seen rule stays. The deploy form's "Yoda decides at" follows (even-hour :11, strictly after first seen + 30 minutes).
+- Finding 1: the happy path of a manual deploy is not run live in this round; a valid manual deploy is deferred to the Phase 8 demo, where it is recorded. What the round did: a MERGE result without `num_inserted_rows` is now `ok: false` with `merge_result_unknown` (no mark, no refresh; the agent's repair marks the incident if a row exists), and the `merge_result_unverified` warning is gone. The field itself was checked on dev in Round 13a-era work (`num_inserted_rows` present, LONG, `"0"` for a no-op MERGE).
+
+**Findings and this round's action.**
+
+| # | Sev | Finding | Action |
+|---|---|---|---|
+| 1 | high | the manual deploy's accept path never run live; a missing MERGE count read as success | fixed here (Fix 1); live happy path deferred to the Phase 8 demo |
+| 2 | medium | odd-hour agent decisions on a cold warehouse, published an hour late | fixed here (Fix 2, option a) |
+| 3 | medium | a full refresh of `gold_sector_reading` would fail every publish on the row cap | fixed here (Fix 3): the same run falls back to day pages over the 30-day window |
+| 4 | medium | `insufficient_rank` / `specialty_mismatch` cascade from an unavailable Jedi | fixed here (Fix 4): both skipped when `jedi_unavailable` is reported |
+| 5 | medium | tasks and Docker need a logon | Phase 8 |
+| 6 | medium | no read-only principal for the puller (the deploy service needs the writing token) | Phase 8 |
+| 7 | low | a retried MERGE whose first attempt committed reads as `already_decided`; the agent ignores the MERGE count | Phase 8 |
+| 8 | low | `serving/deploy.py` (and `agent/ddl.py`, `agent/eval.py`) use `urlopen`, not `files_api.default_opener` | Phase 8 |
+| 9 | low | the `VERIFY_X509_PARTIAL_CHAIN` docstring understates the widened trust | Phase 8 |
+| 10 | low | a deploy's Postgres refresh can collide with a running publish | Phase 8 |
+| 11 | low | the form's "Yoda decides at" ignored the 03:xx skip and the 30-minute rule | fixed here (part of Fix 2) |
+| 12 | low | the server's read of the seen file can break the agent's atomic replace on Windows | Phase 8 |
+| 13 | low | a coincident agent start loses its cycle silently (`agent.lock` has three holders) | Phase 8 |
+| 14 | low | docs stale after Round 14 and Phase 7 | fixed here (Fix 8) |
+| 15 | low | any local process can deploy (token over loopback) | Phase 8 (state the limit in doc 06) |
+| 16 | low | `deploy.log` lacks the requested ids | fixed here (Fix 5) |
+| 17 | low | p7-2 measured from `detected_at` | fixed here (Fix 6) |
+| 18 | low | a decided id stays in the seen store until the next poll | moot under Fix 2 |
+| 19 | low | the C3/C4 timings assume an hourly Job 1 | fixed here (Fix 8: a deviation note) |
+| 20 | low | the CLI's OAuth profile expiring | log only (Round 14 records the profile conflict) |
+| 21 | nit | `build_row` hard-codes `decided_by` | fixed here (Fix 7) |
+| 22 | nit | the dashboard bundle is over 500 kB | Phase 8 |
+| 23 | nit | some logs never rotate | Phase 8 |
+| 24 | nit | manual deploys and catch-up cycles start the warehouse outside Job 1's window | log only (by design) |
+
+**What changed.**
+- Fix 1 and Fix 5 and Fix 7, `serving/deploy.py`: `merge_result_unknown`; the log line now reads `disturbance_id=... jedi_ids=a,b starship_id=x ok=... reasons=... statements=N rationale_chars=N` (the validated slugs only, `-` for an invalid request, never the rationale); `build_row(..., decided_by="yoda_agent")` takes the field and the service passes `"user"` instead of overwriting it.
+- Fix 2, `agent/run.py` and `dashboard/src/lib/deploy.js`: `poll_gate(target, latest_run, run_path)` no longer reads the seen store; `nextAgentDecision` is the first even-hour HH:11:00Z strictly after first seen + 30 minutes, stepping 2 hours at a time past `now`.
+- Fix 3, `serving/pull.py`: `ResultTooLarge` on the incremental `sector_reading` read triggers day pages over the 30-day window (31 statements once, plus the failed read), on `event_time`, and the watermark is set from the maximum pulled. Any other source over the cap still fails the run.
+- Fix 4, `agent/constraints.py`: `party_unavailable` suppresses the rank and specialty checks; the other checks and the order are unchanged.
+- Fix 6, `ingest/phase7_checkpoint.sql` p7-2: `minutes_after_onset` and `decided_after_a_cycle` (at least 60 minutes) are measured from the onset scan's `event_time` (`gold_sector_reading` joined on `sector_id` and `scan_id`).
+- Fix 8, docs (each change):
+  - doc 01 step 4 (Job 1 "Every hour" -> every 2 hours, :03 on even UTC hours) and step 6 (the agent task starts hourly and polls only after a new Job 1 run);
+  - doc 05 "Serving (Phase 7)": the chunk bullet (`agent/dbsql.py` handles one chunk; chunking is in `serving/statements.py`), the warm-window bullet (written for an hourly Job 1; not re-modelled) and the over-the-cap fallback;
+  - doc 05 "Runbook: Phase 7 checkpoint": the T0 rule, steps 2 and 3 headings, the timeline table, the total time (about 5 hours; the CONNECTED override is now `--for-seconds 19800`, 5 h 30 min, was 15000), the GIF times and the `deploy.log` expectation;
+  - doc 05 "Runbook: C3/C4": a deviation note (every "next Job 1 run" is the next even-hour :03; every fourth scan becomes every eighth; ~60 minutes becomes ~120; set `T` on an odd UTC hour);
+  - doc 06 Runtime (the gate without the pending trigger; the task starts hourly; the cost lines now say a cycle with no new run costs 0 statements), "Human-first window" (about 2 hours), the Constraint layer (one line on Fix 4), "Manual deployment path" (the local open check, the forced stand-down step, `merge_result_unknown`, the `deploy.log` content) and Monitoring (S4 pings a no-new-run cycle);
+  - doc 07: "hourly" Job 1 at the Phase 4 steps now reads every 2 hours (two places).
+  - Left as history: doc 05's Job 1 cadence history paragraphs and the S2 design text, doc 07's S-checks text about the old 45-minute freshness test, and the hourly task schedules (ForceAgent, ForceServe).
+
+**Mutations** (copies outside the repo; only an assertion FAIL counts): M1 the old success-with-warning path FAIL (2); M2 the pending trigger restored FAIL (2); M3 `nextAgentDecision` on an odd hour FAIL (3); M4 no fallback FAIL (1; first an ERROR, so the test now converts the escaped `ResultTooLarge` into a failure); M5 the cascade restored FAIL (4); M6 the log line without the party FAIL (2); M7 deploy without passing `decided_by` FAIL (2).
+
+**Existing tests that changed.** `agent/tests/test_constraints.py::Order::test_reasons_come_back_in_the_specified_order` asserted `insufficient_rank` and `specialty_mismatch` next to `jedi_unavailable`; it now asserts the order without them and a second test keeps the full order for an available party. `agent/tests/test_run.py::PollGate::test_the_same_run_with_a_pending_id_polls` became `..._skips_with_no_statement`. `serving/tests/test_deploy.py::..._goes_on_with_a_warning` became `..._is_unknown_and_nothing_follows`. `dashboard/tests/deploy.test.js`: the `nextAgentDecision` cases (hourly slots) and the label parity list (`merge_result_unknown`).
+
+**Tests.** After: agent 573, serving 190, edge 553 (1 skipped), ingest 388, intake 384, intake node 205, dashboard 47, Pester 23 + 23 + 26.
+
+**Catch-up (2026-10-30).** ForceServe, then ForceAgent, enabled at 02:09:15Z. The agent, 02:09:19Z: `polled=0 decided=0 ... statements=2 model_calls=0 http_attempts=0 ... gate=new_run` (Job 1 ran at 02:03Z, run id 498943173382191 recorded). ForceServe, 02:09:31Z: `decision=publish status=ok statements=7 rows=12994`. Before this round, the first live `gate=no_new_run` line appeared at 01:11:01Z (`statements=0`, Job 1 run 928465429257228 already polled) and ForceServe logged `skip_no_new_run` at 01:12:01Z, so the 2-hourly gating works as designed. Statements used: 9 (agent 2, ForceServe 7) of the 9 allowed; Gemini 0 of 6.
+
 **Commits:** listed in the next round.
 
 ## Open items
@@ -2424,13 +2486,24 @@ Report: handoffs/phase-7/review-report.md (gitignored)
 | `silver_source_health` can pick a housekeeping row and counts duplicates toward the 60 | **Watch.** |
 | Port 5432 is published by another project's container and by the dbt `local` target | **Phase 7 uses 5433.** |
 | Warehouse-on time: the agent's :15 cycle extends the warehouse about 6 min an hour (Round 5a, derived); candidate fix: start the agent after Job 1 and lower auto-stop | **Phase 7, agent round.** ForceServe registered at :17 (Round 7). |
-| A read-only service principal for the serving puller (the keyword guard is defense in depth only) | **Phase 8.** |
-| Dashboard bundle is one 625 kB script (Vite warns above 500 kB) | **Phase 8: code-splitting.** |
-| `run.build_row` hard-codes `decided_by`; the deploy service overwrites it (give `build_row` a `decided_by` parameter) | **Phase 7, fix round.** |
-| `deploy.log` does not record the requested jedi_ids and starship_id | **Phase 7 fix round.** The 2026-10-29 rejected attempt logged only the reasons, the statement count and the rationale length, so the request had to be reconstructed. Add the requested ids to the line (they are slugs, not secrets). |
-| `check_deploy` reports `insufficient_rank` (and `specialty_mismatch`) for a party whose Jedi are unavailable | **Phase 7 fix round.** `jedi_by_id` holds only available Jedi, so an unavailable one leaves `known` empty; on 2026-10-29 plo_koon (a council_member) was reported as `insufficient_rank` for alderaan (severity 13.19). Fix: evaluate rank and specialty over the requested Jedi found in `dim_jedi`, available or not. |
-| `ingest/phase7_checkpoint.sql` p7-2 `decided_after_a_cycle` uses `detected_at` | **Phase 7 fix round.** `detected_at` advances while a run continues, so the column read false (26 minutes) for a decision made 60 minutes after the first sighting. Measure from the onset scan (the `scan_id` ULID) or the agent's first-seen time instead. |
-| ForceAgent, ForceServe and ForceBridge run only while the user is logged on | **Watch.** After the planned restart at 07:29 to 07:36Z on 2026-10-29 nobody logged on until 13:20Z: no agent cycle or publish for six hours (Task Scheduler event 332) and the bridge landed nothing until it drained its buffer at 13:21Z. Nothing was lost. |
+| A read-only service principal for the serving puller (the keyword guard is defense in depth only) | **Phase 8 (medium).** Review finding 6: the deploy service needs the writing token, so the puller needs its own read-only one. |
+| Dashboard bundle is one 625 kB script (Vite warns above 500 kB) | **Phase 8: code-splitting (nit).** Review finding 22. |
+| `run.build_row` hard-codes `decided_by`; the deploy service overwrites it (give `build_row` a `decided_by` parameter) | **Resolved, Phase 7 Round 16 (2026-10-30).** `build_row` takes `decided_by` (default `yoda_agent`); the deploy service passes `user`. |
+| `deploy.log` does not record the requested jedi_ids and starship_id | **Resolved, Phase 7 Round 16 (2026-10-30): the line now has `jedi_ids` and `starship_id`.** The 2026-10-29 rejected attempt logged only the reasons, the statement count and the rationale length, so the request had to be reconstructed. Add the requested ids to the line (they are slugs, not secrets). |
+| `check_deploy` reports `insufficient_rank` (and `specialty_mismatch`) for a party whose Jedi are unavailable | **Resolved, Phase 7 Round 16 (2026-10-30): rank and specialty are skipped when `jedi_unavailable` is reported (not judged on the requested Jedi found in `dim_jedi`, the fix proposed below).** `jedi_by_id` holds only available Jedi, so an unavailable one leaves `known` empty; on 2026-10-29 plo_koon (a council_member) was reported as `insufficient_rank` for alderaan (severity 13.19). Fix: evaluate rank and specialty over the requested Jedi found in `dim_jedi`, available or not. |
+| `ingest/phase7_checkpoint.sql` p7-2 `decided_after_a_cycle` uses `detected_at` | **Resolved, Phase 7 Round 16 (2026-10-30): p7-2 measures from the onset scan's `event_time` and requires 60 minutes.** `detected_at` advances while a run continues, so the column read false (26 minutes) for a decision made 60 minutes after the first sighting. Measure from the onset scan (the `scan_id` ULID) or the agent's first-seen time instead. |
+| ForceAgent, ForceServe and ForceBridge run only while the user is logged on | **Watch.** After the planned restart at 07:29 to 07:36Z on 2026-10-29 nobody logged on until 13:20Z: no agent cycle or publish for six hours (Task Scheduler event 332) and the bridge landed nothing until it drained its buffer at 13:21Z. Nothing was lost. Review finding 5 (medium): Phase 8 (S4U tasks or a service). |
+| Live successful manual deploy not yet run | **Open, Phase 8 demo.** The accept path (MERGE count, mark, refresh) is covered by tests and the no-op MERGE result was read on dev, but no valid manual deploy has run on prod; record one in the Phase 8 demo (review finding 1, high). |
+| A retried MERGE whose first attempt committed reads as `already_decided` (deploy), and the agent ignores the MERGE count | **Phase 8 (low).** Review finding 7. Treat a count of 0 with the row's own `deployment_id` as success. |
+| The deploy path (`serving/deploy.py`, `agent/ddl.py`, `agent/eval.py`) uses `urllib.request.urlopen`, not `files_api.default_opener` | **Phase 8 (low).** Review finding 8: a chain that needs PARTIAL_CHAIN would fail there and nowhere else. |
+| `files_api.ssl_context` docstring says no certificate becomes trusted that was not trusted before | **Phase 8 (low).** Review finding 9: on Windows PARTIAL_CHAIN also lets any certificate in the `CA` store end a chain. Correct the docstring; consider a ROOT-only context. |
+| A deploy's Postgres refresh can collide with a running publish (both replace `serving.deployment`) | **Phase 8 (low).** Review finding 10: a Postgres advisory lock in both writers. The loser gets `refresh_failed`, recovered by the next pull. |
+| The server's read of `agent_seen_prod.json` can make the agent's `os.replace` fail on Windows | **Phase 8 (low).** Review finding 12: retry once in `SeenStore.save`. |
+| A coincident agent start (ForceServe's lock probe, a deploy) skips its cycle silently | **Phase 8 (low).** Review finding 13: retry the lock for about 30 s or probe without taking it. |
+| Any local process can deploy (the token is readable over loopback) | **Phase 8 (low).** Review finding 15: state the limit in doc 06; bind the token to a cookie if it matters. |
+| Some logs never rotate (`serve.log`, `deploy.log`, `dashboard.log`, `agent_decisions.ndjson`, `serving.publish_log`) | **Phase 8 (nit).** Review finding 23. |
+| A decided id stays in the seen store until the next poll, so the cycle after a decision polls once more | **Resolved (moot), Phase 7 Round 16.** A poll now follows only a new Job 1 run, so the next poll prunes the id at no extra cost. |
+| C3/C4 runbook timings in doc 05 assume an hourly Job 1 | **Resolved, Phase 7 Round 16.** A deviation note maps every "next Job 1 run" to the next even-hour :03. |
 | Duplicate cross-signed root in the Windows CurrentUser CA store (worked around by VERIFY_X509_PARTIAL_CHAIN) | **Watch.** `USERTrust ECC Certification Authority` appears twice, the cross-signed copy issued by `AAA Certificate Services` (not trusted here); the store was not touched. If a ping host ever fails again, check the chain first. |
 | Task Scheduler launches each task twice about 2 s apart (debounced) | **Watch.** One `CalendarTrigger` per task and no other task, so the cause is unexplained; every task start is debounced for 60 s (doc 05 Monitoring). |
 | ForceServe's pinger discarded S5 failures (`log=lambda m: None`) | **Resolved, Phase 7 Round 13b (2026-10-27).** A failed S5 ping is logged to `logs\serve.log`. |

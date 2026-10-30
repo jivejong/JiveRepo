@@ -151,7 +151,7 @@ power-loss test".
 9. **Deviation (this round):** build and schedule Job 1 (`force_pipeline`, doc 05 "Job topology"), once the gold
    models (steps 4-6) exist. Ingestion has been a manual notebook run for the rest of this phase (doc 05, "The
    one-time arrival-timestamp backfill"); the checkpoint below needs the ingest → transform → publish cycle
-   actually running on its own schedule (hourly, Stage 4c; was 30 minutes (Stage 4b), then 15 — Free Edition
+   actually running on its own schedule (every 2 hours since Phase 7 Round 14; hourly, Stage 4c; was 30 minutes (Stage 4b), then 15 — Free Edition
    quota, see `docs/ENGINEERING-LOG.md`), not a one-off `dbt build`.
 
 **Checkpoint:**
@@ -161,7 +161,7 @@ power-loss test".
 - **The baseline test passes:** `gold.sector_baseline` contains zero report-sourced data.
 - Trigger `sith_presence` via the control topic. Within two scans a `gold.disturbance` row
   appears with the correct `signature` and `sustained_scans >= 2`. **Depends on Job 1's own scheduled rebuild
-  actually running** (step 9, currently hourly — Stage 4c) — a manually-triggered `dbt build` does not
+  actually running** (step 9, currently every 2 hours — Phase 7 Round 14) — a manually-triggered `dbt build` does not
   exercise it.
 
   **Clarification, Phase 4 Stage 3d: "two scans" counts from the onset scan (the first scan actually at or above
