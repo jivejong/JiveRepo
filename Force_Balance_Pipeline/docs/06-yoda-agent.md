@@ -19,6 +19,8 @@ entry point from the working tree, the same pattern as `ForceBridge`. It is not 
 Before any warehouse query, each cycle calls the Jobs API, which costs no warehouse time. If Job 1 (`692051683030737`) has an
 active run, the cycle is skipped. If Job 1 is still running at the start of a cycle, the agent waits for it (polling every 30 s, up to 10 minutes) before skipping. A Jobs API error during the wait ends it at once and is handled like any other Jobs API error.
 
+The agent polls the warehouse only when Job 1 has a new successful run since its last poll, or when an incident is waiting out its human-first window; otherwise the cycle ends with 0 statements. (Prod only; dev always polls. The last run followed is in `logs\agent_last_job1_prod.txt`, written after a successful poll. The summary line shows `gate=<new_run|pending|no_new_run|dev|none>`; `none` means Job 1 has no successful run to compare, so the cycle polls.)
+
 **Eligible incidents.** Only incidents with `detected_at >= AGENT_EPOCH` are processed. `AGENT_EPOCH` is a config constant,
 2026-10-12T00:00:00Z. Older incidents are never processed and stay `agent_processed = false`. There is no bulk update. A cycle processes at most `MAX_INCIDENTS_PER_RUN` = 5 incidents, the oldest 5 eligible ones; the rest wait for the next hour.
 
