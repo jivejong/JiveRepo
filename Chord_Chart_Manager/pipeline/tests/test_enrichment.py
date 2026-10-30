@@ -93,9 +93,10 @@ def gemini_input(call) -> dict:
 
 
 def song(song_id=1, title="Do It Again", artist="Steely Dan", *, release_year=None, original_key=None,
-         bpm=None, has_genre=False, has_vibe=False):
+         bpm=None, genres=(), secondary=False, has_vibe=False):
     return enrich_songs.Song(id=song_id, title=title, artist=artist, release_year=release_year,
-                             original_key=original_key, bpm=bpm, has_genre=has_genre, has_vibe=has_vibe)
+                             original_key=original_key, bpm=bpm, genres=tuple(genres),
+                             has_secondary_genre=secondary, has_vibe=has_vibe)
 
 
 def enricher(http, clock, **settings):
@@ -105,7 +106,9 @@ def enricher(http, clock, **settings):
 
 
 def complete(**overrides):
-    values = {"release_year": 1972, "original_key": "G", "bpm": 120, "has_genre": True, "has_vibe": True}
+    # A complete song: all scalars set, a primary plus a secondary Genre, and a Vibe.
+    values = {"release_year": 1972, "original_key": "G", "bpm": 120, "genres": ("Rock", "Pop"),
+              "secondary": True, "has_vibe": True}
     return song(**{**values, **overrides})
 
 
@@ -197,7 +200,7 @@ def test_musicbrainz_genres_fill_an_empty_genre_category_from_managed_names_only
     page = {"recordings": [recording(MBID_A, "Do It Again", "Steely Dan", 100, "1972",
                                      genres=("jazz", "classic  rock", "yacht rock"), tags=("rock",))]}
     http = FakeHttp(clock, mb=lambda call: (200, page))
-    outcome = enricher(http, clock).lookup(complete(has_genre=False))
+    outcome = enricher(http, clock).lookup(complete(genres=(), secondary=False))
 
     assert outcome.genres == [("Jazz", "MusicBrainz"), ("Rock", "MusicBrainz")]
     assert outcome.vibes == []
@@ -231,15 +234,51 @@ def test_only_missing_fields_are_asked_for_and_kept() -> None:
 
 
 # FR-103
-def test_a_category_with_any_assignment_gets_no_new_labels() -> None:
+def test_a_song_with_a_secondary_genre_or_any_vibe_gets_no_new_labels() -> None:
     clock = FakeClock()
-    http = FakeHttp(clock, gemini=lambda call: gemini_reply(genres=["Pop"], vibes=["Mellow"]))
-    outcome = enricher(http, clock).lookup(complete(has_genre=True, has_vibe=False))
+    http = FakeHttp(clock, gemini=lambda call: gemini_reply(genres=["Jazz"], vibes=["Mellow"]))
+    outcome = enricher(http, clock).lookup(complete(has_vibe=False))
 
     assert outcome.genres == []
     assert outcome.vibes == [("Mellow", "Gemini")]
     allowed = gemini_input(http.to("generativelanguage.googleapis.com")[0])["allowed_names"]
     assert allowed == {"genres": [], "vibes": ["Upbeat", "Mellow", "Danceable", "Romantic"]}
+
+    quiet = FakeHttp(clock)
+    assert enricher(quiet, clock).lookup(complete(genres=("Rock",), secondary=True)).genres == []
+    assert quiet.calls == []
+
+
+# FR-103
+def test_a_song_whose_only_genre_is_its_primary_gets_secondary_genres_up_to_three_in_total() -> None:
+    clock = FakeClock()
+    http = FakeHttp(clock, gemini=lambda call: gemini_reply(genres=["Rock", "Pop", "Jazz", "Soul"]))
+    outcome = enricher(http, clock).lookup(complete(genres=("Rock",), secondary=False))
+
+    assert outcome.genres == [("Pop", "Gemini"), ("Jazz", "Gemini")]
+    request = http.to("generativelanguage.googleapis.com")[0]
+    assert gemini_input(request)["allowed_names"]["genres"] == ["Pop", "Jazz", "Soul"]
+    assert gemini_request(request)["response_format"]["schema"]["properties"]["genres"]["maxItems"] == 2
+
+
+# FR-103
+def test_musicbrainz_tags_for_the_primary_genre_are_not_added_again() -> None:
+    clock = FakeClock()
+    page = {"recordings": [recording(MBID_A, "Do It Again", "Steely Dan", 100, "1972",
+                                     genres=("rock", "jazz", "soul"))]}
+    http = FakeHttp(clock, mb=lambda call: (200, page))
+    outcome = enricher(http, clock, max_genres=2).lookup(complete(genres=("Rock",), secondary=False))
+    assert outcome.genres == [("Jazz", "MusicBrainz")]
+    assert http.to("generativelanguage.googleapis.com") == []
+
+
+# FR-103
+def test_a_primary_only_song_is_left_alone_when_the_genre_limit_is_already_met() -> None:
+    clock = FakeClock()
+    http = FakeHttp(clock)
+    outcome = enricher(http, clock, max_genres=1).lookup(complete(genres=("Rock",), secondary=False))
+    assert outcome.genres == [] and outcome.left == {}
+    assert http.calls == []
 
 
 # FR-092 FR-103
@@ -248,7 +287,7 @@ def test_unknown_duplicate_and_excess_labels_are_dropped() -> None:
     http = FakeHttp(clock, gemini=lambda call: gemini_reply(
         genres=["Polka", "Rock", "rock", "Soul", "Jazz", "Pop"],
         vibes=["Upbeat", "Brooding", "Romantic"]))
-    outcome = enricher(http, clock, max_genres=3, max_vibes=1).lookup(complete(has_genre=False, has_vibe=False))
+    outcome = enricher(http, clock, max_genres=3, max_vibes=1).lookup(complete(genres=(), secondary=False, has_vibe=False))
 
     assert outcome.genres == [("Rock", "Gemini"), ("Soul", "Gemini"), ("Jazz", "Gemini")]
     assert outcome.vibes == [("Upbeat", "Gemini")]
@@ -306,8 +345,8 @@ def test_requests_carry_identity_and_managed_names_only() -> None:
 
 # FR-093
 def test_the_song_query_reads_no_chart_or_lyric_column() -> None:
-    selected = enrich_songs.SONG_QUERY.lower().split("from")[0]
-    assert "chart" not in selected and "lyric" not in selected and "*" not in selected
+    query = enrich_songs.SONG_QUERY.lower()
+    assert "chart" not in query and "lyric" not in query and "*" not in query
 
 
 # FR-112
@@ -578,6 +617,8 @@ def test_scratch_database_fills_only_gaps_for_the_run_documents_and_rerun_is_a_n
             full = insert("Full song", document, release_year=1970, original_key="E", bpm=90)
             cur.execute("INSERT INTO song_genres(song_id,genre_id,is_primary) VALUES (%s,%s,true)",
                         (full, ids[kept_genre]))
+            cur.execute("INSERT INTO song_genres(song_id,genre_id,is_primary) VALUES (%s,%s,false)",
+                        (full, ids[genre_name]))
             cur.execute("INSERT INTO song_vibes(song_id,vibe_id) VALUES (%s,%s)", (full, ids[vibe_name]))
             outside = insert("Other document song", other_document)
         conn.commit()
@@ -606,7 +647,9 @@ def test_scratch_database_fills_only_gaps_for_the_run_documents_and_rerun_is_a_n
         assert after[empty][:3] == (2001, "Am", 101)
         assert after[empty][5] == [f"{ids[genre_name]}:false"] and after[empty][6] == [ids[vibe_name]]
         assert after[partial][:3] == (1999, "Am", 101)
-        assert after[partial][5] == [f"{ids[kept_genre]}:true"] and after[partial][6] == [ids[vibe_name]]
+        # The primary stays primary; the secondary Genre is added beside it (FR-103).
+        assert after[partial][5] == [f"{ids[genre_name]}:false", f"{ids[kept_genre]}:true"]
+        assert after[partial][6] == [ids[vibe_name]]
         assert after[full] == before[full]
         assert after[outside] == before[outside]
         assert all(row[4] == chart_text for row in after.values())
@@ -647,7 +690,7 @@ def test_scratch_database_write_never_overwrites_a_value_or_category_filled_mean
         with conn.cursor() as cur:
             # A user edit lands between the lookup and the write.
             cur.execute("UPDATE songs SET bpm=77 WHERE id=%s", (song_id,))
-            cur.execute("INSERT INTO song_genres(song_id,genre_id,is_primary) VALUES (%s,%s,true)",
+            cur.execute("INSERT INTO song_genres(song_id,genre_id,is_primary) VALUES (%s,%s,false)",
                         (song_id, user_genre_id))
         conn.commit()
 
@@ -656,8 +699,41 @@ def test_scratch_database_write_never_overwrites_a_value_or_category_filled_mean
             cur.execute("SELECT release_year, bpm FROM songs WHERE id=%s", (song_id,))
             assert cur.fetchone() == (2001, 77)
             cur.execute("SELECT genre_id, is_primary FROM song_genres WHERE song_id=%s", (song_id,))
-            assert cur.fetchall() == [(user_genre_id, True)]
+            assert cur.fetchall() == [(user_genre_id, False)]
         conn.commit()
         assert outcome.filled == {"release_year": (2001, "Gemini")}
         assert outcome.genres == []
         assert "another change" in outcome.left["bpm"] and "another change" in outcome.left["genres"]
+
+
+# FR-092 FR-103 FR-109
+def test_scratch_database_genres_beside_a_primary_respect_the_total_limit_and_keep_the_primary() -> None:
+    tag = uuid.uuid4().hex[:8]
+    with psycopg.connect(_scratch_database_url(), autocommit=False) as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO artists(name) VALUES (%s) RETURNING id", (f"Cap artist {tag}",))
+            artist_id = cur.fetchone()[0]
+            genre_ids = {}
+            for label in ("Primary", "One", "Two", "Three"):
+                cur.execute("INSERT INTO genres(name) VALUES (%s) RETURNING id", (f"Cap {label} {tag}",))
+                genre_ids[label] = cur.fetchone()[0]
+            cur.execute("""INSERT INTO songs(title,artist_id,chart_content,source_document)
+                           VALUES (%s,%s,%s,%s) RETURNING id""",
+                        (f"Cap song {tag}", artist_id, Jsonb({"sections": []}), f"cap-{tag}.docx"))
+            song_id = cur.fetchone()[0]
+            cur.execute("INSERT INTO song_genres(song_id,genre_id,is_primary) VALUES (%s,%s,true)",
+                        (song_id, genre_ids["Primary"]))
+        conn.commit()
+
+        names = {f"Cap {label} {tag}": genre_ids[label] for label in genre_ids}
+        outcome = enrich_songs.Outcome(song(song_id, f"Cap song {tag}", f"Cap artist {tag}"))
+        # A lookup that (wrongly or stale) returns the primary and three more must still stop at 3 in total.
+        outcome.genres = [(f"Cap {label} {tag}", "Gemini") for label in ("Primary", "One", "Two", "Three")]
+        enrich_songs._write(conn, outcome, names, {}, 3)
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT genre_id, is_primary FROM song_genres WHERE song_id=%s ORDER BY genre_id", (song_id,))
+            rows = cur.fetchall()
+        conn.commit()
+        assert rows == [(genre_ids["Primary"], True), (genre_ids["One"], False), (genre_ids["Two"], False)]
+        assert [label for label, _ in outcome.genres] == [f"Cap One {tag}", f"Cap Two {tag}"]

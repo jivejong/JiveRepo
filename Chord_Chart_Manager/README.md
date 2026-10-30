@@ -432,9 +432,11 @@ only what is still missing, so a complete document makes no provider requests
 and no changes.
 
 - **What it fills.** Only a missing `release_year`, `original_key` or `bpm`, and
-  a Genre or Vibe category only when the song has no assignment in it (at most
-  3 Genres and 3 Vibes). Populated values, existing assignments, the primary
-  Genre and chart text are never changed. New assignments use only existing
+  Vibes only when the song has none (at most 3), and Genres only when the song
+  has no non-primary Genre, up to 3 Genres in total counting the primary (so a
+  song with only its primary Genre can gain 2). Populated values, existing
+  assignments, the primary Genre and chart text are never changed. A song whose
+  providers return no extra Genre is looked up again on a rerun. New assignments use only existing
   definitions.
 - **Where values come from.** MusicBrainz first (the best-scoring recording for
   the title and artist at or above a minimum score, with the earliest release
@@ -1047,7 +1049,7 @@ Verified on 2026-10-29 after the bug fixes and the enrichment rewrite:
   integration tests, and 52 serial Playwright E2E tests against a scratch
   `ccm_test` database, which was dropped afterwards. The main app stayed
   healthy and its `/api/stats` counts were unchanged.
-- The pipeline image passed 153 pytest tests (41 of them for enrichment, using
+- The pipeline image passed 157 pytest tests (45 of them for enrichment, using
   stubbed providers) against a scratch `ccm_loader_c1_*` database.
 
 Not yet verified: a full real-corpus import (FR-099), the physical-tablet

@@ -5,8 +5,9 @@ Per-document metadata enrichment for Chord Chart Manager.
 `load_songs.py --enrich` calls this after a committed load, for every song whose
 source_document is in that songs.json (FR-101), not only the new inserts.
 
-* Fills only missing release_year, original_key and bpm, and a Genre or Vibe
-  category only when the song has no assignment in it (FR-092, FR-103, Q29).
+* Fills only missing release_year, original_key and bpm; Vibes only when the song
+  has none; Genres only when it has no non-primary Genre, up to max_genres in
+  total counting the primary (FR-092, FR-103, Q29 as revised 2026-10-29).
 * MusicBrainz and AcousticBrainz first; Gemini as fallback (FR-103, FR-113).
 * Never reads or sends chart text or lyrics (FR-093): the song query selects
   identity and metadata columns only.
@@ -68,7 +69,9 @@ GEMINI_INSTRUCTION = (
 
 # Identity and metadata only: chart text and lyrics are never read (FR-093).
 SONG_QUERY = """SELECT s.id, s.title, a.name, s.release_year, s.original_key, s.bpm,
-       EXISTS (SELECT 1 FROM public.song_genres g WHERE g.song_id = s.id),
+       ARRAY(SELECT d.name FROM public.song_genres g JOIN public.genres d ON d.id = g.genre_id
+              WHERE g.song_id = s.id ORDER BY d.id),
+       EXISTS (SELECT 1 FROM public.song_genres g WHERE g.song_id = s.id AND NOT g.is_primary),
        EXISTS (SELECT 1 FROM public.song_vibes v WHERE v.song_id = s.id)
   FROM public.songs s JOIN public.artists a ON a.id = s.artist_id
  WHERE s.source_document = ANY(%s)
@@ -123,8 +126,13 @@ class Song:
     release_year: int | None
     original_key: str | None
     bpm: int | None
-    has_genre: bool
+    genres: tuple          # names of the Genres the song already has (the primary included)
+    has_secondary_genre: bool
     has_vibe: bool
+
+    @classmethod
+    def from_row(cls, row) -> "Song":
+        return cls(*row[:6], tuple(row[6] or ()), row[7], row[8])
 
     def missing(self) -> list[str]:
         return [name for name in SCALARS if getattr(self, name) is None]
@@ -313,7 +321,7 @@ def _gemini_schema(requested: list[str], max_genres: int, max_vibes: int) -> dic
 
 
 def gemini_body(song: Song, requested: list[str], genres: list[str], vibes: list[str],
-                settings: Settings) -> bytes:
+                genre_limit: int, vibe_limit: int) -> bytes:
     """FR-093: the only song data sent is its title and artist."""
     payload = {"title": song.title, "artist": song.artist, "requested_missing_fields": requested,
                "allowed_names": {"genres": genres, "vibes": vibes}}
@@ -323,8 +331,8 @@ def gemini_body(song: Song, requested: list[str], genres: list[str], vibes: list
         "system_instruction": GEMINI_INSTRUCTION,
         "store": False,
         "response_format": {"type": "text", "mime_type": "application/json",
-                            "schema": _gemini_schema(requested, settings.max_genres if genres else 0,
-                                                     settings.max_vibes if vibes else 0)},
+                            "schema": _gemini_schema(requested, genre_limit if genres else 0,
+                                                     vibe_limit if vibes else 0)},
         "generation_config": {"max_output_tokens": GEMINI_MAX_OUTPUT_TOKENS},
     }
     return json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -388,7 +396,12 @@ class Enricher:
     def lookup(self, song: Song) -> Outcome:
         outcome = Outcome(song)
         missing = song.missing()
-        want_genres = not song.has_genre and self.settings.max_genres > 0 and bool(self.genre_names)
+        # A Genre is added only to a song with no non-primary Genre yet, and never past
+        # max_genres in total; the primary counts toward that total (FR-103).
+        has = {_label_key(name) for name in song.genres}
+        slots = 0 if song.has_secondary_genre else max(0, self.settings.max_genres - len(song.genres))
+        allowed_genres = {key: name for key, name in self._genre_keys.items() if key not in has}
+        want_genres = slots > 0 and bool(allowed_genres)
         want_vibes = not song.has_vibe and self.settings.max_vibes > 0 and bool(self.vibe_names)
         if not missing and not want_genres and not want_vibes:
             return outcome
@@ -399,7 +412,7 @@ class Enricher:
                 if "release_year" in missing and match.year is not None:
                     outcome.filled["release_year"] = (match.year, MUSICBRAINZ)
                 if want_genres:
-                    outcome.genres = self._labels(match.tags, self._genre_keys, self.settings.max_genres, MUSICBRAINZ)
+                    outcome.genres = self._labels(match.tags, allowed_genres, slots, MUSICBRAINZ)
                 if "original_key" in missing or "bpm" in missing:
                     for name, value in self._acousticbrainz(match.mbid).items():
                         if name in missing:
@@ -408,9 +421,10 @@ class Enricher:
         still = [name for name in missing if name not in outcome.filled]
         need_genres = want_genres and not outcome.genres
         if still or need_genres or want_vibes:
-            answer, reason = self._gemini(song, still, need_genres, want_vibes)
+            answer, reason = self._gemini(song, still, list(allowed_genres.values()) if need_genres else [],
+                                          slots, want_vibes)
             if answer is not None:
-                self._take_gemini(outcome, answer, still, need_genres, want_vibes)
+                self._take_gemini(outcome, answer, still, allowed_genres if need_genres else {}, slots, want_vibes)
             reason = reason or "no valid answer from Gemini"
             for name in still:
                 if name not in outcome.filled:
@@ -431,7 +445,7 @@ class Enricher:
                 break
         return chosen
 
-    def _take_gemini(self, outcome: Outcome, answer: dict, still, need_genres, want_vibes) -> None:
+    def _take_gemini(self, outcome: Outcome, answer: dict, still, genre_keys, genre_limit, want_vibes) -> None:
         if "release_year" in still and (year := _valid_year(answer.get("release_year"))) is not None:
             outcome.filled["release_year"] = (year, GEMINI)
         if "bpm" in still and (bpm := _valid_bpm(answer.get("bpm"))) is not None:
@@ -440,7 +454,7 @@ class Enricher:
         if "original_key" in still and isinstance(key, dict) and set(key) == {"key_key", "key_scale"} \
                 and (value := _valid_key(key["key_key"], key["key_scale"])) is not None:
             outcome.filled["original_key"] = (value, GEMINI)
-        for wanted, field_name, keys, limit in ((need_genres, "genres", self._genre_keys, self.settings.max_genres),
+        for wanted, field_name, keys, limit in ((bool(genre_keys), "genres", genre_keys, genre_limit),
                                                 (want_vibes, "vibes", self._vibe_keys, self.settings.max_vibes)):
             labels = answer.get(field_name)
             if wanted and isinstance(labels, list):
@@ -472,15 +486,15 @@ class Enricher:
         return {"User-Agent": f"{APP_AGENT} ( {self.settings.musicbrainz_contact} )",
                 "Accept": "application/json"}
 
-    def _gemini(self, song: Song, still, need_genres, want_vibes):
+    def _gemini(self, song: Song, still, genre_names, genre_limit, want_vibes):
         if not self.settings.gemini_api_key:
             return None, "not filled: Gemini skipped (GEMINI_API_KEY is not set)"
         if GEMINI in self._stopped:
             return None, "not filled: Gemini stopped after repeated failures"
         if self.gemini_calls >= self.settings.gemini_cap:
             return None, "not enriched: Gemini call cap reached"
-        body = gemini_body(song, still, self.genre_names if need_genres else [],
-                           self.vibe_names if want_vibes else [], self.settings)
+        body = gemini_body(song, still, genre_names, self.vibe_names if want_vibes else [],
+                           genre_limit, self.settings.max_vibes)
         if len(body) > GEMINI_MAX_INPUT_BYTES:
             return None, "not filled: Gemini request too large"
         self.gemini_calls += 1
@@ -540,7 +554,7 @@ def run(conn, documents, settings: Settings, *, http=urllib_http, sleep=time.sle
             cur.execute("SELECT id, name FROM public.vibes ORDER BY id")
             vibes = cur.fetchall()
             cur.execute(SONG_QUERY, (documents,))
-            songs = [Song(*row) for row in cur.fetchall()]
+            songs = [Song.from_row(row) for row in cur.fetchall()]
 
     enricher = Enricher(settings, genres=genres, vibes=vibes, http=http, sleep=sleep, clock=clock)
     outcomes = []
@@ -548,7 +562,7 @@ def run(conn, documents, settings: Settings, *, http=urllib_http, sleep=time.sle
         outcome = enricher.lookup(song)
         if outcome.changed:
             try:
-                _write(conn, outcome, enricher.genre_ids, enricher.vibe_ids)
+                _write(conn, outcome, enricher.genre_ids, enricher.vibe_ids, settings.max_genres)
             except psycopg.Error as error:
                 reason = f"write failed (SQLSTATE {getattr(error, 'sqlstate', None) or 'unknown'}); rerun to retry"
                 for name in outcome.filled:
@@ -563,8 +577,9 @@ def run(conn, documents, settings: Settings, *, http=urllib_http, sleep=time.sle
                      started_at=started.strftime("%Y-%m-%d %H:%M:%S UTC"))
 
 
-def _write(conn, outcome: Outcome, genre_ids: dict, vibe_ids: dict) -> None:
-    """One transaction per song. Never overwrites; fills a category only while it is empty."""
+def _write(conn, outcome: Outcome, genre_ids: dict, vibe_ids: dict, max_genres: int = 3) -> None:
+    """One transaction per song. Never overwrites; adds Genres only while the song has no
+    non-primary Genre (and never past max_genres in total), and Vibes only while it has none."""
     song_id = outcome.song.id
     with conn.transaction():
         with conn.cursor() as cur:
@@ -580,8 +595,9 @@ def _write(conn, outcome: Outcome, genre_ids: dict, vibe_ids: dict) -> None:
             for name in [name for name in outcome.filled if current[name] is not None]:
                 del outcome.filled[name]
                 outcome.left[name] = "filled by another change during the run"
-            outcome.genres = _insert_labels(cur, outcome, "genres", "song_genres", "genre_id", "genres", genre_ids)
-            outcome.vibes = _insert_labels(cur, outcome, "vibes", "song_vibes", "vibe_id", "vibes", vibe_ids)
+            outcome.genres = _insert_labels(cur, outcome, "genres", "song_genres", "genre_id", "genres",
+                                            genre_ids, max_genres)
+            outcome.vibes = _insert_labels(cur, outcome, "vibes", "song_vibes", "vibe_id", "vibes", vibe_ids, None)
             if outcome.changed:
                 # Also moves updated_at forward so devices pull the change.
                 values = [outcome.filled.get(name, (None,))[0] for name in SCALARS]
@@ -590,18 +606,33 @@ def _write(conn, outcome: Outcome, genre_ids: dict, vibe_ids: dict) -> None:
                                 WHERE id = %s""", (*values, song_id))
 
 
-def _insert_labels(cur, outcome: Outcome, name: str, table: str, column: str, definitions: str, ids: dict) -> list:
+def _insert_labels(cur, outcome: Outcome, name: str, table: str, column: str, definitions: str, ids: dict,
+                   max_total: int | None) -> list:
+    """Re-checks inside the transaction that the category is still open. Vibes: the song has
+    none. Genres (max_total set): the song has no non-primary Genre and room under max_total."""
     labels = getattr(outcome, name)
     if not labels:
         return []
-    cur.execute(f"SELECT EXISTS (SELECT 1 FROM public.{table} WHERE song_id=%s)", (outcome.song.id,))
-    if cur.fetchone()[0]:
+    if max_total is None:
+        cur.execute(f"SELECT count(*), 0 FROM public.{table} WHERE song_id=%s", (outcome.song.id,))
+        total, secondary = cur.fetchone()
+        room = None if total == 0 else 0
+    else:
+        cur.execute(f"SELECT count(*), count(*) FILTER (WHERE NOT is_primary) FROM public.{table} WHERE song_id=%s",
+                    (outcome.song.id,))
+        total, secondary = cur.fetchone()
+        room = 0 if secondary else max_total - total
+    if room is not None and room <= 0:
         outcome.left[name] = "category filled by another change during the run"
         return []
     wanted = [ids[label] for label, _ in labels]
     cur.execute(f"SELECT id FROM public.{definitions} WHERE id = ANY(%s) FOR SHARE", (wanted,))
     present = {row[0] for row in cur.fetchall()}
-    kept = [(label, source) for label, source in labels if ids[label] in present]
+    cur.execute(f"SELECT {column} FROM public.{table} WHERE song_id=%s", (outcome.song.id,))
+    held = {row[0] for row in cur.fetchall()}
+    kept = [(label, source) for label, source in labels if ids[label] in present and ids[label] not in held]
+    if room is not None:
+        kept = kept[:room]
     for label, _ in kept:
         cur.execute(f"INSERT INTO public.{table}(song_id, {column}) VALUES (%s, %s)", (outcome.song.id, ids[label]))
     return kept
