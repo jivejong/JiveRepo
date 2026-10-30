@@ -12,12 +12,14 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 
 import psycopg
 from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
 
 import chart_parser
+import enrich_songs
 
 DIAGNOSTICS_VERSION = 1
 # The app locks Genre then Vibe names, matching definition rows, then writes
@@ -447,13 +449,34 @@ def _print_report(report: dict, *, dry_run=False):
             print("  " + json.dumps(row, ensure_ascii=False, separators=(",", ":")))
 
 
+def _enrich(conn, songs: list[dict], report_dir: Path) -> int:
+    # FR-101: every song from the documents in this songs.json, not only new inserts.
+    documents = sorted({song["source_document"] for song in songs
+                        if isinstance(song, dict) and isinstance(song.get("source_document"), str)})
+    try:
+        return enrich_songs.enrich_and_report(conn, documents, report_dir)
+    except Exception as exc:
+        conn.rollback()
+        sqlstate = getattr(exc, "sqlstate", None)
+        detail = f"database error (SQLSTATE {sqlstate})" if isinstance(sqlstate, str) else type(exc).__name__
+        print(f"Enrichment stopped: {detail}; details suppressed. The load is committed; "
+              "rerun to fill what is still missing.", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Preview or insert new songs from validated songs.json.")
     parser.add_argument("songs_json", help="Path to songs.json from batch_parse")
     parser.add_argument("--dry-run", action="store_true", help="Read-only plan; no rows or sequences are changed")
     parser.add_argument("--database-url", default=os.environ.get("DATABASE_URL"),
                         help="Postgres URL (or set DATABASE_URL)")
+    parser.add_argument("--enrich", action="store_true",
+                        help="After a committed load, enrich every song from these documents "
+                             "(run only after a backup; scripts/import-documents does both)")
     args = parser.parse_args()
+    if args.enrich and args.dry_run:
+        print("--enrich cannot be combined with --dry-run", file=sys.stderr)
+        return 2
     try:
         with open(args.songs_json, encoding="utf-8") as handle:
             songs = json.load(handle)
@@ -474,6 +497,8 @@ def main() -> int:
     try:
         report = load(conn, songs, dry_run=args.dry_run)
         _print_report(report, dry_run=args.dry_run)
+        if args.enrich and report.get("state") == "committed":
+            return _enrich(conn, songs, Path(args.songs_json).parent)
         return 0
     except LoadPreflightError as exc:
         try:
