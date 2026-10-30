@@ -2422,7 +2422,128 @@ The fix round from the Phase 7 review (`handoffs/phase-7/review-report.md`, giti
 
 **Catch-up (2026-10-30).** ForceServe, then ForceAgent, enabled at 02:09:15Z. The agent, 02:09:19Z: `polled=0 decided=0 ... statements=2 model_calls=0 http_attempts=0 ... gate=new_run` (Job 1 ran at 02:03Z, run id 498943173382191 recorded). ForceServe, 02:09:31Z: `decision=publish status=ok statements=7 rows=12994`. Before this round, the first live `gate=no_new_run` line appeared at 01:11:01Z (`statements=0`, Job 1 run 928465429257228 already polled) and ForceServe logged `skip_no_new_run` at 01:12:01Z, so the 2-hourly gating works as designed. Statements used: 9 (agent 2, ForceServe 7) of the 9 allowed; Gemini 0 of 6.
 
-**Commits:** listed in the next round.
+**Commits:** AL `6345b66`, AM `3117d4f`.
+
+### Phase 7 summary
+
+**Goal.** A local dashboard that shows the pipeline's state from a local Postgres copy, with a manual deployment path that runs through the agent's own constraint layer and writes to the same table, and a puller that keeps the copy fresh inside the Free Edition warehouse quota.
+
+**What was built.**
+
+- `serving/` (local puller, Postgres and backend, own venv `serving\.venv`):
+  - `config.py`, `schema.py` and `sql/schema.sql`, `views.py` and `sql/views.sql`, `fixtures.py`: the `.env.serving` loader and table map, the 12 tables of schema `serving`, the 10 views, and the display fixtures.
+  - `statements.py`, `jobs.py`, `gate.py`: the read-only Statement client with result-chunk following, a row cap and a keyword guard; the Job 1 lookup; the publish gate.
+  - `pull.py`, `publish.py`: the pull (watermarks, upserts, retention, the over-the-cap fallback) and the `python -m serving.publish` CLI (lock, 03:xx skip, agent wait, gate, `publish_log`, S5 ping, `serve.log`, start debounce).
+  - `api_queries.py`, `server.py`: the read API, the static handler and `POST /api/deploy` with its Origin, Content-Type and token checks, on 127.0.0.1:8081.
+  - `deploy.py`: the manual deployment service (validate, 03:xx, open check, agent lock, Job 1 check, three reads, forced stand-down, `check_deploy`, MERGE, mark, refresh), with `logs\deploy.log`.
+- `dashboard/` (React 19, Vite 8, Recharts 3, exact versions, `npm audit` clean):
+  - `src/lib/*.js`: the pure modules (format, regions, bands, planet, health, poll, countdown, overrides, incidents, histogram, rejections, deploy), tested with `node --test`.
+  - `src/*.jsx`, `api.js`, `usePoll.js`: the eight panels, the deploy form and the poll hook with backoff and a refresh bus.
+  - `package.json`, `package-lock.json`, `vite.config.js`, `index.html`, `styles.css`.
+- `infra/serving/compose.yml` (the `force-postgres` container, `postgres:17` on 127.0.0.1:5433, volume `force-postgres-data`) and the registration scripts `infra/desktop/register-serve-task.ps1` (new, with its Pester file) and `register-agent-task.ps1` (trigger minute).
+- Agent changes:
+  - `agent/seen.py`: the first-seen store behind the human-first window.
+  - `agent/run.py`: the window and its 30-minute rule, the Job 1 wait, the start debounce, the poll gate, `build_row(decided_by=...)`.
+  - `agent/distance.py`: `party_eta_hours`. `agent/dbsql.py`: the scrubbed API error body. `agent/jobs.py`: `latest_successful_run`.
+  - `agent/constraints.py`: no rank or specialty verdict for an unavailable party. `agent/config.py`: `POLL_LIMIT`, `MIN_FIRST_SEEN_AGE_MINUTES`.
+- `ingest/bridge/files_api.py`: `ssl_context()` with `VERIFY_X509_PARTIAL_CHAIN` and `default_opener`.
+- `ingest/phase7_checkpoint.sql`: p7-1 to p7-5, read-only.
+- `resources/force_pipeline.job.yml`: Job 1 every 2 hours.
+
+**Checkpoint.** Passed on 2026-10-29. Shown: two real incidents (geonosis `sith_presence`, kamino `force_drain`) were first seen by the agent at 01:11Z, published at 01:12Z and decided as deploys at 02:11Z, 60 minutes later (the human-first window, seen live); the deployment log filled (Yoda's two deploys with ETA, `decided_by` and override count, then a stand-down of alderaan at 04:11Z); a manual deploy to alderaan naming kamino's plo_koon was rejected at 02:14Z (`jedi_unavailable` first among five reasons) and wrote nothing (p7-3 = 0, `deploy.log` shows 3 statements, all reads); Jong confirmed the planet shift from his recording. Evidence: Round 13c, `ingest/phase7_checkpoint.sql` p7-1 to p7-5 and `logs\deploy.log`. Two follow-ups from it were fixed in Round 16 (the rank and specialty cascade; the p7-2 measuring point). The live happy path of a manual deploy has not run on prod (Phase 8 demo).
+
+**Measured numbers.**
+
+| Measure | Value |
+|---|---|
+| First live pull (backfill, 7 days, dims due) | 31 statements, 58.4 s, 83,024 rows |
+| A steady publish | 7 statements, about 10 s (10 statements when the dims are due) |
+| An idle agent cycle / a gated cycle (no new Job 1 run) | 2 statements / 0 statements |
+| A rejected manual deploy | 3 statements (all reads) |
+| Warehouse-on minutes per hour, median (**derived**, Round 11a model) | about 23 with the agent at :15 and the pull at :17; about 18 with the agent at :11 and the pull at :12; roughly half of that under a 2-hourly Job 1 (**model only**, not re-computed) |
+| Quota blocks, 2026-10-16 to 2026-10-27 | 5 stretches without a Job 1 run (table below); none recorded since the 2026-10-27 lift |
+| Suites at the phase start | edge 553 (1 skipped), ingest 373, intake 384, agent 502, intake node 205, Pester 45 (23 + 22) |
+| Suites at the phase end | edge 553 (1 skipped), ingest 388, intake 384, agent 573, serving 190, intake node 205, dashboard 47, Pester 72 (23 + 23 + 26) |
+| dbt (unchanged by the phase) | 12 models, 5 seeds, 121 tests, 81 unit tests, 2 sources; Job 1's selection 94 nodes |
+
+**Deviations from docs 01, 05, 06 and 07 as written at the start of the phase.**
+
+- `publish_serving` is a local puller (`ForceServe`), not a Job 1 task.
+- Postgres runs in Docker on 127.0.0.1:5433 (5432 is taken by another project's container and by the dbt `local` target).
+- D4 (doc 01) is amended: the dashboard reads Postgres only; a manual deployment writes to the warehouse through the agent's own path; the pull draws on the warehouse quota.
+- "Active anomaly" is defined as an open, undecided incident with `detected_at >= AGENT_EPOCH`. Fixture 20 (`severity_floor_user_anomaly`) and the 4.40 floor are unreachable from the UI; the floor stays as defense in depth.
+- The human-first window: the agent decides an incident only in a cycle at least 30 minutes after the one that first saw it. About 59 minutes with an hourly Job 1; about 2 hours since Round 14.
+- The agent runs at :11 and ForceServe at :12 (docs said :15), inside Job 1's warm window.
+- Job 1 runs every 2 hours (:03 on even UTC hours), not hourly; the agent polls only after a new Job 1 run.
+- `VERIFY_X509_PARTIAL_CHAIN` was added to the TLS context for the monitoring host's cross-signed chain.
+- Every task start is debounced for 60 seconds because Task Scheduler launches each task twice about 2 s apart.
+- The fixture database is separate (`force_serving_fixture`, never used for deploys); `force_serving` holds live data only.
+- The checkpoint was recorded as MP4 clips (Jong's), not a GIF.
+
+**Quota history** (from `handoffs/phase-7/quota-report.md`, Round 13a and Round 13b; a block is a stretch with no successful Job 1 run).
+
+| Block | Last good Job 1 run ends | First good run starts | Duration |
+|---|---|---|---|
+| B1 | 2026-10-16 00:09Z | 10-16 04:03Z | 3.9 h |
+| B2 (probably not quota) | 10-18 02:10Z | 10-18 04:03Z | 1.9 h |
+| B3 | 10-18 17:08Z | 10-19 16:03Z | 22.9 h |
+| B4 | 10-21 00:10Z | 10-21 03:03Z | 2.9 h |
+| B5 | 10-25 16:10Z | 10-27 17:03Z | 48.9 h (still on at 15:41Z on 10-27; the cause of the lift is unknown) |
+
+| Date | Mitigation |
+|---|---|
+| 2026-10-20 / 10-21 | Agent at :11 and ForceServe at :12, inside Job 1's warm window (Round 11b; auto-stop cannot be changed on Free Edition) |
+| 2026-10-27 | TLS partial-chain fix, the human-first 30-minute rule and the 60-second start debounce (Round 13b) |
+| 2026-10-29 | Job 1 every 2 hours; the agent polls only after a new Job 1 run (Round 14); S2 set to 2 h / 1 h |
+| 2026-10-30 | The gate is only "a new Job 1 run"; decisions fall in the even-hour warm window (Round 16) |
+
+No simple budget rule fits the block start times (quota report, section 3), so the cause of the blocks is not established.
+
+**What carries into Phase 8.** The rows marked "Phase 8" in the open-items table below: the read-only service principal for the puller (separate tokens for the puller and the deploy path), the logon dependency, the bundle size, the log rotation, the findings 7, 8, 9, 10, 12, 13 and 15 of the Phase 7 review, and the live successful manual deploy for the demo.
+
+**Phase 7 commits, in order** (`git log --oneline eb2fc86..HEAD -- Force_Balance_Pipeline`):
+
+1. `90c97c6` Record Phase 7 dashboard design decisions
+2. `218a83d` Start Phase 7 log entry
+3. `70027af` Record anomaly band consumer in doc 03
+4. `b83e5f9` Add local Postgres serving schema and fixture loader
+5. `d9a7b47` Add serving views for dashboard panels
+6. `ef67379` Fix serving column types, volume name and capacity fixture
+7. `e1d8ddb` Log Phase 7 serving rounds
+8. `54a4508` Add serving statement client, Job 1 lookup and publish gate
+9. `a171975` Log Phase 7 Round 5a
+10. `33fa965` Add serving pull core and tighten read-only guard
+11. `ba22e84` Log Phase 7 Round 5b; serve after the agent at :17
+12. `5ade06f` Add serving publish CLI with gate, agent wait and S5 ping
+13. `b2da8e8` Log Phase 7 Round 5c
+14. `10a3f9f` Add ForceServe task registration script
+15. `b4f9863` Log Phase 7 Round 6; document ForceServe registration
+16. `2d642aa` Record first live serving pull
+17. `0ab2f71` Fix empty-backfill watermark; add dashboard read API
+18. `fd0d748` Log Phase 7 Round 8; document the dashboard backend
+19. `9757c48` Add dashboard app with galaxy, planet, signature and health panels
+20. `525ba52` Add ingest lag, rejection, incident and deployment panels
+21. `554e9d1` Log Phase 7 Rounds 9-10; document the dashboard frontend
+22. `b69bb7e` Add agent human-first window, shared ETA and API error detail
+23. `17c538a` Log Phase 7 Round 11a
+24. `0b03bd2` Run the agent at :11 after Job 1 and serving at :12
+25. `8b25bb5` Log Phase 7 Round 11b; document the warm-window schedule
+26. `ea317be` Add manual deployment service on the agent's code path
+27. `d8b940e` Log Phase 7 Round 12a
+28. `34f3720` Add deploy endpoint with CSRF guard and deploy form
+29. `caae6d0` Log Phase 7 Round 12b; document the deploy endpoint
+30. `0121168` Fix agent decision time; add Phase 7 checkpoint SQL
+31. `73e98f4` Log Phase 7 Round 13a; add the checkpoint runbook
+32. `582bf1a` Verify TLS partial chains; debounce duplicate task launches
+33. `f76ae8a` Log Phase 7 Round 13b
+34. `456fb75` Record Phase 7 checkpoint
+35. `05bc901` Run Job 1 every 2 hours; gate the agent's poll on new runs
+36. `df77fb7` Log Phase 7 Round 14; document the 2-hourly cadence
+37. `20ea66c` Log Phase 7 review; record checkpoint and alert delivery
+38. `6345b66` Apply Phase 7 review fixes
+39. `3117d4f` Log Phase 7 review fixes; document the 2-hour decision cycle
+
+The close-out commits (this summary and the DeployForm string) follow these.
 
 ## Open items
 
