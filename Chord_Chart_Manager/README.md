@@ -428,41 +428,40 @@ songs and enriches them in one run. If the backup fails, nothing is loaded.
 
 `load_songs.py --enrich` runs after a committed load, over **every** song whose
 `source_document` is in that `songs.json`, not only new inserts. A rerun fills
-only what is still missing, so a complete document makes no provider requests
-and no changes.
+only what is still missing, so a complete document makes no requests and no
+changes.
 
-- **What it fills.** Only a missing `release_year`, `original_key` or `bpm`, and
+- **What it fills.** Only a missing `release_year`, `original_key` or `bpm`,
   Vibes only when the song has none (at most 3), and Genres only when the song
   has no non-primary Genre, up to 3 Genres in total counting the primary (so a
   song with only its primary Genre can gain 2). Populated values, existing
-  assignments, the primary Genre and chart text are never changed. A song whose
-  providers return no extra Genre is looked up again on a rerun. New assignments use only existing
-  definitions.
-- **Where values come from.** MusicBrainz first (the best-scoring recording for
-  the title and artist at or above a minimum score, with the earliest release
-  year among matching recordings), then AcousticBrainz for key and BPM, then
-  Gemini (`gemini-3.1-flash-lite`) for whatever is still missing.
+  assignments, the primary Genre and chart text are never changed. New
+  assignments use only existing definitions. A song for which Gemini returns no
+  extra Genre is asked again on a rerun.
+- **Where values come from.** Gemini (`gemini-3.1-flash-lite`) only, in one
+  call per song that fills every gap at once. MusicBrainz and AcousticBrainz
+  are not used: two trials showed wrong years from title variants (MusicBrainz)
+  and poor key and BPM agreement (AcousticBrainz). Key and BPM vary between
+  Gemini runs, so treat them as suggestions and review the report.
 - **What is sent.** Only the title and artist, the names of the missing fields
   and the existing Genre and Vibe names. Never chart text or lyrics.
 - **Limits.** At most `ENRICH_GEMINI_CAP` Gemini calls per run (default 1000);
   songs left over are reported as not enriched, and a rerun picks them up.
-  MusicBrainz requests are at least 1 second apart. After 3 failed requests in a
-  row a provider is skipped for the rest of the run.
+  After 3 failed requests in a row Gemini is skipped for the rest of the run.
 - **Report.** Each run writes `enrichment-report-<UTC time>.txt` next to
-  `songs.json` (in `pipeline/parsed_out/`) listing what was filled, by which
-  provider, and what was left and why. Nothing reads it back.
+  `songs.json` (in `pipeline/parsed_out/`) listing what was filled and what was
+  left and why. Nothing reads it back.
 - **Before you run it.** Enrichment writes directly with no preview, so take a
   backup first (the import script does) and sync every device until Settings
   shows 0 pending: enrichment changes `updated_at`, and a queued tablet edit to
   the same song would be replaced by the server copy.
 
-Settings, in `app/.env` (never commit it): `MUSICBRAINZ_CONTACT` is required for
-MusicBrainz and AcousticBrainz (it forms the User-Agent), and `GEMINI_API_KEY`
-for Gemini. With either missing, that provider is skipped and the report says
-so. Optional: `ENRICH_GEMINI_CAP` (default 1000), `ENRICH_MB_MIN_SCORE` (90),
-`ENRICH_MAX_GENRES` (3) and `ENRICH_MAX_VIBES` (3). The pipeline Compose service
-passes only `MUSICBRAINZ_CONTACT` and `GEMINI_API_KEY`, so to change the other
-four, add them to the service's `environment` list in `app/docker-compose.yml`.
+Settings, in `app/.env` (never commit it): `GEMINI_API_KEY` is required; without
+it enrichment makes no request and the report says so. Optional:
+`ENRICH_GEMINI_CAP` (default 1000), `ENRICH_MAX_GENRES` (3) and
+`ENRICH_MAX_VIBES` (3). The pipeline Compose service passes only
+`GEMINI_API_KEY`, so to change the other three, add them to the service's
+`environment` list in `app/docker-compose.yml`.
 
 Keep real `.docx` files, generated song JSON, database dumps, and secrets out
 of source control. The song files can contain copyrighted lyrics, and they are
@@ -1049,13 +1048,13 @@ Verified on 2026-10-29 after the bug fixes and the enrichment rewrite:
   integration tests, and 52 serial Playwright E2E tests against a scratch
   `ccm_test` database, which was dropped afterwards. The main app stayed
   healthy and its `/api/stats` counts were unchanged.
-- The pipeline image passed 157 pytest tests (45 of them for enrichment, using
+- The pipeline image passed 151 pytest tests (39 of them for enrichment, using
   stubbed providers) against a scratch `ccm_loader_c1_*` database.
 
 Not yet verified: a full real-corpus import (FR-099), the physical-tablet
-checklist (FR-100), and enrichment against the live providers: the rewritten
-step (FR-092, FR-093, FR-101 to FR-115) passes its stubbed tests but has not yet
-made a live MusicBrainz, AcousticBrainz or Gemini request.
+checklist (FR-100), and enrichment on the main library. The rewritten step
+(FR-092, FR-093, FR-101 to FR-115) has made live requests only once, in a
+25-song trial on a scratch copy of `Lite.docx` (2026-10-30).
 
 ## Project documents
 

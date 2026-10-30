@@ -4,7 +4,7 @@ import json
 import os
 import re
 import uuid
-from urllib.parse import parse_qs, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
 import pytest
@@ -16,12 +16,8 @@ import load_songs as loader
 
 GENRES = [(1, "Rock"), (2, "Pop"), (3, "Jazz"), (4, "Soul")]
 VIBES = [(11, "Upbeat"), (12, "Mellow"), (13, "Danceable"), (14, "Romantic")]
-CONTACT = "owner@example.com"
 FAKE_KEY = "fake-gemini-key-for-tests"
-MBID_A = "11111111-1111-4111-8111-111111111111"
-MBID_B = "22222222-2222-4222-8222-222222222222"
-MBID_C = "33333333-3333-4333-8333-333333333333"
-MBID_D = "44444444-4444-4444-8444-444444444444"
+GEMINI_HOST = "generativelanguage.googleapis.com"
 
 
 class FakeClock:
@@ -36,13 +32,12 @@ class FakeClock:
 
 
 class FakeHttp:
-    """Records every request; answers by host. No network is ever used."""
+    """Records every request and answers Gemini's host only: a request to any other host
+    raises KeyError, so a stray provider call fails the test. No network is ever used."""
 
-    def __init__(self, clock: FakeClock, *, mb=None, ab=None, gemini=None) -> None:
+    def __init__(self, clock: FakeClock, *, gemini=None) -> None:
         self.clock = clock
         self.calls: list[dict] = []
-        self.mb = mb or (lambda call: (200, {"recordings": []}))
-        self.ab = ab or (lambda call: (404, {"message": "Not found"}))
         self.gemini = gemini or self._unexpected_gemini
 
     @staticmethod
@@ -54,8 +49,7 @@ class FakeHttp:
                 "timeout": timeout, "at": self.clock()}
         self.calls.append(call)
         host = urlsplit(url).hostname
-        handler = {"musicbrainz.org": self.mb, "acousticbrainz.org": self.ab,
-                   "generativelanguage.googleapis.com": self.gemini}[host]
+        handler = {GEMINI_HOST: self.gemini}[host]
         status, payload = handler(call)
         if isinstance(payload, (bytes, bytearray)):
             return status, bytes(payload)
@@ -63,18 +57,6 @@ class FakeHttp:
 
     def to(self, host: str) -> list[dict]:
         return [call for call in self.calls if urlsplit(call["url"]).hostname == host]
-
-
-def recording(mbid, title, artist, score, date=None, genres=(), tags=()):
-    item = {"id": mbid, "score": score, "title": title,
-            "artist-credit": [{"name": artist, "joinphrase": ""}]}
-    if date:
-        item["first-release-date"] = date
-    if genres:
-        item["genres"] = [{"name": name, "count": 5} for name in genres]
-    if tags:
-        item["tags"] = [{"name": name, "count": 1} for name in tags]
-    return item
 
 
 def gemini_reply(**values):
@@ -100,9 +82,9 @@ def song(song_id=1, title="Do It Again", artist="Steely Dan", *, release_year=No
 
 
 def enricher(http, clock, **settings):
-    values = {"musicbrainz_contact": CONTACT, "gemini_api_key": FAKE_KEY, **settings}
+    values = {"gemini_api_key": FAKE_KEY, **settings}
     return enrich_songs.Enricher(enrich_songs.Settings(**values), genres=GENRES, vibes=VIBES,
-                                 http=http, sleep=clock.sleep, clock=clock)
+                                 http=http)
 
 
 def complete(**overrides):
@@ -112,99 +94,32 @@ def complete(**overrides):
     return song(**{**values, **overrides})
 
 
-# FR-113
-def test_best_score_above_minimum_wins_and_year_is_earliest_among_matching_recordings() -> None:
+# FR-103
+def test_a_song_with_every_gap_needs_one_gemini_call_and_no_other_provider() -> None:
+    # Owner 2026-10-30: AcousticBrainz and then MusicBrainz were dropped after two live trials.
+    # FakeHttp answers Gemini's host only, so a request to any other host fails the test.
     clock = FakeClock()
-    page = {"recordings": [
-        "not a recording",
-        {"score": 100, "title": "Do It Again"},
-        {"id": MBID_D, "score": "abc", "title": "Do It Again"},
-        recording(MBID_A, "Do It Again", "Steely Dan", 100, "1973-01-15"),
-        recording(MBID_D, "Do It Again", "The Beach Boys", 98, "1968-07-08"),
-        recording(MBID_B, "Do it again!", "Steely Dan", 95, "1972-11"),
-        recording(MBID_C, "Do It Again", "Steely Dan", 92, "1985"),
-    ]}
-    http = FakeHttp(clock, mb=lambda call: (200, page))
-    outcome = enricher(http, clock).lookup(complete(release_year=None))
+    http = FakeHttp(clock, gemini=lambda call: gemini_reply(
+        release_year=1972, bpm=96, original_key={"key_key": "Bb", "key_scale": "major"},
+        genres=["Jazz", "Rock"], vibes=["Mellow"]))
+    outcome = enricher(http, clock).lookup(song(genres=(), secondary=False, has_vibe=False))
 
-    assert outcome.filled == {"release_year": (1972, "MusicBrainz")}
-    assert outcome.left == {}
-    assert len(http.to("musicbrainz.org")) == 1
-    assert http.to("acousticbrainz.org") == []
-    query = parse_qs(urlsplit(http.calls[0]["url"]).query)
-    assert query["query"] == ['recording:"Do It Again" AND artist:"Steely Dan"']
-    assert query["fmt"] == ["json"]
-
-
-# FR-113
-def test_no_recording_at_minimum_score_falls_back_to_gemini() -> None:
-    clock = FakeClock()
-    page = {"recordings": [recording(MBID_A, "Do It Again", "Steely Dan", 80, "1972")]}
-    http = FakeHttp(clock, mb=lambda call: (200, page), gemini=lambda call: gemini_reply(release_year=1972))
-    outcome = enricher(http, clock).lookup(complete(release_year=None))
-
-    assert outcome.filled == {"release_year": (1972, "Gemini")}
-    assert len(http.to("generativelanguage.googleapis.com")) == 1
-    assert http.to("acousticbrainz.org") == []
-
-
-# FR-113
-def test_a_page_with_no_usable_entries_is_no_match_not_a_failure() -> None:
-    clock = FakeClock()
-    http = FakeHttp(clock, mb=lambda call: (200, {"recordings": "garbage"}),
-                    gemini=lambda call: gemini_reply(release_year=1990))
-    run = enricher(http, clock)
-    outcome = run.lookup(complete(release_year=None))
-    assert outcome.filled == {"release_year": (1990, "Gemini")}
-    assert run.notes == []
+    assert len(http.calls) == 1
+    assert {urlsplit(call["url"]).hostname for call in http.calls} == {GEMINI_HOST}
+    assert outcome.filled == {"release_year": (1972, "Gemini"), "original_key": ("Bb", "Gemini"),
+                              "bpm": (96, "Gemini")}
+    assert outcome.genres == [("Jazz", "Gemini"), ("Rock", "Gemini")]
+    assert outcome.vibes == [("Mellow", "Gemini")]
+    assert gemini_input(http.calls[0])["requested_missing_fields"] == [
+        "release_year", "original_key", "bpm", "genres", "vibes"]
 
 
 # FR-103
-def test_acousticbrainz_fills_key_and_bpm_for_the_chosen_recording() -> None:
-    clock = FakeClock()
-    page = {"recordings": [recording(MBID_A, "Do It Again", "Steely Dan", 100, "1972")]}
-    lowlevel = {"rhythm": {"bpm": 117.6}, "tonal": {"key_key": "F#", "key_scale": "minor"}}
-    http = FakeHttp(clock, mb=lambda call: (200, page), ab=lambda call: (200, lowlevel))
-    outcome = enricher(http, clock).lookup(complete(original_key=None, bpm=None))
-
-    assert outcome.filled == {"original_key": ("F#m", "AcousticBrainz"), "bpm": (118, "AcousticBrainz")}
-    assert [urlsplit(call["url"]).path for call in http.to("acousticbrainz.org")] == [f"/api/v1/{MBID_A}/low-level"]
-
-
-# FR-103
-def test_acousticbrainz_without_data_leaves_the_gap_for_gemini() -> None:
-    clock = FakeClock()
-    page = {"recordings": [recording(MBID_A, "Do It Again", "Steely Dan", 100, "1972")]}
-    http = FakeHttp(clock, mb=lambda call: (200, page),
-                    gemini=lambda call: gemini_reply(bpm=96, original_key={"key_key": "Bb", "key_scale": "major"}))
-    outcome = enricher(http, clock).lookup(complete(original_key=None, bpm=None))
-
-    assert outcome.filled == {"original_key": ("Bb", "Gemini"), "bpm": (96, "Gemini")}
-    assert len(http.to("acousticbrainz.org")) == 1
-
-
-# FR-103
-def test_malformed_acousticbrainz_values_are_ignored() -> None:
-    clock = FakeClock()
-    page = {"recordings": [recording(MBID_A, "Do It Again", "Steely Dan", 100, "1972")]}
-    lowlevel = {"rhythm": {"bpm": -4}, "tonal": {"key_key": "H", "key_scale": "minor"}}
-    http = FakeHttp(clock, mb=lambda call: (200, page), ab=lambda call: (200, lowlevel),
-                    gemini=lambda call: gemini_reply(bpm=100, original_key={"key_key": "C", "key_scale": "minor"}))
-    outcome = enricher(http, clock).lookup(complete(original_key=None, bpm=None))
-    assert outcome.filled == {"original_key": ("Cm", "Gemini"), "bpm": (100, "Gemini")}
-
-
-# FR-103
-def test_musicbrainz_genres_fill_an_empty_genre_category_from_managed_names_only() -> None:
-    clock = FakeClock()
-    page = {"recordings": [recording(MBID_A, "Do It Again", "Steely Dan", 100, "1972",
-                                     genres=("jazz", "classic  rock", "yacht rock"), tags=("rock",))]}
-    http = FakeHttp(clock, mb=lambda call: (200, page))
-    outcome = enricher(http, clock).lookup(complete(genres=(), secondary=False))
-
-    assert outcome.genres == [("Jazz", "MusicBrainz"), ("Rock", "MusicBrainz")]
-    assert outcome.vibes == []
-    assert http.to("generativelanguage.googleapis.com") == []
+def test_no_musicbrainz_or_acousticbrainz_code_remains() -> None:
+    for name in ("choose_recording", "acousticbrainz_values", "MUSICBRAINZ", "ACOUSTICBRAINZ", "MB_URL"):
+        assert not hasattr(enrich_songs, name), name
+    for name in ("musicbrainz_contact", "mb_min_score"):
+        assert name not in enrich_songs.Settings.__dataclass_fields__, name
 
 
 # FR-092 FR-115
@@ -262,17 +177,6 @@ def test_a_song_whose_only_genre_is_its_primary_gets_secondary_genres_up_to_thre
 
 
 # FR-103
-def test_musicbrainz_tags_for_the_primary_genre_are_not_added_again() -> None:
-    clock = FakeClock()
-    page = {"recordings": [recording(MBID_A, "Do It Again", "Steely Dan", 100, "1972",
-                                     genres=("rock", "jazz", "soul"))]}
-    http = FakeHttp(clock, mb=lambda call: (200, page))
-    outcome = enricher(http, clock, max_genres=2).lookup(complete(genres=("Rock",), secondary=False))
-    assert outcome.genres == [("Jazz", "MusicBrainz")]
-    assert http.to("generativelanguage.googleapis.com") == []
-
-
-# FR-103
 def test_a_primary_only_song_is_left_alone_when_the_genre_limit_is_already_met() -> None:
     clock = FakeClock()
     http = FakeHttp(clock)
@@ -326,6 +230,35 @@ def test_a_failed_gemini_answer_leaves_the_gaps_reported(reply) -> None:
     assert run.gemini_calls == 1
 
 
+# FR-103
+def test_a_labels_only_request_names_the_label_categories_it_wants() -> None:
+    # Observed live (2026-10-30): when requested_missing_fields held no label category,
+    # Gemini answered a labels-only request with empty arrays.
+    def picky(call):
+        wanted = gemini_input(call)["requested_missing_fields"]
+        return gemini_reply(genres=["Jazz"] if "genres" in wanted else [], vibes=["Mellow"] if "vibes" in wanted else [])
+
+    clock = FakeClock()
+    http = FakeHttp(clock, gemini=picky)
+    outcome = enricher(http, clock).lookup(complete(genres=(), secondary=False, has_vibe=False))
+
+    assert gemini_input(http.to("generativelanguage.googleapis.com")[0])["requested_missing_fields"] == ["genres", "vibes"]
+    assert outcome.genres == [("Jazz", "Gemini")] and outcome.vibes == [("Mellow", "Gemini")]
+    properties = gemini_request(http.to("generativelanguage.googleapis.com")[0])["response_format"]["schema"]["properties"]
+    assert all(properties[name] == {"type": "null"} for name in enrich_songs.SCALARS)
+
+
+# FR-103 FR-102
+def test_the_report_distinguishes_no_usable_labels_from_an_unusable_answer() -> None:
+    clock = FakeClock()
+    empty = FakeHttp(clock, gemini=lambda call: gemini_reply())
+    outcome = enricher(empty, clock).lookup(complete(has_vibe=False))
+    assert outcome.left["vibes"] == "Gemini answered with no usable labels"
+
+    broken = FakeHttp(clock, gemini=lambda call: (200, b"not json"))
+    assert enricher(broken, clock).lookup(complete(has_vibe=False)).left["vibes"] == "no valid answer from Gemini"
+
+
 # FR-093
 def test_requests_carry_identity_and_managed_names_only() -> None:
     clock = FakeClock()
@@ -336,7 +269,7 @@ def test_requests_carry_identity_and_managed_names_only() -> None:
     assert sorted(request) == ["generation_config", "input", "model", "response_format", "store", "system_instruction"]
     assert gemini_input(http.calls[-1]) == {
         "title": "Do It Again", "artist": "Steely Dan",
-        "requested_missing_fields": ["release_year"],
+        "requested_missing_fields": ["release_year", "vibes"],
         "allowed_names": {"genres": [], "vibes": ["Upbeat", "Mellow", "Danceable", "Romantic"]},
     }
     assert request["store"] is False
@@ -360,29 +293,12 @@ def test_gemini_cap_stops_calls_and_reports_the_remaining_songs() -> None:
     assert run.gemini_calls == 2
     assert [bool(item.filled) for item in outcomes] == [True, True, False, False, False]
     assert all("cap" in item.left["release_year"] for item in outcomes[2:])
-    assert len(http.to("musicbrainz.org")) == 5
 
 
 # NFR-011
-def test_musicbrainz_requests_are_spaced_and_identify_the_app_and_contact() -> None:
+def test_gemini_requests_use_the_twenty_second_timeout_and_bounds() -> None:
     clock = FakeClock()
-    http = FakeHttp(clock, gemini=lambda call: gemini_reply(release_year=2001))
-    run = enricher(http, clock)
-    for n in range(1, 4):
-        run.lookup(complete(song_id=n, release_year=None))
-
-    times = [call["at"] for call in http.to("musicbrainz.org")]
-    assert all(later - earlier >= 1.0 for earlier, later in zip(times, times[1:]))
-    agent = http.to("musicbrainz.org")[0]["headers"]["User-Agent"]
-    assert re.fullmatch(r"ChordChartManager-pipeline/\S+ \( owner@example\.com \)", agent)
-
-
-# NFR-011
-def test_provider_requests_use_the_twenty_second_timeout_and_gemini_bounds() -> None:
-    clock = FakeClock()
-    page = {"recordings": [recording(MBID_A, "Do It Again", "Steely Dan", 100, "1972")]}
-    http = FakeHttp(clock, mb=lambda call: (200, page),
-                    gemini=lambda call: gemini_reply(bpm=100))
+    http = FakeHttp(clock, gemini=lambda call: gemini_reply(bpm=100))
     enricher(http, clock).lookup(complete(bpm=None))
 
     assert {call["timeout"] for call in http.calls} == {20}
@@ -396,23 +312,11 @@ def test_an_oversized_gemini_request_is_not_sent() -> None:
     clock = FakeClock()
     http = FakeHttp(clock)
     many = [(1000 + n, f"Vibe label number {n} " + "x" * 40) for n in range(400)]
-    run = enrich_songs.Enricher(enrich_songs.Settings(musicbrainz_contact=CONTACT, gemini_api_key=FAKE_KEY),
-                                genres=GENRES, vibes=many, http=http, sleep=clock.sleep, clock=clock)
+    run = enrich_songs.Enricher(enrich_songs.Settings(gemini_api_key=FAKE_KEY),
+                                genres=GENRES, vibes=many, http=http)
     outcome = run.lookup(complete(has_vibe=False))
     assert http.to("generativelanguage.googleapis.com") == []
     assert "too large" in outcome.left["vibes"]
-
-
-# NFR-011
-def test_without_a_contact_musicbrainz_and_acousticbrainz_are_skipped() -> None:
-    clock = FakeClock()
-    http = FakeHttp(clock, gemini=lambda call: gemini_reply(release_year=1972))
-    run = enricher(http, clock, musicbrainz_contact="")
-    outcome = run.lookup(complete(release_year=None))
-
-    assert http.to("musicbrainz.org") == [] and http.to("acousticbrainz.org") == []
-    assert outcome.filled == {"release_year": (1972, "Gemini")}
-    assert any("MUSICBRAINZ_CONTACT" in note for note in run.notes)
 
 
 # FR-112
@@ -425,28 +329,29 @@ def test_without_a_gemini_key_gaps_are_reported_and_nothing_is_sent() -> None:
     assert "GEMINI_API_KEY" in outcome.left["release_year"]
 
 
-# FR-103
-def test_consecutive_provider_failures_stop_calls_to_that_provider() -> None:
+# FR-112
+def test_consecutive_gemini_failures_stop_calls_and_report_the_rest() -> None:
     clock = FakeClock()
-    http = FakeHttp(clock, mb=lambda call: (503, {"error": "busy"}),
-                    gemini=lambda call: gemini_reply(release_year=1980))
+    http = FakeHttp(clock, gemini=lambda call: (503, {"error": "busy"}))
     run = enricher(http, clock, outage_failures=3)
     outcomes = [run.lookup(complete(song_id=n, release_year=None)) for n in range(1, 6)]
 
-    assert len(http.to("musicbrainz.org")) == 3
-    assert all(item.filled == {"release_year": (1980, "Gemini")} for item in outcomes)
-    assert any("MusicBrainz" in note and "stopped" in note for note in run.notes)
+    assert len(http.calls) == 3
+    assert run.gemini_calls == 3
+    assert all(item.filled == {} for item in outcomes)
+    assert "stopped" in outcomes[4].left["release_year"]
+    assert any("Gemini stopped" in note for note in run.notes)
 
 
-# FR-103
-def test_a_single_failure_does_not_stop_a_provider() -> None:
+# FR-112
+def test_a_single_gemini_failure_does_not_stop_the_run() -> None:
     clock = FakeClock()
-    replies = iter([(503, {}), (200, {"recordings": []}), (503, {}), (503, {}), (200, {"recordings": []})])
-    http = FakeHttp(clock, mb=lambda call: next(replies), gemini=lambda call: gemini_reply(release_year=1980))
+    replies = iter([(503, {}), gemini_reply(release_year=1980), (503, {}), (503, {}), gemini_reply(release_year=1981)])
+    http = FakeHttp(clock, gemini=lambda call: next(replies))
     run = enricher(http, clock, outage_failures=3)
-    for n in range(1, 6):
-        run.lookup(complete(song_id=n, release_year=None))
-    assert len(http.to("musicbrainz.org")) == 5
+    outcomes = [run.lookup(complete(song_id=n, release_year=None)) for n in range(1, 6)]
+    assert len(http.calls) == 5
+    assert [bool(item.filled) for item in outcomes] == [False, True, False, False, True]
 
 
 # NFR-009 FR-102
@@ -487,26 +392,26 @@ def test_urllib_adapter_bounds_responses_and_maps_errors(monkeypatch) -> None:
         return Response(b'{"ok": true}')
 
     monkeypatch.setattr(enrich_songs.urllib.request, "urlopen", ok)
-    assert enrich_songs.urllib_http("GET", "https://musicbrainz.org/ws/2/recording/?x=1",
+    assert enrich_songs.urllib_http("GET", "https://example.invalid/x?y=1",
                                     {"User-Agent": "UA"}, None, 20) == (200, b'{"ok": true}')
-    assert seen == {"url": "https://musicbrainz.org/ws/2/recording/?x=1", "method": "GET", "timeout": 20, "agent": "UA"}
+    assert seen == {"url": "https://example.invalid/x?y=1", "method": "GET", "timeout": 20, "agent": "UA"}
 
     monkeypatch.setattr(enrich_songs.urllib.request, "urlopen",
                         lambda request, timeout: Response(b"x" * (enrich_songs.MAX_RESPONSE_BYTES + 1)))
     with pytest.raises(enrich_songs.ProviderError):
-        enrich_songs.urllib_http("GET", "https://acousticbrainz.org/", {}, None, 20)
+        enrich_songs.urllib_http("GET", "https://example.invalid/", {}, None, 20)
 
     def not_found(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(b"{}"))
 
     monkeypatch.setattr(enrich_songs.urllib.request, "urlopen", not_found)
-    assert enrich_songs.urllib_http("GET", "https://acousticbrainz.org/", {}, None, 20) == (404, b"{}")
+    assert enrich_songs.urllib_http("GET", "https://example.invalid/", {}, None, 20) == (404, b"{}")
 
     def no_body(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 503, "Unavailable", {}, None)
 
     monkeypatch.setattr(enrich_songs.urllib.request, "urlopen", no_body)
-    assert enrich_songs.urllib_http("GET", "https://musicbrainz.org/", {}, None, 20) == (503, b"")
+    assert enrich_songs.urllib_http("GET", "https://example.invalid/", {}, None, 20) == (503, b"")
 
     def timed_out(request, timeout):
         raise TimeoutError(f"timed out calling {request.full_url} with {FAKE_KEY}")
@@ -520,13 +425,13 @@ def test_urllib_adapter_bounds_responses_and_maps_errors(monkeypatch) -> None:
 # FR-112 NFR-011
 def test_settings_defaults_and_environment() -> None:
     defaults = enrich_songs.Settings.from_env({})
-    assert (defaults.gemini_cap, defaults.mb_min_score, defaults.max_genres, defaults.max_vibes,
-            defaults.outage_failures, defaults.timeout_seconds) == (1000, 90, 3, 3, 3, 20)
+    assert (defaults.gemini_cap, defaults.max_genres, defaults.max_vibes,
+            defaults.outage_failures, defaults.timeout_seconds) == (1000, 3, 3, 3, 20)
     configured = enrich_songs.Settings.from_env({
-        "MUSICBRAINZ_CONTACT": " me@example.com ", "GEMINI_API_KEY": FAKE_KEY, "ENRICH_GEMINI_CAP": "5",
-        "ENRICH_MB_MIN_SCORE": "80", "ENRICH_MAX_GENRES": "2", "ENRICH_MAX_VIBES": "1"})
-    assert (configured.musicbrainz_contact, configured.gemini_cap, configured.mb_min_score,
-            configured.max_genres, configured.max_vibes) == ("me@example.com", 5, 80, 2, 1)
+        "GEMINI_API_KEY": f" {FAKE_KEY} ", "ENRICH_GEMINI_CAP": "5",
+        "ENRICH_MAX_GENRES": "2", "ENRICH_MAX_VIBES": "1", "MUSICBRAINZ_CONTACT": "ignored@example.com"})
+    assert (configured.gemini_api_key, configured.gemini_cap, configured.max_genres,
+            configured.max_vibes) == (FAKE_KEY, 5, 2, 1)
     with pytest.raises(ValueError):
         enrich_songs.Settings.from_env({"ENRICH_GEMINI_CAP": "-1"})
 
@@ -640,8 +545,8 @@ def test_scratch_database_fills_only_gaps_for_the_run_documents_and_rerun_is_a_n
         http = FakeHttp(clock, gemini=lambda call: gemini_reply(
             release_year=2001, bpm=101, original_key={"key_key": "A", "key_scale": "minor"},
             genres=[genre_name], vibes=[vibe_name]))
-        settings = enrich_songs.Settings(musicbrainz_contact=CONTACT, gemini_api_key=FAKE_KEY)
-        result = enrich_songs.run(conn, [document], settings, http=http, sleep=clock.sleep, clock=clock)
+        settings = enrich_songs.Settings(gemini_api_key=FAKE_KEY)
+        result = enrich_songs.run(conn, [document], settings, http=http)
         after = snapshot()
 
         assert after[empty][:3] == (2001, "Am", 101)
@@ -662,7 +567,7 @@ def test_scratch_database_fills_only_gaps_for_the_run_documents_and_rerun_is_a_n
         assert "secret lyric" not in report
 
         rerun_http = FakeHttp(clock)
-        enrich_songs.run(conn, [document], settings, http=rerun_http, sleep=clock.sleep, clock=clock)
+        enrich_songs.run(conn, [document], settings, http=rerun_http)
         assert rerun_http.calls == []
         assert snapshot() == after
 
