@@ -870,8 +870,10 @@ async function pushPendingSongs(songApi) {
         error.message = `${error.category} (${error.code}): ${error.message}`;
         throw error;
       }
+      // A 400 is definitive (for example an old-format version token), so a
+      // retry can never succeed; keep the server copy rather than block the queue.
       const serverWins = operation !== 'create'
-        && (error.status === 404 || error.status === 409);
+        && (error.status === 400 || error.status === 404 || error.status === 409);
       if (!serverWins) throw error;
 
       await keepServerVersion(songId, songApi);
