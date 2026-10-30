@@ -337,10 +337,9 @@ title/artist/source match is reported and skipped, while duplicate identities
 and same-title/artist entries from another source stop the batch for review. A
 rerun does not refresh charts or metadata.
 
-The pipeline has no enrichment step. The earlier enrichment tooling was removed
-and is to be rewritten (`docs/REQUIREMENTS.md`, FR-101 onward); until then the
-loader does not call outside providers, infer missing metadata, or consume
-provider caches.
+Enrichment is optional and runs only when `load_songs.py` is given `--enrich`
+(see [Enrichment](#enrichment)). Without that flag the loader never calls an
+outside provider or infers missing metadata.
 
 ### Set up
 
@@ -418,6 +417,50 @@ pip install -r requirements.txt
 
 `--database-url URL` selects a database instead of `DATABASE_URL`; confirm the
 target before any apply.
+
+**One command.** `scripts/import-documents.ps1` (or `.sh`) runs steps 3 to 5
+and stops: it parses `pipeline/docs`, then prints the dry-run preview, and
+changes nothing. After you have reviewed the preview, run it again with
+`-Apply` (`--apply` for the shell version). That takes a backup, loads the
+songs and enriches them in one run. If the backup fails, nothing is loaded.
+
+### Enrichment
+
+`load_songs.py --enrich` runs after a committed load, over **every** song whose
+`source_document` is in that `songs.json`, not only new inserts. A rerun fills
+only what is still missing, so a complete document makes no provider requests
+and no changes.
+
+- **What it fills.** Only a missing `release_year`, `original_key` or `bpm`, and
+  a Genre or Vibe category only when the song has no assignment in it (at most
+  3 Genres and 3 Vibes). Populated values, existing assignments, the primary
+  Genre and chart text are never changed. New assignments use only existing
+  definitions.
+- **Where values come from.** MusicBrainz first (the best-scoring recording for
+  the title and artist at or above a minimum score, with the earliest release
+  year among matching recordings), then AcousticBrainz for key and BPM, then
+  Gemini (`gemini-3.1-flash-lite`) for whatever is still missing.
+- **What is sent.** Only the title and artist, the names of the missing fields
+  and the existing Genre and Vibe names. Never chart text or lyrics.
+- **Limits.** At most `ENRICH_GEMINI_CAP` Gemini calls per run (default 1000);
+  songs left over are reported as not enriched, and a rerun picks them up.
+  MusicBrainz requests are at least 1 second apart. After 3 failed requests in a
+  row a provider is skipped for the rest of the run.
+- **Report.** Each run writes `enrichment-report-<UTC time>.txt` next to
+  `songs.json` (in `pipeline/parsed_out/`) listing what was filled, by which
+  provider, and what was left and why. Nothing reads it back.
+- **Before you run it.** Enrichment writes directly with no preview, so take a
+  backup first (the import script does) and sync every device until Settings
+  shows 0 pending: enrichment changes `updated_at`, and a queued tablet edit to
+  the same song would be replaced by the server copy.
+
+Settings, in `app/.env` (never commit it): `MUSICBRAINZ_CONTACT` is required for
+MusicBrainz and AcousticBrainz (it forms the User-Agent), and `GEMINI_API_KEY`
+for Gemini. With either missing, that provider is skipped and the report says
+so. Optional: `ENRICH_GEMINI_CAP` (default 1000), `ENRICH_MB_MIN_SCORE` (90),
+`ENRICH_MAX_GENRES` (3) and `ENRICH_MAX_VIBES` (3). The pipeline Compose service
+passes only `MUSICBRAINZ_CONTACT` and `GEMINI_API_KEY`, so to change the other
+four, add them to the service's `environment` list in `app/docker-compose.yml`.
 
 Keep real `.docx` files, generated song JSON, database dumps, and secrets out
 of source control. The song files can contain copyrighted lyrics, and they are
@@ -698,7 +741,7 @@ Chord_Chart_Manager/
 |   `-- test/e2e/            Playwright browser tests
 |-- pipeline/                .docx parser and database loader
 |   `-- tests/               pytest suite
-|-- scripts/                 backup and restore scripts
+|-- scripts/                 backup, restore and import-documents scripts
 |-- docs/                    requirements, decisions, handoffs, engineering log
 |-- infra/                   proposed Kubernetes/Terraform design (untracked)
 `-- README.md                this guide
@@ -745,8 +788,9 @@ app/
 pipeline/
 ├── batch_parse.py                 parse a folder of .docx files
 ├── chart_parser.py                the .docx parser
-├── load_songs.py                  insert-only database loader
-└── tests/test_pipeline.py         pytest suite
+├── load_songs.py                  insert-only database loader (--enrich)
+├── enrich_songs.py                per-document metadata enrichment
+└── tests/                         pytest suites (pipeline, enrichment)
 ```
 
 ### Architecture
@@ -997,18 +1041,19 @@ copy.
 
 ## Current validation status
 
-Verified on 2026-10-29 at the end of the simplification refactor:
+Verified on 2026-10-29 after the bug fixes and the enrichment rewrite:
 
-- `npm.cmd run test:t11` passed the production build, 153 unit tests, 9 API
+- `npm.cmd run test:t11` passed the production build, 159 unit tests, 9 API
   integration tests, and 52 serial Playwright E2E tests against a scratch
   `ccm_test` database, which was dropped afterwards. The main app stayed
   healthy and its `/api/stats` counts were unchanged.
-- The pipeline image passed 112 pytest tests against a scratch
-  `ccm_loader_c1_*` database.
+- The pipeline image passed 153 pytest tests (41 of them for enrichment, using
+  stubbed providers) against a scratch `ccm_loader_c1_*` database.
 
 Not yet verified: a full real-corpus import (FR-099), the physical-tablet
-checklist (FR-100), and enrichment, which was removed and is to be rewritten
-(FR-092, FR-093, FR-101 to FR-115).
+checklist (FR-100), and enrichment against the live providers: the rewritten
+step (FR-092, FR-093, FR-101 to FR-115) passes its stubbed tests but has not yet
+made a live MusicBrainz, AcousticBrainz or Gemini request.
 
 ## Project documents
 
