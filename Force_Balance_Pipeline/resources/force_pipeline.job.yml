@@ -1,7 +1,11 @@
-# Job 1 -- doc 05, "Job topology". Every hour (:03), offset +3 minutes from the probe's own :00/:15/:30/:45
+# Job 1 -- doc 05, "Job topology". Every 2 hours (:03 on even UTC hours), offset +3 minutes from the probe's own :00/:15/:30/:45
 # scan boundary (doc 02) so the bridge's ndjson files have landed in the telemetry volume before Auto Loader
 # looks for them. The probe's own scan interval is unchanged at 15 minutes -- this is the JOB's cadence, not
-# the scan's; an hourly job run now picks up four scans' worth of new rows per run instead of one.
+# the scan's; a run now picks up eight scans' worth of new rows instead of one.
+#
+# Changed 60 -> 120 min, Phase 7 Round 14 (2026-10-29): quota blocks continued after the agent and the pull moved into this job's warm
+# window (docs/ENGINEERING-LOG.md, Round 13b's report); no simple budget rule fits the block start times, so the warehouse footprint was
+# halved for margin. "0 3 0/2 * * ?" fires at 00:03, 02:03, ... 22:03 UTC, which skips 03:03 (the quota-reset hour) by construction.
 #
 # Cadence changed 15 -> 30 min, Stage 4b, then 30 -> 60 min, Stage 4c (both see docs/ENGINEERING-LOG.md): the
 # 30-minute cadence (Stage 4b) was itself measured for 3 days (2026-10-02 to 2026-10-04, `ingest/job1_quota_watch.sql`,
@@ -59,7 +63,7 @@ resources:
         on_success:
           - ${var.s2_ping_email}
       schedule:
-        quartz_cron_expression: "0 3 * * * ?"
+        quartz_cron_expression: "0 3 0/2 * * ?"
         timezone_id: UTC
         # Set back to PAUSED by Jong on 2026-10-01 after the quota exhaustion (docs/ENGINEERING-LOG.md, "Stage
         # 3d"). Set to UNPAUSED again here, Stage 3d, alongside the task timeouts and Job 2's moved schedule

@@ -58,5 +58,12 @@ class Job1Active(unittest.TestCase):
         self.assertIn("user-agent", opener.requests[0]["headers"])
 
 
+class SharedLookup(unittest.TestCase):
+    def test_serving_re_exports_the_same_lookup(self):
+        from serving import jobs as serving_jobs
+        self.assertIs(serving_jobs.latest_successful_run, jobs.latest_successful_run)
+        self.assertIs(serving_jobs.JobsApiError, jobs.JobsApiError)
+
+
 if __name__ == "__main__":
     unittest.main()
