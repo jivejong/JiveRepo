@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from agent import jobs, queries
 from agent.budget import BudgetExhausted, CallBudget
-from agent.config import (AGENT_EPOCH, DEBOUNCE_SECONDS, ENV_KEYS, MAX_INCIDENTS_PER_RUN, MIN_FIRST_SEEN_AGE_MINUTES, PING_KEY, POLL_LIMIT,
+from agent.config import (AGENT_EPOCH, DEBOUNCE_SECONDS, ENV_KEYS, JOB1_ID, MAX_INCIDENTS_PER_RUN, MIN_FIRST_SEEN_AGE_MINUTES, PING_KEY, POLL_LIMIT,
                           ROOT, RUN_ENV_KEYS, load_env)
 from agent.context import build_context
 from agent.dbsql import StatementClient, StatementError, iso_z, parse_timestamp
@@ -40,6 +40,7 @@ import files_api  # noqa: E402
 LOG_PATH = ROOT / "logs" / "agent.log"
 LOCK_PATH = ROOT / "logs" / "agent.lock"
 START_PATH = ROOT / "logs" / "agent_last_start.txt"
+JOB1_RUN_PATH = ROOT / "logs" / "agent_last_job1_prod.txt"      # the Job 1 run id the last successful prod poll followed (doc 06 "Runtime")
 DECISIONS_PATH = ROOT / "logs" / "agent_decisions.ndjson"
 QUOTA_WINDOW_HOUR_UTC = 3
 CYCLE_SECONDS = 30 * 60
@@ -125,6 +126,45 @@ def write_start_stamp(stamp_path, now):
         pass
 
 
+def read_job1_run(path):
+    """The Job 1 run id the last successful poll followed, as text; None when the file is missing or unreadable."""
+    try:
+        return Path(path).read_text(encoding="ascii").strip() or None
+    except (OSError, ValueError):
+        return None
+
+
+def write_job1_run(path, run_id):
+    """Record run_id atomically (a temp file in the same folder, then os.replace). A write failure is ignored: the next cycle polls again."""
+    path = Path(path)
+    temp = path.with_name(path.name + ".tmp")
+    try:
+        temp.write_text(f"{run_id}\n", encoding="ascii")
+        os.replace(temp, path)
+    except OSError:
+        pass
+
+
+def poll_gate(target, latest_run, run_path, seen):
+    """(gate, run_id): whether this cycle polls the warehouse (doc 06 "Runtime"). gate is dev (dev always polls), new_run (Job 1 has a
+    successful run the last poll did not follow), pending (an incident is waiting out its human-first window), none (no run to compare:
+    poll and let the warehouse answer) or no_new_run (skip). run_id is the run to record after a successful poll, or None.
+    latest_run() is jobs.latest_successful_run; its JobsApiError propagates."""
+    if target != "prod":
+        return "dev", None
+    if latest_run is None:
+        return "none", None
+    latest = latest_run()
+    if latest is None:
+        return "none", None
+    run_id = str(latest[0])
+    if read_job1_run(run_path) != run_id:
+        return "new_run", run_id
+    if seen.load():
+        return "pending", run_id
+    return "no_new_run", run_id
+
+
 def first_seen(stored, disturbance_id):
     """The recorded first-seen time of an id as a datetime, or None if it has none (or an unreadable one)."""
     try:
@@ -134,7 +174,7 @@ def first_seen(stored, disturbance_id):
 
 
 def run_cycle(*, target, limit, db, gemini, budget, job1_check, clock, monotonic, log, decisions_path, seen, decide_fn=decide,
-              ulid_fn=ulid_now, epoch=AGENT_EPOCH, waited_s=0):
+              ulid_fn=ulid_now, epoch=AGENT_EPOCH, waited_s=0, gate="dev"):
     """Steps d to f of the cycle. Returns the summary dict (it is also logged). summary["stop_reason"] is "job1_running" or
     "jobs_api_error" when the Job 1 re-check before a write stopped the cycle; summary["degraded"] is True after a permanent model
     error. Both make the caller's ping differ (see run_guarded)."""
@@ -217,12 +257,12 @@ def run_cycle(*, target, limit, db, gemini, budget, job1_check, clock, monotonic
         "left": len(ids) - decided, "new": len(new), "deferred": len(ids) - len(to_decide), "statements": db.statements - statements_before, "model_calls": totals["model_calls"],
         "http_attempts": budget.used, "prompt_tokens": totals["prompt"], "output_tokens": totals["output"],
         "thought_tokens": totals["thought"], "cost_usd": totals["cost"], "duration_s": round(monotonic() - started, 1),
-        "degraded": "true" if degraded else "false", "stop_reason": stop_reason, "waited_s": waited_s,
+        "degraded": "true" if degraded else "false", "stop_reason": stop_reason, "waited_s": waited_s, "gate": gate,
     }
     log("agent: cycle target={target} polled={polled} decided={decided} (deploy={deploy} stand_down={stand_down}) left={left} "
         "new={new} deferred={deferred} statements={statements} model_calls={model_calls} http_attempts={http_attempts} "
         "tokens={prompt_tokens}/{output_tokens}/{thought_tokens} cost_usd={cost_usd:.6f} duration_s={duration_s} "
-        "degraded={degraded} waited_s={waited_s}".format(**summary))
+        "degraded={degraded} waited_s={waited_s} gate={gate}".format(**summary))
     return summary
 
 
@@ -245,11 +285,14 @@ def wait_for_job1(job1_check, *, sleep, wait_seconds, poll_seconds):
 
 def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, ping, clock, monotonic, log, decisions_path, seen,
                 decide_fn=decide, ulid_fn=ulid_now, epoch=AGENT_EPOCH, sleep=time.sleep, job1_wait=JOB1_WAIT_SECONDS,
-                job1_poll=JOB1_POLL_SECONDS, start_path=None):
+                job1_poll=JOB1_POLL_SECONDS, start_path=None, latest_run=None, job1_run_path=None):
     """Steps a to c and g: the lock, the start debounce, the quota window, the Job 1 check (waiting for a running Job 1 for up to job1_wait
     seconds, polling every job1_poll), and the S4 ping. Returns the exit code. S4: success, or /fail after a Jobs API error, a permanent
     model error or a crash. start_path (logs\\agent_last_start.txt): when given, a start less than DEBOUNCE_SECONDS after the previous one
-    logs "debounced" and exits 0 with no ping, no Jobs call and no statement; otherwise this start is recorded."""
+    logs "debounced" and exits 0 with no ping, no Jobs call and no statement; otherwise this start is recorded.
+    The poll gate (prod only; see poll_gate): after the Job 1 check, latest_run() names Job 1's newest successful run. A run other than the one in
+    job1_run_path, or an incident waiting in the seen store, means poll; otherwise the cycle ends with decision=no_new_run, a success ping and no
+    statement. job1_run_path is written, atomically, only after a cycle whose poll succeeded. A JobsApiError ends the cycle like the Job 1 check's."""
     lock = InstanceLock(lock_path)
     try:
         lock.acquire()
@@ -272,9 +315,21 @@ def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, pin
             log(f"agent: skipping the cycle: {reason}" + (f" (waited {waited} s)" if waited else ""))
             ping("fail" if reason == "jobs_api_error" else "success")
             return 0
+        try:
+            gate, run_id = poll_gate(target, latest_run, job1_run_path, seen)
+        except jobs.JobsApiError:
+            log("agent: skipping the cycle: jobs_api_error (the latest Job 1 run could not be read)")
+            ping("fail")
+            return 0
+        if gate == "no_new_run":
+            log(f"agent: cycle target={target} decision=no_new_run gate={gate} statements=0 (Job 1 run {run_id} was already polled; no incident is waiting)")
+            ping("success")
+            return 0
         summary = run_cycle(target=target, limit=limit, db=db, gemini=gemini, budget=budget, job1_check=job1_check, clock=clock,
                             monotonic=monotonic, log=log, decisions_path=decisions_path, seen=seen, decide_fn=decide_fn,
-                            ulid_fn=ulid_fn, epoch=epoch, waited_s=waited)
+                            ulid_fn=ulid_fn, epoch=epoch, waited_s=waited, gate=gate)
+        if run_id is not None and job1_run_path is not None:      # run_cycle returned, so its poll succeeded
+            write_job1_run(job1_run_path, run_id)
         ping(cycle_ping_kind(summary))
         return 0
     except Exception:
@@ -351,7 +406,8 @@ def main(argv=None):
             job1_check=lambda: jobs.job1_active(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], opener=opener),
             ping=ping, clock=lambda: datetime.now(timezone.utc), monotonic=time.monotonic,
             log=log, decisions_path=DECISIONS_PATH, seen=SeenStore(ROOT / "logs" / f"agent_seen_{args.target}.json"), epoch=epoch,
-            start_path=START_PATH)
+            start_path=START_PATH,
+            latest_run=lambda: jobs.latest_successful_run(env, JOB1_ID, opener=opener), job1_run_path=JOB1_RUN_PATH)
     except Exception:
         log("agent: the run failed:\n" + traceback.format_exc())
         ping("fail")

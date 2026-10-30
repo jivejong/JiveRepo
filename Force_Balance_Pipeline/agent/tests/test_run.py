@@ -13,6 +13,7 @@ from _fixtures import JEDI, SHIPS, StepClock, row
 from agent import run
 from agent.budget import BudgetExhausted, CallBudget
 from agent.dbsql import StatementFailed, StatementTimeout, iso_z
+from agent.jobs import JobsApiError
 from agent.gemini import GeminiPermanent, GeminiTransient, GeminiUnavailable
 from agent.lock import InstanceLock
 from agent.loop import Decision, decide
@@ -20,6 +21,9 @@ from agent.seen import SeenStore
 
 NOW = datetime(2026, 10, 14, 12, 15, 0, tzinfo=timezone.utc)
 TOKEN_MARKER = "dapi-NOT-A-REAL-TOKEN-5521"
+
+
+UNSET = object()
 
 
 def kind_of(sql):
@@ -108,6 +112,10 @@ class Harness:
         self.sleeps = []
         self.now = NOW
         self.start_path = None                       # set a path to switch the start debounce on
+        self.target = "dev"
+        self.latest = UNSET                          # prod poll gate: a (run_id, end) pair, None, or an exception; unset = no gate
+        self.latest_calls = 0
+        self.job1_run_path = None
         self.seen_path = self.dir / "agent_seen_dev.json"
         self.seen = SeenStore(self.seen_path)
         if preseed:                                  # most tests are about the cycle itself, so their ids were polled in an earlier cycle
@@ -123,6 +131,12 @@ class Harness:
         if len(self.sleeps) > 100:                   # a wait with no upper bound fails the test instead of hanging it
             raise AssertionError("the Job 1 wait has no upper bound")
 
+    def _latest(self):
+        self.latest_calls += 1
+        if isinstance(self.latest, Exception):
+            raise self.latest
+        return self.latest
+
     def job1_check(self):
         """job1 is one (active, reason) pair, or a list of pairs consumed one per call (the last repeats)."""
         self.job1_calls += 1
@@ -132,11 +146,11 @@ class Harness:
 
     def go(self):
         code = run.run_guarded(
-            target="dev", limit=self.limit, lock_path=self.lock_path, db=self.db, gemini=object(), budget=self.budget,
+            target=self.target, limit=self.limit, lock_path=self.lock_path, db=self.db, gemini=object(), budget=self.budget,
             job1_check=self.job1_check, ping=self.pings.append, clock=lambda: self.now.replace(hour=self.hour),
             monotonic=self.monotonic, log=self.logs.append, decisions_path=self.decisions_path,
             decide_fn=self.decide_fn, ulid_fn=lambda: next(self.ulids), epoch=self.epoch, seen=self.seen, sleep=self._sleep,
-            start_path=self.start_path)
+            start_path=self.start_path, latest_run=self._latest if self.latest is not UNSET else None, job1_run_path=self.job1_run_path)
         if self.held:
             self.held.release()
         return code
@@ -977,6 +991,106 @@ class StartDebounce(unittest.TestCase):
         self.assertEqual(run.START_PATH, S.ROOT / "logs" / "agent_last_start.txt")
         self.assertEqual(run.DEBOUNCE_SECONDS, 60)
         self.assertIn("start_path=START_PATH", Path(run.__file__).read_text(encoding="utf-8"))
+
+
+class PollGate(unittest.TestCase):
+    """Doc 06 "Runtime": on prod the agent polls the warehouse only when Job 1 has a new successful run since the last poll, or an incident
+    is waiting out its human-first window (logs/agent_last_job1_prod.txt holds the last run id followed)."""
+
+    def gated(self, run_id=101, stored=None, ids=(), seen_ids=None, **options):
+        h = harness(ids=ids, **options)
+        h.target = "prod"
+        h.latest = (run_id, NOW)
+        h.job1_run_path = h.dir / "agent_last_job1_prod.txt"
+        if stored is not None:
+            h.job1_run_path.write_text(f"{stored}\n", encoding="ascii")
+        if seen_ids is not None:
+            h.seen.save({i: iso_z(NOW - timedelta(hours=1)) for i in seen_ids})
+        return h
+
+    def test_a_new_run_polls_and_records_its_id(self):
+        h = self.gated(run_id=102, stored=101)
+        self.assertEqual(h.go(), 0)
+        self.assertIn("poll", h.db.kinds)
+        self.assertEqual(h.job1_run_path.read_text(encoding="ascii").strip(), "102")
+        self.assertTrue(any(" gate=new_run" in line for line in h.logs))
+
+    def test_a_missing_or_unreadable_id_file_counts_as_a_new_run(self):
+        h = self.gated(run_id=102)
+        h.go()
+        self.assertIn("poll", h.db.kinds)
+        h2 = self.gated(run_id=102)
+        h2.job1_run_path.write_bytes(bytes([255, 254, 0]))
+        h2.go()
+        self.assertIn("poll", h2.db.kinds)
+        self.assertEqual(h2.job1_run_path.read_text(encoding="ascii").strip(), "102")
+
+    def test_the_same_run_with_an_empty_store_skips_with_no_statement(self):
+        h = self.gated(run_id=101, stored=101)
+        self.assertEqual(h.go(), 0)
+        self.assertEqual(h.db.statements, 0)
+        self.assertEqual(h.pings, ["success"])
+        self.assertTrue(any("decision=no_new_run" in line and "gate=no_new_run" in line and "statements=0" in line for line in h.logs))
+        self.assertEqual(h.job1_run_path.read_text(encoding="ascii").strip(), "101")
+
+    def test_the_same_run_with_a_pending_id_polls(self):
+        h = self.gated(run_id=101, stored=101, ids=["inc-1"], seen_ids=["inc-1"])
+        h.go()
+        self.assertIn("poll", h.db.kinds)
+        self.assertTrue(any(" gate=pending" in line for line in h.logs))
+
+    def test_dev_always_polls(self):
+        h = harness(ids=[])
+        h.latest = (101, NOW)
+        h.job1_run_path = h.dir / "agent_last_job1_prod.txt"
+        h.job1_run_path.write_text("101\n", encoding="ascii")
+        h.go()
+        self.assertIn("poll", h.db.kinds)
+        self.assertEqual(h.latest_calls, 0)
+        self.assertTrue(any(" gate=dev" in line for line in h.logs))
+        self.assertEqual(h.job1_run_path.read_text(encoding="ascii").strip(), "101")
+
+    def test_a_failed_poll_leaves_the_file_unchanged(self):
+        h = self.gated(run_id=102, stored=101, fail={"poll": StatementFailed("X", "boom", False)})
+        self.assertEqual(h.go(), 1)
+        self.assertEqual(h.job1_run_path.read_text(encoding="ascii").strip(), "101")
+        self.assertEqual(h.pings, ["fail"])
+        h2 = self.gated(run_id=102, fail={"poll": StatementFailed("X", "boom", False)})
+        h2.go()
+        self.assertFalse(h2.job1_run_path.exists())
+
+    def test_a_jobs_api_error_gives_fail(self):
+        h = self.gated(run_id=102, stored=101)
+        h.latest = JobsApiError("the Jobs API answered HTTP 500")
+        self.assertEqual(h.go(), 0)
+        self.assertEqual(h.pings, ["fail"])
+        self.assertEqual(h.db.statements, 0)
+        self.assertEqual(h.job1_run_path.read_text(encoding="ascii").strip(), "101")
+
+    def test_no_successful_run_polls_and_writes_nothing(self):
+        h = self.gated(run_id=102)
+        h.latest = None
+        h.go()
+        self.assertIn("poll", h.db.kinds)
+        self.assertFalse(h.job1_run_path.exists())
+        self.assertTrue(any(" gate=none" in line for line in h.logs))
+
+    def test_the_id_is_written_atomically(self):
+        h = self.gated(run_id=102, stored=101)
+        with mock.patch("agent.run.os.replace", wraps=run.os.replace) as replace:
+            h.go()
+        calls = [c for c in replace.call_args_list if Path(c.args[1]) == h.job1_run_path]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(Path(calls[0].args[0]).parent, h.job1_run_path.parent)
+        self.assertFalse(Path(calls[0].args[0]).exists())
+
+    def test_the_gate_runs_after_the_job_1_check(self):
+        h = self.gated(run_id=102, stored=101, job1=(True, "job1_running"))
+        h.go()
+        self.assertEqual(h.latest_calls, 0)
+        h2 = self.gated(run_id=102, stored=101, hour=3)
+        h2.go()
+        self.assertEqual(h2.latest_calls, 0)
 
 
 if __name__ == "__main__":
