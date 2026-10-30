@@ -121,6 +121,28 @@ class Availability(unittest.TestCase):
         self.assertEqual(check(ship="ghost"), ["starship_unavailable"])
 
 
+class UnavailableParty(unittest.TestCase):
+    """Review finding 4: rank and specialty are judged on the whole party, so an unknown or deployed Jedi suppresses them."""
+
+    def test_a_deployed_council_member_is_not_called_unranked(self):          # the 2026-10-29 case: plo_koon, deployed, on civil_unrest
+        council = Jedi("plo", "council_member", "investigation", "combat", "Outer Rim")
+        jedi = dict(ALL_JEDI, plo=council)
+        state = FleetState(frozenset({"plo"}), frozenset({"big"}), 3)
+        reasons = c.check_deploy(incident(severity=13.19, signature="civil_unrest"), ["plo"], "big", jedi, ALL_SHIPS, state)
+        self.assertEqual(reasons, ["jedi_unavailable", "starship_unavailable", "deployment_capacity_reached"])
+
+    def test_a_deployed_jedi_in_a_mixed_party_suppresses_both_checks(self):
+        state = FleetState(frozenset({"knight_a"}), frozenset(), 0)
+        reasons = c.check_deploy(incident(severity=15.0, signature="kyber_cache"), ["knight_a", "knight_c"], "big", ALL_JEDI, ALL_SHIPS, state)
+        self.assertEqual(reasons, ["jedi_unavailable"])
+
+    def test_an_unknown_jedi_suppresses_both_checks(self):
+        self.assertEqual(check(incident(severity=15.0, signature="kyber_cache"), jedi=("ghost",)), ["jedi_unavailable"])
+
+    def test_an_available_party_is_still_judged(self):
+        self.assertEqual(check(incident(severity=15.0, signature="kyber_cache"), jedi=("knight_a",)), ["insufficient_rank", "specialty_mismatch"])
+
+
 class FleetCapacity(unittest.TestCase):
     def test_two_open_deployments_still_allow_a_third(self):
         self.assertEqual(check(state=FleetState(frozenset(), frozenset(), 2)), [])
@@ -145,7 +167,13 @@ class Order(unittest.TestCase):
                                  ["knight_a", "knight_a", "knight_c", "knight_d", "knight_e", "ghost"], "tiny",
                                  ALL_JEDI, ALL_SHIPS, state)
         self.assertEqual(reasons, ["duplicate_jedi", "party_too_large", "jedi_unavailable", "starship_unavailable",
-                                   "deployment_capacity_reached", "insufficient_rank", "specialty_mismatch",
+                                   "deployment_capacity_reached", "insufficient_capacity"])
+
+    def test_the_party_quality_reasons_keep_their_place_for_an_available_party(self):
+        state = FleetState(frozenset(), frozenset({"tiny"}), 3)
+        reasons = c.check_deploy(incident(severity=15.0, signature="kyber_cache"), ["knight_a", "knight_c"], "tiny",
+                                 ALL_JEDI, ALL_SHIPS, state)
+        self.assertEqual(reasons, ["starship_unavailable", "deployment_capacity_reached", "insufficient_rank", "specialty_mismatch",
                                    "insufficient_capacity"])
 
     def test_no_jedi_comes_first(self):

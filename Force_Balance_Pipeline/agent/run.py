@@ -73,11 +73,12 @@ def valid_ping_url(value):
 
 
 # ---- one cycle ------------------------------------------------------------------------------------------------------
-def build_row(context, decision, decided_at, deployment_id):
-    """The dict queries.write_decision takes. released_at is set only for a deploy."""
+def build_row(context, decision, decided_at, deployment_id, decided_by="yoda_agent"):
+    """The dict queries.write_decision takes. released_at is set only for a deploy. decided_by is 'yoda_agent' unless the caller says otherwise
+    (serving.deploy passes 'user')."""
     eta = decision.eta_hours
     return {
-        "deployment_id": deployment_id, "disturbance_id": context["disturbance_id"], "decided_by": "yoda_agent",
+        "deployment_id": deployment_id, "disturbance_id": context["disturbance_id"], "decided_by": decided_by,
         "decision": decision.decision, "jedi_ids": list(decision.jedi_ids), "starship_id": decision.starship_id,
         "eta_hours": eta, "released_at": released_at(decided_at, eta) if decision.decision == "deploy" else None,
         "rationale": decision.rationale, "context_snapshot": context, "signature_at_decision": context.get("signature"),
@@ -145,11 +146,12 @@ def write_job1_run(path, run_id):
         pass
 
 
-def poll_gate(target, latest_run, run_path, seen):
+def poll_gate(target, latest_run, run_path):
     """(gate, run_id): whether this cycle polls the warehouse (doc 06 "Runtime"). gate is dev (dev always polls), new_run (Job 1 has a
-    successful run the last poll did not follow), pending (an incident is waiting out its human-first window), none (no run to compare:
-    poll and let the warehouse answer) or no_new_run (skip). run_id is the run to record after a successful poll, or None.
-    latest_run() is jobs.latest_successful_run; its JobsApiError propagates."""
+    successful run the last poll did not follow), none (no run to compare: poll and let the warehouse answer) or no_new_run (skip).
+    An incident waiting out its human-first window does not make a poll: it is decided at the first cycle after a new Job 1 run that finds it
+    at least MIN_FIRST_SEEN_AGE_MINUTES old, so with Job 1 every 2 hours, two hours after it was first seen. run_id is the run to record after
+    a successful poll, or None. latest_run() is jobs.latest_successful_run; its JobsApiError propagates."""
     if target != "prod":
         return "dev", None
     if latest_run is None:
@@ -160,8 +162,6 @@ def poll_gate(target, latest_run, run_path, seen):
     run_id = str(latest[0])
     if read_job1_run(run_path) != run_id:
         return "new_run", run_id
-    if seen.load():
-        return "pending", run_id
     return "no_new_run", run_id
 
 
@@ -291,7 +291,7 @@ def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, pin
     model error or a crash. start_path (logs\\agent_last_start.txt): when given, a start less than DEBOUNCE_SECONDS after the previous one
     logs "debounced" and exits 0 with no ping, no Jobs call and no statement; otherwise this start is recorded.
     The poll gate (prod only; see poll_gate): after the Job 1 check, latest_run() names Job 1's newest successful run. A run other than the one in
-    job1_run_path, or an incident waiting in the seen store, means poll; otherwise the cycle ends with decision=no_new_run, a success ping and no
+    job1_run_path means poll (an incident waiting out its window is decided at the next cycle after a new run); otherwise the cycle ends with decision=no_new_run, a success ping and no
     statement. job1_run_path is written, atomically, only after a cycle whose poll succeeded. A JobsApiError ends the cycle like the Job 1 check's."""
     lock = InstanceLock(lock_path)
     try:
@@ -316,13 +316,13 @@ def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, pin
             ping("fail" if reason == "jobs_api_error" else "success")
             return 0
         try:
-            gate, run_id = poll_gate(target, latest_run, job1_run_path, seen)
+            gate, run_id = poll_gate(target, latest_run, job1_run_path)
         except jobs.JobsApiError:
             log("agent: skipping the cycle: jobs_api_error (the latest Job 1 run could not be read)")
             ping("fail")
             return 0
         if gate == "no_new_run":
-            log(f"agent: cycle target={target} decision=no_new_run gate={gate} statements=0 (Job 1 run {run_id} was already polled; no incident is waiting)")
+            log(f"agent: cycle target={target} decision=no_new_run gate={gate} statements=0 (Job 1 run {run_id} was already polled)")
             ping("success")
             return 0
         summary = run_cycle(target=target, limit=limit, db=db, gemini=gemini, budget=budget, job1_check=job1_check, clock=clock,

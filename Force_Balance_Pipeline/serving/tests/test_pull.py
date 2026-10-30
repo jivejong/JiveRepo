@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 import pg_support
-from agent.dbsql import TransientHTTPError
+from agent.dbsql import ResultTooLarge, TransientHTTPError
 from fake_http import FakeOpener
 from serving import config, fixtures, pull, statements
 
@@ -170,6 +170,45 @@ class EmptyBackfill(PullTest):
     def test_sector_reading_keeps_no_watermark_when_empty(self):
         self.first_run({"probe_reading": [[probe(1, NOW - HOUR)]]})
         self.assertNotIn("sector_reading", dict(self.q("SELECT source, value FROM serving.watermark")))
+
+
+class OverTheCap(PullTest):
+    """Review finding 3: a full refresh of gold_sector_reading re-stamps every row's _gold_built_at, so the incremental read is over the cap."""
+
+    def over_cap_script(self, rows):
+        pages = []
+
+        def serve(params):
+            if "wm" in params:
+                raise ResultTooLarge("the result has more than 50000 rows")
+            pages.append(params)
+            return [r for r in rows if params["start"][0] <= r["event_time"] < params["end"][0]]
+        return serve, pages
+
+    def test_the_run_falls_back_to_day_pages_and_sets_the_watermark(self):
+        self.first_run({"sector_reading": [[reading(1, NOW - 2 * HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]]})
+        later = NOW + HOUR
+        restamped = [reading(1, later, event=NOW - 2 * HOUR), reading(2, later, event=NOW - timedelta(days=3)),
+                     reading(3, later, event=NOW - timedelta(days=29))]
+        serve, pages = self.over_cap_script(restamped)
+        client = FakeClient({"sector_reading": serve})
+        try:
+            result = pull.run_pulls(client, self.conn, later)
+        except ResultTooLarge:
+            self.fail("the run failed on the row cap instead of falling back to day pages")
+        self.assertEqual(sorted(r[0] for r in self.q("SELECT event_id FROM serving.sector_reading")), ["E1", "E2", "E3"])
+        self.assertEqual(dict(self.q("SELECT source, value FROM serving.watermark"))["sector_reading"], later)
+        self.assertEqual(len(pages), pull.RETENTION.days + 1)                           # one statement per UTC day of the window
+        self.assertEqual(result["statements"], 6 + 1 + pull.RETENTION.days + 1)         # six other sources, the failed read, the pages
+        self.assertTrue(all("event_time >= :start" in c[0] for c in client.calls_for("sector_reading")[1:]))
+
+    def test_other_sources_over_the_cap_still_fail_the_run(self):
+        self.first_run({"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]]})
+        before = self.state()
+        client = FakeClient(fail_on=6, error=ResultTooLarge)                             # the probe_reading read
+        with self.assertRaises(ResultTooLarge):
+            pull.run_pulls(client, self.conn, NOW + HOUR)
+        self.assertEqual(self.state(), before)
 
 
 class RefreshSource(PullTest):

@@ -309,20 +309,40 @@ class Accepted(DeployTest):
         self.assertEqual(self.client.kinds, ["context", "jedi", "ships", "merge"])
         self.assertEqual(self.count("deployment"), 4)
 
-    def test_a_merge_result_without_num_inserted_rows_goes_on_with_a_warning(self):
-        client = FakeAgentClient()
+    def merge_without_count(self, **kwargs):
+        client = FakeAgentClient(**kwargs)
         plain = client._do
 
-        def merge_without_count(sql, params):
+        def merge_result(sql, params):
             rows = plain(sql, params)
             return [{}] if sql.startswith("MERGE") else rows
-        client.read = client.write = merge_without_count
-        self.client = client
+        client.read = client.write = merge_result
+        return client
+
+    def test_a_merge_result_without_num_inserted_rows_is_unknown_and_nothing_follows(self):
+        self.client = self.merge_without_count()
+        before = self.pg.execute("SELECT agent_processed FROM serving.disturbance WHERE disturbance_id = 'FIXD4'").fetchone()[0]
         result = self.go()
-        self.assertTrue(result["ok"])
-        self.assertIn("warnings", result)
-        self.assertEqual(result["warnings"], ["merge_result_unverified"])
-        self.assertEqual(client.kinds[-2:], ["merge", "mark"])
+        self.refused(result, "merge_result_unknown")
+        self.assertNotIn("warnings", result)
+        self.assertEqual(self.client.kinds[-1], "merge")                 # no mark after it
+        self.assertEqual(self.serving.statements, 0)                     # no refresh
+        self.assertEqual(self.count("deployment"), 4)
+        self.assertEqual(self.pg.execute("SELECT agent_processed FROM serving.disturbance WHERE disturbance_id = 'FIXD4'").fetchone()[0], before)
+
+    def test_an_empty_or_unreadable_merge_result_is_unknown_too(self):
+        for rows in ([], [{"num_inserted_rows": None}], [{"num_inserted_rows": "many"}], ["x"]):
+            client = FakeAgentClient()
+            plain = client._do
+            client.read = client.write = (lambda sql, params, plain=plain, rows=rows: rows if sql.startswith("MERGE") else plain(sql, params))
+            self.client = client
+            self.refused(self.go(), "merge_result_unknown")
+
+    def test_the_row_is_written_as_the_user_through_the_agents_row_builder(self):
+        self.go()
+        merge = [p for k, p in zip(self.client.kinds, self.client.params) if k == "merge"][0]
+        self.assertEqual(merge["decided_by"][0], "user")
+        self.assertIsNone(merge["model"][0])
 
     def test_a_merge_with_a_count_has_no_warning(self):
         result = self.go()
@@ -366,7 +386,13 @@ class LogLine(DeployTest):
         self.assertIn("reasons=internal_error", self.logs[1])
         self.assertIn("ok=true", self.logs[2])
         self.assertIn(f"rationale_chars={len(RATIONALE)}", self.logs[2])
-        self.assertTrue(self.logs[2].startswith("2026-10-19T16:00:00Z disturbance_id=FIXD4 ok=true"))
+        self.assertTrue(self.logs[2].startswith("2026-10-19T16:00:00Z disturbance_id=FIXD4 jedi_ids=windu,anakin starship_id=arc_170 ok=true"))
+        self.assertIn("jedi_ids=windu,ghost starship_id=arc_170", self.logs[0])
+
+    def test_an_invalid_request_logs_no_party(self):
+        self.go(dict(REQUEST, jedi_ids=["windu", "x" * 100], rationale="r"))
+        self.assertIn("jedi_ids=- starship_id=-", self.logs[0])
+        self.assertNotIn("xxxx", self.logs[0])
 
 
 if __name__ == "__main__":
