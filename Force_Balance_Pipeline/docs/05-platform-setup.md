@@ -727,11 +727,11 @@ That's a deliberate property: someone reading the repo sees the actual productio
 - `ForceServe` scheduled task: hourly at :12 UTC (its gate skips the odd hours at 0 statements, because Job 1 runs every 2 hours); it first waits for `logs\agent.lock` to be free (up to 10 minutes), so the pull follows the agent's cycle while the warehouse is still on; skips the 03:xx UTC hour, `IgnoreNew`, runs `serving/` from the working tree with `serving\.venv` (its own venv; `edge/requirements.txt` is also installed on the Pi, so serving dependencies stay out of it), lock `logs\serve.lock`. Registered with `infra/desktop/register-serve-task.ps1`.
 - Gate: it asks the Jobs API for Job 1's latest successful run (free) and pulls only when that run is newer than the last publish's.
 - Reads, all read-only SELECTs: incremental with upsert on `event_id` and 30 days kept in Postgres (the first run backfills 7): `gold_sector_reading` (watermark `_gold_built_at`), `silver_probe_reading` lag columns and `silver_rejects` (watermark `arrival_ts`). Full pulls each run: `gold_disturbance` (the daily baseline rebuild re-scores it), `gold.deployment`, `gold_sector_baseline`, the dim tables, and `silver_source_health` (one snapshot kept per publish, so the panel has history). Aggregations (ingest lag histogram, rejection rate) are Postgres views.
-- Results larger than one chunk are fetched through the Statement API's result-chunk endpoint, through `files_api.http_request`; `agent/dbsql.py` is not changed.
+- Results larger than one chunk are fetched through the Statement API's result-chunk endpoint, through `files_api.http_request`, by `serving/statements.py`; `agent/dbsql.py` handles one chunk only (its only Phase 7 change is that a failed statement's API error body, with the host and URLs replaced, is part of the error text).
 - Postgres: Docker container `force-postgres`, pinned major version, bound to 127.0.0.1:5433 (5432 is published by another project's stopped container and claimed by the dbt `local` target, which Phase 7 does not use), database `force_serving`, schema `serving`, credentials in `.env.serving` (gitignored).
 - Dashboard backend: `python -m serving.server` on 127.0.0.1:8081, read-only GET API over the serving views (it never queries the lakehouse) plus POST /api/deploy (doc 06, 'Manual deployment path'); `--database force_serving_fixture` for UI work against fixtures.
 - Dashboard frontend: `dashboard/` (React, Vite, Recharts; exact versions in package-lock.json). Build with `npm run build` in dashboard/; the backend serves dashboard/dist. `npm run dev` proxies /api to 127.0.0.1:8081 for development (no CSP there; the CSP applies to the built app).
-- Warehouse auto-stop is fixed at 10 minutes (Free Edition does not allow editing the warehouse). With Job 1 ending by :11 in 99.4% of runs (Phase 7 Round 11a), the agent at :11 and the pull at :12 run inside Job 1's warm tail; the modelled warehouse-on time is about 18 min/h, against about 23 with the old schedule and about 16 for Job 1 alone. Model, not measurement.
+- Warehouse auto-stop is fixed at 10 minutes (Free Edition does not allow editing the warehouse). With Job 1 ending by :11 in 99.4% of runs (Phase 7 Round 11a), the agent at :11 and the pull at :12 run inside Job 1's warm tail; the modelled warehouse-on time is about 18 min/h, against about 23 with the old schedule and about 16 for Job 1 alone. Model, not measurement. Written for an hourly Job 1: with Job 1 every 2 hours (Phase 7 Round 14) the warm window recurs every 2 hours, not hourly, and the agent and the pull end their odd-hour cycles at 0 statements; the figures were not re-modelled. If the incremental `gold_sector_reading` read is over the 50,000-row cap (a full refresh of that model re-stamps every row's `_gold_built_at`), the same pull reads it again one UTC day per statement over the 30-day retention window (31 more statements once) and sets the watermark from the maximum pulled.
 - Cost: the first live pull (2026-10-20, the 7-day backfill with the dims due) took 31 statements and 58 seconds and wrote 83,024 rows; a steady run is 7 statements (10 when the dims are due), measured by the tests. The live steady number comes after the next scheduled run.
 
 ---
@@ -1564,6 +1564,8 @@ row appears with the correct `signature` and `sustained_scans >= 2`" (C3), and "
 minutes apart. One incident row — cooldown works" (C4). The commands below are `probe_ctl.py`'s own documented syntax
 (`edge/probe_ctl.py`'s own docstring; doc 04:91-98) — no new flags invented.
 
+Deviation note (2026-10-30): the timings in this runbook were written for an hourly Job 1 and earlier cadences. Job 1 now runs every 2 hours, at :03 on even UTC hours (Phase 7 Round 14), so read every "next Job 1 run" as the next even hour :03; "builds once per hour (every fourth scan)" as once per 2 hours (every eighth scan); "up to ~60 minutes after" the onset's second qualifying scan as up to ~120 minutes; and "Set `T` on the hour" as "set `T` on an odd UTC hour" (then `T+60` is an even hour :00 and the :03 run three minutes later covers it). The `detected_at` ranges quoted for C3 and C4 stretch by the same extra hour. The checks themselves are unchanged.
+
 **(a) C3 — one injection.** Pick any sector other than Mustafar or Dathomir (doc 04, their dark baseline clamps at 100 and
 can't reach the emergency threshold via a spike — doc 03's own "Resolved, 2026-09-30" note on `gold.disturbance` has the
 unclamped-direction nuance, irrelevant here since this is a spike, not a dip). Fire it a minute or two before a `:00/:15/:30/:45`
@@ -1688,20 +1690,20 @@ the hourly `:03` schedule isn't precise enough to tell by wall clock alone, and 
 
 ### Runbook: Phase 7 checkpoint
 
-The checkpoint (doc 07, Phase 7): the agent decides a real incident A after the human-first window; while A is deployed, a manual deploy of the same Jedi to a second incident B is rejected with `jedi_unavailable` and writes nothing. It takes about four hours from T0 and needs two injected planets in different regions. Commands are `probe_ctl.py`'s own documented syntax (`edge/probe_ctl.py`) and `python -m serving.server` (doc 05, "Serving (Phase 7)"); `<DESKTOP_IP>` is the broker host, as in the C3/C4 runbook. It prompts for the `operator` password (or reads `OPERATOR_MQTT_PASSWORD`); neither is ever stored or printed.
+The checkpoint (doc 07, Phase 7): the agent decides a real incident A after the human-first window; while A is deployed, a manual deploy of the same Jedi to a second incident B is rejected with `jedi_unavailable` and writes nothing. It takes about five hours from A's injection (Job 1 runs every 2 hours) and needs two injected planets in different regions. Commands are `probe_ctl.py`'s own documented syntax (`edge/probe_ctl.py`) and `python -m serving.server` (doc 05, "Serving (Phase 7)"); `<DESKTOP_IP>` is the broker host, as in the C3/C4 runbook. It prompts for the `operator` password (or reads `OPERATOR_MQTT_PASSWORD`); neither is ever stored or printed.
 
 **1. Preconditions.**
 - No quota block in the last 24 h: the last three Job 1 runs and the last ForceServe line in `logs\serve.log` are successes, and `logs\agent.log` has no `the cycle failed` after the last success.
 - `ForceAgent` and `ForceServe` are Ready (`Get-ScheduledTask -TaskName ForceAgent, ForceServe`). Neither task is touched by this runbook.
 - The dashboard backend is running on `force_serving` and deploy is enabled: `python -m serving.server` (no `--database`), then `GET /api/meta` shows `deploy_enabled` true. If it says `fixture_database`, `fixture_rows` or `no_credentials`, fix that first (doc 06, "Manual deployment path").
-- The probe is CONNECTED from T0 to T0 + 4 h and no scheduled window falls in that span. **The scheduled windows cannot be listed from the code.** `ModeSchedule` (`edge/probe/modes.py`) places one DISCONNECTED window of 1 to 3 hours in each half of the UTC day (00-12Z and 12-24Z) from a seed, and the Pi's unit (`infra/pi/force-probe.service`, `--mode-schedule` with no `--mode-schedule-seed`) draws a new random seed each time the probe starts and logs neither the seed nor the future windows. Past windows are in the Pi's `mode_transitions.jsonl` (`reason: schedule`), and a window can fall anywhere in its half, so no start time is guaranteed clear. Make it independent of the schedule instead: an operator override outranks the schedule, so a few minutes before T0 send
+- The probe is CONNECTED from T0 to T0 + 5 h 10 min and no scheduled window falls in that span. **The scheduled windows cannot be listed from the code.** `ModeSchedule` (`edge/probe/modes.py`) places one DISCONNECTED window of 1 to 3 hours in each half of the UTC day (00-12Z and 12-24Z) from a seed, and the Pi's unit (`infra/pi/force-probe.service`, `--mode-schedule` with no `--mode-schedule-seed`) draws a new random seed each time the probe starts and logs neither the seed nor the future windows. Past windows are in the Pi's `mode_transitions.jsonl` (`reason: schedule`), and a window can fall anywhere in its half, so no start time is guaranteed clear. Make it independent of the schedule instead: an operator override outranks the schedule, so a few minutes before T0 send
   ```bash
-  python edge/probe_ctl.py --host <DESKTOP_IP> mode CONNECTED --for-seconds 15000
+  python edge/probe_ctl.py --host <DESKTOP_IP> mode CONNECTED --for-seconds 19800
   ```
-  (4 h 10 min; it expires by itself and the schedule resumes, so never use `--indefinite`). If a scheduled window was already running, the override ends it and the buffered scans drain through BURST. If the seed of the running probe is ever known (a probe started with `--mode-schedule-seed N`), its windows for a UTC day number `D` (days since the epoch) are `ModeSchedule(seed=N).windows_for_day(D)`, as epoch-second `(start, end, mode)` triples.
-- T0 must not put any step in the 03:xx UTC hour (the agent and ForceServe skip it): inject A between :02 and :10 past hour H (it must land before the :15 scan), and B exactly one hour later, never in the same hour (two incidents built in the same hour are decided together, leaving no open incident). H runs from 04 to 23 UTC, so that H+1, H+2 and H+3 are never 03 (H = 00 to 03 is out). If the 03:xx UTC hour falls after A's decision, B stays open about two hours (the agent skips 03:xx).
+  (5 h 30 min; it expires by itself and the schedule resumes, so never use `--indefinite`). If a scheduled window was already running, the override ends it and the buffered scans drain through BURST. If the seed of the running probe is ever known (a probe started with `--mode-schedule-seed N`), its windows for a UTC day number `D` (days since the epoch) are `ModeSchedule(seed=N).windows_for_day(D)`, as epoch-second `(start, end, mode)` triples.
+- T0 must not put any step in the 03:xx UTC hour, and A and B must be built by different Job 1 runs. Job 1 runs every 2 hours at :03 on even UTC hours, so inject A at :02 to :10 past an **odd** UTC hour H (before the :15 scan): it builds at (H+1):03 and the agent records it at (H+1):11. Inject B two hours later, at (H+2):02 to :10: it builds at (H+3):03 and is recorded at (H+3):11. A is decided at (H+3):11, the first cycle after a new Job 1 run that finds it at least 30 minutes old, and B at (H+5):11. Two incidents built by the same Job 1 run are decided together, leaving no open incident. The manual-reject window is (H+3):13 to (H+5):10, about 5 hours 10 minutes from A's injection, and it must not reach the 03:xx hour (deploys are refused then), so H runs over the odd hours 01 to 21 UTC (H = 23 is out).
 
-**2. T0 (between :02 and :10 past hour H): planet A.** Pick a sector that is not Mustafar or Dathomir (doc 04); the example is `geonosis` (Outer Rim):
+**2. T0 (between :02 and :10 past an odd UTC hour H): planet A.** Pick a sector that is not Mustafar or Dathomir (doc 04); the example is `geonosis` (Outer Rim):
 
 ```bash
 python edge/probe_ctl.py --host <DESKTOP_IP> inject geonosis sith_presence
@@ -1709,39 +1711,39 @@ python edge/probe_ctl.py --host <DESKTOP_IP> inject geonosis sith_presence
 
 Default episode (`ramp=2, hold=4, decay=3` scans). Note the time you sent it as T0.
 
-**3. T0 + 60 min: planet B.** A different signature on a planet in another region; the example is `kamino` (Wild Space):
+**3. T0 + 2 h ((H+2):02 to :10): planet B.** A different signature on a planet in another region; the example is `kamino` (Wild Space):
 
 ```bash
 python edge/probe_ctl.py --host <DESKTOP_IP> inject kamino force_drain
 ```
 
-**4. Expected timeline** (UTC; T0 = H:20; all times are the cycles the schedule gives: Job 1 :03, agent :11, ForceServe :12):
+**4. Expected timeline** (UTC; H is an odd hour; the cycles the schedule gives: Job 1 :03 on even hours, agent :11 (it polls only after a new Job 1 run), ForceServe :12):
 
 | When | What |
 |---|---|
-| (H+1):03 | A's incident is in gold (Job 1 builds it from the :30 and :45 scans) |
+| H:02 to :10 | inject A |
+| (H+1):03 | A's incident is in gold (Job 1 builds it from the scans up to (H+1):00) |
 | (H+1):11 | the agent records A (first seen; `logs\agent_seen_prod.json` gets its key; no decision yet) |
 | (H+1):12 | A is on the dashboard (tile at emergency, incident open) |
-| (H+1):20 | inject B |
-| (H+2):03 | B is in gold |
-| (H+2):11 | the agent decides A (a deploy, `decided_by` `yoda_agent`) and records B |
-| (H+2):12 | A's deployment and B's incident are on the dashboard |
-| (H+2):13 to (H+3):10 | **the manual-reject window**: A's Jedi are deployed and B is open and undecided |
-| (H+3):11 | the agent decides B |
+| (H+2):02 to :10 | inject B |
+| (H+2):11 | no new Job 1 run: the agent's cycle ends with 0 statements (`gate=no_new_run`) |
+| (H+3):03 | B is in gold |
+| (H+3):11 | the agent decides A (a deploy, `decided_by` `yoda_agent`) and records B |
+| (H+3):12 | A's deployment and B's incident are on the dashboard |
+| (H+3):13 to (H+5):10 | **the manual-reject window**: A's Jedi are deployed and B is open and undecided |
+| (H+5):11 | the agent decides B |
 
-With Job 1 every 2 hours: inject A at :02 to :10 past an odd UTC hour H (it builds at H+1:03), and B two hours later at H+2:02 to :10 (it builds at H+3:03); the manual-reject window is H+3:13 to H+4:10. About 4 h 10 min in total. The table above is the hourly-Job-1 timeline; with the 2-hourly Job 1 read its Job 1 times (:03 builds) as the next even hour.
+Deviation note (2026-10-30): this table replaces the one written for an hourly Job 1 (T0 = H:20, B an hour after A; the first checkpoint run, 2026-10-29, injected B in the same hour as A and both were decided together at 02:11Z). With Job 1 every 2 hours the agent decides an incident two hours after it first sees it, not one hour, so A and B are two hours apart and the window and the total time are longer.
 
-Deviation note (2026-10-29): this table was written for T0 = H:20 and B injected at (H+1):20. The first checkpoint run injected B in the same hour as A and both were decided together at 02:11Z, so the table is now read as offsets from T0 with A and B an hour apart, as step 1 says.
+The form's "Yoda decides at HH:MM UTC" for B (from `agent_first_seen`) shows (H+5):11 during the window.
 
-The form's "Yoda decides at HH:MM UTC" for B (from `agent_first_seen`) shows (H+3):11 during the window.
-
-**5. What to record in the GIF, and when.** (a) At (H+1):12: A's tile turning emergency and its incident in the feed. (b) At (H+2):12: the deployment log showing Yoda's deploy to A, and the Jedi it chose (`<jedi_x>`). (c) In the manual-reject window: open "Deploy..." on B, tick `<jedi_x>`, choose any starship, write a rationale, submit; the form shows "Rejected by the constraint layer:" with the `jedi_unavailable` reason. Optionally (d) a valid manual deploy to B with other Jedi and a free starship, so a user row sits next to the agent's row; if you do, B's later agent decision does not happen (the incident is decided).
+**5. What to record in the GIF, and when.** (a) At (H+1):12: A's tile turning emergency and its incident in the feed. (b) At (H+3):12: the deployment log showing Yoda's deploy to A, and the Jedi it chose (`<jedi_x>`). (c) In the manual-reject window: open "Deploy..." on B, tick `<jedi_x>`, choose any starship, write a rationale, submit; the form shows "Rejected by the constraint layer:" with the `jedi_unavailable` reason. Optionally (d) a valid manual deploy to B with other Jedi and a free starship, so a user row sits next to the agent's row; if you do, B's later agent decision does not happen (the incident is decided).
 
 **6. Fallback.** If the agent stands down on A, record that (the stand-down reason is in the deployment log), let both incidents finish, and rerun the next day with another planet.
 
 **7. Verification.**
 - `ingest/phase7_checkpoint.sql` p7-1 to p7-5, with `<sector_a>`, `<sector_b>`, `<t0_utc>` (the full date and time of T0) and `<jedi_x>` filled in (`python run_sql_file.py ingest/phase7_checkpoint.sql p7-1 p7-2 ...`); expectations are in each heading.
-- `logs\deploy.log`: one line for the rejected attempt, `ok=false reasons=...jedi_unavailable...`, `statements=3`, and no rationale text.
+- `logs\deploy.log`: one line for the rejected attempt, `ok=false reasons=...jedi_unavailable...`, `statements=3`, the requested `jedi_ids` and `starship_id`, and no rationale text.
 - `serving.v_deployment_log` in the local Postgres (the dashboard's deployment log) shows A's agent row, and B's row once decided.
 
 ## Local development stack

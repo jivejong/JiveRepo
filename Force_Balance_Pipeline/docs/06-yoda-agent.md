@@ -13,16 +13,16 @@ matching is fully testable, and the model is only doing the part that genuinely 
 ## Runtime
 
 The agent runs locally as a Windows scheduled task named `ForceAgent`. It runs `edge\.venv\Scripts\pythonw.exe` on the agent
-entry point from the working tree, the same pattern as `ForceBridge`. It is not in Docker. It runs hourly at :11 and skips the
-03:xx UTC hour. Cloud Run is an optional later stage, containerized then. The task uses `StartWhenAvailable`, so a cycle missed while the computer was off or asleep runs at the next opportunity (seen at registration on 2026-10-15).
+entry point from the working tree, the same pattern as `ForceBridge`. It is not in Docker. The task starts hourly at :11 and skips the
+03:xx UTC hour; with Job 1 every 2 hours only the even-hour cycles poll the warehouse (below). Cloud Run is an optional later stage, containerized then. The task uses `StartWhenAvailable`, so a cycle missed while the computer was off or asleep runs at the next opportunity (seen at registration on 2026-10-15).
 
 Before any warehouse query, each cycle calls the Jobs API, which costs no warehouse time. If Job 1 (`692051683030737`) has an
 active run, the cycle is skipped. If Job 1 is still running at the start of a cycle, the agent waits for it (polling every 30 s, up to 10 minutes) before skipping. A Jobs API error during the wait ends it at once and is handled like any other Jobs API error.
 
-The agent polls the warehouse only when Job 1 has a new successful run since its last poll, or when an incident is waiting out its human-first window; otherwise the cycle ends with 0 statements. (Prod only; dev always polls. The last run followed is in `logs\agent_last_job1_prod.txt`, written after a successful poll. The summary line shows `gate=<new_run|pending|no_new_run|dev|none>`; `none` means Job 1 has no successful run to compare, so the cycle polls.)
+The agent polls the warehouse only when Job 1 has a new successful run since its last poll; otherwise the cycle ends with 0 statements. An incident waiting out its human-first window does not make a poll: it is decided at the first cycle after a new Job 1 run that finds it at least 30 minutes old (with Job 1 every 2 hours, the next even-hour :11 cycle). (Prod only; dev always polls. The last run followed is in `logs\agent_last_job1_prod.txt`, written after a successful poll. The summary line shows `gate=<new_run|no_new_run|dev|none>`; `none` means Job 1 has no successful run to compare, so the cycle polls.)
 
 **Eligible incidents.** Only incidents with `detected_at >= AGENT_EPOCH` are processed. `AGENT_EPOCH` is a config constant,
-2026-10-12T00:00:00Z. Older incidents are never processed and stay `agent_processed = false`. There is no bulk update. A cycle processes at most `MAX_INCIDENTS_PER_RUN` = 5 incidents, the oldest 5 eligible ones; the rest wait for the next hour.
+2026-10-12T00:00:00Z. Older incidents are never processed and stay `agent_processed = false`. There is no bulk update. A cycle processes at most `MAX_INCIDENTS_PER_RUN` = 5 incidents, the oldest 5 eligible ones; the rest wait for the next cycle that polls.
 
 **Cycle order** (Delta does not enforce unique keys, so idempotency is in the order of the steps):
 
@@ -42,7 +42,7 @@ appears only as a JSON field in the user message.
 Reads and writes go through the **Databricks SQL Statement Execution API**. Gemini inference is off the Databricks compute quota,
 but every Statement API query runs on the warehouse and uses it. The warehouse cost per incident is 3 reads (context, available
 Jedi, available starships) and 2 writes (the decision MERGE and the processed mark), plus 2 statements per cycle for the repair and
-the poll. A cycle in which Job 1 is running costs 0 statements. An hour with nothing to process makes no Gemini call.
+the poll. A cycle in which Job 1 is running, or in which Job 1 has no new run, costs 0 statements. A cycle with nothing to process makes no Gemini call.
 
 The request sets `toolConfig` mode `ANY`, so every answer is a tool call. A forced stand-down (severity below the floor, or a missing signature) makes no model call. An incident gets at most `MAX_MODEL_CALLS_PER_INCIDENT` = 6 model calls. The ETA of a deploy is the slowest party member's.
 
@@ -167,6 +167,8 @@ cannot reason about.
 | The model declines to assess the input (blocked prompt or answer) | `blocked_by_model` — force stand-down |
 | Decision write is idempotent (MERGE on `disturbance_id`) | - (see "Runtime", cycle order) |
 
+Rank and specialty are judged on the whole party, so `insufficient_rank` and `specialty_mismatch` are skipped when `jedi_unavailable` is reported (an unknown or already-deployed Jedi would leave the judged party smaller than the one asked for, and a deployed council member read as "no master"); every other check and the order of the reasons are unchanged.
+
 `one_decision_per_turn` is an answer the agent loop gives a second terminal call in the same turn. It is not a rejection and is not recorded in `guardrail_overrides`.
 
 **Resolved (Phase 6, 2026-10-14):** the severity bands were re-derived against the thresholds tuned on 2026-09-26.
@@ -261,9 +263,9 @@ The dashboard lets a user deploy to any planet with an active anomaly, choosing 
 
 **Active anomaly (decided, Phase 7).** An open, undecided incident: a `gold_disturbance` row with `detected_at >= AGENT_EPOCH` and no row in `gold.deployment`. A deployment needs a `disturbance_id` (NOT NULL, with a `relationships` test), so a planet without an incident cannot be targeted. Every incident has an imbalance above 5.75 (severity about 6.33 or more), so the severity floor (4.40) and fixture 20 (`severity_floor_user_anomaly`) cannot be reached from the dashboard. The floor stays as defense in depth and is exercised by the eval. The 4.0 anomaly threshold is used by the galaxy view as a color band: above 4.0 is an anomaly, above 5.75 an emergency.
 
-**Human-first window (decided, Phase 7).** The agent decides an incident only in a cycle after the one that first polled it; first-seen ids are kept in `logs\agent_seen_<target>.json`. A person gets about 59 minutes, from the :12 publish to the next :11 cycle, and every agent decision is delayed by one cycle. An incident is decided only when it was first seen at least 30 minutes before the cycle starts, so a duplicate launch cannot skip the window. First-seen ids live in `logs\agent_seen_<target>.json`; the poll reads up to 50 undecided incidents (POLL_LIMIT) and the cycle decides at most 5 that were seen in an earlier cycle.
+**Human-first window (decided, Phase 7).** The agent decides an incident only in a cycle after the one that first polled it; first-seen ids are kept in `logs\agent_seen_<target>.json`. A person gets about 2 hours: an incident first seen at an even-hour :11 cycle is decided at the next even-hour :11 cycle (the agent polls only after a new Job 1 run), and every agent decision is delayed by that cycle. An incident is decided only when it was first seen at least 30 minutes before the cycle starts, so a duplicate launch cannot skip the window. First-seen ids live in `logs\agent_seen_<target>.json`; the poll reads up to 50 undecided incidents (POLL_LIMIT) and the cycle decides at most 5 that were seen in an earlier cycle.
 
-**Manual deployment path (decided, Phase 7).** The dashboard backend runs these steps in order: (1) refuse during the 03:xx UTC hour; (2) take `logs\agent.lock`, retrying for up to 10 seconds, then refuse with "agent cycle in progress" (a missed S4 ping is inside its grace); (3) ask the Jobs API whether Job 1 is active, and refuse if so; (4) read the context, the available Jedi and the available starships live through `agent.context`; (5) run `agent.constraints.check_deploy`. A rejection shows every reason and writes nothing. (6) On a pass, run the agent's MERGE (`decided_by = 'user'`, `model` and `decision_latency_ms` null, the rationale required, `released_at` from `agent.distance`) and mark the incident processed, so the agent's repair never fires on user rows. A rejected deploy costs 3 statements and an accepted one 5, plus 1 to refresh the deployment table in Postgres. The party's ETA comes from a function in `agent/distance.py` shared with the agent loop. The dashboard's POST /api/deploy accepts only JSON, from the dashboard's own Origin, with a per-process token readable only by same-origin pages, one request at a time; deploy is disabled unless the backend serves force_serving with no fixture rows.
+**Manual deployment path (decided, Phase 7).** The dashboard backend runs these steps in order: (1) refuse during the 03:xx UTC hour; (2) take `logs\agent.lock`, retrying for up to 10 seconds, then refuse with "agent cycle in progress" (a missed S4 ping is inside its grace); (3) ask the Jobs API whether Job 1 is active, and refuse if so; (4) read the context, the available Jedi and the available starships live through `agent.context`; (5) run `agent.constraints.check_deploy`. A rejection shows every reason and writes nothing. (6) On a pass, run the agent's MERGE (`decided_by = 'user'`, `model` and `decision_latency_ms` null, the rationale required, `released_at` from `agent.distance`) and mark the incident processed, so the agent's repair never fires on user rows. A rejected deploy costs 3 statements and an accepted one 5, plus 1 to refresh the deployment table in Postgres. The party's ETA comes from a function in `agent/distance.py` shared with the agent loop. The dashboard's POST /api/deploy accepts only JSON, from the dashboard's own Origin, with a per-process token readable only by same-origin pages, one request at a time; deploy is disabled unless the backend serves force_serving with no fixture rows. Before step (2) the service checks the local Postgres that the incident is open (`unknown_incident` or `not_open`), and a forced stand-down reason (the severity floor or a missing signature) is refused after step (4). If the MERGE result carries no `num_inserted_rows`, the deploy is refused with `merge_result_unknown` (the write may or may not have landed): nothing is marked or refreshed, and the agent's repair marks the incident if a row exists. `logs\deploy.log` has one line per attempt with the incident, the requested `jedi_ids` and `starship_id` (slugs), the outcome and the size of the rationale, never its text.
 
 - Same constraint layer, same rejection reasons surfaced in the UI
 - `decided_by = 'user'`, `model` and `decision_latency_ms` null
@@ -373,7 +375,7 @@ Known behavior: an incident that arrives while the fleet cap is full is stood do
 ## Monitoring and cost
 
 A Healthchecks check, S4 `fbp-s4-agent` (period 1 h, grace 2 h), is pinged at the end of every cycle, including a cycle skipped for the
-03:xx UTC hour or for an active Job 1 run. S4 gets a success ping, or the `/fail` suffix after a Jobs API error (at the start or in the check before a write), a permanent model error, or a crash (doc 05, "Monitoring"). The ping URL is
+03:xx UTC hour, for an active Job 1 run, or because Job 1 has no new run (0 statements). S4 gets a success ping, or the `/fail` suffix after a Jobs API error (at the start or in the check before a write), a permanent model error, or a crash (doc 05, "Monitoring"). The ping URL is
 `AGENT_PING_S4_URL` in `.env.agent`, named like the bridge's `BRIDGE_PING_S1_URL`; it is credential-like and is never logged. A cycle is run
 with:
 
@@ -388,5 +390,5 @@ Every model call logs `usageMetadata` (prompt, output and thought token counts) 
 24-fixture suite of 72 runs against `gemini-3.1-flash-lite` at thinking level `low`; list price $0.25 per million input tokens and $1.50
 per million output tokens, thought tokens billed as output): 76 model calls cost $0.095, or **$0.00126 per model call**. The average
 prompt is about 3,670 tokens, mostly the Jedi and starship lists. At the observed rate of about 0.6 incidents a day, production costs
-under $0.03 a month (derived from the measured per-call cost). An hour with nothing to process makes no Gemini call and costs 2 warehouse
-statements.
+under $0.03 a month (derived from the measured per-call cost). A polling cycle with nothing to process makes no Gemini call and costs 2 warehouse
+statements; a cycle with no new Job 1 run costs none.
