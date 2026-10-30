@@ -71,7 +71,7 @@ export default function DeployForm({ disturbanceId, onClose }) {
           <p className="note">
             {decideAt
               ? `Yoda decides at ${clockUtc(decideAt)} UTC`
-              : "Yoda has not seen it yet; it decides one cycle after it first sees it"}
+              : "Yoda has not seen it yet: he records it at the next even-hour :11 cycle and decides it two hours later."}
           </p>
           <fieldset>
             <legend>Jedi (choose 1 to {MAX_PARTY})</legend>
