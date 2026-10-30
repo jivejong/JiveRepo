@@ -84,9 +84,13 @@ def take_agent_lock(lock_path, sleep):
     return None
 
 
-def write_log(log, now, disturbance_id, result, rationale_chars):
-    line = (f"{now.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%S}Z disturbance_id={disturbance_id or '-'} ok={str(result['ok']).lower()} "
-            f"reasons={','.join(result['reasons']) or '-'} statements={result['statements']} rationale_chars={rationale_chars}")
+def write_log(log, now, clean, result, rationale_chars):
+    """One line: the incident and the validated party (slugs only, never the raw request), the outcome and the size of the rationale."""
+    clean = clean or {}
+    line = (f"{now.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%S}Z disturbance_id={clean.get('disturbance_id') or '-'} "
+            f"jedi_ids={','.join(clean.get('jedi_ids') or []) or '-'} starship_id={clean.get('starship_id') or '-'} "
+            f"ok={str(result['ok']).lower()} reasons={','.join(result['reasons']) or '-'} statements={result['statements']} "
+            f"rationale_chars={rationale_chars}")
     log(line)
 
 
@@ -158,18 +162,24 @@ def deploy(request, *, env, now, client, jobs, pg_conn, lock_path=AGENT_LOCK, sl
                               ships_by_id[clean["starship_id"]].hyperdrive_rating)
         decision = Decision("deploy", jedi_ids=clean["jedi_ids"], starship_id=clean["starship_id"], eta_hours=eta,
                             rationale=clean["rationale"], guardrail_overrides=[], model=None, decision_latency_ms=None)
-        row = build_row(context, decision, now, ulid_fn())
-        row["decided_by"] = "user"
+        row = build_row(context, decision, now, ulid_fn(), decided_by="user")
         merged = client.write(*queries.write_decision(TARGET, row))
         inserted = merged[0].get("num_inserted_rows") if merged and isinstance(merged[0], dict) else None
-        if inserted is not None and int(inserted) == 0:
+        try:
+            inserted = None if inserted is None else int(inserted)
+        except (TypeError, ValueError):
+            inserted = None
+        if inserted is None:
+            # The write may or may not have landed, and success cannot be claimed without the count. Nothing is marked or refreshed: if a
+            # row exists, the agent's next repair marks the incident and the next pull brings the row.
+            result["reasons"] = ["merge_result_unknown"]
+            return result
+        if inserted == 0:
             result["reasons"] = ["already_decided"]
             return result
         result["ok"], result["deployment_id"] = True, row["deployment_id"]
 
         warnings = []
-        if inserted is None:                                       # the MERGE result has no num_inserted_rows: not verified live yet
-            warnings.append("merge_result_unverified")
         try:
             client.write(*queries.mark(TARGET, clean["disturbance_id"]))
         except Exception:
@@ -192,4 +202,4 @@ def deploy(request, *, env, now, client, jobs, pg_conn, lock_path=AGENT_LOCK, sl
         if lock is not None:
             lock.release()
         result["statements"] = (client.statements - before[0]) + (serving_client.statements - before[1])
-        write_log(log, now, clean["disturbance_id"] if clean else None, result, chars)
+        write_log(log, now, clean, result, chars)

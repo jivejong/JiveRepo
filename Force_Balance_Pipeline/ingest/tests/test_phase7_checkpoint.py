@@ -60,8 +60,17 @@ class ClaimTests(unittest.TestCase):
 
     def test_p7_2_checks_the_agent_deployed_a_jedi_after_a_cycle(self):
         b = blocks()["p7-2"]
-        for needle in ("<sector_a>", "decided_by", "array_contains(p.jedi_ids, '<jedi_x>')", "INTERVAL 1 HOUR", "p.decision"):
+        for needle in ("<sector_a>", "decided_by", "array_contains(p.jedi_ids, '<jedi_x>')", "p.decision"):
             self.assertIn(needle, b)
+
+    def test_p7_2_measures_from_the_onset_scan_and_not_from_detected_at(self):
+        code = normalise(blocks()["p7-2"])
+        for needle in ("force.gold.gold_sector_reading r", "r.scan_id = d.scan_id", "r.sector_id = d.sector_id", "r.event_time AS onset_scan_time",
+                       "timestampdiff(MINUTE, r.event_time, p.decided_at) AS minutes_after_onset",
+                       "p.decided_at >= r.event_time + INTERVAL 60 MINUTE AS decided_after_a_cycle"):
+            self.assertIn(needle, code)
+        self.assertNotIn("d.detected_at + INTERVAL", code)
+        self.assertNotIn("timestampdiff(MINUTE, d.detected_at", code)
 
     def test_p7_3_counts_user_rows_naming_the_jedi_on_b(self):
         b = blocks()["p7-3"]

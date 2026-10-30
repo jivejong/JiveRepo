@@ -7,6 +7,8 @@ const DISTURBANCE_ID = /^[0-9A-Za-z_]{1,64}$/;
 const SLUG = /^[a-z0-9_]{1,64}$/;
 const HOUR_MS = 3600000;
 const AGENT_MINUTE = 11;
+const CYCLE_MS = 2 * HOUR_MS;                      // the agent polls only after a Job 1 run, and Job 1 runs at :03 on even UTC hours
+const MIN_FIRST_SEEN_AGE_MS = 30 * 60000;          // agent/config.py MIN_FIRST_SEEN_AGE_MINUTES
 
 /** A list of problems (empty when the form may be sent). form: {disturbanceId, jedi: [ids], starship: id or "", rationale}. */
 export function validate(form) {
@@ -66,7 +68,7 @@ const LABELS = {
   // serving/deploy.py warnings
   mark_failed: "The incident could not be marked; the agent's next repair marks it.",
   refresh_failed: "The deployment was written but the local copy is not refreshed yet; the next pull will update it.",
-  merge_result_unverified: "The write's result could not be verified.",
+  merge_result_unknown: "The write's result could not be read, so it is not known whether the deployment was recorded; check the deployment log.",
   // endpoint errors
   deploy_in_progress: "Another deployment is being sent; try again.",
   deploy_disabled: "Deploying is disabled on this dashboard.",
@@ -92,16 +94,18 @@ export function reasonLabel(code) {
 /** The label table's codes (for the parity test). */
 export const KNOWN_CODES = Object.keys(LABELS);
 
-/** When the agent next looks at an incident first seen at `firstSeenIso`: the first HH:11:00Z strictly after that time. If that is not after
- *  `nowMs` (the agent missed a cycle), it steps forward an hour at a time until it is. Returns an ISO string, or null when the incident has not
- *  been seen or the input is invalid. The agent records an incident at that cycle and decides it one cycle later (doc 06 "Human-first window"). */
+/** When the agent decides an incident first seen at `firstSeenIso` (doc 06 "Human-first window"): the agent polls only after a new Job 1 run, so
+ *  its cycles that count are the :11 of even UTC hours, and it decides an incident only when it was first seen at least 30 minutes earlier. That is
+ *  the first HH:11:00Z with HH even strictly after firstSeen + 30 minutes. If that is not after `nowMs` (the agent missed a cycle), it steps
+ *  forward 2 hours at a time until it is. Returns an ISO string, or null when the incident has not been seen or the input is invalid. */
 export function nextAgentDecision(firstSeenIso, nowMs) {
   if (typeof firstSeenIso !== "string" || typeof nowMs !== "number") return null;
   const seen = new Date(firstSeenIso).getTime();
   if (Number.isNaN(seen)) return null;
   const offset = AGENT_MINUTE * 60000;
-  let slot = Math.floor((seen - offset) / HOUR_MS) * HOUR_MS + offset + HOUR_MS;
-  while (slot <= nowMs) slot += HOUR_MS;
+  const earliest = seen + MIN_FIRST_SEEN_AGE_MS;
+  let slot = Math.floor((earliest - offset) / CYCLE_MS) * CYCLE_MS + offset + CYCLE_MS;
+  while (slot <= nowMs) slot += CYCLE_MS;
   return new Date(slot).toISOString();
 }
 

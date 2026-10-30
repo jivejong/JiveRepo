@@ -56,7 +56,7 @@ describe("reasonLabel", () => {
   it("finds the codes in the sources", () => {
     assert.equal(fromReasons.length, 17);
     for (const c of ["quota_hour", "not_open", "unknown_incident", "agent_cycle_in_progress", "already_decided", "internal_error", "invalid_request",
-      "mark_failed", "refresh_failed", "merge_result_unverified"]) assert.ok(fromDeploy.includes(c), c);
+      "mark_failed", "refresh_failed", "merge_result_unknown"]) assert.ok(fromDeploy.includes(c), c);
   });
   it("has a label, not the code, for every constraint and service code", () => {
     for (const code of [...fromReasons, ...fromDeploy]) {
@@ -78,16 +78,27 @@ describe("reasonLabel", () => {
 describe("nextAgentDecision", () => {
   const at = (s) => Date.parse(s);
   const early = at("2026-10-20T00:00:00Z");                   // a clock before every first-seen time below: no stepping
-  it("is the first :11 strictly after the first-seen time", () => {
-    assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", early), "2026-10-21T02:11:00.000Z");
-    assert.equal(nextAgentDecision("2026-10-21T02:11:00Z", early), "2026-10-21T03:11:00.000Z");
-    assert.equal(nextAgentDecision("2026-10-21T02:11:01Z", early), "2026-10-21T03:11:00.000Z");
-    assert.equal(nextAgentDecision("2026-10-21T23:30:00Z", early), "2026-10-22T00:11:00.000Z");
+  it("is the first even-hour :11 strictly after the first-seen time plus 30 minutes", () => {
+    assert.equal(nextAgentDecision("2026-10-21T02:11:00Z", early), "2026-10-21T04:11:00.000Z");     // seen at an even-hour cycle: two hours later
+    assert.equal(nextAgentDecision("2026-10-21T01:30:00Z", early), "2026-10-21T02:11:00.000Z");
+    assert.equal(nextAgentDecision("2026-10-21T02:50:00Z", early), "2026-10-21T04:11:00.000Z");
+    assert.equal(nextAgentDecision("2026-10-21T01:41:00Z", early), "2026-10-21T04:11:00.000Z");     // 02:11 is exactly 30 min later: not strictly after
+    assert.equal(nextAgentDecision("2026-10-21T01:40:59Z", early), "2026-10-21T02:11:00.000Z");
+    assert.equal(nextAgentDecision("2026-10-21T22:50:00Z", early), "2026-10-22T00:11:00.000Z");
   });
-  it("steps forward an hour at a time when that time has passed", () => {
+  it("never names an odd hour, so never 03:11 either", () => {
+    for (let h = 0; h < 24; h++) for (const m of [0, 11, 29, 30, 31, 59]) {
+      const iso = `2026-10-21T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00Z`;
+      const slot = new Date(nextAgentDecision(iso, early));
+      assert.equal(slot.getUTCHours() % 2, 0, iso);
+      assert.equal(slot.getUTCMinutes(), 11, iso);
+      assert.ok(slot.getTime() >= Date.parse(iso) + 30 * 60000, iso);
+    }
+  });
+  it("steps forward two hours at a time when that time has passed", () => {
     assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", at("2026-10-21T05:30:00Z")), "2026-10-21T06:11:00.000Z");
-    assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", at("2026-10-21T04:11:00Z")), "2026-10-21T05:11:00.000Z");
-    assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", at("2026-10-21T02:10:59Z")), "2026-10-21T02:11:00.000Z");
+    assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", at("2026-10-21T04:11:00Z")), "2026-10-21T06:11:00.000Z");
+    assert.equal(nextAgentDecision("2026-10-21T02:10:00Z", at("2026-10-21T02:10:59Z")), "2026-10-21T04:11:00.000Z");
   });
   it("is null when the incident has not been seen or the input is bad", () => {
     assert.equal(nextAgentDecision(null, 0), null);

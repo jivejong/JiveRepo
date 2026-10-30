@@ -8,7 +8,9 @@ probe_reading, rejects), each through client.read (two attempts, 5 s apart) with
 retention is applied. Any error rolls everything back and is re-raised; a failed read changes nothing because no write has started.
 Watermarks: sector_reading on _gold_built_at (upsert, because a probe row is recomputed in place); probe_reading and rejects on
 arrival_ts with a 1-hour overlap (insert-only, DO NOTHING). With no watermark yet, an incremental source backfills one UTC day per
-statement. Table names come only from config.SOURCES.
+statement. If the incremental sector_reading read is over the row cap (a full refresh of gold_sector_reading re-stamps every row's
+_gold_built_at), the same run reads it again one UTC day per statement over the 30-day retention window, on event_time, and the watermark
+is set from the maximum pulled. Table names come only from config.SOURCES.
 
 expected_types are Databricks manifest type_names. DOCUMENTED (dbt yml, seeds' column_types or create_deployment.sql): deployment, the
 dims, scan_completeness, sample_count. INFERRED from the model SQL and not yet observed on the live warehouse (the first live pull is the
@@ -20,6 +22,7 @@ from datetime import timedelta
 
 from psycopg.types.json import Jsonb
 
+from agent.dbsql import ResultTooLarge
 from serving import config
 
 DEFAULT_BACKFILL_DAYS = 7
@@ -151,6 +154,14 @@ def _insert(cur, spec, rows, extra_first=None, conflict=None):
         cur.executemany(sql, data)
 
 
+def _read_retention_pages(client, spec, now):
+    """Every row of the retention window, one UTC day per statement (the fallback when the incremental read is over the row cap)."""
+    rows = []
+    for start, end in backfill_pages(now, RETENTION.days):
+        rows.extend(client.read(*build_select(spec, start=start, end=end), expected_types=spec["types"]))
+    return rows
+
+
 def run_pulls(client, conn, now, backfill_days=DEFAULT_BACKFILL_DAYS):
     """One pull. Returns {"statements": n, "rows": {serving table: rows pulled}}; raises (after a rollback) on any error."""
     before = client.statements
@@ -162,7 +173,13 @@ def run_pulls(client, conn, now, backfill_days=DEFAULT_BACKFILL_DAYS):
         spec = SPECS[key]
         rows = []
         for sql, params in statements:
-            rows.extend(client.read(sql, params, expected_types=spec["types"]))
+            try:
+                rows.extend(client.read(sql, params, expected_types=spec["types"]))
+            except ResultTooLarge:
+                if key != "sector_reading" or key not in wms:
+                    raise
+                rows = _read_retention_pages(client, spec, now)
+                break
         results[key] = rows
     try:
         with conn.cursor() as cur:

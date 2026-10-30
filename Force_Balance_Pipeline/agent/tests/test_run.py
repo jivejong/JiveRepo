@@ -1033,11 +1033,31 @@ class PollGate(unittest.TestCase):
         self.assertTrue(any("decision=no_new_run" in line and "gate=no_new_run" in line and "statements=0" in line for line in h.logs))
         self.assertEqual(h.job1_run_path.read_text(encoding="ascii").strip(), "101")
 
-    def test_the_same_run_with_a_pending_id_polls(self):
+    def test_the_same_run_with_a_pending_id_skips_with_no_statement(self):
         h = self.gated(run_id=101, stored=101, ids=["inc-1"], seen_ids=["inc-1"])
+        self.assertEqual(h.go(), 0)
+        self.assertEqual(h.db.statements, 0)
+        self.assertEqual(len(h.decide_calls), 0)
+        self.assertEqual(h.pings, ["success"])
+        self.assertTrue(any(" gate=no_new_run" in line for line in h.logs))
+        self.assertEqual(h.seen.load(), {"inc-1": iso_z(NOW - timedelta(hours=1))})        # still waiting
+
+    def test_a_pending_id_is_decided_at_the_next_cycle_after_a_new_run(self):
+        h = self.gated(run_id=101, stored=101, ids=["inc-1"], seen_ids=["inc-1"])
+        h.go()                                                  # an odd-hour cycle: no new Job 1 run
+        self.assertEqual(len(h.decide_calls), 0)
+        h.latest = (102, NOW)                                   # Job 1 ran
+        h.now = NOW + timedelta(hours=1)
         h.go()
-        self.assertIn("poll", h.db.kinds)
-        self.assertTrue(any(" gate=pending" in line for line in h.logs))
+        self.assertEqual(len(h.decide_calls), 1)
+        self.assertTrue(any(" gate=new_run" in line for line in h.logs))
+        self.assertEqual(h.job1_run_path.read_text(encoding="ascii").strip(), "102")
+
+    def test_a_row_is_built_with_the_agent_as_decider_unless_told_otherwise(self):
+        decision = fake_decision()
+        context = {"disturbance_id": "d1", "signature": "sith_presence"}
+        self.assertEqual(run.build_row(context, decision, NOW, "dep1")["decided_by"], "yoda_agent")
+        self.assertEqual(run.build_row(context, decision, NOW, "dep1", decided_by="user")["decided_by"], "user")
 
     def test_dev_always_polls(self):
         h = harness(ids=[])

@@ -2,8 +2,8 @@
 -- path"). Run as yourself in the workspace SQL editor one statement at a time, or with run_sql_file.py (python run_sql_file.py
 -- ingest/phase7_checkpoint.sql [p7-1 p7-2 ...]). Read-only throughout: every statement is a SELECT.
 --
--- The checkpoint: two injected incidents, A at T0 and B an hour later in another region. The agent records A one cycle after the gold build
--- and decides it a cycle later; while A is deployed, a manual deploy of A's Jedi to B is rejected with jedi_unavailable and writes nothing.
+-- The checkpoint: two injected incidents, A at T0 and B two hours later in another region (Job 1 runs every 2 hours). The agent records A at the
+-- first cycle after the gold build and decides it at the next cycle after a Job 1 run, two hours later; while A is deployed, a manual deploy of A's Jedi to B is rejected with jedi_unavailable and writes nothing.
 -- Both incidents are found by sector and time, not by id, so the file does not depend on the deterministic ids.
 -- Target schema: the statements read the production tables force.gold.*. To check a dev run, replace "force.gold." with "force.dev_jivejong."
 -- throughout.
@@ -22,15 +22,17 @@ WHERE d.sector_id IN ('<sector_a>', '<sector_b>')
   AND d.detected_at >= TIMESTAMP '<t0_utc>'
 ORDER BY d.detected_at;
 
--- (p7-2) A'S DECISION. Expect: 1 row; decision 'deploy', decided_by 'yoda_agent', jedi_includes_x true, minutes_after_detection at least 60 and
---   decided_after_a_cycle true (the human-first window: the agent records A at one :11 and decides it at the next, so the decision is at least
---   one cycle after detection).
-SELECT d.sector_id, p.decision, p.decided_by, p.jedi_ids, p.starship_id, p.decided_at, d.detected_at,
+-- (p7-2) A'S DECISION. Expect: 1 row; decision 'deploy', decided_by 'yoda_agent', jedi_includes_x true, minutes_after_onset at least 60 and
+--   decided_after_a_cycle true (the human-first window: the agent decides A at least 30 minutes after it first sees it, which with Job 1 every
+--   2 hours is two hours later, so the decision is well over an hour after the onset scan). The time is measured from the incident's onset scan
+--   (disturbance.scan_id, whose gold_sector_reading row gives its event_time), not from detected_at, which advances while an incident continues.
+SELECT d.sector_id, p.decision, p.decided_by, p.jedi_ids, p.starship_id, p.decided_at, d.detected_at, r.event_time AS onset_scan_time,
        array_contains(p.jedi_ids, '<jedi_x>') AS jedi_includes_x,
-       timestampdiff(MINUTE, d.detected_at, p.decided_at) AS minutes_after_detection,
-       p.decided_at >= d.detected_at + INTERVAL 1 HOUR AS decided_after_a_cycle
+       timestampdiff(MINUTE, r.event_time, p.decided_at) AS minutes_after_onset,
+       p.decided_at >= r.event_time + INTERVAL 60 MINUTE AS decided_after_a_cycle
 FROM force.gold.gold_disturbance d
 JOIN force.gold.deployment p ON p.disturbance_id = d.disturbance_id
+LEFT JOIN force.gold.gold_sector_reading r ON r.sector_id = d.sector_id AND r.scan_id = d.scan_id AND r.source_type = 'probe'
 WHERE d.sector_id = '<sector_a>'
   AND d.detected_at >= TIMESTAMP '<t0_utc>'
 ORDER BY p.decided_at;

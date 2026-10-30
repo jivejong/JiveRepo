@@ -99,18 +99,22 @@ def check_deploy(incident, jedi_ids, starship_id, jedi_by_id, ships_by_id, state
         reasons.append("duplicate_jedi")
     if len(distinct) > MAX_PARTY:
         reasons.append("party_too_large")
-    if any(j not in jedi_by_id or j in state.open_jedi_ids for j in distinct):
+    party_unavailable = any(j not in jedi_by_id or j in state.open_jedi_ids for j in distinct)
+    if party_unavailable:
         reasons.append("jedi_unavailable")
     if starship_id not in ships_by_id or starship_id in state.open_starship_ids:
         reasons.append("starship_unavailable")
     if state.open_deployment_count >= MAX_CONCURRENT_DEPLOYMENTS:
         reasons.append("deployment_capacity_reached")
-    if incident.severity > MASTER_SEVERITY and not any(_rank(j) >= MASTER_RANK for j in known):
-        reasons.append("insufficient_rank")
-    if incident.signature != "unclassified":
-        wanted = SPECIALTY[incident.signature]
-        if not any(wanted in (j.primary_specialty, j.secondary_specialty) for j in known):
-            reasons.append("specialty_mismatch")
+    # An unknown or unavailable Jedi is missing from `known`, so rank and specialty would be judged on a smaller party than the one asked
+    # for (a council member who is already deployed read as "no master"). Those two checks wait until the party is available.
+    if not party_unavailable:
+        if incident.severity > MASTER_SEVERITY and not any(_rank(j) >= MASTER_RANK for j in known):
+            reasons.append("insufficient_rank")
+        if incident.signature != "unclassified":
+            wanted = SPECIALTY[incident.signature]
+            if not any(wanted in (j.primary_specialty, j.secondary_specialty) for j in known):
+                reasons.append("specialty_mismatch")
     ship = ships_by_id.get(starship_id)
     if ship is not None and len(distinct) > ship.crew + ship.passengers:
         reasons.append("insufficient_capacity")
