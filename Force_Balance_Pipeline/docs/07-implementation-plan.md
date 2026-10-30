@@ -321,7 +321,7 @@ different planet and confirm the constraint layer rejects an already-deployed Je
 a GIF.
 
 **Checkpoint status: passed (2026-10-29).** The agent decided two real incidents (geonosis `sith_presence` and kamino `force_drain`) at 02:11Z, one cycle after it first saw them at 01:11Z, and a manual deploy to alderaan naming kamino's plo_koon was rejected at 02:14Z (`jedi_unavailable`, among five reasons) and wrote nothing.
-The GIF was recorded by Jong and its location is still to be added; the evidence, the explanation of the five reasons and three follow-ups are in `docs/ENGINEERING-LOG.md`, "Round 13c".
+Jong recorded the GIF and confirmed the planet shift from it (2026-10-29), so every part of the checkpoint passed; the evidence, the explanation of the five reasons and three follow-ups are in `docs/ENGINEERING-LOG.md`, "Round 13c".
 
 **Decisions:** doc 01 D4 (amended), doc 05 "Serving (Phase 7)", doc 06 "User-initiated deployment" and "Re-escalation".
 
