@@ -518,7 +518,7 @@ only if it becomes slow.
 Free Edition allows 5 concurrent job tasks. **Sequential tasks within one job do not count
 against that limit concurrently**, so a four-task linear job is well within budget.
 
-### Job 1 — `force_pipeline` (every hour, offset +3 from scan)
+### Job 1 — `force_pipeline` (every 2 hours, offset +3 from scan)
 
 | Task              | Type                                                                          | Depends on      |
 | ----------------- | -------------------------------------------------------------------------------- | --------------- |
@@ -548,6 +548,8 @@ Going hourly (Stage 4c) halves the run count again, bringing cumulative transfor
 at observed per-run durations — real margin under the inferred budget. Still **provisional**: the scan cycle
 itself stays 15 minutes unchanged, so an hourly run now processes roughly four scans' worth of new rows instead
 of one.
+
+**Changed 60 -> 120 min, Phase 7 (2026-10-29):** quota blocks continued after the agent and the pull moved into Job 1's warm window (Phase 7 Round 13b's report); no simple budget rule fits the block start times, so the warehouse footprint was halved for margin. Job 1 runs at :03 on even UTC hours (cron `0 3 0/2 * * ?`, which skips 03:03 by construction); a scan is detected within at most about 2 h.
 
 `publish_serving` is not a Job 1 task. Databricks serverless cannot reach the desktop, so it runs locally as `ForceServe` (see "Serving (Phase 7)").
 
@@ -722,7 +724,7 @@ That's a deliberate property: someone reading the repo sees the actual productio
 
 ### Serving (Phase 7)
 
-- `ForceServe` scheduled task: hourly at :12 UTC; it first waits for `logs\agent.lock` to be free (up to 10 minutes), so the pull follows the agent's cycle while the warehouse is still on; skips the 03:xx UTC hour, `IgnoreNew`, runs `serving/` from the working tree with `serving\.venv` (its own venv; `edge/requirements.txt` is also installed on the Pi, so serving dependencies stay out of it), lock `logs\serve.lock`. Registered with `infra/desktop/register-serve-task.ps1`.
+- `ForceServe` scheduled task: hourly at :12 UTC (its gate skips the odd hours at 0 statements, because Job 1 runs every 2 hours); it first waits for `logs\agent.lock` to be free (up to 10 minutes), so the pull follows the agent's cycle while the warehouse is still on; skips the 03:xx UTC hour, `IgnoreNew`, runs `serving/` from the working tree with `serving\.venv` (its own venv; `edge/requirements.txt` is also installed on the Pi, so serving dependencies stay out of it), lock `logs\serve.lock`. Registered with `infra/desktop/register-serve-task.ps1`.
 - Gate: it asks the Jobs API for Job 1's latest successful run (free) and pulls only when that run is newer than the last publish's.
 - Reads, all read-only SELECTs: incremental with upsert on `event_id` and 30 days kept in Postgres (the first run backfills 7): `gold_sector_reading` (watermark `_gold_built_at`), `silver_probe_reading` lag columns and `silver_rejects` (watermark `arrival_ts`). Full pulls each run: `gold_disturbance` (the daily baseline rebuild re-scores it), `gold.deployment`, `gold_sector_baseline`, the dim tables, and `silver_source_health` (one snapshot kept per publish, so the panel has history). Aggregations (ingest lag histogram, rejection rate) are Postgres views.
 - Results larger than one chunk are fetched through the Statement API's result-chunk endpoint, through `files_api.http_request`; `agent/dbsql.py` is not changed.
@@ -1214,7 +1216,7 @@ Python verifies TLS with VERIFY_X509_PARTIAL_CHAIN (2026-10-27): a duplicate cro
 | Signal | What it says | Sent by | Ping | Check | Period | Grace | Alert after |
 |---|---|---|---|---|---|---|---|
 | **S1** | the bridge is alive and connected | `bridge.py` (`monitor.py`) | every 5 min while `client.is_connected()`, data or not | `fbp-s1-bridge-alive` | 5 min | 25 min | 30 min of silence |
-| **S2** | Job 1 is running and succeeding | Databricks, on each successful Job 1 run (design below) | once per success | `fbp-s2-job1-success` | 1 h | 1 h | 2 h of silence |
+| **S2** | Job 1 is running and succeeding | Databricks, on each successful Job 1 run (design below) | once per success | `fbp-s2-job1-success` | 2 h | 1 h | 3 h of silence |
 | **S3** | data is landing | `bridge.py` (`monitor.py`) | after an upload that landed at least 1 line, at most one per 5 min | `fbp-s3-data-landed` | 15 min | 3 h 45 min | 4 h of silence |
 | **S4** | the Yoda agent cycle ran, or skipped on purpose | `agent/run.py` (Phase 6) | at the end of every cycle, skipped cycles included; `/fail` on a crash | `fbp-s4-agent` | 1 h | 2 h | 3 h of silence |
 | **S5** | the `ForceServe` puller ran, or was gated on purpose (Phase 7) | `serving/` | at the end of every run, a gated no-op run included; `/fail` on an error | `fbp-s5-serving` | 1 h | 2 h | 3 h of silence |
@@ -1222,7 +1224,7 @@ Python verifies TLS with VERIFY_X509_PARTIAL_CHAIN (2026-10-27): a duplicate cro
 
 "Grace" here is the Healthchecks.io grace time and the alert comes after period plus grace, i.e. **total silence** (decision, Q-B1).
 
-**S4 (Phase 6).** The agent runs hourly at :11 (the `ForceAgent` task), so its check has a period of 1 hour and a grace of 2 hours. Every cycle pings it, including a cycle that skips the 03:xx UTC hour or an active Job 1 run, because a skipped cycle means the agent is alive; a crashed cycle pings the `/fail` URL. The URL is `AGENT_PING_S4_URL` in `.env.agent`. The check is created by hand when the task is registered (Phase 6 R6b).
+**S4 (Phase 6).** The agent runs hourly at :11 (the `ForceAgent` task), so its check has a period of 1 hour and a grace of 2 hours. Every cycle pings it, including a cycle that skips the 03:xx UTC hour or an active Job 1 run, or ends because Job 1 has no new run (0 statements), because a skipped cycle means the agent is alive; a crashed cycle pings the `/fail` URL. The URL is `AGENT_PING_S4_URL` in `.env.agent`. The check is created by hand when the task is registered (Phase 6 R6b).
 
 **S5 (Phase 7).** `ForceServe` runs hourly at :12 UTC, so `fbp-s5-serving` has a period of 1 hour and a grace of 2 hours. Every run pings it, including a run gated because Job 1 has no newer successful run; an error pings `/fail`.
 
@@ -1253,10 +1255,10 @@ Python verifies TLS with VERIFY_X509_PARTIAL_CHAIN (2026-10-27): a duplicate cro
   and the bridge was connected again at 18:04:40Z, 13 min 56 s later, because Docker Desktop took about 12.5 minutes to start.
   30 minutes covers that with a margin and still catches a bridge, desktop or broker that stays down. S1 stops when the MQTT client is
   disconnected, so it also fires when the broker or Docker is down even though the bridge process is up.
-- *S2, 2 hours.* Job 1 runs hourly at :03 (cron `0 3 * * * ?`), takes about 6 minutes normally (median transform 338–358 s observed)
-  and up to about 18–20 minutes after a backlog, with a 40-minute task timeout. A period of 1 h plus 1 h grace alerts after two
-  consecutive hourly runs fail to succeed, so one slow or late run never alerts. Quota exhaustion, where no run is created for
-  hours, alerts within 2 hours.
+- *S2, 3 hours (period 2 h, grace 1 h since Phase 7 Round 14).* Job 1 runs every 2 hours at :03 on even UTC hours (cron `0 3 0/2 * * ?`), takes about 6 minutes normally (median transform 338–358 s observed)
+  and up to about 18–20 minutes after a backlog, with a 40-minute task timeout. A period of 2 h plus 1 h grace alerts when a scheduled run has not succeeded an hour after it was due, so a slow run (up to
+  about 20 minutes) never alerts but one missed or failed run does. Quota exhaustion, where no run is created for
+  hours, alerts within 3 hours.
 - *S3, 4 hours.* Scans are every 15 minutes (hourly in STEALTH), but the probe's scheduled DISCONNECTED windows last 1–3 hours
   (`edge/probe/modes.py:55`, `min_hours=1.0, max_hours=3.0`), two a day, one per half of the UTC day, and nothing lands during one;
   its buffer arrives as a BURST when it ends. So the longest normal silence is about 3 hours plus up to one scan interval, under 4.
@@ -1348,7 +1350,7 @@ Databricks sends the email itself, so the compute needs no outbound access and n
 
 **Setting Healthchecks.io up** (the order matters; the 2026-10-11 outage test found the third step missing).
 1. *Create the four checks* with the periods and grace times in the table: `fbp-s1-bridge-alive` (5 min / 25 min),
-   `fbp-s2-job1-success` (1 h / 1 h), `fbp-s3-data-landed` (15 min / 3 h 45 min) and the test check `fbp-test` (1 min / 1 min). Copy each
+   `fbp-s2-job1-success` (2 h / 1 h since 2026-10-29; first created as 1 h / 1 h), `fbp-s3-data-landed` (15 min / 3 h 45 min) and the test check `fbp-test` (1 min / 1 min). Copy each
    check's ping URL (S1, S3) or Email-tab address (S2, `fbp-test`) from the check itself.
 2. *Confirm the account's Email integration:* open the confirmation email Healthchecks sent and follow its link. An unconfirmed
    integration sends nothing.
@@ -1726,6 +1728,8 @@ python edge/probe_ctl.py --host <DESKTOP_IP> inject kamino force_drain
 | (H+2):12 | A's deployment and B's incident are on the dashboard |
 | (H+2):13 to (H+3):10 | **the manual-reject window**: A's Jedi are deployed and B is open and undecided |
 | (H+3):11 | the agent decides B |
+
+With Job 1 every 2 hours: inject A at :02 to :10 past an odd UTC hour H (it builds at H+1:03), and B two hours later at H+2:02 to :10 (it builds at H+3:03); the manual-reject window is H+3:13 to H+4:10. About 4 h 10 min in total. The table above is the hourly-Job-1 timeline; with the 2-hourly Job 1 read its Job 1 times (:03 builds) as the next even hour.
 
 Deviation note (2026-10-29): this table was written for T0 = H:20 and B injected at (H+1):20. The first checkpoint run injected B in the same hour as A and both were decided together at 02:11Z, so the table is now read as offsets from T0 with A and B an hour apart, as step 1 says.
 
