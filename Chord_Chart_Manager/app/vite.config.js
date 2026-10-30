@@ -7,10 +7,20 @@ import { fileURLToPath } from "node:url";
 const sharedParserPath = fileURLToPath(new URL("./server/chartParser.js", import.meta.url));
 const sharedParserId = "\0shared-chart-parser";
 
+const commonJsBranch =
+  /  if \(typeof module === "object" && module\.exports\) module\.exports = factory\(\);\r?\n  else root\.ChartParser = factory\(\);/;
+
 // Serve and build the same parser source Express requires. For the browser
 // entry, remove only the CommonJS branch so Vite does not wrap the entire app
 // in the parser's lazy module factory; the parser still initializes the UMD
 // browser global consumed by src/lib/chartParser.js.
+export function bridgeSharedParserSource(source) {
+  if (!commonJsBranch.test(source)) {
+    throw new Error("shared-chart-parser: the UMD header in server/chartParser.js changed; update vite.config.js");
+  }
+  return source.replace(commonJsBranch, "  root.ChartParser = factory();");
+}
+
 function sharedChartParser() {
   return {
     name: "shared-chart-parser",
@@ -20,10 +30,7 @@ function sharedChartParser() {
     },
     load(id) {
       if (id === sharedParserId) {
-        return fs.readFileSync(sharedParserPath, "utf8").replace(
-          '  if (typeof module === "object" && module.exports) module.exports = factory();\n  else root.ChartParser = factory();',
-          "  root.ChartParser = factory();",
-        );
+        return bridgeSharedParserSource(fs.readFileSync(sharedParserPath, "utf8"));
       }
       return null;
     },
