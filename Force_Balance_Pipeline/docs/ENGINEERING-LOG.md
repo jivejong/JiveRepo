@@ -2627,6 +2627,24 @@ First mirror push and ci run: all six jobs green (2026-11-16).
 
 **Tests.** Scripts 10 OK, `make check-dbt` 12/5/121/81/2, ingest 388 OK (it reads doc 05).
 
+**Commits:** A `920cb06`, B `ad7f5bd`.
+
+### Round 6 (2026-11-16): README, LICENSE and the language bar
+
+**README.** Rewritten (212 lines, ASCII) in the prescribed order: title with the ci, docs and license badges and the core claim; "See it run" (the demo-video placeholder comment for Jong and the dbt docs link); "Architecture" (a Mermaid `flowchart LR`, 20 nodes in 5 subgraphs, 25 ids in all; the dashed S1 to S5 edges to Healthchecks); "What it demonstrates" (outage survival, an agent behind hard constraints, operating inside Free Edition limits, testing discipline); "Quickstart (no cloud account needed)"; "Repository map"; "Documentation" (docs 00 to 08 and this log); "How this repository is developed"; "License". The AI-use paragraph was omitted (AI-USE: no). The SWAPI attribution and the Lucasfilm trademark line from the old README sit under "License". The old README's status table (it still said Phase 3 of 8 and that the Makefile targets were stubs), the signatures and channels tables and the stack table were dropped.
+
+**Fact-source check.** 55 facts in the README (cadences, counts, thresholds, dates, measured numbers) were traced to a file and line in docs 00 to 06, `agent/constraints.py`, `agent/distance.py`, `resources/force_pipeline.job.yml`, `scripts/check_dbt_manifest.py`, the Makefile or this log; none was missing. Where the docs and the log differ the README follows the log: docs 00 and 01 (and the "Stack at a glance" table at the top of this log) still place the bridge, Postgres and agent on a GCP e2-micro or Cloud Run, while Phases 6 and 7 run them on the desktop (the agent as the `ForceAgent` task, Postgres in Docker). Gaps, so the README says less: no log entry checks for gaps across a Free Edition quota block, so the README says a stopped Job 1 means a delay "by design", not "proven"; docs 00 and 01 describe 2 to 3% fault injection but the deployed probe ran with faults at 0 (log, Phase 3 "Today"), so the README makes no fault-injection claim; no cloud outage was injected on purpose, the cloud stoppages were Free Edition quota blocks and the 2026-11-03 to 11-16 inactivity stop.
+
+**Checks.** All 27 relative links resolve to files in the tree (`LICENSE` is untracked until the commit). The Mermaid block was counted by id. The README has no RFC 1918 address, `azuredatabricks`, `cloud.databricks`, `hc-ping`, `@` or `dapi`; the only addresses are 127.0.0.1 (the demo's 8082 and 5434 and the serving Postgres on 5433).
+
+**`.gitattributes`.** Appended under the comment "Language bar: count dbt models and checkpoint queries (SQL is a data language in Linguist)": `*.sql text eol=lf linguist-detectable=true` and `data/** linguist-generated=true`. The first line was specified as `*.sql linguist-detectable=true`; `edge/tests/test_repo_hygiene.py` keeps one rule per pattern (the last wins) and requires `text` and `eol=lf` on `*.sql`, so the plain line failed that test; Git merges attributes from every matching line, so the longer line gives the same result.
+
+**LICENSE.** A byte-for-byte copy of the repo-root `LICENSE`; both have SHA-256 `731ba3f4aa9f5a882c487ca43ea5e55f9d9d0212db39ff1a52e9dc47a10b466c`.
+
+Mirror About set by Jong: description, website (dbt docs) and 20 topics.
+
+**Tests.** Baseline: ingest 388, edge 553 (1 skipped), scripts 10. After: the same. The first edge run after the `.gitattributes` append had one failure (`test_every_pattern_is_text_eol_lf`, pattern `*.sql`), fixed as above.
+
 **Commits:** listed in the next round.
 
 ## Open items
