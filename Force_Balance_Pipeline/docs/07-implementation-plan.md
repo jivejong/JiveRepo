@@ -348,6 +348,20 @@ Jong recorded the GIF and confirmed the planet shift from it (2026-10-29), so ev
 **Checkpoint:** clone into a fresh directory, run `make demo`, reach a working dashboard without
 editing a file.
 
+**Deviations (2026-11-16).** Items 1-3 apply to the mirror repo jivejong/Force_Balance_Pipeline (P8-1); JiveRepo keeps portfolio-wide settings. Item 4: the dashboard visual is cut from Jong's MP4 recordings. Item 5: dbt docs without a catalog, from the mirror (P8-4). Item 6: CI runs on push and pull requests in the mirror (development commits go straight to main) and runs dbt parse with a manifest check instead of dbt build --target local (P8-3). Item 7: make demo per P8-2, with its own ports and container so a clean clone on the development desktop cannot touch live data.
+
+### Phase 8 decisions (2026-11-16)
+
+Doc 08 is the enrichment spec, not a decision record, so the Phase 8 decisions are kept here.
+
+**P8-1 Repo home.** Development stays in JiveRepo under `Force_Balance_Pipeline/`. A one-way mirror, `jivejong/Force_Balance_Pipeline`, receives `git subtree split --prefix=Force_Balance_Pipeline` on every push to JiveRepo main, from the root `.github/workflows/mirror.yml` with the deploy-key secret `FORCE_BALANCE_PIPELINE_MIRROR_KEY`. The mirror carries the project's description, topics, language bar, CI and GitHub Pages; issues and pull requests are disabled on it. Mirror SHAs differ from JiveRepo's; every SHA in this project's docs refers to JiveRepo. The Jobs' `git_url`, `infra/pi/deploy.sh` and the User-Agent keep pointing at JiveRepo.
+
+**P8-2 make demo.** `make demo` runs `scripts/demo.py` (Python standard library only), so the same recipe works with make on Windows and on Linux. The demo uses its own Docker Compose project `fbp-demo`, container `fbp-demo-postgres`, volume `fbp-demo-data`, a password generated into `.env.demo` (ignored), Postgres on 127.0.0.1:5434, the display fixtures loaded into database `force_serving_demo`, `npm ci` and `npm run build` in `dashboard`, and the backend on 127.0.0.1:8082. Deploy is off (the fixture rows already disable it). It never reads `.env.agent` or `.env.serving`, never touches `force-postgres` (5433) or the live backend (8081), and makes no warehouse, Gemini or MQTT call. Prerequisites: Docker, Python 3.10 or later, Node 24, make.
+
+**P8-3 CI.** `Force_Balance_Pipeline/.github/workflows/ci.yml` runs only in the mirror (GitHub ignores it in JiveRepo), on push to main, pull_request and workflow_dispatch. Job `linux` (ubuntu-latest): the agent, edge, ingest and intake Python suites; the serving suite against a `postgres:17` service container with a `.env.serving` generated in the job from dummy values; the intake node and dashboard node suites; `npm run build`; `dbt parse` with dummy environment values and a check that the manifest has 12 models, 5 seeds, 121 tests, 81 unit tests and 2 sources. Job `windows` (windows-latest): the three Pester files. CI holds no secrets and reaches no warehouse, Gemini, broker or Pi. `make test-agent`, `make test-intake` and `make test` run the same commands locally. This replaces `dbt build --target local`: the dbt project's Postgres branch stays unbuilt (out of scope for Phase 8).
+
+**P8-4 dbt docs.** `dbt docs generate --no-compile --empty-catalog` with dummy environment values, published from the mirror to GitHub Pages by `actions/deploy-pages` on push to main. The site shows models, lineage, tests and descriptions, not warehouse column types. If generation needs a live connection, the step is dropped and this doc says so.
+
 ---
 
 ## Ordering

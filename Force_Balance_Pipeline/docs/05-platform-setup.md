@@ -1080,7 +1080,7 @@ code 1 if the broker was not reachable at start, and the broker container came u
 | Property | Setting | Why |
 |---|---|---|
 | Interpreter | `edge\.venv\Scripts\pythonw.exe` | No console window to close by mistake. `pythonw.exe` has no stdout or stderr, so the bridge writes its own log file (below) |
-| Triggers | the logon of the current user (`-AtLogOn -User DOMAIN\name`), and a repetition every 5 minutes with no end | The logon trigger starts it; the repetition restarts it if it ever exits. The task's `RestartCount` (999, a minute apart) only covers a failure to *start* the process, not one that starts and later exits |
+| Triggers | a logon trigger for the current user (`-AtLogOn -User DOMAIN\name`), plus a separate time trigger repeating every 5 minutes (`PT5M`, no end) | The logon trigger starts it; the repetition restarts it if it ever exits. The task's `RestartCount` (999, a minute apart) only covers a failure to *start* the process, not one that starts and later exits |
 | Overlap | `MultipleInstances = IgnoreNew` | A repetition tick while the bridge is running does nothing |
 | Missed ticks | `StartWhenAvailable = True` | A tick missed while the machine was off or asleep runs when it is back |
 | Time limit | none (`ExecutionTimeLimit` 0) | The bridge is meant to run for weeks |
