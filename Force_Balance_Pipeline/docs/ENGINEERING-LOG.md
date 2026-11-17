@@ -2593,6 +2593,22 @@ The commit messages after `35030c6` (47 commits) were rewritten with `git filter
 
 **Tests.** Baseline before the first edit: serving 190, scripts none. After: serving 190, scripts 6.
 
+**Commits:** A `90467f2`, B `f19fede`.
+
+### Round 4 (2026-11-16): Make test targets, CI and the mirror line
+
+**Decision.** P8-3 (doc 07). `ci.yml` is in `Force_Balance_Pipeline/.github/workflows/` and runs only in the `jivejong/Force_Balance_Pipeline` mirror; `mirror.yml` gets a second matrix entry (dir and repo `Force_Balance_Pipeline`, secret `FORCE_BALANCE_PIPELINE_MIRROR_KEY`).
+
+**Make targets.** `test-agent`, `test-edge`, `test-ingest`, `test-intake`, `test-scripts`, `test-serving`, `test-node`, `test-dashboard`, `check-dbt` and `test` (the first seven, in that order). `PYTHON`, `SERVING_PYTHON` and `DBT` now have Windows and Linux defaults and can be overridden; `PYTHON` was already the edge venv and its Windows value is unchanged. `test-intake` now runs only the Python suite (its `node --test` line moved to `test-node`, which `test` also runs). `make` here uses Git's `sh.exe`; the recipes are single commands or `cd x && y`, and `test-scripts` and `test-node` were also run with `SHELL=cmd.exe` and passed. `check-dbt` exports its dummy variables with target-specific `export`. `demo`, `demo-down` and `demo-clean` are unchanged.
+
+**Manifest check.** `scripts/check_dbt_manifest.py` expects 12 models, 5 seeds, 121 tests, 81 unit tests (from the manifest's `unit_tests` section) and 2 sources; the real manifest matches. `scripts/tests/test_check_dbt_manifest.py` has 4 tests (the prompt named 3; the fourth covers an unreadable manifest). Mutations on a copy outside the repo, each an assertion FAIL with no ERROR: counting models as tests, `EXPECTED` models 11, reading unit tests from `nodes`.
+
+**ci.yml.** Jobs `python`, `serving`, `node`, `dbt`, `demo` (after `node`) and `pester` (windows). Actions: `actions/checkout@v7` (as `batcave-ids.yml`), `actions/setup-python@v7` and `actions/setup-node@v7`; the releases pages show v7.1.0 as the latest of each (the pages do not list floating major tags, so `v7` is assumed to exist). Python 3.10 (the venvs' version), Node 24, Pester pinned to 3.4.0 because the tests use `Should Be`. The serving job writes a `.env.serving` with dummy values and no ping URL; only `POSTGRES_PASSWORD` is required by `load_env`.
+
+**Pre-flight** (a throwaway export of `HEAD` plus this round's files, in containers, deleted afterwards). actionlint: ci.yml had one shellcheck warning (SC2034, an unused loop variable), fixed; mirror.yml clean before and after the new entry. `python:3.10-bookworm`: agent 573, edge 553 (1 skipped), ingest 388 (1 skipped: the Windows-only rename test), intake 384, scripts 10. The same image with the dbt requirements (dbt-core 1.10.13, dbt-databricks 1.9.8) and the example profile: `check-dbt` 12/5/121/81/2. `node:24-bookworm`: `test-node` 205; `npm ci`; `test-dashboard` 47. One Linux finding, fixed: on a fresh checkout the dashboard's 3 "built page" tests do not exist until `dist/` does, so `npm test` before `npm run build` ran 44; `test-dashboard` now builds first. Serving, demo and Pester were not run before the mirror.
+
+**Tests (Windows).** Baseline: agent 573, edge 553 (1 skipped), ingest 388, intake 384, serving 190, scripts 6, intake node 205, dashboard 47, Pester 72, dbt parse 12/5/121/81/2. After: the same, with scripts 10. The serving suite once reported 1 error in a run that overlapped the edge suite (output not captured); two reruns and `make test` were 190 OK.
+
 **Commits:** listed in the next round.
 
 ## Open items

@@ -750,6 +750,38 @@ Doc 07, Phase 8 decision P8-2. The dashboard on the display fixtures, with no wa
 - The serving command-line entry points are not used: they are fixed to the live database and read `.env.serving`. The demo calls the same functions (`schema.recreate`, `views.apply`, `fixtures.load`, `server.make_server`) with its own connection.
 - Isolation rule: the demo never touches the live Postgres container, ports 5433, 8081 or 1883, `.env.agent` or `.env.serving`, and the child processes run without any `DATABRICKS_`, `GEMINI_`, `AGENT_`, `SERVING_PING` or `BUNDLE_` variable. `scripts/tests/test_demo.py` enforces it (run `edge\.venv\Scripts\python.exe -m unittest discover -s scripts/tests` from `Force_Balance_Pipeline`).
 
+### CI (GitHub Actions)
+
+Doc 07, Phase 8 decision P8-3. `.github/workflows/ci.yml` lives in this project folder. GitHub reads workflows only from the root `.github/workflows/` of a repository, so in JiveRepo the file is ignored; it runs in the `jivejong/Force_Balance_Pipeline` mirror (`.github/workflows/mirror.yml` in JiveRepo copies this folder there, where it becomes the root). Every path in `ci.yml` is therefore relative to `Force_Balance_Pipeline`. It runs on push to `main`, on pull requests and on demand, with `contents: read` and one run per ref (a newer push cancels the older run).
+
+The jobs (each has a 20-minute limit):
+
+| Job | Runner | What it runs |
+|---|---|---|
+| `python` | ubuntu | Python 3.10, `pip install -r edge/requirements.txt` (paho-mqtt; agent, ingest and intake need nothing else), then `make PYTHON=python test-agent test-edge test-ingest test-intake test-scripts` |
+| `serving` | ubuntu | a `postgres:17` service container (user and database `force_serving`, published on 127.0.0.1:5433, health-checked), `pip install -r serving/requirements.txt`, a dummy `.env.serving`, then `make SERVING_PYTHON=python test-serving` (the tests create `force_serving_test` themselves) |
+| `node` | ubuntu | Node 24: `make test-node` (the intake page), `npm ci` in `dashboard`, then `make test-dashboard` (build, then the dashboard tests) |
+| `dbt` | ubuntu | Python 3.10, `pip install -r warehouse/dbt/requirements.txt`, `profiles.yml.example` copied to a temporary profiles directory, `dbt deps` only if a `packages.yml` exists, then `make check-dbt` |
+| `demo` | ubuntu, after `node` | `make demo` in the background, polling `http://127.0.0.1:8082/api/meta` every 5 s for up to 5 minutes; it fails unless the answer is 200 and `deploy_enabled` is false, prints the demo log on failure, and always runs `make demo-clean` |
+| `pester` | windows | Pester 3.4.0 (the tests use the `Should Be` syntax of Pester 3, so the version is pinned) over the three `infra/desktop/*.Tests.ps1` files; any failed test fails the job |
+
+Make targets (run from `Force_Balance_Pipeline`): `test-agent`, `test-edge`, `test-ingest`, `test-intake`, `test-scripts` (each `$(PYTHON) -m unittest discover -s <folder>/tests`), `test-serving` (the same with `$(SERVING_PYTHON)`; it needs the local serving Postgres on 127.0.0.1:5433 and `.env.serving`), `test-node` (`node --test intake/web/tests/*.test.js`), `test-dashboard` (`npm run build`, then `npm test`, in `dashboard`; it needs `npm ci` first, and it builds first because the "built page" tests exist only when `dashboard/dist` does), `check-dbt` and `test`, which runs the first seven in that order (not `test-dashboard` or `check-dbt`).
+
+| Variable | Local default (Windows / Linux) | CI override |
+|---|---|---|
+| `PYTHON` | `edge/.venv/Scripts/python.exe` / `edge/.venv/bin/python` | `python` |
+| `SERVING_PYTHON` | `serving/.venv/Scripts/python.exe` / `serving/.venv/bin/python` | `python` |
+| `DBT` | `warehouse/dbt/.venv/Scripts/dbt.exe` / `warehouse/dbt/.venv/bin/dbt` | `dbt` |
+| `DBT_PROFILES_DIR` | `warehouse/dbt` | a temporary directory holding `profiles.yml.example` as `profiles.yml` |
+| `NODE` | `node` | not set |
+| `DEMO_PYTHON` | `python` / `python3` | `python3` |
+
+The recipes are single commands, or `cd dashboard && ...`, which both `sh` and `cmd` run. `check-dbt` exports the dummy `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN` and `POSTGRES_PASSWORD` for its own recipe only.
+
+What CI never touches: it holds no secret (the only values are dummies and a throwaway database password inside the job), and it makes no warehouse, Databricks API, Gemini, MQTT broker or Pi connection. The `serving` and `demo` jobs use containers that exist only for the run.
+
+The manifest check: `dbt parse` writes `warehouse/dbt/target/manifest.json`, and `scripts/check_dbt_manifest.py` counts its resources and exits 1, naming each mismatch, unless they equal 12 models, 5 seeds, 121 tests, 81 unit tests (the manifest's `unit_tests` section) and 2 sources. When the project legitimately gains or loses a resource, change `EXPECTED` in that script in the same commit. The first run of `serving`, `demo` and `pester` happens in the mirror: they were not run on Linux or in Actions beforehand.
+
 ---
 
 ## Phase 3 staging: the desktop broker and the Pi
