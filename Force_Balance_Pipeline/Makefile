@@ -1,6 +1,6 @@
 # seed and inject are stubs: each is implemented in the phase noted and fails loudly until then, so nothing mistakes a stub for a passing check.
 
-.PHONY: demo demo-down demo-clean seed inject test test-agent test-edge test-ingest test-intake test-scripts test-serving test-node test-dashboard check-dbt
+.PHONY: demo demo-down demo-clean seed inject test test-agent test-edge test-ingest test-intake test-scripts test-serving test-node test-dashboard check-dbt docs-dbt
 
 # make demo: the dashboard on display fixtures in an isolated Postgres (127.0.0.1:5434) and backend (127.0.0.1:8082), doc 07 P8-2.
 # DEMO_PYTHON is separate from PYTHON below, which is the edge venv used by test-intake.
@@ -75,6 +75,18 @@ check-dbt: export POSTGRES_PASSWORD = dummy
 check-dbt:
 	$(DBT) parse --project-dir warehouse/dbt --profiles-dir $(DBT_PROFILES_DIR)
 	$(PYTHON) scripts/check_dbt_manifest.py
+
+# The static dbt docs page (docs.yml publishes warehouse/dbt/target/static_index.html). dbt parse runs first, with the prod target:
+# `docs generate --no-compile` does not parse into manifest.json itself, it embeds whatever manifest.json is already in target/
+# (a stale dev one would publish the dev schema name). --empty-catalog: no warehouse connection, so no column types.
+# The credential values are distinctive on purpose: docs.yml fails if any of the four appears in the page (keep the two in sync).
+docs-dbt: export DATABRICKS_HOST = dummy.example.invalid
+docs-dbt: export DATABRICKS_HTTP_PATH = /sql/1.0/warehouses/dummy
+docs-dbt: export DATABRICKS_TOKEN = fbp-docs-dummy-token
+docs-dbt: export POSTGRES_PASSWORD = fbp-docs-dummy-password
+docs-dbt:
+	$(DBT) parse --project-dir warehouse/dbt --profiles-dir $(DBT_PROFILES_DIR) --target prod
+	$(DBT) docs generate --project-dir warehouse/dbt --profiles-dir $(DBT_PROFILES_DIR) --target prod --no-compile --empty-catalog --static
 
 # Usage: make inject SIGNATURE=sith_presence PLANET=coruscant
 inject:

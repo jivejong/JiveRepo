@@ -1,0 +1,77 @@
+# dbt docs to GitHub Pages (doc 07 P8-4; doc 05 "CI (GitHub Actions)").
+# Like ci.yml, this runs only in the jivejong/Force_Balance_Pipeline mirror (GitHub reads workflows from a repository's root
+# .github/workflows/ only, so in JiveRepo the file is ignored); every path is relative to the Force_Balance_Pipeline folder.
+# It needs Settings > Pages > Source: GitHub Actions in the mirror. `make docs-dbt` builds the single-file static page with no
+# warehouse connection (dbt parse, then docs generate --no-compile --empty-catalog --static, dummy credentials). Only that
+# page is published: no manifest.json and no catalog.json.
+name: docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: warehouse/dbt/requirements.txt
+      - run: pip install -r warehouse/dbt/requirements.txt
+      - name: Use the example profile
+        run: |
+          mkdir -p "$RUNNER_TEMP/profiles"
+          cp warehouse/dbt/profiles.yml.example "$RUNNER_TEMP/profiles/profiles.yml"
+      - name: dbt deps
+        env:
+          DATABRICKS_HOST: dummy.example.invalid
+          DATABRICKS_HTTP_PATH: /sql/1.0/warehouses/dummy
+          DATABRICKS_TOKEN: fbp-docs-dummy-token
+          POSTGRES_PASSWORD: fbp-docs-dummy-password
+        run: |
+          if [ -f warehouse/dbt/packages.yml ]; then
+            dbt deps --project-dir warehouse/dbt --profiles-dir "$RUNNER_TEMP/profiles"
+          fi
+      - run: make PYTHON=python DBT=dbt DBT_PROFILES_DIR="$RUNNER_TEMP/profiles" docs-dbt
+      # Publish the static page only, and fail if it holds any of the dummy values docs-dbt sets in the Makefile
+      # (keep the four strings below in sync with it).
+      - name: Stage the static page
+        run: |
+          mkdir -p "$RUNNER_TEMP/site"
+          cp warehouse/dbt/target/static_index.html "$RUNNER_TEMP/site/index.html"
+          for value in dummy.example.invalid /sql/1.0/warehouses/dummy fbp-docs-dummy-token fbp-docs-dummy-password; do
+            if grep -qF -e "$value" "$RUNNER_TEMP/site/index.html"; then
+              echo "ERROR: the static page contains a dummy credential value" >&2
+              exit 1
+            fi
+          done
+          ls -l "$RUNNER_TEMP/site"
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ runner.temp }}/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
