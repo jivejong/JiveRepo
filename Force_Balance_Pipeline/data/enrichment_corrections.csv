@@ -1,0 +1,12 @@
+# Recorded human corrections to reviewed enrichment output (doc 08). Applied at promote time, before
+# the review gate: enrich_planets.py --from-response <file> --write. This file lives outside
+# warehouse/dbt/seeds/ on purpose, because dbt loads every csv in seeds/ as a seed.
+#
+# Rules: only dim_sector rows that were sent to the model, only the *_baseline columns, never the
+# uncharted row. A corrected baseline rescales its sigma to the same percentage of baseline, and the
+# sigma band is re-checked. Every correction needs a reason. Lines starting with # are ignored.
+#
+# Values are lore-based, not threshold minimums.
+seed,key,column,corrected_value,reason
+dim_sector,geonosis,dark_baseline,55,"War-scarred Separatist foundry world, first battle of the Clone Wars, later sterilized by the Empire (a site of atrocity); model placed it at 40, tied with several ordinary worlds."
+dim_sector,utapau,kyber_baseline,80,"Clone Wars Utapau arc: a giant kyber crystal, a major crystal deposit per the prompt's 'very high'; model placed it at 25."

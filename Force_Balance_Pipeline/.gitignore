@@ -51,3 +51,11 @@ Thumbs.db
 
 logs/
 handoffs/
+
+# Phase 8: the repo-root .gitignore has an unanchored `data/` rule that hid this project's data/ (the SWAPI
+# snapshot and enrichment_corrections.csv); re-include it here. Every .env.* file is local config except the
+# committed examples.
+!data/
+.env.*
+!.env.example
+!.env.*.example
