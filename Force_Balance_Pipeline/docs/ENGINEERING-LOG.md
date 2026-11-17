@@ -2627,6 +2627,8 @@ First mirror push and ci run: all six jobs green (2026-11-16).
 
 **Tests.** Scripts 10 OK, `make check-dbt` 12/5/121/81/2, ingest 388 OK (it reads doc 05).
 
+docs.yml runs 1 and 2 failed because the mirror's Pages source was not set; green after Jong set Source: GitHub Actions (2026-11-16).
+
 **Commits:** A `920cb06`, B `ad7f5bd`.
 
 ### Round 6 (2026-11-16): README, LICENSE and the language bar
@@ -2645,7 +2647,7 @@ Mirror About set by Jong: description, website (dbt docs) and 20 topics.
 
 **Tests.** Baseline: ingest 388, edge 553 (1 skipped), scripts 10. After: the same. The first edge run after the `.gitattributes` append had one failure (`test_every_pattern_is_text_eol_lf`, pattern `*.sql`), fixed as above.
 
-**Commits:** listed in the next round.
+**Commits:** A `ae73546`, B `52d598a`.
 
 ## Open items
 
