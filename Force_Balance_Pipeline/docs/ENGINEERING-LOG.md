@@ -2328,7 +2328,7 @@ Also seen: the phone push "up" notification arrived after the TLS fix (Jong). Th
 
 **Statements.** Warehouse: 8 of 8, all read-only SELECTs on prod through `ServingStatementClient`, sent at 14:13Z (p7-1 to p7-5, p7-1 again with geonosis, the open deployments at 02:14:16Z, the agent's available-starships read). Local Postgres reads were free. Gemini: 0. Baseline before any step: agent 555, serving 185, ingest 387, all green. No code was changed.
 
-**Commits:** AH `456fb75`.
+**Commits:** AH `aa38074`.
 
 ### Round 14 (2026-10-29): Job 1 every 2 hours and the agent's poll gate
 
@@ -2350,17 +2350,17 @@ Also seen: the phone push "up" notification arrived after the TLS fix (Jong). Th
 
 **Deploy (Jong, 2026-10-29).** `databricks bundle deploy` first failed with `Refresh token is invalid` after a fresh `auth login --profile DEFAULT`; it worked once the CLI used Jong's email-named profile instead (a conflicting profile). Job 1's 2-hourly schedule was deployed and S2 was changed to period 2 h, grace 1 h (Jong, 2026-10-29).
 
-**Commits:** AI `05bc901`, AJ `df77fb7`.
+**Commits:** AI `cc17ada`, AJ `787dbb5`.
 
 ### Round 15 (2026-10-30): Phase 7 review
 
-A read-only review of everything since the Phase 6 close (`eb2fc86..df77fb7`, 97 files) and of the Phase 7 doc text: correctness, security, concurrency, failure handling, the quota footprint, docs against code, tests and operability. Warehouse 0, Gemini 0; the only network calls were Jobs API GETs. Free checks: Job 1's live schedule is `0 3 0/2 * * ?`, UTC, UNPAUSED; no `gate=no_new_run` line yet (both gated cycles, 23:12Z and 00:11Z, were `new_run`); ForceServe published at every hour from 19:12Z to 00:12Z (7 statements, 10 at 19:12Z with the dims).
+A read-only review of everything since the Phase 6 close (`eb2fc86..787dbb5`, 97 files) and of the Phase 7 doc text: correctness, security, concurrency, failure handling, the quota footprint, docs against code, tests and operability. Warehouse 0, Gemini 0; the only network calls were Jobs API GETs. Free checks: Job 1's live schedule is `0 3 0/2 * * ?`, UTC, UNPAUSED; no `gate=no_new_run` line yet (both gated cycles, 23:12Z and 00:11Z, were `new_run`); ForceServe published at every hour from 19:12Z to 00:12Z (7 statements, 10 at 19:12Z with the dims).
 
 **Findings: 24.** Blocker 0, high 1, medium 5, low 14, nit 4. The high: the manual deploy's accept path has never run live, and a MERGE result without `num_inserted_rows` is reported as success with only a warning. The mediums: with Job 1 every 2 hours every agent decision falls in an odd hour, on a cold warehouse, and is not published until the next even hour; a full refresh of `gold_sector_reading` would make every publish fail on the 50,000-row cap; the rank and specialty cascade (Round 13c); the logon dependency; no read-only principal for the puller, which the shared `.env.serving` token cannot have while the deploy service writes with it.
 
 Report: handoffs/phase-7/review-report.md (gitignored)
 
-**Commits:** AK `20ea66c`.
+**Commits:** AK `619d765`.
 
 ### Round 16 (2026-10-30): review fixes
 
@@ -2422,7 +2422,7 @@ The fix round from the Phase 7 review (`handoffs/phase-7/review-report.md`, giti
 
 **Catch-up (2026-10-30).** ForceServe, then ForceAgent, enabled at 02:09:15Z. The agent, 02:09:19Z: `polled=0 decided=0 ... statements=2 model_calls=0 http_attempts=0 ... gate=new_run` (Job 1 ran at 02:03Z, run id 498943173382191 recorded). ForceServe, 02:09:31Z: `decision=publish status=ok statements=7 rows=12994`. Before this round, the first live `gate=no_new_run` line appeared at 01:11:01Z (`statements=0`, Job 1 run 928465429257228 already polled) and ForceServe logged `skip_no_new_run` at 01:12:01Z, so the 2-hourly gating works as designed. Statements used: 9 (agent 2, ForceServe 7) of the 9 allowed; Gemini 0 of 6.
 
-**Commits:** AL `6345b66`, AM `3117d4f`.
+**Commits:** AL `373d283`, AM `d025ba8`.
 
 ### Phase 7 summary
 
@@ -2536,14 +2536,45 @@ No simple budget rule fits the block start times (quota report, section 3), so t
 31. `73e98f4` Log Phase 7 Round 13a; add the checkpoint runbook
 32. `582bf1a` Verify TLS partial chains; debounce duplicate task launches
 33. `f76ae8a` Log Phase 7 Round 13b
-34. `456fb75` Record Phase 7 checkpoint
-35. `05bc901` Run Job 1 every 2 hours; gate the agent's poll on new runs
-36. `df77fb7` Log Phase 7 Round 14; document the 2-hourly cadence
-37. `20ea66c` Log Phase 7 review; record checkpoint and alert delivery
-38. `6345b66` Apply Phase 7 review fixes
-39. `3117d4f` Log Phase 7 review fixes; document the 2-hour decision cycle
+34. `aa38074` Record Phase 7 checkpoint
+35. `cc17ada` Run Job 1 every 2 hours; gate the agent's poll on new runs
+36. `787dbb5` Log Phase 7 Round 14; document the 2-hourly cadence
+37. `619d765` Log Phase 7 review; record checkpoint and alert delivery
+38. `373d283` Apply Phase 7 review fixes
+39. `d025ba8` Log Phase 7 review fixes; document the 2-hour decision cycle
 
 The close-out commits (this summary and the DeployForm string) follow these.
+
+## Phase 8 - Repo polish (2026-10-30, in progress)
+
+### Round 1 (2026-10-30): verification, read-only
+
+All ten handoff facts were OK (the suites matched: serving 190, agent 573, edge 553 with 1 skipped, ingest 388, intake 384, intake node 205, dashboard 47, Pester 72; `dbt parse` gave 12 models, 5 seeds, 121 tests, 81 unit tests and 2 sources). Findings:
+- `make demo`, `make seed`, `make test` and `make test-agent` are stubs that exit 1; only `make test-intake` works.
+- `dbt build --target local` cannot build: `dbt-postgres` is not installed, the `extract_payload` and `epoch_seconds` macros raise a compiler error on any non-Databricks target, and the models use `QUALIFY`, `dateadd`, `current_timestamp()`, VARIANT unit-test fixtures and the dbt-databricks `merge` options.
+- The repo-root `.gitignore` has an unanchored `data/` rule, so `Force_Balance_Pipeline/data/` (the SWAPI snapshot and `enrichment_corrections.csv`) was never committed.
+- `.gitignore` had no `.env.*` wildcard; each file was listed by name.
+- `ForceBridge` has two triggers: a logon trigger and a separate time trigger repeating every 5 minutes.
+- `gh` is not installed.
+
+**Commits:** none.
+
+### History rewrite (2026-11-16, recorded)
+
+The commit messages after `35030c6` (47 commits) were rewritten with `git filter-branch`; every tree is unchanged. The eight SHAs cited in the project docs were remapped (old -> new): `456fb75` -> `aa38074`, `05bc901` -> `cc17ada`, `df77fb7` -> `787dbb5`, `20ea66c` -> `619d765`, `6345b66` -> `373d283`, `3117d4f` -> `d025ba8`, `45329ed` -> `bd784be`, `57eb5ed` -> `cf0d014`.
+
+### Round 2 (2026-11-16): Phase 8 decisions, SHA remap, tracked data, wider .env ignore
+
+- **P8-1 Repo home:** development stays in JiveRepo; a one-way mirror, `jivejong/Force_Balance_Pipeline`, is fed by `git subtree split` from a root `mirror.yml` workflow.
+- **P8-2 make demo:** `scripts/demo.py` (standard library only) on its own Compose project `fbp-demo`, Postgres on 127.0.0.1:5434, backend on 127.0.0.1:8082, fixtures only, deploy off.
+- **P8-3 CI:** `ci.yml` runs in the mirror only: the Python, node and Pester suites, `dbt parse` with a manifest-count check; it replaces `dbt build --target local`.
+- **P8-4 dbt docs:** `dbt docs generate --no-compile --empty-catalog`, published from the mirror to GitHub Pages; dropped if it needs a live connection.
+- **Ignore change:** `Force_Balance_Pipeline/.gitignore` now re-includes `data/` (6 files, 121,642 bytes: the four SWAPI snapshot JSON files, `enrichment_corrections.csv` and `.gitkeep`; no credential, LAN address or non-SWAPI URL in them) and ignores `.env.*` except `.env.example` and `.env.*.example`.
+- **SHA remap:** the eight old SHAs appeared only in this log (13 occurrences on 11 lines changed); of its 184 backticked 7-hex tokens (112 unique), all 112 are reachable from HEAD.
+- **Job 1:** its latest run is 681083995769143 (2026-11-03 16:03Z, SUCCESS); no run was created after it, so the agent's cycles from 2026-11-03 16:11Z on logged `no_new_run` (cause not established).
+- Doc 07 holds the decisions and the deviations; doc 05's ForceBridge trigger row now says logon trigger plus a separate time trigger.
+
+**Commits:** listed in the next round.
 
 ## Open items
 
