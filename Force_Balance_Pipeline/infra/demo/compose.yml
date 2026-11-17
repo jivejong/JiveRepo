@@ -1,0 +1,24 @@
+# The isolated demo database for `make demo` (doc 07, Phase 8 decision P8-2; doc 05, "Demo (make demo)").
+# Never the live serving container: its own project, container, volume and port (127.0.0.1:5434).
+# scripts/demo.py runs it with --env-file .env.demo, which holds only POSTGRES_PASSWORD.
+name: fbp-demo
+services:
+  postgres:
+    image: postgres:17
+    container_name: fbp-demo-postgres
+    environment:
+      POSTGRES_USER: force
+      POSTGRES_DB: force_serving_demo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set by scripts/demo.py}
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - fbp-demo-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U force -d force_serving_demo"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  fbp-demo-data: { name: fbp-demo-data }

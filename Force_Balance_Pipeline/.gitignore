@@ -59,3 +59,6 @@ handoffs/
 .env.*
 !.env.example
 !.env.*.example
+
+# make demo: the isolated demo venv (scripts/demo.py)
+.demo/

@@ -1,10 +1,23 @@
 # Stub targets. Each is implemented in the phase noted; until then it fails loudly
 # so nothing mistakes a stub for a passing check.
 
-.PHONY: demo seed test test-agent test-intake inject
+.PHONY: demo demo-down demo-clean seed test test-agent test-intake inject
 
+# make demo: the dashboard on display fixtures in an isolated Postgres (127.0.0.1:5434) and backend (127.0.0.1:8082), doc 07 P8-2.
+# DEMO_PYTHON is separate from PYTHON below, which is the edge venv used by test-intake.
+ifeq ($(OS),Windows_NT)
+DEMO_PYTHON ?= python
+else
+DEMO_PYTHON ?= python3
+endif
 demo:
-	@echo "make demo: not implemented (Phase 4: docker-compose + dbt build --target local)"; exit 1
+	$(DEMO_PYTHON) scripts/demo.py up
+
+demo-down:
+	$(DEMO_PYTHON) scripts/demo.py down
+
+demo-clean:
+	$(DEMO_PYTHON) scripts/demo.py clean
 
 seed:
 	@echo "make seed: not implemented (Phase 1: SWAPI fetch + dbt seed)"; exit 1
