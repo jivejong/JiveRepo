@@ -2574,6 +2574,25 @@ The commit messages after `35030c6` (47 commits) were rewritten with `git filter
 - **Job 1:** its latest run is 681083995769143 (2026-11-03 16:03Z, SUCCESS); no run was created after it, so the agent's cycles from 2026-11-03 16:11Z on logged `no_new_run` (cause not established).
 - Doc 07 holds the decisions and the deviations; doc 05's ForceBridge trigger row now says logon trigger plus a separate time trigger.
 
+**Commits:** A `27d4a7a`, B `8420ffc`, C `d40bcc1`.
+
+### Round 3 (2026-11-16): make demo on an isolated Postgres and port
+
+**Decision.** P8-2 (doc 07). The serving command-line entry points cannot be pointed at another database: `serving/config.py` hardcodes the host, port 5433 and the user in `PG`, and `config.load_env()` reads `.env.serving`. The demo therefore does not use them; it calls the same functions with its own connection (`schema.recreate`, `views.apply`, `fixtures.load(reset=True)`, `server.make_server(env=, connect=)`), so `serving/` is unchanged.
+
+**What was built.**
+- `infra/demo/compose.yml`: project `fbp-demo`, container `fbp-demo-postgres`, user `force`, database `force_serving_demo`, `127.0.0.1:5434`, volume `fbp-demo-data`, healthcheck every 2 s with 30 retries.
+- `scripts/demo.py` (standard library only): `up`, `down`, `clean`, plus the two inner steps `_load` and `_serve`, which run under `.demo/venv` (psycopg). Child processes get the environment without any `DATABRICKS_`, `GEMINI_`, `AGENT_`, `SERVING_PING` or `BUNDLE_` key; `POSTGRES_PASSWORD` is set explicitly for compose so an exported value cannot override `.env.demo`. npm is run by its full path (`npm.cmd` on Windows), no shell. Exit codes 0, 1 (check failed), 2 (child failed).
+- `Makefile`: `demo`, `demo-down`, `demo-clean` through `DEMO_PYTHON` (`python` on Windows, `python3` elsewhere). It is a separate variable because `PYTHON` is the edge venv used by `test-intake`. The other targets are unchanged.
+- `.gitignore`: `.demo/`.
+- `scripts/tests/test_demo.py`: 6 tests (port check, env file, child environment, isolation guard, demo ports and database, compose ports).
+
+**Live run (Windows, Docker Desktop).** First `make demo`: the Dashboard line after 48 s (image already present; venv, pip, `npm ci` and the build included). `GET /` 200 (395 bytes of HTML). `GET /api/meta` 200, `deploy_enabled` false, `deploy_disabled_why` `fixture_database`. 200 with non-empty JSON for `/api/galaxy` (60 sectors, 17188 bytes), `/api/signatures` (896), `/api/source-health` (14516), `/api/ingest-lag` (1229), `/api/rejections` (8745), `/api/incidents` (3434), `/api/deployments` (2869) and `/api/planet/cato_neimoidia` (108083). `GET /api/deploy/token` 200; `POST /api/deploy` with the token and Origin: 503 `deploy_disabled`, why `fixture_database` (55 bytes). After stopping the backend and `make demo-down`, a second `make demo` reached the Dashboard line in 26 s with no error and the same answers. `make demo-clean` removed the container, network and volume, `.demo/` and `.env.demo`. `force-postgres`, `force-mosquitto`, `app-app-1` and `app-db-1` stayed Up, never restarted.
+
+**Mutations** (copies outside the repo; each caught by an assertion FAIL, no ERROR): `port_free` always True, `ensure_env_file` overwriting, `child_env` keeping `GEMINI_`, `demo.py` naming 5433, compose binding `0.0.0.0:5434`, `demo.py` naming the live database. One mutant first ERRORed (a bad anchor produced a syntax error) and was redone as a FAIL.
+
+**Tests.** Baseline before the first edit: serving 190, scripts none. After: serving 190, scripts 6.
+
 **Commits:** listed in the next round.
 
 ## Open items
@@ -2659,6 +2678,7 @@ The commit messages after `35030c6` (47 commits) were rewritten with `git filter
 | Duplicate cross-signed root in the Windows CurrentUser CA store (worked around by VERIFY_X509_PARTIAL_CHAIN) | **Watch.** `USERTrust ECC Certification Authority` appears twice, the cross-signed copy issued by `AAA Certificate Services` (not trusted here); the store was not touched. If a ping host ever fails again, check the chain first. |
 | Task Scheduler launches each task twice about 2 s apart (debounced) | **Watch.** One `CalendarTrigger` per task and no other task, so the cause is unexplained; every task start is debounced for 60 s (doc 05 Monitoring). |
 | ForceServe's pinger discarded S5 failures (`log=lambda m: None`) | **Resolved, Phase 7 Round 13b (2026-10-27).** A failed S5 ping is logged to `logs\serve.log`. |
+| Free Edition stops creating scheduled runs after a period without a workspace login | **Open, weekly.** Job 1 made no run from 2026-11-03 16:03Z to 2026-11-16; S2 alerted; logging in fixed it. Log in at least weekly. |
 | `num_inserted_rows` from the MERGE not yet seen live | **Resolved, Phase 7 Round 13a (2026-10-21).** A zero-write dev MERGE returned `num_affected_rows`, `num_updated_rows`, `num_deleted_rows` and `num_inserted_rows`, all LONG, values 0, 0, 0, 0. |
 
 ## Lessons (beyond this project)

@@ -734,6 +734,22 @@ That's a deliberate property: someone reading the repo sees the actual productio
 - Warehouse auto-stop is fixed at 10 minutes (Free Edition does not allow editing the warehouse). With Job 1 ending by :11 in 99.4% of runs (Phase 7 Round 11a), the agent at :11 and the pull at :12 run inside Job 1's warm tail; the modelled warehouse-on time is about 18 min/h, against about 23 with the old schedule and about 16 for Job 1 alone. Model, not measurement. Written for an hourly Job 1: with Job 1 every 2 hours (Phase 7 Round 14) the warm window recurs every 2 hours, not hourly, and the agent and the pull end their odd-hour cycles at 0 statements; the figures were not re-modelled. If the incremental `gold_sector_reading` read is over the 50,000-row cap (a full refresh of that model re-stamps every row's `_gold_built_at`), the same pull reads it again one UTC day per statement over the 30-day retention window (31 more statements once) and sets the watermark from the maximum pulled.
 - Cost: the first live pull (2026-10-20, the 7-day backfill with the dims due) took 31 statements and 58 seconds and wrote 83,024 rows; a steady run is 7 statements (10 when the dims are due), measured by the tests. The live steady number comes after the next scheduled run.
 
+### Demo (make demo)
+
+Doc 07, Phase 8 decision P8-2. The dashboard on the display fixtures, with no warehouse, Gemini or MQTT call and no live credential.
+
+- Prerequisites: Docker, Python 3.10 or later, Node 24, make.
+- `make demo` (from `Force_Balance_Pipeline`) runs `scripts/demo.py up` (standard library only, so the same recipe works on Windows and Linux). It creates:
+  - the Compose project `fbp-demo` with container `fbp-demo-postgres` (`postgres:17`), volume `fbp-demo-data` and database `force_serving_demo`, on 127.0.0.1:5434 (`infra/demo/compose.yml`);
+  - `.env.demo` with a generated `POSTGRES_PASSWORD` (gitignored, never overwritten, never printed);
+  - `.demo/venv` with `serving/requirements.txt` (gitignored);
+  - `dashboard/dist` (`npm ci` and `npm run build`).
+  It then recreates schema `serving` in that database only, applies the views, loads the display fixtures and serves the dashboard in the foreground on http://127.0.0.1:8082/ (Ctrl+C stops it). Rerunning it works: the schema is recreated and the fixtures replaced.
+- Deploy is off: the database is not the live one and holds fixture rows, so `GET /api/meta` reports `deploy_enabled` false (`fixture_database`) and `POST /api/deploy` answers 503 `deploy_disabled`.
+- `make demo-down` stops the database and keeps the volume; `make demo-clean` also deletes the volume, `.demo/` and `.env.demo`.
+- The serving command-line entry points are not used: they are fixed to the live database and read `.env.serving`. The demo calls the same functions (`schema.recreate`, `views.apply`, `fixtures.load`, `server.make_server`) with its own connection.
+- Isolation rule: the demo never touches the live Postgres container, ports 5433, 8081 or 1883, `.env.agent` or `.env.serving`, and the child processes run without any `DATABRICKS_`, `GEMINI_`, `AGENT_`, `SERVING_PING` or `BUNDLE_` variable. `scripts/tests/test_demo.py` enforces it (run `edge\.venv\Scripts\python.exe -m unittest discover -s scripts/tests` from `Force_Balance_Pipeline`).
+
 ---
 
 ## Phase 3 staging: the desktop broker and the Pi
