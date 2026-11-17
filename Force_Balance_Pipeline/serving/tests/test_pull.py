@@ -1,6 +1,7 @@
 """Tests for serving/pull.py (doc 05 "Serving (Phase 7)": "Reads"): a fake warehouse client and force_serving_test. No network."""
 import json
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 
 import pg_support
@@ -172,43 +173,198 @@ class EmptyBackfill(PullTest):
         self.assertNotIn("sector_reading", dict(self.q("SELECT source, value FROM serving.watermark")))
 
 
-class OverTheCap(PullTest):
-    """Review finding 3: a full refresh of gold_sector_reading re-stamps every row's _gold_built_at, so the incremental read is over the cap."""
+LO3 = NOW - timedelta(days=3, hours=5)                 # three whole days and five hours before NOW
+DAY = timedelta(days=1)
 
-    def over_cap_script(self, rows):
+
+def recorder(fail_when=None):
+    """(read, calls): read(a, b) records the window, raises ResultTooLarge when fail_when(a, b, call number) says so, else returns [(a, b)]."""
+    calls = []
+
+    def read(a, b):
+        calls.append((a, b))
+        if fail_when and fail_when(a, b, len(calls)):
+            raise ResultTooLarge("the result has more than 50000 rows")
+        return [(a, b)]
+    return read, calls
+
+
+class ReadWindowed(unittest.TestCase):
+    """pull.read_windowed (Round 8): pure window logic, no database."""
+
+    def test_windows_run_in_one_day_steps_the_last_open_ended_with_no_gap_and_no_overlap(self):
+        read, calls = recorder()
+        rows = pull.read_windowed(read, "probe_reading", LO3, NOW)
+        expected = [(LO3, LO3 + DAY), (LO3 + DAY, LO3 + 2 * DAY), (LO3 + 2 * DAY, LO3 + 3 * DAY), (LO3 + 3 * DAY, None)]
+        self.assertEqual(calls, expected)
+        self.assertEqual(rows, expected)                                           # concatenated in window order
+        for (_, hi), (lo, _) in zip(calls, calls[1:]):
+            self.assertEqual(hi, lo)
+
+    def test_a_lower_bound_at_now_is_one_open_window(self):
+        read, calls = recorder()
+        pull.read_windowed(read, "rejects", NOW, NOW)
+        self.assertEqual(calls, [(NOW, None)])
+
+    def test_a_window_over_the_cap_splits_into_halves_and_succeeds(self):
+        read, calls = recorder(lambda a, b, n: ((NOW if b is None else b) - a) > timedelta(hours=12))
+        rows = pull.read_windowed(read, "probe_reading", LO3, NOW)
+        half = timedelta(hours=12)
+        expected, good = [], []
+        for i in range(3):
+            start = LO3 + i * DAY
+            expected += [(start, start + DAY), (start, start + half), (start + half, start + DAY)]
+            good += [(start, start + half), (start + half, start + DAY)]
+        expected.append((LO3 + 3 * DAY, None))
+        good.append((LO3 + 3 * DAY, None))
+        self.assertEqual(calls, expected)
+        self.assertEqual(rows, good)
+        self.assertEqual(rows[0][0], LO3)
+        for (_, hi), (lo, _) in zip(rows, rows[1:]):
+            self.assertEqual(hi, lo)                                               # no gap and no overlap after splitting
+        self.assertIsNone(rows[-1][1])
+
+    def test_the_open_ended_window_splits_at_now_into_a_closed_half_and_an_open_one(self):
+        read, calls = recorder(lambda a, b, n: b is None and a == LO3 + 3 * DAY and n == 4)      # only the first try of the open window
+        rows = pull.read_windowed(read, "rejects", LO3, NOW)
+        self.assertEqual(calls[3:], [(LO3 + 3 * DAY, None), (LO3 + 3 * DAY, NOW), (NOW, None)])
+        self.assertEqual(rows[3:], [(LO3 + 3 * DAY, NOW), (NOW, None)])
+
+    def test_a_window_at_the_floor_that_is_still_over_the_cap_raises_naming_the_table(self):
+        read, calls = recorder(lambda a, b, n: True)
+        with self.assertRaises(ResultTooLarge) as cm:
+            pull.read_windowed(read, "probe_reading", LO3, NOW)
+        self.assertIn("probe_reading", str(cm.exception))
+        self.assertIn(LO3.isoformat(), str(cm.exception))
+        self.assertEqual([(b or NOW) - a for a, b in calls],                       # 1 day halved down to 45 minutes, then it gives up
+                         [DAY, DAY / 2, DAY / 4, DAY / 8, DAY / 16, DAY / 32])
+        self.assertEqual(calls[-1][1] - calls[-1][0], timedelta(minutes=45))
+
+    def test_a_window_not_longer_than_the_floor_is_not_split(self):
+        read, calls = recorder(lambda a, b, n: True)
+        with self.assertRaises(ResultTooLarge):
+            pull.read_windowed(read, "rejects", NOW - timedelta(minutes=30), NOW)
+        self.assertEqual(calls, [(NOW - timedelta(minutes=30), None)])
+
+
+class OverTheCap(PullTest):
+    """An incremental source whose one normal read is over the row cap is re-read in windows (Round 8)."""
+
+    @staticmethod
+    def over_cap(rows=()):
+        """A script: the normal (wm) read is over the cap; a window read returns the rows whose arrival_ts falls inside it."""
+        def serve(params):
+            if "wm" in params:
+                raise ResultTooLarge("the result has more than 50000 rows")
+            lo, hi = params["lo"][0], params.get("hi", (None,))[0]
+            return [r for r in rows if r["arrival_ts"] >= lo and (hi is None or r["arrival_ts"] < hi)]
+        return serve
+
+    def test_without_a_cap_each_source_is_one_read_and_read_windowed_is_not_called(self):
+        self.first_run({"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]]})
+        client = FakeClient()
+        with mock.patch.object(pull, "read_windowed", side_effect=AssertionError("read_windowed was called")):
+            result = pull.run_pulls(client, self.conn, NOW + HOUR)
+        self.assertEqual(result["statements"], 7)
+        for key in pull.INCREMENTAL_KEYS:
+            self.assertEqual(len(client.calls_for(key)), 1, key)
+
+    @staticmethod
+    def capped_then_empty(params):
+        """sector_reading: the normal (wm) read is over the cap; its event_time pages are empty."""
+        if "wm" in params:
+            raise ResultTooLarge("the result has more than 50000 rows")
+        return []
+
+    def test_probe_reading_and_rejects_window_on_arrival_ts_and_sector_reading_pages_on_event_time(self):
+        self.first_run({"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]], "rejects": [[reject(1, NOW - HOUR)]]})
+        client = FakeClient({"sector_reading": self.capped_then_empty, "probe_reading": self.over_cap(), "rejects": self.over_cap()})
+        pull.run_pulls(client, self.conn, NOW + timedelta(days=2, hours=2))
+        for key in ("probe_reading", "rejects"):
+            calls = client.calls_for(key)
+            self.assertIn("WHERE arrival_ts > :wm", calls[0][0], key)
+            self.assertEqual(len(calls), 1 + 3, key)                                # the normal read, then two closed windows and an open one
+            for sql, params, _ in calls[1:]:
+                self.assertIn("arrival_ts >= :lo", sql, key)
+            self.assertNotIn("hi", calls[-1][1], key)                               # the last window is open-ended
+            self.assertIn("arrival_ts < :hi", calls[1][0], key)
+        sector = client.calls_for("sector_reading")
+        self.assertIn("WHERE _gold_built_at > :wm", sector[0][0])
+        self.assertEqual(len(sector), 1 + pull.RETENTION.days + 1)                  # the normal read, then one event_time page per UTC day
+        for sql, params, _ in sector[1:]:
+            self.assertIn("WHERE event_time >= :start AND event_time < :end", sql)
+            self.assertNotIn(":lo", sql)
+            self.assertNotIn("_gold_built_at >", sql)                               # the pages carry no _gold_built_at predicate
+
+    def test_the_lower_bound_is_the_watermark_minus_the_overlap(self):
+        self.first_run({"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]], "rejects": [[reject(1, NOW - HOUR)]]})
+        client = FakeClient({"sector_reading": self.capped_then_empty, "probe_reading": self.over_cap(), "rejects": self.over_cap()})
+        pull.run_pulls(client, self.conn, NOW + timedelta(days=2, hours=2))
+        self.assertEqual(client.calls_for("probe_reading")[1][1]["lo"][0], NOW - 2 * HOUR)                # overlap 1 hour
+        self.assertEqual(client.calls_for("rejects")[1][1]["lo"][0], NOW - 2 * HOUR)
+
+    def test_an_over_the_cap_probe_reading_is_pulled_in_windows_once_and_the_watermark_advances(self):
+        self.first_run({"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]]})
+        later = NOW + timedelta(days=3, hours=2)
+        rows = [probe(1, NOW - HOUR)] + [probe(n, NOW + timedelta(hours=7 * n)) for n in range(2, 11)]        # P1 again, then nine new rows
+        client = FakeClient({"probe_reading": self.over_cap(rows)})
+        result = pull.run_pulls(client, self.conn, later)
+        self.assertEqual(sorted(r[0] for r in self.q("SELECT event_id FROM serving.probe_reading")), sorted(r["event_id"] for r in rows))
+        self.assertEqual(result["rows"]["probe_reading"], len(rows))
+        self.assertEqual(dict(self.q("SELECT source, value FROM serving.watermark"))["probe_reading"], max(r["arrival_ts"] for r in rows))
+
+    def test_sector_reading_over_the_cap_goes_straight_to_event_time_day_pages_never_windows(self):
+        """gold_sector_reading stamps every row of a Job 1 build with one current_timestamp() as _gold_built_at (a catch-up build stamps its
+        whole backlog alike, and a full refresh re-stamps every row), so halving a time window on that column cannot split them."""
+        self.first_run({"sector_reading": [[reading(1, NOW - 2 * HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]]})
+        later = NOW + HOUR
+        restamped = [reading(1, later, event=NOW - 2 * HOUR), reading(2, later, event=NOW - timedelta(days=3)),
+                     reading(3, later, event=NOW - timedelta(days=29))]
         pages = []
 
         def serve(params):
             if "wm" in params:
                 raise ResultTooLarge("the result has more than 50000 rows")
             pages.append(params)
-            return [r for r in rows if params["start"][0] <= r["event_time"] < params["end"][0]]
-        return serve, pages
-
-    def test_the_run_falls_back_to_day_pages_and_sets_the_watermark(self):
-        self.first_run({"sector_reading": [[reading(1, NOW - 2 * HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]]})
-        later = NOW + HOUR
-        restamped = [reading(1, later, event=NOW - 2 * HOUR), reading(2, later, event=NOW - timedelta(days=3)),
-                     reading(3, later, event=NOW - timedelta(days=29))]
-        serve, pages = self.over_cap_script(restamped)
+            return [r for r in restamped if params["start"][0] <= r["event_time"] < params["end"][0]]
         client = FakeClient({"sector_reading": serve})
         try:
-            result = pull.run_pulls(client, self.conn, later)
+            with mock.patch.object(pull, "read_windowed", side_effect=AssertionError("sector_reading must not use windows")):
+                result = pull.run_pulls(client, self.conn, later)
         except ResultTooLarge:
-            self.fail("the run failed on the row cap instead of falling back to day pages")
+            self.fail("the run failed on the row cap instead of falling back to the event-time day pages")
         self.assertEqual(sorted(r[0] for r in self.q("SELECT event_id FROM serving.sector_reading")), ["E1", "E2", "E3"])
         self.assertEqual(dict(self.q("SELECT source, value FROM serving.watermark"))["sector_reading"], later)
-        self.assertEqual(len(pages), pull.RETENTION.days + 1)                           # one statement per UTC day of the window
-        self.assertEqual(result["statements"], 6 + 1 + pull.RETENTION.days + 1)         # six other sources, the failed read, the pages
+        self.assertEqual(len(pages), pull.RETENTION.days + 1)                               # one statement per UTC day of the window
+        self.assertEqual(result["statements"], 6 + 1 + pull.RETENTION.days + 1)             # six other sources, the failed read, the pages
         self.assertTrue(all("event_time >= :start" in c[0] for c in client.calls_for("sector_reading")[1:]))
 
-    def test_other_sources_over_the_cap_still_fail_the_run(self):
+    def test_a_window_at_the_floor_fails_the_run_naming_the_table_and_changes_nothing(self):
         self.first_run({"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]]})
         before = self.state()
-        client = FakeClient(fail_on=6, error=ResultTooLarge)                             # the probe_reading read
-        with self.assertRaises(ResultTooLarge):
-            pull.run_pulls(client, self.conn, NOW + HOUR)
+
+        def always(params):
+            raise ResultTooLarge("the result has more than 50000 rows")
+        with self.assertRaises(ResultTooLarge) as cm:
+            pull.run_pulls(FakeClient({"probe_reading": always}), self.conn, NOW + HOUR)
+        self.assertEqual(cm.exception.table, "probe_reading")
+        self.assertIn("probe_reading", str(cm.exception))
         self.assertEqual(self.state(), before)
+
+    def test_a_full_source_over_the_cap_still_fails_the_run(self):
+        self.first_run({"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]]})
+        before = self.state()
+        client = FakeClient(fail_on=2, error=ResultTooLarge)                                # the disturbance read: no watermark, no windows
+        with self.assertRaises(ResultTooLarge) as cm:
+            pull.run_pulls(client, self.conn, NOW + HOUR)
+        self.assertEqual(cm.exception.table, "disturbance")
+        self.assertEqual(self.state(), before)
+
+    def test_any_failed_read_carries_the_source_that_failed(self):
+        self.first_run({"sector_reading": [[reading(1, NOW - HOUR)]], "probe_reading": [[probe(1, NOW - HOUR)]]})
+        with self.assertRaises(Boom) as cm:
+            pull.run_pulls(FakeClient(fail_on=6), self.conn, NOW + HOUR)                    # the probe_reading read
+        self.assertEqual(cm.exception.table, "probe_reading")
 
 
 class RefreshSource(PullTest):

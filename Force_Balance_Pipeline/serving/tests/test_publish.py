@@ -9,9 +9,10 @@ from pathlib import Path
 from unittest import mock
 
 import pg_support
+from agent.dbsql import ResultTooLarge
 from agent.lock import InstanceLock
 from serving import fixtures, jobs, publish, pull
-from test_pull import FakeClient, disturbance
+from test_pull import FakeClient, disturbance, probe
 
 NOON = datetime(2026, 10, 19, 12, 17, tzinfo=timezone.utc)
 RUN = (500, NOON - timedelta(minutes=40))
@@ -174,6 +175,63 @@ class Publishing(PublishTest):
         self.assertEqual(self.conn.execute("SELECT count(*) FROM serving.disturbance").fetchone()[0], 0)
         self.assertEqual(self.pings, ["fail"])
         self.assertNotIn("example.invalid", "".join(self.log_lines()))
+
+
+class FailureLog(PublishTest):
+    """Round 8: a failed publish says which source failed and how many statements it really spent (the 2026-11-17 failures logged statements=0
+    and no table)."""
+
+    def test_a_failed_pull_logs_the_real_statement_count_and_the_failing_table(self):
+        factory = lambda env: FakeClient({"disturbance": [[disturbance("D1")]]}, fail_on=5, error=RuntimeError)     # noqa: E731
+        self.assertEqual(self.go(pull_fn=pull.run_pulls, client_factory=factory), 1)             # dims 3, sector_baseline 4, disturbance 5
+        line = self.log_lines()[-1]
+        self.assertIn("decision=publish status=failed statements=5 ", line)
+        self.assertIn("table=disturbance RuntimeError: boom", line)
+        row = self.conn.execute("SELECT status, statements, error FROM serving.publish_log").fetchone()
+        self.assertEqual(row[:2], ("failed", 5))
+        self.assertIn("table=disturbance", row[2])
+
+    def test_a_row_cap_failure_names_the_table_and_its_statements(self):
+        def always(params):
+            raise ResultTooLarge("the result has more than 50000 rows")
+        self.assertEqual(self.go(pull_fn=pull.run_pulls, client_factory=lambda env: FakeClient({"probe_reading": [[probe(1, NOON)]]})), 0)
+        self.latest = (501, NOON + timedelta(hours=2))
+        self.assertEqual(self.go(now=NOON + timedelta(hours=3), pull_fn=pull.run_pulls,
+                                 client_factory=lambda env: FakeClient({"probe_reading": always})), 1)
+        line = self.log_lines()[-1]
+        self.assertRegex(line, r"statements=([5-9]|\d\d) ")
+        self.assertIn("table=probe_reading ResultTooLarge: probe_reading: the window", line)
+
+    def test_a_pull_function_that_has_no_client_counter_logs_zero(self):
+        def boom(client, conn, started, days):
+            raise RuntimeError("no counter")
+        self.assertEqual(self.go(pull_fn=boom, client_factory=lambda env: object()), 1)
+        self.assertIn("statements=0 ", self.log_lines()[-1])
+
+
+class WindowedPublish(PublishTest):
+    def test_a_publish_whose_probe_reading_read_is_over_the_cap_succeeds_and_advances_the_watermark(self):
+        first = lambda env: FakeClient({"probe_reading": [[probe(1, NOON - timedelta(hours=1))]]})                  # noqa: E731
+        self.assertEqual(self.go(pull_fn=pull.run_pulls, client_factory=first), 0)
+        later = NOON + timedelta(days=3, hours=2)
+        self.latest = (501, later - timedelta(minutes=40))
+        arrivals = [NOON - timedelta(hours=1)] + [NOON + timedelta(hours=7 * n) for n in range(1, 10)]          # P1 again, then nine new rows
+        rows = [probe(i, a) for i, a in enumerate(arrivals, 1)]
+
+        def serve(params):
+            if "wm" in params:
+                raise ResultTooLarge("the result has more than 50000 rows")
+            lo, hi = params["lo"][0], params.get("hi", (None,))[0]
+            return [r for r in rows if r["arrival_ts"] >= lo and (hi is None or r["arrival_ts"] < hi)]
+        client = FakeClient({"probe_reading": serve})
+        self.assertEqual(self.go(now=later, pull_fn=pull.run_pulls, client_factory=lambda env: client), 0)
+        self.assertEqual([r[1] for r in self.rows()], ["ok", "ok"])
+        got = self.conn.execute("SELECT event_id FROM serving.probe_reading ORDER BY event_id").fetchall()
+        self.assertEqual(sorted(g[0] for g in got), sorted(r["event_id"] for r in rows))                         # every row once
+        self.assertEqual(self.conn.execute("SELECT value FROM serving.watermark WHERE source = 'probe_reading'").fetchone()[0], max(arrivals))
+        self.assertEqual(len(client.calls_for("probe_reading")), 1 + 4)                                          # the normal read, 3 days and an open window
+        self.assertIn("decision=publish status=ok", self.log_lines()[-1])
+        self.assertEqual(self.pings, ["success", "success"])
 
 
 class NoPing(PublishTest):

@@ -152,11 +152,15 @@ def _run(env, args, o, started, now_fn, sleep, monotonic, jobs_fn, pull_fn, clie
     decision = gate.decide(started, latest, gate.last_live_ok(conn))
     if decision != "publish":
         return finish("skipped", decision, 0, "success", decision)
+    client = client_factory(env)
     try:
-        result = pull_fn(client_factory(env), conn, started, args.backfill_days)
+        result = pull_fn(client, conn, started, args.backfill_days)
     except BaseException as e:
         conn.rollback()
-        return finish("failed", "publish", 1, "fail", scrub(f"{type(e).__name__}: {e}"))
+        table = getattr(e, "table", None)                    # pull.run_pulls names the source whose read failed
+        reason = (f"table={table} " if table else "") + f"{type(e).__name__}: {e}"
+        # the statements the client really spent, failed ones included (the counter lives on the client, so an exception does not lose it)
+        return finish("failed", "publish", 1, "fail", scrub(reason), statements=getattr(client, "statements", 0))
     return finish("ok", "publish", 0, "success", None, latest, result["statements"], result["rows"])
 
 

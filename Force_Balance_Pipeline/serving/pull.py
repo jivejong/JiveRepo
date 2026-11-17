@@ -11,12 +11,12 @@ arrival_ts with a 1-hour overlap (insert-only, DO NOTHING). With no watermark ye
 statement. If the incremental sector_reading read is over the row cap (a full refresh of gold_sector_reading re-stamps every row's
 _gold_built_at), the same run reads it again one UTC day per statement over the 30-day retention window, on event_time, and the watermark
 is set from the maximum pulled. Table names come only from config.SOURCES.
-
-expected_types are Databricks manifest type_names. DOCUMENTED (dbt yml, seeds' column_types or create_deployment.sql): deployment, the
-dims, scan_completeness, sample_count. INFERRED from the model SQL and not yet observed on the live warehouse (the first live pull is the
-check; a wrong one raises SchemaMismatch and writes nothing): every gold_sector_reading, gold_disturbance, gold_sector_baseline,
-silver_probe_reading, silver_rejects and silver_source_health column, including BIGINT shown as LONG, count(*) columns as LONG and
-VARIANT shown as VARIANT.
+Over the row cap (Round 8, after the 13-day stop of 2026-11): each incremental source first runs its one normal read. If that raises
+ResultTooLarge and the source has a watermark, it is re-read by a per-source fallback. probe_reading and rejects: read_windowed, from the
+watermark minus the overlap, in one-day windows on arrival_ts, the last window open-ended, halving any window that is still over the cap
+down to one hour. sector_reading: the 30-day event_time day pages (_read_retention_pages), never windows, because _gold_built_at is one
+current_timestamp() per Job 1 build: a catch-up build stamps all its rows alike, and halving a time window cannot split rows that share one
+value (doc 05, "Serving (Phase 7)").
 """
 from datetime import timedelta
 
@@ -107,6 +107,51 @@ def backfill_pages(now, days):
     return pages
 
 
+def build_window_select(spec, lo, hi=None):
+    """(sql, named params) for one window of an incremental source: <wm_col> >= :lo, and < :hi unless hi is None (open-ended)."""
+    col = spec["wm_col"]
+    if hi is None:
+        return _select(spec, f" WHERE {col} >= :lo"), {"lo": (lo, "TIMESTAMP")}
+    return _select(spec, f" WHERE {col} >= :lo AND {col} < :hi"), {"lo": (lo, "TIMESTAMP"), "hi": (hi, "TIMESTAMP")}
+
+
+def read_windowed(read, table, lo, now, step=timedelta(days=1), floor=timedelta(hours=1)):
+    """Rows of one source from lo on, in windows. read(lo, hi) returns the rows with column >= lo and (hi is None or column < hi), or
+    raises ResultTooLarge. Windows are [lo, lo + step), [lo + step, lo + 2 step), ... while a window start + step <= now; the last window
+    starts where the next closed one would pass now and is open-ended (hi None), so rows that land during the publish are not missed. A
+    window over the cap is split into two halves (an open-ended one at now: a closed first half, an open-ended second half), each retried,
+    until a window of at most `floor` still raises, which raises ResultTooLarge naming the table and the window. lo is inclusive and hi
+    exclusive, so the windows neither overlap nor leave a gap. `now` is the publish's start time, taken once. Rows come back in window order."""
+    def fetch(a, b):
+        try:
+            return read(a, b)
+        except ResultTooLarge:
+            span = (now if b is None else b) - a
+            if span <= floor:
+                end = "open" if b is None else b.isoformat()
+                raise ResultTooLarge(f"{table}: the window {a.isoformat()} to {end} is over the row cap and not longer than {floor}") from None
+            mid = now if b is None else a + span / 2
+            return fetch(a, mid) + fetch(mid, b)
+
+    rows, start = [], lo
+    while start + step <= now:
+        rows.extend(fetch(start, start + step))
+        start += step
+    rows.extend(fetch(start, None))
+    return rows
+
+
+def _read_over_the_cap(client, spec, wm, now):
+    """The re-read of an incremental source that has a watermark when its one normal read was over the row cap."""
+    if spec["key"] == "sector_reading":
+        return _read_retention_pages(client, spec, now)          # windows on _gold_built_at cannot split one build's rows (module docstring)
+
+    def read(a, b):
+        sql, params = build_window_select(spec, a, b)
+        return client.read(sql, params, expected_types=spec["types"])
+    return read_windowed(read, spec["key"], wm - spec["overlap"], now)
+
+
 def dims_due(conn, now):
     """True when a dim table is empty, or the 'dims' watermark is missing or older than 24 hours."""
     for key in DIM_KEYS:
@@ -172,14 +217,19 @@ def run_pulls(client, conn, now, backfill_days=DEFAULT_BACKFILL_DAYS):
     for key, statements in _plan(due, wms, now, backfill_days):
         spec = SPECS[key]
         rows = []
-        for sql, params in statements:
-            try:
-                rows.extend(client.read(sql, params, expected_types=spec["types"]))
-            except ResultTooLarge:
-                if key != "sector_reading" or key not in wms:
-                    raise
-                rows = _read_retention_pages(client, spec, now)
-                break
+        try:
+            for sql, params in statements:
+                try:
+                    rows.extend(client.read(sql, params, expected_types=spec["types"]))
+                except ResultTooLarge:
+                    if spec["mode"] != "incremental" or key not in wms:
+                        raise
+                    rows = _read_over_the_cap(client, spec, wms[key], now)
+                    break
+        except BaseException as e:
+            if getattr(e, "table", None) is None:
+                e.table = key                           # publish.py puts the failing source in serve.log
+            raise
         results[key] = rows
     try:
         with conn.cursor() as cur:
