@@ -27,6 +27,9 @@ jobs:
           - dir: Batcave_IDS
             repo: Batcave_IDS
             secret: BATCAVE_IDS_MIRROR_KEY
+          - dir: Force_Balance_Pipeline
+            repo: Force_Balance_Pipeline
+            secret: FORCE_BALANCE_PIPELINE_MIRROR_KEY
     steps:
       - uses: actions/checkout@v7
         with:
