@@ -2609,6 +2609,24 @@ The commit messages after `35030c6` (47 commits) were rewritten with `git filter
 
 **Tests (Windows).** Baseline: agent 573, edge 553 (1 skipped), ingest 388, intake 384, serving 190, scripts 6, intake node 205, dashboard 47, Pester 72, dbt parse 12/5/121/81/2. After: the same, with scripts 10. The serving suite once reported 1 error in a run that overlapped the edge suite (output not captured); two reruns and `make test` were 190 OK.
 
+**Commits:** A `cd0c4df`, B `f6c5808`, C `6e45f7d`, D `92efcde`.
+
+First mirror push and ci run: all six jobs green (2026-11-16).
+
+### Round 5 (2026-11-16): dbt docs to GitHub Pages from the mirror
+
+**Decision.** P8-4 (doc 07): `dbt docs generate --no-compile --empty-catalog --static`, published from the mirror by `docs.yml`.
+
+**Local trial** (PowerShell, `warehouse\dbt\.venv`, dummy environment values, the example profile copied to a temp directory, `--target prod`). `docs generate` exited 0 in 10.2 s and made no connection (no connection or HTTP line in the output; the only lines were the version, the adapter registration, the partial-parse notices and "Catalog written"). It wrote `static_index.html` (3,123,024 bytes), `index.html` (1,709,115, the non-static template) and `catalog.json` (327, empty). No flag was changed and no retry was needed.
+
+**Finding: the first page was stale.** The first scan found 243 `jivejong` and 328 `dev_` hits, all the schema name `dev_jivejong`. Cause: with `--no-compile`, `docs generate` does not write `manifest.json`; it embeds whatever is already in `target/`, which was the `dev` manifest left by the baseline `make check-dbt` run with the local profile (the page's `generated_at` was that manifest's). A fresh runner would have had none. Fix: `docs-dbt` runs `dbt parse --target prod` with the same profile first. After a parse with the example profile (5.6 s) and a rerun (7.4 s): schemas in the page are `bronze`, `silver`, `gold` and `dbt_test__audit`; 0 hits for `jivejong`, `yourname`, the four dummy values, RFC 1918 addresses, `C:\`, `Users`, `Documents`, `VSCode` and `JiveRepo`; the `dev_` hits (85) are `stddev_` column names; the 28 `dummy` hits are the graph library's `.dummy` property. All 12 model names are in the page (3,122,463 bytes). Because the plain word `dummy` is in the page, `docs-dbt` uses the distinctive token `fbp-docs-dummy-token` and password `fbp-docs-dummy-password`; the guard in `docs.yml` searches for those two plus the dummy host and HTTP path.
+
+**Makefile.** `docs-dbt` (target-specific `export`, `DBT_PROFILES_DIR` as in `check-dbt`): parse, then docs generate, both `--target prod`. Run with a temp profiles directory after deleting `static_index.html`, `index.html` and `catalog.json`: exit 0 in 14 s, the manifest was rebuilt, the four values and `jivejong` each 0 times.
+
+**docs.yml.** Triggers: push to `main` and manual. `contents: read`, `pages: write`, `id-token: write`; group `pages`, no cancel. Job `build` (15 min): checkout, Python 3.10, the dbt requirements, the example profile, `dbt deps` if `packages.yml` exists, `make docs-dbt`, a step that copies only the static page to `site/index.html` and fails if it holds any dummy value, then `configure-pages`, `upload-pages-artifact`. Job `deploy`: `deploy-pages` in `github-pages`. Action refs: `actions/checkout@v7`, `actions/setup-python@v7`, `actions/configure-pages@v6`, `actions/upload-pages-artifact@v5`, `actions/deploy-pages@v5` (the latest releases are v6.0.0, v5.0.0 and v5.0.1; the releases pages do not list floating major tags, so the major tags are assumed to exist). The file passed PyYAML `safe_load`; actionlint was not run this round, and the workflow has not run in Actions yet. Needs Settings > Pages > Source: GitHub Actions in the mirror.
+
+**Tests.** Scripts 10 OK, `make check-dbt` 12/5/121/81/2, ingest 388 OK (it reads doc 05).
+
 **Commits:** listed in the next round.
 
 ## Open items

@@ -780,7 +780,18 @@ The recipes are single commands, or `cd dashboard && ...`, which both `sh` and `
 
 What CI never touches: it holds no secret (the only values are dummies and a throwaway database password inside the job), and it makes no warehouse, Databricks API, Gemini, MQTT broker or Pi connection. The `serving` and `demo` jobs use containers that exist only for the run.
 
-The manifest check: `dbt parse` writes `warehouse/dbt/target/manifest.json`, and `scripts/check_dbt_manifest.py` counts its resources and exits 1, naming each mismatch, unless they equal 12 models, 5 seeds, 121 tests, 81 unit tests (the manifest's `unit_tests` section) and 2 sources. When the project legitimately gains or loses a resource, change `EXPECTED` in that script in the same commit. The first run of `serving`, `demo` and `pester` happens in the mirror: they were not run on Linux or in Actions beforehand.
+The manifest check: `dbt parse` writes `warehouse/dbt/target/manifest.json`, and `scripts/check_dbt_manifest.py` counts its resources and exits 1, naming each mismatch, unless they equal 12 models, 5 seeds, 121 tests, 81 unit tests (the manifest's `unit_tests` section) and 2 sources. When the project legitimately gains or loses a resource, change `EXPECTED` in that script in the same commit. The first run of `serving`, `demo` and `pester` happened in the mirror (2026-11-16): all six jobs were green.
+
+#### dbt docs (`docs.yml`)
+
+Doc 07, Phase 8 decision P8-4. `.github/workflows/docs.yml` is, like `ci.yml`, ignored in JiveRepo and runs only in the mirror. It runs on push to `main` and on demand, with `contents: read`, `pages: write` and `id-token: write`, and one deployment at a time (group `pages`, a running deploy is never cancelled). The site is https://jivejong.github.io/Force_Balance_Pipeline/ and needs the mirror's setting Settings > Pages > Source: GitHub Actions.
+
+- **Build job.** Python 3.10, `pip install -r warehouse/dbt/requirements.txt`, `profiles.yml.example` copied to a temporary profiles directory, `dbt deps` only if a `packages.yml` exists, then `make PYTHON=python DBT=dbt DBT_PROFILES_DIR=... docs-dbt`.
+- **The command.** `docs-dbt` runs `dbt parse --target prod` and then `dbt docs generate --target prod --no-compile --empty-catalog --static`, with dummy credentials. `--no-compile` and `--empty-catalog` mean there is no warehouse connection, so the page has the models, tests, sources and lineage but no column types or row counts. `--static` writes everything into one file, `target/static_index.html` (about 3.1 MB). The parse comes first because `docs generate --no-compile` does not write `manifest.json` itself: it embeds whichever `manifest.json` is already in `target/`. Without the parse a stale one (for example a `dev` parse with a personal schema name) would be published, and a fresh runner would have none.
+- **What is published.** Only the static page, copied to `index.html`. `manifest.json` and `catalog.json` are not published.
+- **The guard.** Before the upload the job fails if the page contains any of the four dummy values `docs-dbt` sets (`dummy.example.invalid`, `/sql/1.0/warehouses/dummy`, `fbp-docs-dummy-token`, `fbp-docs-dummy-password`). The token and password are distinctive on purpose: the page's graph library contains the plain word `dummy`. Keep the strings in `docs.yml` and the Makefile in sync.
+- **Deploy job.** After the build job: `actions/deploy-pages` into the `github-pages` environment.
+- **Local use.** `make docs-dbt` builds the page into `warehouse/dbt/target/` (gitignored); with the default `DBT_PROFILES_DIR` it uses the local `profiles.yml`, which has the same `prod` target.
 
 ---
 
