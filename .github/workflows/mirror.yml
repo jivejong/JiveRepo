@@ -1,0 +1,55 @@
+# One-way mirror of listed folders to their own GitHub repos.
+# JiveRepo is the development home; the mirrors are read-only copies.
+# Each push to main splits the folder's history and pushes it to main of the
+# target repo over SSH with a per-repo deploy key. No force push: a
+# non-fast-forward fails loudly instead of overwriting the mirror.
+name: mirror
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dir: Batcave_IDS
+            repo: Batcave_IDS
+            secret: BATCAVE_IDS_MIRROR_KEY
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Split and push
+        shell: bash
+        env:
+          MIRROR_KEY: ${{ secrets[matrix.secret] }}
+          DIR: ${{ matrix.dir }}
+          REPO: ${{ matrix.repo }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MIRROR_KEY}" ]; then
+            echo "ERROR: the mirror key secret for ${REPO} is empty or missing" >&2
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          umask 077
+          printf '%s\n' "${MIRROR_KEY}" > ~/.ssh/mirror_key
+          chmod 600 ~/.ssh/mirror_key
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/mirror_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts"
+          git subtree split --prefix="$DIR" -b mirror-split
+          git push "git@github.com:jivejong/${REPO}.git" mirror-split:main
+          rm -f ~/.ssh/mirror_key

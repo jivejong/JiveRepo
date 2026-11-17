@@ -1,0 +1,73 @@
+# batcave-ids CI. Lint, test and dbt checks for Batcave_IDS.
+# This copy runs in the jivejong/Batcave_IDS mirror, not in JiveRepo.
+# It is mirrored from JiveRepo/Batcave_IDS/.github/workflows/, so every path
+# below is relative to the Batcave_IDS folder, which is the mirror's root.
+name: batcave-ids CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # sqlfluff is NOT here. It uses the dbt templater, which needs a compiled
+      # project, so it runs in the dbt job after `dbt deps`/`dbt compile`
+      # rather than duplicating those steps in this parallel job.
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+      - run: uv sync
+      - run: uv run pytest
+
+  dbt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+      - run: uv sync
+      - name: dbt deps
+        working-directory: transform
+        run: uv run --project .. dbt deps
+      - name: dbt compile
+        working-directory: transform
+        run: uv run --project .. dbt compile --profiles-dir .
+
+      # After compile: the dbt templater lints the SQL dbt actually produces,
+      # with macros expanded and refs resolved.
+      - name: sqlfluff lint
+        working-directory: transform
+        run: uv run --project .. sqlfluff lint models --dialect duckdb
+
+      # raw_triage_predictions is a dbt SOURCE, written by services/triage/,
+      # not by dbt - fct_intervention_orders+ needs the table to exist (even
+      # empty) before `dbt build` runs, same as `make transform` locally.
+      - name: ensure raw_triage_predictions exists
+        run: >
+          uv run python -c "import duckdb; from services.triage.store import
+          ensure_table; ensure_table(duckdb.connect('data/warehouse.duckdb'))"
+
+      # Builds and tests against the committed sample partition only - no
+      # Docker, no live Kafka. `data/raw/**/sample-*` is the only corpus data
+      # tracked in git; everything else under data/raw is gitignored, so a
+      # fresh checkout has exactly what this step needs and nothing more.
+      - name: dbt build (sample partition)
+        working-directory: transform
+        run: uv run --project .. dbt build --profiles-dir .
+
+      # Named deliberately so a reader sees the invariant in the CI log
+      # (docs/02). It walks target/manifest.json rather than checking column
+      # names, because a column check is defeated by a rename - and it runs
+      # against a compiled project, so it needs no warehouse data.
+      - name: assert_no_ground_truth_leakage
+        run: uv run pytest tests/test_no_ground_truth_leakage.py -v
