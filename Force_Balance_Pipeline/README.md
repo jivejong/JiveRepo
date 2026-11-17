@@ -1,219 +1,212 @@
 # Force Balance Pipeline
 
-A streaming ETL system that detects disturbances in the Force.
+[![ci](https://github.com/jivejong/Force_Balance_Pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/jivejong/Force_Balance_Pipeline/actions/workflows/ci.yml)
+[![docs](https://github.com/jivejong/Force_Balance_Pipeline/actions/workflows/docs.yml/badge.svg)](https://github.com/jivejong/Force_Balance_Pipeline/actions/workflows/docs.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-An intergalactic probe sweeps all 60 planets in the Star Wars API every 15 minutes, reading three
-Force channels. A web intake lets anyone report what they witnessed, with a model inferring
-sensor-equivalent values from free text. Everything lands in a Databricks lakehouse, is scored
-against rolling 90-day per-planet baselines, and is classified into disturbance signatures. When
-the Force becomes imbalanced, a Yoda agent decides whether to deploy Jedi — which ones, on which
-ship, and why.
+A Star Wars-themed streaming ETL portfolio project. A Raspberry Pi probe simulates Force telemetry for 60 planets and publishes it over MQTT to a desktop bridge. The bridge lands it in Databricks Unity Catalog, where Auto Loader and dbt medallion layers (bronze, silver, gold) detect and classify disturbances. An LLM agent decides what to do about each incident, but only behind a code-enforced constraint layer. A local React dashboard shows the state and offers a manual deploy path through the same constraints.
 
-All telemetry is simulated. Reference data comes from [SWAPI](https://swapi.info), extended by a
-governed AI enrichment layer.
+The core claim: data survives edge, broker and bridge outages with no gaps and no loss; a stopped cloud job only delays it.
 
----
+All telemetry is simulated. Reference data comes from [SWAPI](https://swapi.info), extended by a governed AI enrichment layer that was generated once, human-reviewed and frozen (it is never called at runtime; [doc 08](docs/08-ai-enrichment.md)).
 
-## Status: in progress (Phase 3 of 8)
+## See it run
 
-This project is under halfway built. The sections below the status table (the architecture, stack,
-quickstart, signatures, and agent) describe the **target design**, specified in `docs/`. Only the
-phases marked done have been built and verified.
+A walkthrough of the dashboard on a live incident, and the dbt docs site with the model lineage:
 
-| Phase | Scope | Status |
-|---|---|---|
-| 0 | De-risk the platform: dbt job task from Git, external locations, `streaming_table` | Done. [`docs/PHASE0-RESULTS.md`](docs/PHASE0-RESULTS.md) |
-| 1 | SWAPI snapshot, AI enrichment, reviewed `dim_sector` and `dim_jedi` seeds | Done. Frozen, with provenance |
-| 2 | Probe simulator, collector bridge, Auto Loader, 90-day backfill | Done. [`docs/PHASE2-RESULTS.md`](docs/PHASE2-RESULTS.md) |
-| 3 | Four probe modes, SQLite buffer, fault injection, control topic, Raspberry Pi | **In progress.** The probe runs on a real Pi through a password- and ACL-protected LAN broker, and has completed an overnight soak of 32 consecutive scans. The 45-minute forced-`DISCONNECTED` checkpoint, the project's core claim, has not run yet. [`docs/PHASE3-RESULTS.md`](docs/PHASE3-RESULTS.md) |
-| 4 | dbt silver and gold, rolling baselines, scoring, signatures | Not started |
-| 5 | Web intake and report inference | Not started |
-| 6 | Yoda agent and constraint layer | Not started |
-| 7 | Dashboard | Not started |
-| 8 | Repo polish, CI, clean-clone `make demo` | Not started |
+<!-- DEMO VIDEO: Jong adds the MP4 link here -->
 
-The `Makefile` targets (`demo`, `seed`, `test`, `test-agent`, `test-intake`, `inject`) are stubs
-that exit 1 until their phase lands, so nothing mistakes a stub for a passing check. Results files
-record command output only, and a cell stays empty until output supports it. The phase-by-phase
-plan and its checkpoints are in [`docs/07-implementation-plan.md`](docs/07-implementation-plan.md).
+dbt docs: https://jivejong.github.io/Force_Balance_Pipeline/
 
----
+## Architecture
 
-## Why this project exists
+```mermaid
+flowchart LR
+  subgraph EDGE["Edge"]
+    PI["Pi probe<br/>60 planets, every 15 min"]
+  end
+  subgraph DESKTOP["Desktop"]
+    BROKER["Mosquitto broker"]
+    BRIDGE["ForceBridge<br/>NDJSON batches"]
+    INTAKE["Web intake"]
+    AGENT["Yoda agent<br/>ForceAgent, hourly :11"]
+    CON["Constraint layer<br/>agent/constraints.py"]
+  end
+  GEM["Gemini"]
+  subgraph DBX["Databricks"]
+    VOL["UC volume"]
+    AL["Auto Loader<br/>Job 1, every 2 h"]
+    BRONZE["bronze.events"]
+    SILVER["dbt silver"]
+    GOLD["dbt gold<br/>readings, baseline, disturbances"]
+    JOB2["Job 2<br/>baseline rebuild, daily"]
+    DEP["gold.deployment"]
+  end
+  subgraph SERVING["Local serving"]
+    PULL["ForceServe puller<br/>hourly :12"]
+    PG[("Postgres")]
+    API["Dashboard backend"]
+    UI["React dashboard"]
+    FORM["Manual deploy form"]
+  end
+  subgraph MON["Monitoring"]
+    HC["Healthchecks S1-S5"]
+  end
 
-It's a portfolio piece. The Star Wars framing is deliberate — it makes an otherwise dry
-demonstration of streaming ingestion, late-arriving data handling, and dimensional modeling into
-something a person will actually read.
+  PI -->|MQTT| BROKER
+  INTAKE -->|report text| GEM
+  INTAKE -->|report event| BROKER
+  BROKER --> BRIDGE
+  BRIDGE -->|Files API| VOL
+  VOL --> AL
+  AL --> BRONZE --> SILVER --> GOLD
+  JOB2 --> GOLD
+  GOLD -->|new incident| AGENT
+  AGENT <-->|function calling| GEM
+  AGENT --> CON
+  FORM --> CON
+  CON --> DEP
+  GOLD -->|read-only pull| PULL
+  DEP --> PULL
+  PULL --> PG --> API --> UI
+  UI --> FORM
 
-The engineering problems are real ones:
-
-| Problem | Where it shows up |
-|---|---|
-| Late-arriving data and event-time skew | `DISCONNECTED` buffers offline; `BURST` replays hours later |
-| Idempotent ingestion | ULID-named immutable files, dedup on `event_id`, exactly-once Auto Loader |
-| Contextual null semantics | `STEALTH` nulls are expected; fault-injected nulls are rejects. Same shape, different meaning |
-| Data quality quarantine | 2–3% deliberate fault injection feeds `silver.rejects` |
-| Schema evolution without migration | `VARIANT` payload column in bronze |
-| Governed AI-generated data | Enrichment is frozen, reviewed, version-controlled, and provenance-tracked |
-| Statistical detection | Composite deviation score over signed z-scores vs. rolling 90-day baselines |
-| Deterministic classification | Signature typing in SQL, not by an LLM |
-| Trust boundaries in a data model | Inferred values can trigger emergencies but never enter baselines |
-| Agent guardrails and evaluation | Tool-calling agent, code-enforced constraints, regression fixtures |
-| Human/machine decision parity | Manual deployments run the identical constraint layer |
-| Cost-constrained architecture | Entire system runs inside free tiers |
-
----
-
-## The three channels
-
-| Channel | Behavior | Driven by |
-|---|---|---|
-| **Midichlorian density** (ppm) | Stable, σ 2–5% of baseline | Population density, sentient life, Force connection |
-| **Kyber resonance** (0–100) | Moderately variable, σ 8–15% | Geology, crystal deposits, Force-attuned sites |
-| **Dark side activity** (0–100) | Quiet with rare spikes | Sith history, atrocity, dark side nexuses |
-
-Per-planet baselines and spreads come from the AI enrichment layer, so Mustafar is dark-volatile,
-Coruscant is midichlorian-rich and steady, and Utapau's kyber readings run high.
-
-## Signatures
-
-Disturbances are classified deterministically from the *pattern* across the three signed
-z-scores, which is what makes Jedi selection non-arbitrary:
-
-| Signature | Pattern | Responds with |
-|---|---|---|
-| `sith_presence` | dark ↑↑, kyber ↓ | combat |
-| `dark_adept` | dark ↑, midi ↑ | combat |
-| `nexus_awakening` | midi ↑↑, kyber ↑↑ | investigation |
-| `force_drain` | midi ↓↓, kyber ↓↓ | investigation |
-| `kyber_cache` | kyber ↑↑ only | diplomacy |
-| `civil_unrest` | dark ↑, high population | diplomacy |
-| `veiled_presence` | dark ↑ under partial coverage | stealth |
-
----
-
-## Architecture (target design)
-
-The probe, the bridge, and the Auto Loader path into bronze are built; everything from silver
-onward, the web intake, the agent, and the dashboard are specified but not yet implemented.
-
-```
-  ┌──────────────────────┐      ┌──────────────────────┐
-  │ Intergalactic probe  │      │ Web intake           │
-  │ RPi 3 · 60 planets   │      │ free-text report →   │
-  │ /15min · 4 modes     │      │ model-inferred values│
-  └──────────┬───────────┘      └──────────┬───────────┘
-             │  MQTT                  HTTP │
-             └────────────┬────────────────┘
-                          ▼
-                ┌───────────────────┐
-                │ Collector bridge  │   GCP e2-micro (always free)
-                │ batch → NDJSON    │   + report inference endpoint
-                └─────────┬─────────┘
-                          │ Files API
-  ┌───────────────────────┼────────────────────────────────┐
-  │  Databricks Free Edition                               │
-  │                       ▼                                │
-  │  ┌────────────┐  ┌─────────────┐  ┌─────────────────┐  │
-  │  │ UC volume  │→ │ Auto Loader │→ │ bronze → silver │  │
-  │  │ landing    │  │ availableNow│  │ → gold  (dbt)   │  │
-  │  └────────────┘  └─────────────┘  └────────┬────────┘  │
-  │   rolling 90d baselines · composite scoring │          │
-  │   signature classification · incident rules │          │
-  └─────────────────────────────────────────────┼──────────┘
-                        ┌──────────────────────┴───────┐
-                        ▼                              ▼
-              ┌───────────────────┐         ┌───────────────────┐
-              │ Jedi Council      │         │ Yoda agent        │
-              │ dashboard +       │         │ deploy/stand down │
-              │ manual deployment │         │ + audit trail     │
-              └─────────┬─────────┘         └─────────┬─────────┘
-                        └──────── shared constraint layer ──────►
+  BRIDGE -.->|S1| HC
+  AL -.->|S2| HC
+  VOL -.->|S3| HC
+  AGENT -.->|S4| HC
+  PULL -.->|S5| HC
 ```
 
-Full detail: [`docs/01-architecture.md`](docs/01-architecture.md)
+How it flows:
 
----
+- The probe sweeps all 60 planets every 15 minutes and publishes each sweep as one burst. If the link is down it buffers to SQLite and replays when the link returns.
+- The bridge writes one NDJSON file per completed scan (or on a 4 MB / 90 second fallback) to a Unity Catalog volume through the Files API.
+- Job 1 runs every 2 hours (at :03 on even UTC hours): Auto Loader ingests with `trigger(availableNow=True)`, then dbt builds silver and gold and runs the tests. Job 2 rebuilds the per-planet 90-day baseline daily at 03:40 UTC, from probe data only.
+- Detection and classification are deterministic SQL. A model never sits in the per-event path; the agent sees only an incident that already has a signature.
+- Web reports go through a model that infers sensor-equivalent values. They can raise an incident but never enter a baseline.
+- The agent is a Windows scheduled task on the desktop. The dashboard reads only the local Postgres copy, which the ForceServe puller refreshes with read-only queries.
+- Five external dead-man's-switch checks (S1 to S5) watch the bridge, Job 1, data landing, the agent and the puller, so an alert shares no failure domain with the desktop or with Databricks.
 
-## Stack
+## What it demonstrates
 
-| Layer | Technology |
-|---|---|
-| Edge — probe | Python 3, paho-mqtt, SQLite store-and-forward, Raspberry Pi 3 |
-| Edge — intake | Vanilla JS, IndexedDB buffering |
-| Transport | Mosquitto (MQTT), Databricks Files API |
-| Lakehouse | Databricks Free Edition, Delta Lake, Unity Catalog, Auto Loader |
-| Transformation | dbt Core + `dbt-databricks`, orchestrated by Lakeflow Jobs |
-| Serving | PostgreSQL |
-| Inference | Gemini (`gemini-3.1-flash-lite`) — report intake and Yoda agent, each with its own fixture suite |
-| Dashboard | Node.js + React |
-| Reference data | SWAPI + governed AI enrichment layer |
-| Local development | Docker Compose |
+### Outage survival
 
----
+The probe's SQLite store is write-ahead and deletion waits for the broker's acknowledgement, so a crash between a sweep and its publish loses nothing. The bridge acknowledges an MQTT message only after its batch has landed.
 
-## Quickstart (target: not yet runnable)
+- **Edge to broker, Phase 3 checkpoint (2026-09-29).** The link was cut on the Pi itself for 42 minutes 52 seconds. `bronze.events` held the 180 buffered rows spanning the outage, their arrival clustered within 2 seconds of the replay, proven three independent ways (workspace SQL, the Pi's journal, the bridge's landing log), with no gaps and no duplicates. Query: [`ingest/phase3_checkpoint.sql`](ingest/phase3_checkpoint.sql).
+- **Scheduled outages.** The probe forces itself offline for 1 to 3 hours about twice a day. In the Phase 4 checks, a scheduled window with a backlog of 300 landed 300 rows over 5 scans with 0 duplicates ([`ingest/phase4_checkpoint.sql`](ingest/phase4_checkpoint.sql), p4-8).
+- **Bridge and broker.** A roughly 22-hour bridge outage (2026-10-09/10) delivered intact on a manual restart. In a deliberate bridge outage of about 41 minutes the broker held three scans for the offline persistent session and delivered them when the bridge reconnected, with nothing buffered on the Pi.
+- **Re-proof, 2026-10-14.** The desktop rebooted and nothing restarted the broker, so scans stopped landing for about eleven hours. After recovery, each of the 45 fifteen-minute slots from 06:30Z to 17:30Z held exactly 60 probe events: 2,700 events and 2,700 distinct ids, 42 of the slots (2,520 events) arrived replayed, and `silver_rejects` gained 0 rows.
+- **Cloud side.** Databricks Free Edition stopped Job 1 for hours to days at a time when its quota ran out (see below). Ingestion is idempotent by design (immutable ULID-named files, exactly-once Auto Loader, dedup on `event_id`), so a stopped Job 1 means a delay, not a loss.
 
-`make demo` and `make inject` are stubs today (see [Status](#status-in-progress-phase-3-of-8)); the
-local demo arrives in Phase 4, and the control topic that `make inject` will use is part of
-Phase 3. What follows is the intended end state.
+The monitoring itself was proven too: S1 went down at exactly the period plus grace (30 minutes) in a real outage and back up on its first ping. One finding: the checks fired but the alert email had never been verified, so nothing was delivered; that was found and fixed on 2026-10-14.
 
-Runs the full pipeline locally with no cloud account. Postgres stands in for the lakehouse; the
-dbt models are the same ones that run on Databricks.
+### An agent behind hard constraints
+
+Gemini (`gemini-3.1-flash-lite`) uses function calling to propose; code decides. The agent receives an already-classified incident and has five tools (context, available Jedi, available ships, deploy, stand down). No temperature is sent.
+
+| Rule                   | Value                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| Severity floor         | below 4.40 forces a stand-down                                                    |
+| Master severity        | above 12.0 needs at least one Jedi of rank master, council member or grand master |
+| Concurrent deployments | at most 3 galaxy-wide                                                             |
+| Party size             | at most 4 Jedi per deployment                                                     |
+| Mission length         | 24 hours added to the travel time to give the release time                        |
+
+A deployment must also name no Jedi twice, use Jedi and a ship with no open deployment, match the signature's specialty, and fit the ship's capacity. An illegal proposal is rejected with every reason that applies, not just the first (one live manual deploy was rejected with five). A rejected manual deployment writes nothing.
+
+Humans get the first look: the agent decides an incident only in a cycle after the one that first saw it, and only when it was first seen at least 30 minutes before, which with Job 1 every 2 hours is about a 2-hour window. Manual deployments from the dashboard run the identical constraint code; `decided_by` (`agent` or `user`) is the only difference in the record. The agent's evaluation is 24 fixtures run 3 times each, asserting on decision class and constraint compliance ([doc 06](docs/06-yoda-agent.md)).
+
+### Operating inside Free Edition limits
+
+Free Edition runs serverless compute only, with one 2X-Small SQL warehouse, so the design fits the quota instead of fighting it.
+
+- **Job 1 cadence.** It was 15 minutes, then 30, then 60, and is now every 2 hours. At 30 minutes it exhausted the daily quota on each of 3 measured days.
+- **Warm window.** The agent runs at :11 and the ForceServe puller at :12, inside Job 1's already-running warehouse window.
+- **Poll gate.** The agent and the puller ask the Jobs API first (no warehouse time) and poll only after a new successful Job 1 run; otherwise the cycle costs 0 statements.
+- **Quota blocks.** Between 2026-10-16 and 2026-10-27 there were 5 stretches without a Job 1 run, the longest 48.9 hours (one of the five is probably not a quota block). None have been recorded since the quota lifted on 2026-10-27, and the cause of the blocks was never established.
+- **Inactivity.** From 2026-11-03 to 2026-11-16 Job 1 created no scheduled runs until a workspace login restored them, so the project logs in at least weekly.
+
+| Measured cost                                    | Value                              |
+| ------------------------------------------------ | ---------------------------------- |
+| First live pull (7-day backfill, dimensions due) | 31 statements, 58.4 s, 83,024 rows |
+| A steady publish                                 | 7 statements, about 10 s           |
+| An idle agent cycle / a gated cycle              | 2 statements / 0 statements        |
+| A rejected manual deploy                         | 3 statements, all reads            |
+
+### Testing discipline
+
+| Suite                         | Tests                                                   |
+| ----------------------------- | ------------------------------------------------------- |
+| agent                         | 573                                                     |
+| edge                          | 553 (1 skipped)                                         |
+| ingest                        | 388                                                     |
+| intake                        | 384                                                     |
+| serving                       | 190                                                     |
+| scripts                       | 10                                                      |
+| intake page (node)            | 205                                                     |
+| dashboard (node)              | 47                                                      |
+| Pester (desktop task scripts) | 72                                                      |
+| dbt                           | 12 models, 5 seeds, 121 tests, 81 unit tests, 2 sources |
+
+Every new test was mutation-checked: the production code is broken on a copy outside the repository and the test must fail on an assertion, because an error does not count as a catch. CI runs in six jobs (`python`, `serving` against a throwaway Postgres, `node`, `dbt`, `demo`, and `pester` on Windows), with no secrets and no warehouse, Gemini, broker or Pi. A manifest check after `dbt parse` fails if the dbt project no longer has exactly the expected resource counts above ([`scripts/check_dbt_manifest.py`](scripts/check_dbt_manifest.py)).
+
+## Quickstart (no cloud account needed)
+
+Prerequisites: Docker, Python 3.10 or later, Node 24 and make.
 
 ```bash
-git clone https://github.com/jivejong/JiveRepo
-cd JiveRepo/Force_Balance_Pipeline
+git clone https://github.com/jivejong/Force_Balance_Pipeline.git
+cd Force_Balance_Pipeline
 make demo
 ```
 
-Starts Mosquitto, Postgres, the probe simulator, the bridge, and the dashboard, then loads a
-90-day synthetic history so baselines are populated immediately. Open http://localhost:3000.
+`make demo` starts its own Postgres container and loads the display fixtures into it, builds the dashboard and serves it on http://127.0.0.1:8082/ (Postgres is on 127.0.0.1:5434). Deploy is off in the demo. It uses no live credential and makes no call to Databricks, Gemini or a broker.
 
-The probe runs a compressed schedule, so you'll see a `DISCONNECTED` gap and its `BURST` replay
-within a few minutes. To trigger a specific disturbance:
+- `make demo-down` stops the database and keeps its data; `make demo-clean` removes the container, volume and local files.
+- `make test` runs the Python and node suites. It expects the project venvs (`edge/.venv`, `serving/.venv`), and the serving suite needs a local Postgres on 127.0.0.1:5433 and a `.env.serving`. `make test-dashboard` builds and tests the dashboard and `make check-dbt` runs the dbt manifest check. CI overrides the interpreters; see [doc 05](docs/05-platform-setup.md), "CI (GitHub Actions)".
 
-```bash
-make inject SIGNATURE=sith_presence PLANET=coruscant
-```
+Running the full pipeline needs a Databricks Free Edition workspace, a Raspberry Pi and an MQTT broker; see [doc 05](docs/05-platform-setup.md).
 
-To run against Databricks instead, see [`docs/05-platform-setup.md`](docs/05-platform-setup.md).
+## Repository map
 
----
+| Folder       | Contents                                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------------------------ |
+| `agent/`     | The Yoda agent: constraint layer, Gemini loop, Statement API client, evaluation fixtures                     |
+| `dashboard/` | The React and Vite dashboard and its node tests                                                              |
+| `data/`      | The SWAPI snapshot and the enrichment corrections                                                            |
+| `docs/`      | The design docs 00-08, the engineering log and the phase results                                             |
+| `edge/`      | The probe simulator (`forcesim`, `probe_sim.py`) and the 90-day backfill generator                           |
+| `infra/`     | Docker Compose files, Mosquitto config, Raspberry Pi service files and the Windows task registration scripts |
+| `ingest/`    | The collector bridge, Auto Loader notebook, and the per-phase checkpoint SQL                                 |
+| `intake/`    | The web intake: server, model core, page and fixtures                                                        |
+| `resources/` | The Databricks job definitions (Job 1 and Job 2)                                                             |
+| `scripts/`   | The demo launcher, the dbt manifest check and the enrichment and seed builders                               |
+| `serving/`   | The puller, the local Postgres schema and views, and the dashboard backend                                   |
+| `warehouse/` | The dbt project (`warehouse/dbt`)                                                                            |
 
 ## Documentation
 
-| Doc | Contents |
-|---|---|
-| [01 — Architecture](docs/01-architecture.md) | Component boundaries, platform constraints, design decisions |
-| [02 — Event contract](docs/02-event-contract.md) | Envelope schema, payloads, landing zone, `source_type` semantics |
-| [03 — Data model](docs/03-data-model.md) | Medallion layers, composite scoring, signature classification |
-| [04 — Edge simulator and intake](docs/04-edge-simulators.md) | Four probe modes, fault injection, report inference |
-| [05 — Platform setup](docs/05-platform-setup.md) | Databricks workspace, dbt project, job topology |
-| [06 — Yoda agent](docs/06-yoda-agent.md) | Tools, constraint layer, evaluation fixtures |
-| [07 — Implementation plan](docs/07-implementation-plan.md) | Phased build order with verification checkpoints |
-| [08 — AI enrichment](docs/08-ai-enrichment.md) | Enrichment prompts, review process, provenance rules |
+| Doc                                        | Title                                                              |
+| ------------------------------------------ | ------------------------------------------------------------------ |
+| [00](docs/00-session-handoff.md)           | Session handoff                                                    |
+| [01](docs/01-architecture.md)              | Architecture                                                       |
+| [02](docs/02-event-contract.md)            | Event contract                                                     |
+| [03](docs/03-data-model.md)                | Data model                                                         |
+| [04](docs/04-edge-simulators.md)           | Edge simulator and web intake                                      |
+| [05](docs/05-platform-setup.md)            | Platform setup                                                     |
+| [06](docs/06-yoda-agent.md)                | Yoda agent and deployment decisions                                |
+| [07](docs/07-implementation-plan.md)       | Implementation plan                                                |
+| [08](docs/08-ai-enrichment.md)             | AI enrichment layer                                                |
+| [Engineering log](docs/ENGINEERING-LOG.md) | What happened, in order, including what broke and how it was found |
 
----
+## How this repository is developed
 
-## A note on the AI enrichment layer
+This repository is a one-way mirror of the `Force_Balance_Pipeline` folder of [jivejong/JiveRepo](https://github.com/jivejong/JiveRepo), where development happens. Commit SHAs cited in the docs refer to JiveRepo. Issues are disabled here.
 
-Planet Force parameters and Jedi attributes are LLM-generated. This is done once, with the model's
-default sampling settings, human-reviewed, and committed as version-controlled seed CSVs with
-recorded provenance. Reruns would not reproduce the committed values, which is why the reviewed
-CSVs, not the model, are the source of truth. It is never called at runtime.
+## License
 
-That constraint is load-bearing rather than cosmetic: the 90-day backfill derives from these
-parameters, and every rolling baseline derives from the backfill. Regenerating enrichment would
-silently invalidate all historical statistics. See [`docs/08-ai-enrichment.md`](docs/08-ai-enrichment.md).
+MIT, see [LICENSE](LICENSE).
 
-Enrichment content is generated from model knowledge and human-reviewed. It is not scraped from
-any wiki.
-
----
-
-## Attribution
-
-Star Wars reference data courtesy of [swapi.info](https://swapi.info), a community-maintained
-mirror of the original SWAPI project by Paul Hallett. Star Wars is a trademark of Lucasfilm Ltd.
-This is an unaffiliated, non-commercial portfolio exercise.
+Star Wars reference data courtesy of [swapi.info](https://swapi.info), a community-maintained mirror of the original SWAPI project by Paul Hallett. Star Wars is a trademark of Lucasfilm Ltd. This is an unaffiliated, non-commercial portfolio exercise.

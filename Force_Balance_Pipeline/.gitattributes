@@ -39,3 +39,7 @@ terraform/**        linguist-detectable
 *.sh     text eol=lf
 *.png    binary
 *.gif    binary
+
+# Language bar: count dbt models and checkpoint queries (SQL is a data language in Linguist)
+*.sql text eol=lf linguist-detectable=true
+data/** linguist-generated=true
