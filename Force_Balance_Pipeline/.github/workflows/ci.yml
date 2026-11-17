@@ -1,0 +1,181 @@
+# Force_Balance_Pipeline CI (doc 07 P8-3; doc 05 "CI (GitHub Actions)").
+# This copy runs in the jivejong/Force_Balance_Pipeline mirror, not in JiveRepo: GitHub only reads workflows from the repo-root
+# .github/workflows/, so in JiveRepo this file is ignored. The mirror's root is this project folder, so every path below is
+# relative to Force_Balance_Pipeline. No secrets, no warehouse, no Gemini, no broker, no Pi: the jobs use dummy values and
+# throwaway containers only. The targets are in the Makefile; CI overrides the interpreters (PYTHON=python and so on).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: edge/requirements.txt
+      # agent, ingest and intake have no requirements file of their own: they need the standard library and paho-mqtt.
+      - run: pip install -r edge/requirements.txt
+      - run: make PYTHON=python test-agent test-edge test-ingest test-intake test-scripts
+
+  serving:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: force_serving
+          POSTGRES_DB: force_serving
+          POSTGRES_PASSWORD: ci-throwaway-password
+        ports:
+          - 127.0.0.1:5433:5432
+        options: >-
+          --health-cmd "pg_isready -U force_serving -d force_serving"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: serving/requirements.txt
+      - run: pip install -r serving/requirements.txt
+      # The tests read .env.serving (serving/config.py) and create force_serving_test themselves (serving/tests/pg_support.py).
+      # Only POSTGRES_PASSWORD is required; the other keys get dummy values and there is no ping URL.
+      - name: Write a dummy .env.serving
+        run: |
+          {
+            echo "DATABRICKS_HOST=dummy.example.invalid"
+            echo "DATABRICKS_TOKEN=dummy"
+            echo "DATABRICKS_WAREHOUSE_ID=dummy"
+            echo "POSTGRES_PASSWORD=ci-throwaway-password"
+          } > .env.serving
+      - run: make SERVING_PYTHON=python test-serving
+
+  node:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: make test-node
+      - run: cd dashboard && npm ci
+      - run: make test-dashboard
+
+  dbt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: warehouse/dbt/requirements.txt
+      - run: pip install -r warehouse/dbt/requirements.txt
+      - name: Use the example profile
+        run: |
+          mkdir -p "$RUNNER_TEMP/profiles"
+          cp warehouse/dbt/profiles.yml.example "$RUNNER_TEMP/profiles/profiles.yml"
+      - name: dbt deps
+        env:
+          DATABRICKS_HOST: dummy.example.invalid
+          DATABRICKS_HTTP_PATH: /sql/1.0/warehouses/dummy
+          DATABRICKS_TOKEN: dummy
+          POSTGRES_PASSWORD: dummy
+        run: |
+          if [ -f warehouse/dbt/packages.yml ]; then
+            dbt deps --project-dir warehouse/dbt --profiles-dir "$RUNNER_TEMP/profiles"
+          fi
+      - run: make PYTHON=python DBT=dbt DBT_PROFILES_DIR="$RUNNER_TEMP/profiles" check-dbt
+
+  demo:
+    runs-on: ubuntu-latest
+    needs: node
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Start make demo
+        run: |
+          nohup make DEMO_PYTHON=python3 demo > "$RUNNER_TEMP/demo.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/demo.pid"
+      - name: Wait for /api/meta and check deploy is off
+        run: |
+          pid=$(cat "$RUNNER_TEMP/demo.pid")
+          code=000
+          for _ in $(seq 1 60); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "make demo exited before the dashboard came up" >&2
+              exit 1
+            fi
+            code=$(curl -s -o "$RUNNER_TEMP/meta.json" -w '%{http_code}' http://127.0.0.1:8082/api/meta || true)
+            [ "$code" = "200" ] && break
+            sleep 5
+          done
+          if [ "$code" != "200" ]; then
+            echo "/api/meta answered $code, expected 200" >&2
+            exit 1
+          fi
+          python3 - "$RUNNER_TEMP/meta.json" <<'PY'
+          import json, sys
+          body = json.load(open(sys.argv[1]))
+          meta = body.get("data", body)
+          if meta.get("deploy_enabled") is not False:
+              sys.exit("deploy_enabled is not false")
+          print("meta ok: deploy_enabled false, why =", meta.get("deploy_disabled_why"))
+          PY
+      - name: Print the demo log
+        if: failure()
+        run: cat "$RUNNER_TEMP/demo.log" || true
+      - name: Clean up
+        if: always()
+        run: |
+          kill "$(cat "$RUNNER_TEMP/demo.pid")" 2>/dev/null || true
+          make DEMO_PYTHON=python3 demo-clean
+
+  pester:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v7
+      # The tests use the Pester 3 syntax (Should Be), so the version is pinned.
+      - name: Install Pester 3.4.0
+        run: |
+          Install-Module Pester -RequiredVersion 3.4.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 3.4.0
+      - name: Invoke-Pester
+        run: |
+          Import-Module Pester -RequiredVersion 3.4.0
+          $result = Invoke-Pester -Path infra/desktop/register-agent-task.Tests.ps1, infra/desktop/register-bridge-task.Tests.ps1, infra/desktop/register-serve-task.Tests.ps1 -PassThru
+          if ($result.FailedCount -gt 0 -or $result.TotalCount -eq 0) { exit 1 }
