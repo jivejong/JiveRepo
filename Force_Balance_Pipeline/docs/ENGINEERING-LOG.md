@@ -8,17 +8,17 @@ why a decision went one way, what broke, how it was found, and what it cost. Dat
 `Z` suffix, the project's own convention (doc 02). Anything below computed or inferred rather than read directly
 off a log or a query result is labelled **derived**.
 
-## Stack at a glance
+## Stack at a glance (updated 2026-11-17)
 
 | Area                           | Decision                                                                                          |
 | ------------------------------ | ------------------------------------------------------------------------------------------------- |
 | Platform                       | Databricks Free Edition                                                                           |
 | Ingestion                      | Bridge writes NDJSON to a UC volume via the Files API; Auto Loader (`trigger(availableNow=True)`) |
 | Transform                      | dbt Core + `dbt-databricks`, run as a native `dbt` job task pulled from Git                       |
-| Serving                        | Postgres on a GCP e2-micro (not yet built); dashboard never queries the warehouse directly        |
-| Bridge                         | Mosquitto + Python; on the developer's desktop for Phase 3, moves to the e2-micro with TLS later  |
+| Serving                        | Postgres in Docker on the desktop (`force-postgres`, 127.0.0.1:5433), filled by `ForceServe`; dashboard never queries the warehouse directly |
+| Bridge                         | Mosquitto (Docker) + Python (`ForceBridge` scheduled task), on the developer's desktop; the e2-micro was never deployed |
 | Enrichment                     | `gemini-3.1-flash-lite`, default temperature (1.0), build-time only, human-reviewed, frozen CSVs  |
-| Agent (Phase 6, not yet built) | Cloud Run job, same Gemini model, function calling                                                |
+| Agent                          | `ForceAgent` Windows scheduled task on the desktop, same Gemini model, function calling           |
 | Probe hardware                 | Raspberry Pi 3, 64-bit Raspberry Pi OS Lite, Ethernet, no RTC                                     |
 | Probe software                 | `paho-mqtt` 2.1.x, stdlib `sqlite3`, systemd, no LLM on-device                                    |
 
@@ -2667,7 +2667,7 @@ Read-only warehouse work: 4 SELECT statements in one window (06:13Z, an even hou
 
 **Tests.** `ingest/tests/test_phase8_outage_check.py`, 13 tests (structure, window, claims), medians asserted in full; 19 mutants on copies outside the repo, all caught by an assertion FAIL (a first harness run ERRORed on every mutant for missing sibling folders, and one surviving mutant, median to average, led to asserting both full median expressions). Ingest 388 before, 401 after.
 
-**Commits:** listed in the next round.
+**Commits:** A `5f217f7` (outage check queries and test), B `8f47c41` (titled "Log Phase 8 Round 7", but its diff is only the Round 5 Pages line and the Round 6 commits line), C `1642f36` (this entry, with Round 8's).
 
 ### Round 8 (2026-11-17): windowed fallback for every incremental pull, honest failure logging
 
@@ -2688,6 +2688,43 @@ Read-only warehouse work: 4 SELECT statements in one window (06:13Z, an even hou
 **Tasks re-enabled** (06:14:48Z): ForceServe, then ForceAgent; both Ready afterwards. Catch-up: ForceServe 06:14:53Z `skip_no_new_run` (0 statements); ForceAgent cycle 06:14:50Z polled 0 incidents, 2 statements, 0 model calls, Gemini 0. Statements this round: 55 + 2 = 57 of 85.
 
 Jong: resume S5 in Healthchecks.
+
+**Commits:** A `57830be`, B `1642f36` (doc 05 and this log, shared with Round 7).
+
+### Round 9 (2026-11-17): stale-stack doc fixes, the README's cloud-outage claim, dashboard code-splitting
+
+No warehouse statement, no Gemini call, no Jobs API call, no scheduled-task action. `serving/` and `agent/` were not edited.
+
+**Docs 00 and 01 (stale stack).** Both docs placed the bridge, the serving Postgres and the agent on a GCP e2-micro or Cloud Run. Changed to what runs today (`ForceBridge`, `ForceAgent` and `ForceServe` as Windows scheduled tasks; Mosquitto and `force-postgres`, 127.0.0.1:5433, in Docker on the desktop; the dashboard backend started by hand on 127.0.0.1:8081). Doc 00: the Stack decisions rows Serving, Bridge, Agent and Dashboard, the Phase 3 staging bullet ("the e2-micro was never deployed"), the fault-injection bullet, and one "Deviation (2026-11-17)" line (9 lines added, 6 removed). Doc 01: the Component boundaries rows Collector bridge, Yoda agent and Dashboard, D10, data-flow steps 1 and 6, and the same deviation line (10 lines added, 7 removed). "Stack at a glance" in this log: heading "(updated 2026-11-17)" and the Serving, Bridge and Agent rows.
+
+**Fault injection, a correction to the instruction.** The round asked for "the deployed probe has run with `--fault-rate 0` since Phase 3". The log and doc 04 say otherwise for one period: the Pi ran at `--fault-rate 1.0` from 2026-10-07T13:29:35Z to the 2026-10-10 pull (425 injected faults, seed `fault_injection_20261007.csv`) and is back at 0. The docs say "`--fault-rate 0` since Phase 3, except one period at `--fault-rate 1.0` from 2026-10-07T13:29:35Z to 2026-10-10" and cite the Open items row "Fault injection still at `--fault-rate 0`" (Round 6's fact-source check cited "Phase 3 Today", which predates that period).
+
+**README (the cloud-outage claim).** The core-claim sentence now reads "data survives edge, broker, bridge and cloud outages with no gaps and no loss." and the "Cloud side" bullet of "Outage survival" now carries the Round 7 evidence: stop 2026-11-03 16:03Z to 2026-11-17 02:03Z after a period without a login (Open items, "Free Edition stops creating scheduled runs..."); every UTC day 2026-11-02 to 2026-11-16 with 96 scans and 5,760 events; 0 duplicate event ids; largest interval between scans 15.0 minutes; ingest lag 321.81 hours at most and 314.06 hours for 2026-11-04, the oldest day ingested entirely after the stop; the query `ingest/phase8_outage_check.sql`; one sentence on the row-cap fix with a link to doc 05, "Serving (Phase 7)". Two wording differences from the instruction: "no interval over 15.0 minutes" is written as the largest interval being 15.0 minutes (p8-3 lists intervals over 20 minutes and the largest), and the lag is 321.81 hours, not 314, because 2026-11-03's events after 16:03Z waited longest (p8-4 shows both). Numbers and where they are in this log: the stop dates (Round 7 "Recovery facts", and the Open items row), 96 scans and 5,760 events per day (Round 7, p8-1), 0 duplicates (p8-2), 15.0 minutes (p8-3), 321.81 and 314.06 hours (p8-4), the row-cap fix (Round 8 and doc 05, "Serving (Phase 7)"). Nothing else in the README changed.
+
+**Commits lines.** Rounds 7 and 8 filled in from `git log --oneline -- Force_Balance_Pipeline` by subject: Round 7 A `5f217f7`, B `8f47c41`, C `1642f36`; Round 8 A `57830be`, B `1642f36`. The commit titled "Log Phase 8 Round 7" (`8f47c41`) changed only the Round 5 Pages line and the Round 6 commits line; the Round 7 entry itself arrived in `1642f36`.
+
+**Dashboard code-splitting (finding 22).** `npm run build` gave one 641.08 kB chunk and the 500 kB warning. The four panels that import recharts (`PlanetDetail`, `SignatureBreakdown`, `IngestLag`, `RejectionRate`) are now loaded with `React.lazy`, each inside a `Suspense` with the text fallback "Loading panel" (the existing `note` class, no inline style); `GalaxyView`, `SourceHealth`, `IncidentFeed` and `DeploymentLog` stay eager. `src/App.jsx` only; `vite.config.js` unchanged (no manual chunk was needed, `chunkSizeWarningLimit` not touched). Build before and after (JavaScript chunks, kB):
+
+| Asset | Before | After |
+| --- | --- | --- |
+| `index` (entry) | 641.08 | 240.57 |
+| `CartesianChart` | - | 338.18 |
+| `BarChart` | - | 34.64 |
+| `LineChart` | - | 16.79 |
+| `PlanetDetail` | - | 10.66 |
+| `RejectionRate` | - | 1.95 |
+| `SignatureBreakdown` | - | 1.83 |
+| `IngestLag` | - | 1.61 |
+| `style` (CSS) | 5.38 | 5.38 |
+| `index.html` | 0.39 | 0.39 |
+
+The largest chunk is 338,180 bytes; no chunk warning. `dist/index.html` has one `<script type="module" src>` and one stylesheet link, no inline script or style.
+
+**Test.** `dashboard/tests/bundle.test.js` (2 tests, skipped when `dist/` is missing, like the built-page tests): every `dist/assets/*.js` is under 500,000 bytes, and `dist/index.html` has no inline script (body or missing `src`) and no inline style element or attribute. Mutations on copies outside the repo, only an assertion FAIL counts: a 600,000-byte fake asset FAIL; the same asset with the threshold raised to 5,000,000 passes, as does the real `dist/` with it; an inline script body FAIL; an empty `<script type="module">` without `src` FAIL; an inline `<style>` FAIL; an inline `style=` attribute FAIL; a script with a `src` and an inline body FAIL. All failures were `ERR_ASSERTION`. Dashboard tests: 47 before, 49 after.
+
+**Live check (`make demo`, 127.0.0.1:8082, GETs only).** `/` and all 9 files under `dist/assets` returned 200 with the right Content-Type (`text/html; charset=utf-8`, `text/javascript`, `text/css`) and a Content-Security-Policy header; `/api/meta` returned 200 (fixture data). The static handler's path checks accepted the new chunk names. `make demo-down` and `make demo-clean` ran; `force-postgres` and `force-mosquitto` kept their start times (2026-11-16T01:13:37Z), and the demo's own server processes were stopped by hand afterwards (they had been left running by the foreground `make demo`).
+
+**Suites.** Baseline and after: ingest 401 (2 skipped), edge 553 (1 skipped), serving 206, scripts 10, dashboard 47 then 49. Ingest skips: `test_paho_retries_the_first_connection_itself` (`test_bridge_resilience.RealPahoTests`) and `test_the_real_paho_client_is_built_with_a_persistent_session` (`test_cli.PersistentSessionTests`), both "paho-mqtt is not installed (run the suite with the edge venv)" (they run under the edge venv). Edge skip: `test_no_known_machine_id_in_a_tracked_file` (`test_no_sensitive_addresses.MachineIdGuardTests`), because `~/.force_balance_pipeline/sensitive-strings.txt` is not present.
 
 **Commits:** listed in the next round.
 
