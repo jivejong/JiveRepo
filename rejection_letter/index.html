@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ghosted? Get Gloriously Rejected</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- html2canvas for downloading as image -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <!-- Canvas Confetti -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Plus Jakarta Sans', sans-serif; }
+    .font-serif-doc { font-family: 'Newsreader', serif; }
+    .font-crest { font-family: 'Cinzel', serif; }
+    .paper-texture {
+      background-color: #faf7f2;
+      background-image: radial-gradient(#e5dfd5 0.75px, transparent 0.75px);
+      background-size: 16px 16px;
+    }
+    .emboss-stamp {
+      border: 3px double #b91c1c;
+      transform: rotate(-12deg);
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen antialiased selection:bg-amber-400 selection:text-slate-900 pb-16">
+
+  <!-- LinkedIn Satirical Nav -->
+  <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50 px-4 py-3">
+    <div class="max-w-6xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 bg-blue-600 rounded flex items-center justify-center font-black text-xl text-white tracking-tighter">
+          in
+        </div>
+        <div>
+          <span class="font-bold tracking-tight text-white flex items-center gap-1.5 text-base">
+            Ghosted<span class="text-blue-400">In</span>
+            <span class="text-[10px] uppercase tracking-wider bg-amber-400/10 text-amber-300 border border-amber-400/30 px-1.5 py-0.5 rounded font-mono">Satire Edition</span>
+          </span>
+        </div>
+      </div>
+      <div class="text-xs text-slate-400 hidden sm:flex items-center gap-2">
+        <span>Closure guaranteed</span>
+        <span class="text-slate-600">•</span>
+        <span class="text-emerald-400 font-medium">0% Ghost Rate</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <main class="max-w-5xl mx-auto px-4 pt-10">
+    <div class="text-center max-w-2xl mx-auto mb-10">
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-xs text-slate-300 mb-4">
+        <span> Tired of waiting 6 weeks for automated radio silence?</span>
+      </div>
+      <h1 class="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight text-white mb-4">
+        Turn Ghosting Into <span class="bg-gradient-to-r from-amber-300 via-yellow-200 to-amber-400 bg-clip-text text-transparent">Unadulterated Flattery</span>
+      </h1>
+      <p class="text-slate-400 text-sm sm:text-base leading-relaxed">
+        If hiring teams won't give you closure, write the rejection letter you deserve: one where you were simply too visionary, dangerous, and magnificent for their humble quarterly roadmap.
+      </p>
+    </div>
+
+    <!-- Generator & Preview Grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+      
+      <!-- Input Controls Panel -->
+      <section class="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+        <h2 class="text-base font-semibold text-white mb-1 flex items-center justify-between">
+          <span>Letter Parameters</span>
+          <button id="shuffleBtn" class="text-xs text-amber-400 hover:text-amber-300 transition-colors font-normal">
+            ↻ Randomize
+          </button>
+        </h2>
+        <p class="text-xs text-slate-400 mb-5">Enter your details or mock information to craft your letter.</p>
+
+        <form id="letterForm" class="space-y-4">
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1" for="candidateName">Your Name</label>
+            <input type="text" id="candidateName" class="w-full bg-slate-950 border border-slate-750 border-slate-700 rounded-lg px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400 transition" value="Alex Vance" placeholder="e.g. Sarah Connor">
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1" for="companyName">Target Company</label>
+            <input type="text" id="companyName" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400 transition" value="Apex HyperGrowth Corp" placeholder="e.g. Acme Innovations">
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1" for="roleTitle">Role Applied For</label>
+            <input type="text" id="roleTitle" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400 transition" value="Principal Solutions Alchemist" placeholder="e.g. Senior Product Lead">
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1" for="superpower">Secret Competency / Flaw</label>
+            <input type="text" id="superpower" class="w-full bg-slate-950 border border-slate-750 border-slate-700 rounded-lg px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400 transition" value="telepathic architectural foresight" placeholder="e.g. solving latency by staring at code">
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1" for="archetypeSelect">Flattery Archetype</label>
+            <select id="archetypeSelect" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400 transition cursor-pointer">
+              <option value="intimidation">Terror & Awe (We are simply intimidated)</option>
+              <option value="existential">Cosmic & Spiritual (Your aura transcends our OKRs)</option>
+              <option value="humility">Financial Ruin (We cannot afford this majesty)</option>
+              <option value="boardroom">Board Coup Risk (You will take over the company in 90 days)</option>
+              <option value="melodrama">Tears & Mourning (Archiving your resume broke our hearts)</option>
+            </select>
+          </div>
+
+          <div class="pt-2">
+            <button type="button" id="generateBtn" class="w-full bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-bold py-3 px-4 rounded-xl shadow-lg shadow-amber-400/20 active:scale-[0.98] transition">
+              Regenerate Formal Rejection ✨
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Letterhead Render Canvas -->
+      <section class="lg:col-span-7 space-y-4">
+        <!-- Action Toolbar -->
+        <div class="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-xs">
+          <div class="text-slate-400">
+            Document Status: <span class="text-emerald-400 font-mono font-medium uppercase">Issued with Regret</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="copyBtn" class="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition flex items-center gap-1.5">
+              <span>📋</span> Copy Text
+            </button>
+            <button id="downloadBtn" class="bg-amber-400/20 hover:bg-amber-400/30 text-amber-300 border border-amber-400/40 px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 font-medium">
+              <span>📷</span> Export PNG
+            </button>
+          </div>
+        </div>
+
+        <!-- The Printable Parchment -->
+        <div id="rejectionLetterCard" class="paper-texture text-stone-900 rounded-2xl p-8 sm:p-10 shadow-2xl border border-stone-300/80 relative overflow-hidden">
+          
+          <!-- Subtle watermark -->
+          <div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.03] select-none">
+            <span class="font-crest text-9xl tracking-widest uppercase">Apex</span>
+          </div>
+
+          <!-- Rubber Stamp Badge -->
+          <div class="absolute top-6 right-6 select-none pointer-events-none">
+            <div class="emboss-stamp text-red-700 px-3 py-1 text-center font-bold font-crest tracking-wider text-[11px] uppercase bg-red-100/40">
+              OVERQUALIFIED<br>
+              <span class="text-[9px] font-sans font-semibold tracking-normal text-red-800">Do Not Interview (Dangerous)</span>
+            </div>
+          </div>
+
+          <!-- Letterhead Header -->
+          <div class="border-b border-stone-300 pb-5 mb-6 flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-stone-900 flex items-center justify-center text-amber-400 font-crest text-xl font-bold shadow-sm">
+              <span id="crestLetter">A</span>
+            </div>
+            <div>
+              <h3 id="letterOrgName" class="font-crest text-lg sm:text-xl font-bold tracking-wider uppercase text-stone-900">Apex HyperGrowth Corp</h3>
+              <p class="text-[11px] font-serif-doc uppercase tracking-widest text-stone-500">Executive Committee of Talent & Existential Stewardship</p>
+              <p class="text-[10px] text-stone-400 font-mono mt-0.5">REF: <span id="docRefId">DISQ-2026-9942</span> • CLASSIFIED: SUBLIME</p>
+            </div>
+          </div>
+
+          <!-- Recipient Meta -->
+          <div class="text-xs font-mono text-stone-600 mb-6 space-y-0.5 border-l-2 border-stone-300 pl-3">
+            <div><span class="text-stone-400">TO:</span> <strong id="letterApplicant" class="text-stone-800">Alex Vance</strong></div>
+            <div><span class="text-stone-400">RE:</span> <span id="letterPosition">Principal Solutions Alchemist</span></div>
+            <div><span class="text-stone-400">DATE:</span> <span id="letterDate">March 2026</span></div>
+          </div>
+
+          <!-- Body Paragraphs -->
+          <div id="letterContent" class="font-serif-doc text-base sm:text-lg leading-relaxed text-stone-800 space-y-4">
+            <!-- Dynamically populated -->
+          </div>
+
+          <!-- Formal Signoff -->
+          <div class="mt-10 pt-6 border-t border-stone-300 flex justify-between items-end">
+            <div>
+              <div class="font-serif-doc italic text-stone-600 text-sm mb-2">With deepest reverence and slight apprehension,</div>
+              <div class="font-crest text-sm font-bold text-stone-900" id="signatoryName">Lord Harrison Sterling III</div>
+              <div class="text-xs text-stone-500" id="signatoryTitle">Director of Talent Curation & Fragility Prevention</div>
+            </div>
+            <div class="text-right">
+              <div class="inline-block p-1 bg-stone-200/80 rounded border border-stone-300 text-[10px] font-mono text-stone-500 uppercase">
+                Seal of Finality
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <footer class="mt-16 text-center text-xs text-slate-500">
+    <p>Zero candidate feelings were harmed in the making of this letter. Hostable via GitHub Pages.</p>
+  </footer>
+
+  <!-- Logic & Scripts -->
+  <script>
+    // Audio synthesis using Web Audio API (fanfare chime)
+    function playTriumphChime() {
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const now = ctx.currentTime;
+        const notes = [261.63, 329.63, 392.00, 523.25]; // C, E, G, C
+        notes.forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(freq, now + idx * 0.08);
+          gain.gain.setValueAtTime(0.001, now + idx * 0.08);
+          gain.gain.exponentialRampToValueAtTime(0.2, now + idx * 0.08 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.08 + 0.5);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + idx * 0.08);
+          osc.stop(now + idx * 0.08 + 0.5);
+        });
+      } catch (e) {
+        // Audio policy or error ignore
+      }
+    }
+
+    const templates = {
+      intimidation: {
+        signatory: "Vance Sterling",
+        title: "Chief Risk & Organizational Self-Preservation Officer",
+        paragraphs: (name, comp, role, power) => [
+          `Dear ${name},`,
+          `We are writing to inform you that the interview panel has unanimously elected to decline your candidacy for the <strong>${role}</strong> opening at ${comp}. This was not a business decision; it was an act of raw self-preservation.`,
+          `During the review of your portfolio, our Senior Vice President of Operations began trembling. Your background—particularly your reputation for <em>${power}</em>—does not suggest a mere employee. It suggests an incoming conqueror. Introducing someone of your sheer intellectual firepower into our middle-management hierarchy would cause our existing workflows to vaporize like tissue paper in a furnace.`,
+          `Quite frankly, we enjoy our comfortable mediocrity. We like our two-hour alignment meetings that produce zero action items. You would have fixed all our quarterly targets by Wednesday afternoon, leaving the remaining 400 staff members with nothing to do but reflect upon their wasted youths.`,
+          `We wish you boundless triumph elsewhere, preferably at our most aggressive competitors.`
+        ]
+      },
+      existential: {
+        signatory: "Aria Thorne",
+        title: "VP of Spiritual Bandwidth & Cosmic HR",
+        paragraphs: (name, comp, role, power) => [
+          `Beloved ${name},`,
+          `It is with a heavy heart and trembling chakras that we release your application for <strong>${role}</strong> back into the universe.`,
+          `Upon contemplating your candidacy, our talent council realized that the mortal construct of ${comp} is simply not wide enough to house your radiance. To assign someone equipped with <em>${power}</em> to mere sprint planning would be akin to using the James Webb Space Telescope to locate a dropped contact lens.`,
+          `Your aura belongs in the high Himalayas or inaugurating a new epoch of civilization—not filling out Jira tickets in three-week cadences. Confining you here would incur a karmic debt our equity pool cannot balance.`,
+          `Please forgive our smallness. Keep illuminating the cosmos.`
+        ]
+      },
+      humility: {
+        signatory: "Marcus Sterling-Cash",
+        title: "Head of Treasury Preservation",
+        paragraphs: (name, comp, role, power) => [
+          `Esteemed ${name},`,
+          `After deep deliberation regarding the <strong>${role}</strong> post, our CFO has barred us from extending an offer.`,
+          `It became instantly apparent that remunerating someone with your mastery of <em>${power}</em> would require us to liquidate our Series B tranche, sell the executive snack lounge, and place our primary headquarters up for auction on eBay.`,
+          `Even offering you the customary top-of-band equity slice felt like insulting royalty with a voucher for a complimentary car wash. You deserve to be paid in sovereignty and rare earth minerals, neither of which our cap table presently supports.`,
+          `We will watch your ascent from a respectful, fiscally solvent distance.`
+        ]
+      },
+      boardroom: {
+        signatory: "Evelyn Cross",
+        title: "Lead Independent Director",
+        paragraphs: (name, comp, role, power) => [
+          `Dear ${name},`,
+          `Following an emergency executive closed-door session, ${comp} must formally decline to advance your candidacy for <strong>${role}</strong>.`,
+          `The Board observed that your strategic vision and knack for <em>${power}</em> would inevitably result in you staging a peaceful internal boardroom coup by Day 45. Our current Chief Executive Officer holds two children and a mortgage; we cannot in good conscience place him in an open-plan office adjacent to someone whose gaze already radiates sovereign governance.`,
+          `We ask that you refrain from applying again until the current leadership team reaches full pension maturation in 2038.`
+        ]
+      },
+      melodrama: {
+        signatory: "Montgomery Higgins",
+        title: "Senior Grief Coordinator in Talent Acquisition",
+        paragraphs: (name, comp, role, power) => [
+          `Dearest ${name},`,
+          `The hiring committee has spent the last forty-eight hours in collective mourning. Moving your profile to the "Archived" folder in our applicant tracking system was performed with white gloves, black armbands, and a lone bagpipe rendition echoing through our Zoom room.`,
+          `Why, then, do we not hire you as our <strong>${role}</strong>? Because the world is cruel, poetry is fleeting, and the department head was too emotionally shattered by the incandescent beauty of your <em>${power}</em> to proceed.`,
+          `You are the one that got away. We will tell future cohorts of interns about you by the flickering glow of the vending machine.`
+        ]
+      }
+    };
+
+    const shufflePresets = [
+      { name: "Morgan Drake", company: "Hyperion Cloud Dynamics", role: "VP of Chaos Engineering", power: "diagnosing distributed deadlocks through telepathy", archetype: "intimidation" },
+      { name: "Jordan Bellamy", company: "Lumina Wellness OS", role: "Head of Vibes & Retention", power: "transmuting burned-out burnouts into ecstatic disciples", archetype: "existential" },
+      { name: "Devon Reed", company: "Apex Quantitative Alpha", role: "Principal Yield Architect", power: "front-running arbitrage before the market even exists", archetype: "humility" },
+      { name: "Samantha Sterling", company: "OmniCorp Global Holdings", role: "Chief Strategic Instigator", power: "restructuring entire org charts during a 15-minute coffee run", archetype: "boardroom" }
+    ];
+
+    function renderLetter() {
+      const name = document.getElementById('candidateName').value.trim() || "Esteemed Candidate";
+      const company = document.getElementById('companyName').value.trim() || "Our Organization";
+      const role = document.getElementById('roleTitle').value.trim() || "Visionary Contributor";
+      const power = document.getElementById('superpower').value.trim() || "effortless brilliance";
+      const archetypeKey = document.getElementById('archetypeSelect').value;
+
+      const template = templates[archetypeKey] || templates.intimidation;
+
+      // Update Header & Letter Meta
+      document.getElementById('letterApplicant').textContent = name;
+      document.getElementById('letterOrgName').textContent = company;
+      document.getElementById('crestLetter').textContent = (company.charAt(0) || 'A').toUpperCase();
+      document.getElementById('letterPosition').textContent = role;
+      document.getElementById('signatoryName').textContent = template.signatory;
+      document.getElementById('signatoryTitle').textContent = `${template.title}, ${company}`;
+
+      const dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+      document.getElementById('letterDate').textContent = dateStr;
+
+      // Random doc ID
+      const randomId = Math.floor(1000 + Math.random() * 9000);
+      document.getElementById('docRefId').textContent = `REJ-${new Date().getFullYear()}-${randomId}`;
+
+      // Build paragraphs
+      const pElements = template.paragraphs(name, company, role, power)
+        .map(pText => `<p>${pText}</p>`)
+        .join('');
+
+      document.getElementById('letterContent').innerHTML = pElements;
+    }
+
+    // Trigger regeneration
+    document.getElementById('generateBtn').addEventListener('click', () => {
+      renderLetter();
+      playTriumphChime();
+      if (window.confetti) {
+        confetti({
+          particleCount: 50,
+          spread: 60,
+          origin: { y: 0.7 },
+          colors: ['#f59e0b', '#d97706', '#fbbf24', '#ffffff']
+        });
+      }
+    });
+
+    document.getElementById('archetypeSelect').addEventListener('change', renderLetter);
+
+    // Shuffle inputs
+    document.getElementById('shuffleBtn').addEventListener('click', () => {
+      const pick = shufflePresets[Math.floor(Math.random() * shufflePresets.length)];
+      document.getElementById('candidateName').value = pick.name;
+      document.getElementById('companyName').value = pick.company;
+      document.getElementById('roleTitle').value = pick.role;
+      document.getElementById('superpower').value = pick.power;
+      document.getElementById('archetypeSelect').value = pick.archetype;
+      renderLetter();
+      playTriumphChime();
+    });
+
+    // Copy to clipboard
+    document.getElementById('copyBtn').addEventListener('click', async () => {
+      const container = document.getElementById('letterContent');
+      const plainText = container.innerText;
+      const applicant = document.getElementById('letterApplicant').textContent;
+      const org = document.getElementById('letterOrgName').textContent;
+      const fullCopy = `--- OFFICIAL REJECTION NOTICE ---\nORGANIZATION: ${org}\nTO: ${applicant}\n\n${plainText}\n\n- ${document.getElementById('signatoryName').textContent}`;
+
+      try {
+        await navigator.clipboard.writeText(fullCopy);
+        const originalText = document.getElementById('copyBtn').innerHTML;
+        document.getElementById('copyBtn').innerHTML = `<span>✓</span> Copied!`;
+        setTimeout(() => {
+          document.getElementById('copyBtn').innerHTML = originalText;
+        }, 2000);
+      } catch (err) {
+        alert("Copied to clipboard!");
+      }
+    });
+
+    // Download as PNG
+    document.getElementById('downloadBtn').addEventListener('click', () => {
+      const card = document.getElementById('rejectionLetterCard');
+      html2canvas(card, {
+        scale: 2,
+        backgroundColor: '#faf7f2',
+        useCORS: true
+      }).then(canvas => {
+        const link = document.createElement('a');
+        link.download = `Flattering-Rejection-${document.getElementById('candidateName').value.replace(/\s+/g, '-')}.png`;
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+      });
+    });
+
+    // Initial render
+    renderLetter();
+  </script>
+</body>
+</html>
