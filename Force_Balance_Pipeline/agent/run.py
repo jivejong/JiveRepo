@@ -46,6 +46,8 @@ QUOTA_WINDOW_HOUR_UTC = 3
 CYCLE_SECONDS = 30 * 60
 JOB1_WAIT_SECONDS = 10 * 60          # how long a cycle waits for a running Job 1 before it skips (doc 06 "Runtime")
 JOB1_POLL_SECONDS = 30
+LOCK_WAIT_SECONDS = 30               # how long a start waits for agent.lock (held by ForceServe's probe or a manual deploy) before it skips
+LOCK_POLL_SECONDS = 2
 PING_TIMEOUT_SECONDS = 10
 LOG_MAX_BYTES, LOG_BACKUPS = 1_000_000, 3
 
@@ -96,6 +98,17 @@ def decision_record(row, decision):
     record.update(model_calls=decision.model_calls, prompt_tokens=decision.prompt_tokens, output_tokens=decision.output_tokens,
                   thought_tokens=decision.thought_tokens, cost_usd=decision.cost_usd)
     return record
+
+
+def merge_inserted(rows):
+    """num_inserted_rows from a MERGE's result (the statement API returns it as a "0" or "1" string), as an int; None when the result has no
+    count or it does not parse. serving.deploy uses the same reading."""
+    first = rows[0] if rows and isinstance(rows[0], dict) else None
+    value = first.get("num_inserted_rows") if first else None
+    try:
+        return None if value is None else int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def append_ndjson(path, record):
@@ -223,7 +236,7 @@ def run_cycle(*, target, limit, db, gemini, budget, job1_check, clock, monotonic
                 break
             decided_at = clock()
             row = build_row(context, decision, decided_at, ulid_fn())
-            db.write(*queries.write_decision(target, row))
+            merged = db.write(*queries.write_decision(target, row))
         except GeminiPermanent as e:
             degraded = True
             log(f"agent: incident {disturbance_id}: a permanent model error ({e.kind}); nothing written; the cycle is degraded")
@@ -237,12 +250,22 @@ def run_cycle(*, target, limit, db, gemini, budget, job1_check, clock, monotonic
         except StatementError as e:
             log(f"agent: incident {disturbance_id}: a statement failed ({type(e).__name__}); not marked")
             continue
-        totals[decision.decision] += 1
-        totals["model_calls"] += decision.model_calls
+        totals["model_calls"] += decision.model_calls                 # the model was called whatever the MERGE did
         totals["prompt"] += decision.prompt_tokens
         totals["output"] += decision.output_tokens
         totals["thought"] += decision.thought_tokens
         totals["cost"] += decision.cost_usd
+        inserted = merge_inserted(merged)
+        if inserted is None:
+            log(f"agent: incident {disturbance_id}: merge_result_unknown; not counted as decided and not marked")
+            continue
+        if inserted == 0:
+            # A decision for this incident already existed (or a retried MERGE found its own first attempt): nothing new was written, so no
+            # fresh decision is logged and nothing is marked; the next cycle's repair marks the incident if it needs it.
+            log(f"agent: incident {disturbance_id}: decision=merge_noop (the MERGE inserted no row)")
+            append_ndjson(decisions_path, dict(decision_record(row, decision), outcome="merge_noop"))
+            continue
+        totals[decision.decision] += 1
         append_ndjson(decisions_path, decision_record(row, decision))
         log(f"agent: incident {disturbance_id}: {decision.decision}" +
             (f" ({', '.join(decision.jedi_ids)} on {decision.starship_id})" if decision.decision == "deploy" else ""))
@@ -285,7 +308,8 @@ def wait_for_job1(job1_check, *, sleep, wait_seconds, poll_seconds):
 
 def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, ping, clock, monotonic, log, decisions_path, seen,
                 decide_fn=decide, ulid_fn=ulid_now, epoch=AGENT_EPOCH, sleep=time.sleep, job1_wait=JOB1_WAIT_SECONDS,
-                job1_poll=JOB1_POLL_SECONDS, start_path=None, latest_run=None, job1_run_path=None):
+                job1_poll=JOB1_POLL_SECONDS, start_path=None, latest_run=None, job1_run_path=None, lock_factory=InstanceLock,
+                lock_wait=LOCK_WAIT_SECONDS, lock_poll=LOCK_POLL_SECONDS):
     """Steps a to c and g: the lock, the start debounce, the quota window, the Job 1 check (waiting for a running Job 1 for up to job1_wait
     seconds, polling every job1_poll), and the S4 ping. Returns the exit code. S4: success, or /fail after a Jobs API error, a permanent
     model error or a crash. start_path (logs\\agent_last_start.txt): when given, a start less than DEBOUNCE_SECONDS after the previous one
@@ -293,12 +317,18 @@ def run_guarded(*, target, limit, lock_path, db, gemini, budget, job1_check, pin
     The poll gate (prod only; see poll_gate): after the Job 1 check, latest_run() names Job 1's newest successful run. A run other than the one in
     job1_run_path means poll (an incident waiting out its window is decided at the next cycle after a new run); otherwise the cycle ends with decision=no_new_run, a success ping and no
     statement. job1_run_path is written, atomically, only after a cycle whose poll succeeded. A JobsApiError ends the cycle like the Job 1 check's."""
-    lock = InstanceLock(lock_path)
-    try:
-        lock.acquire()
-    except AlreadyRunning:
-        log("agent: already running; exiting")
-        return 0
+    lock = lock_factory(lock_path)
+    waited_for_lock = 0
+    while True:
+        try:
+            lock.acquire()
+            break
+        except AlreadyRunning:
+            if waited_for_lock >= lock_wait:           # agent.lock has three holders (this agent, ForceServe's probe, a manual deploy): wait, then skip
+                log(f"agent: decision=skip_lock_held (agent.lock was held for {waited_for_lock} s); no warehouse call")
+                return 0
+            sleep(lock_poll)
+            waited_for_lock += lock_poll
     try:
         if start_path is not None:
             started = clock()

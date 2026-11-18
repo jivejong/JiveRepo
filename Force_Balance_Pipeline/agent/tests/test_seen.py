@@ -1,8 +1,10 @@
 """agent/seen.py: the first-seen store of the human-first window (doc 06)."""
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _support  # noqa: F401  (puts the repo root on the path)
 from agent.seen import SeenStore
@@ -38,6 +40,58 @@ class Store(unittest.TestCase):
     def test_no_temp_file_is_left_after_a_save(self):
         self.store.save({"a": "x"})
         self.assertEqual([p.name for p in self.dir.iterdir()], ["agent_seen_dev.json"])
+
+
+class SaveRetry(unittest.TestCase):
+    """Finding 12: os.replace can raise PermissionError on Windows while the server has the file open; one retry after 0.2 s."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.sleeps = []
+        self.store = SeenStore(self.dir / "agent_seen_prod.json", sleep=self.sleeps.append)
+        self.real = os.replace
+
+    def test_the_first_replace_fails_and_the_second_saves(self):
+        calls = []
+
+        def flaky(src, dst):
+            calls.append(1)
+            if len(calls) == 1:
+                raise PermissionError("in use")
+            return self.real(src, dst)
+        with mock.patch("agent.seen.os.replace", flaky):
+            self.store.save({"a": "x"})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.sleeps, [0.2])
+        self.assertEqual(self.store.load(), {"a": "x"})
+        self.assertEqual([p.name for p in self.dir.iterdir()], ["agent_seen_prod.json"])
+
+    def test_both_replaces_fail_and_it_raises_leaving_no_temp_file(self):
+        calls = []
+
+        def broken(src, dst):
+            calls.append(1)
+            raise PermissionError("in use")
+        with mock.patch("agent.seen.os.replace", broken):
+            with self.assertRaises(PermissionError):
+                self.store.save({"a": "x"})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(list(self.dir.iterdir()), [])
+
+    def test_a_clean_replace_does_not_sleep(self):
+        self.store.save({"a": "x"})
+        self.assertEqual(self.sleeps, [])
+
+    def test_an_error_other_than_permission_is_not_retried(self):
+        calls = []
+
+        def other(src, dst):
+            calls.append(1)
+            raise OSError("disk")
+        with mock.patch("agent.seen.os.replace", other):
+            with self.assertRaises(OSError):
+                self.store.save({"a": "x"})
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

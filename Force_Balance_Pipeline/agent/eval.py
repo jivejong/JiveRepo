@@ -13,7 +13,6 @@ import dataclasses
 import json
 import sys
 import time
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +23,10 @@ from agent.context import constraint_inputs
 from agent.fixtures.spec import FIXTURES
 from agent.gemini import GeminiClient, GeminiUnavailable
 from agent.loop import decide
+
+sys.path.insert(0, str(ROOT / "ingest" / "bridge"))      # files_api: the one outbound HTTP path
+
+import files_api  # noqa: E402
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 RESULTS_FILE = Path(__file__).resolve().parent / "eval_results.md"
@@ -194,7 +197,7 @@ def main(argv=None):
     env = load_env(args.env, required=EVAL_ENV_KEYS)
     fixtures = load_fixtures(only=args.only)
     budget = CallBudget(args.budget)
-    client = GeminiClient(env["GEMINI_API_KEY"], env["INFERENCE_MODEL"], opener=urllib.request.urlopen, sleep=time.sleep,
+    client = GeminiClient(env["GEMINI_API_KEY"], env["INFERENCE_MODEL"], opener=files_api.default_opener, sleep=time.sleep,
                           monotonic=time.monotonic, budget=budget)
     results, exhausted = run_suite(fixtures, args.runs, lambda ctx: decide(ctx, client, budget, monotonic=time.monotonic))
 

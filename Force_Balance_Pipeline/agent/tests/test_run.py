@@ -15,7 +15,7 @@ from agent.budget import BudgetExhausted, CallBudget
 from agent.dbsql import StatementFailed, StatementTimeout, iso_z
 from agent.jobs import JobsApiError
 from agent.gemini import GeminiPermanent, GeminiTransient, GeminiUnavailable
-from agent.lock import InstanceLock
+from agent.lock import AlreadyRunning, InstanceLock
 from agent.loop import Decision, decide
 from agent.seen import SeenStore
 
@@ -47,8 +47,9 @@ def kind_of(sql):
 
 
 class FakeDb:
-    def __init__(self, ids=(), fail=None, context_overrides=None, no_context=False, repair_n=0):
+    def __init__(self, ids=(), fail=None, context_overrides=None, no_context=False, repair_n=0, merge_result=UNSET):
         self.ids = list(ids)
+        self.merge_result = [{"num_inserted_rows": "1"}] if merge_result is UNSET else merge_result    # what a MERGE returns (a LONG as a string)
         self.repair_n = repair_n
         self.no_context = no_context
         self.fail = fail or {}                      # kind -> exception to raise on every call
@@ -76,6 +77,8 @@ class FakeDb:
             return [dict(j) for j in JEDI]
         if kind == "ships":
             return [dict(s) for s in SHIPS]
+        if kind == "write":
+            return self.merge_result
         return []
 
     read = write = _do
@@ -94,9 +97,9 @@ def fake_decision(kind="deploy", **overrides):
 
 class Harness:
     def __init__(self, directory, ids=(), hour=12, job1=(False, "idle"), decide_fn=None, fail=None, monotonic=None, limit=None,
-                 context_overrides=None, hold_lock=False, repair_n=0, preseed=True):
+                 context_overrides=None, hold_lock=False, repair_n=0, preseed=True, merge_result=UNSET):
         self.dir = Path(directory)
-        self.db = FakeDb(ids, fail, context_overrides, repair_n=repair_n)
+        self.db = FakeDb(ids, fail, context_overrides, repair_n=repair_n, merge_result=merge_result)
         self.pings, self.logs, self.decide_calls = [], [], []
         self.budget = CallBudget(20)
         self.lock_path = self.dir / "agent.lock"
@@ -168,7 +171,7 @@ class Skips(unittest.TestCase):
         self.assertEqual(h.go(), 0)
         self.assertEqual(h.pings, [])
         self.assertEqual(h.db.kinds, [])
-        self.assertIn("agent: already running; exiting", h.logs)
+        self.assertTrue(any(line.startswith("agent: decision=skip_lock_held") for line in h.logs))
 
     def test_the_quota_hour_skips_the_cycle_and_pings_success(self):
         h = harness(ids=["a"], hour=3)
@@ -977,7 +980,7 @@ class StartDebounce(unittest.TestCase):
         h = self.debounced_harness(hold_lock=True)
         h.start_path.write_text(iso_z(NOW - timedelta(seconds=1)) + chr(10), encoding="ascii")
         h.go()
-        self.assertTrue(any("already running" in line for line in h.logs))
+        self.assertTrue(any("skip_lock_held" in line for line in h.logs))
         self.assertFalse(any("debounced" in line for line in h.logs))
 
     def test_the_debounce_is_off_without_a_start_path(self):
@@ -1111,6 +1114,113 @@ class PollGate(unittest.TestCase):
         h2 = self.gated(run_id=102, stored=101, hour=3)
         h2.go()
         self.assertEqual(h2.latest_calls, 0)
+
+
+class MergeResult(unittest.TestCase):
+    """Finding 7: the agent reads num_inserted_rows from its MERGE (a "0" or "1" string) before it logs or marks a decision."""
+
+    def test_one_inserted_row_is_the_unchanged_path(self):
+        h = harness(ids=["inc-1"], merge_result=[{"num_inserted_rows": "1"}])
+        h.go()
+        self.assertIn("mark", h.db.kinds)
+        self.assertTrue(any(line.startswith("agent: incident inc-1: deploy") for line in h.logs))
+        self.assertFalse(any("merge_noop" in line or "merge_result_unknown" in line for line in h.logs))
+        record = json.loads(h.decisions_path.read_text(encoding="ascii").splitlines()[0])
+        self.assertNotIn("outcome", record)
+        self.assertIn("decided=1 (deploy=1", next(x for x in h.logs if x.startswith("agent: cycle ")))
+
+    def test_zero_inserted_rows_is_a_merge_noop_not_a_fresh_decision(self):
+        h = harness(ids=["inc-1"], merge_result=[{"num_inserted_rows": "0"}])
+        h.go()
+        self.assertNotIn("mark", h.db.kinds)
+        self.assertEqual(h.db.kinds, ["repair_needed", "poll", "context", "jedi", "ships", "write"])      # nothing extra ran
+        self.assertIn("agent: incident inc-1: decision=merge_noop (the MERGE inserted no row)", h.logs)
+        self.assertFalse(any(line.startswith("agent: incident inc-1: deploy") for line in h.logs))
+        self.assertTrue(h.decisions_path.exists(), "no ndjson entry was written for the merge_noop")
+        lines = h.decisions_path.read_text(encoding="ascii").splitlines()
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        self.assertEqual((record["disturbance_id"], record.get("outcome")), ("inc-1", "merge_noop"))
+        summary = next(x for x in h.logs if x.startswith("agent: cycle "))
+        self.assertIn("polled=1 decided=0 (deploy=0 stand_down=0) left=1", summary)
+        self.assertIn("model_calls=1", summary)                  # the model was called, so its usage is still counted
+
+    def test_a_missing_or_unparseable_count_is_unknown_and_not_decided(self):
+        for result in ([], None, [{}], [{"num_inserted_rows": None}], [{"num_inserted_rows": "many"}], ["x"]):
+            with self.subTest(result=result):
+                h = harness(ids=["inc-1"], merge_result=result)
+                self.assertEqual(h.go(), 0)
+                self.assertNotIn("mark", h.db.kinds)
+                self.assertIn("agent: incident inc-1: merge_result_unknown; not counted as decided and not marked", h.logs)
+                self.assertFalse(h.decisions_path.exists())
+                self.assertIn("decided=0", next(x for x in h.logs if x.startswith("agent: cycle ")))
+
+    def test_the_reader(self):
+        self.assertEqual(run.merge_inserted([{"num_inserted_rows": "1"}]), 1)
+        self.assertEqual(run.merge_inserted([{"num_inserted_rows": 0}]), 0)
+        self.assertIsNone(run.merge_inserted([]))
+        self.assertIsNone(run.merge_inserted([{"num_affected_rows": "1"}]))
+
+
+class FakeLock:
+    """An InstanceLock that stays held until `free_after` seconds of sleeping have passed (None = never)."""
+    clock, free_after, attempts = {"slept": 0}, None, 0
+
+    def __init__(self, path):
+        self.path = path
+
+    def acquire(self):
+        FakeLock.attempts += 1
+        if FakeLock.free_after is None or FakeLock.clock["slept"] < FakeLock.free_after:
+            raise AlreadyRunning("held")
+        return self
+
+    def release(self):
+        pass
+
+
+class LockWait(unittest.TestCase):
+    """Finding 13: a start that meets agent.lock held retries every 2 s for up to 30 s, then skips with no warehouse call."""
+
+    def run_with(self, free_after):
+        h = harness(ids=["inc-1"])
+        slept = {"slept": 0}
+        FakeLock.clock, FakeLock.free_after, FakeLock.attempts = slept, free_after, 0
+
+        def sleep(seconds):
+            slept["slept"] += seconds
+            h.sleeps.append(seconds)
+        code = run.run_guarded(
+            target=h.target, limit=None, lock_path=h.lock_path, db=h.db, gemini=object(), budget=h.budget, job1_check=h.job1_check,
+            ping=h.pings.append, clock=lambda: h.now.replace(hour=h.hour), monotonic=h.monotonic, log=h.logs.append,
+            decisions_path=h.decisions_path, decide_fn=h.decide_fn, ulid_fn=lambda: next(h.ulids), epoch=h.epoch, seen=h.seen, sleep=sleep,
+            lock_factory=FakeLock)
+        return h, code, slept["slept"]
+
+    def test_freed_after_4_seconds_it_runs(self):
+        h, code, slept = self.run_with(4)
+        self.assertEqual(code, 0)
+        self.assertEqual(slept, 4)
+        self.assertIn("write", h.db.kinds)
+        self.assertFalse(any("skip_lock_held" in line for line in h.logs))
+
+    def test_held_for_31_seconds_it_skips_with_no_warehouse_call(self):
+        h, code, slept = self.run_with(31)
+        self.assertEqual(code, 0)
+        self.assertEqual(h.db.kinds, [])
+        self.assertEqual(h.pings, [])
+        self.assertEqual(sum(1 for line in h.logs if line.startswith("agent: decision=skip_lock_held")), 1)
+
+    def test_the_wait_never_exceeds_30_seconds(self):
+        h, code, slept = self.run_with(None)
+        self.assertEqual(slept, 30)
+        self.assertEqual(FakeLock.attempts, 16)                   # the first try, then one every 2 s
+        self.assertTrue(all(s == 2 for s in h.sleeps))
+
+    def test_a_free_lock_does_not_sleep(self):
+        h, code, slept = self.run_with(0)
+        self.assertEqual(slept, 0)
+        self.assertEqual(FakeLock.attempts, 1)
 
 
 if __name__ == "__main__":

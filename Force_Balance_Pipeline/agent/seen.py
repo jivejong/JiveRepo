@@ -4,17 +4,22 @@ A JSON object {disturbance_id: first_seen as ISO-8601 UTC with Z}. The agent rec
 decides it only in a later cycle, so a person has the time between two cycles to act first. One file per target
 (logs/agent_seen_<target>.json), so dev and prod never mix. load() treats a missing file as empty; a file that is not a JSON object of
 strings is treated as empty with one warning. save() writes a temp file in the same folder and replaces the old one, so a crash
-leaves the previous file whole.
+leaves the previous file whole. On Windows the replace can fail with PermissionError while another process (the dashboard backend reading
+the file for /api/deploy/options) has it open; save() waits REPLACE_RETRY_SECONDS and replaces once more, and a second failure raises.
 """
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
+
+REPLACE_RETRY_SECONDS = 0.2
 
 
 class SeenStore:
-    def __init__(self, path):
+    def __init__(self, path, sleep=time.sleep):
         self.path = Path(path)
+        self._sleep = sleep
 
     def load(self, log=lambda message: None):
         """{id: first_seen}; {} for a missing file; {} (and one warning through `log`) for a file that is not a JSON object of strings."""
@@ -43,7 +48,11 @@ class SeenStore:
                 json.dump(data, f, sort_keys=True, indent=0)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(temp, self.path)
+            try:
+                os.replace(temp, self.path)
+            except PermissionError:
+                self._sleep(REPLACE_RETRY_SECONDS)
+                os.replace(temp, self.path)
         except BaseException:
             try:
                 os.unlink(temp)

@@ -8,10 +8,13 @@ once through StatementClient.write and is idempotent (CREATE TABLE IF NOT EXISTS
 import argparse
 import sys
 import time
-import urllib.request
 
 from agent.config import ROOT, ConfigError, load_env, tables
 from agent.dbsql import StatementClient
+
+sys.path.insert(0, str(ROOT / "ingest" / "bridge"))      # files_api: the one outbound HTTP path
+
+import files_api  # noqa: E402
 
 CREATE_DEPLOYMENT_SQL = ROOT / "agent" / "sql" / "create_deployment.sql"
 DDL_ENV_KEYS = ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_WAREHOUSE_ID")
@@ -40,7 +43,7 @@ def main(argv=None):
         print(f"configuration problem: {e}")
         return 2
     db = StatementClient(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], env["DATABRICKS_WAREHOUSE_ID"],
-                         opener=urllib.request.urlopen, sleep=time.sleep, monotonic=time.monotonic)
+                         opener=files_api.default_opener, sleep=time.sleep, monotonic=time.monotonic)
     name = create_deployment_table(args.target, db)
     print(f"{name}: created or already exists")
     return 0
