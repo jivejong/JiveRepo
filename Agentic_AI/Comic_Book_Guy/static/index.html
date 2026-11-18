@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CBG Retcon Solutions</title>
+  <style>
+    body {
+      font-family: monospace;
+      background: #111827;
+      color: #4ade80;
+      margin: 0;
+      padding: 24px;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      border: 2px solid #374151;
+      padding: 16px;
+      background: #030712;
+    }
+    #chat-log {
+      height: 420px;
+      overflow-y: auto;
+      border: 1px solid #1f2937;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .msg { margin-bottom: 10px; white-space: pre-wrap; }
+    .msg.user { color: #93c5fd; }
+    .msg.model { color: #4ade80; }
+    form { display: flex; gap: 8px; }
+    input[type="text"] {
+      flex: 1;
+      padding: 8px;
+      background: #111827;
+      color: #f9fafb;
+      border: 1px solid #374151;
+      font-family: inherit;
+    }
+    button {
+      padding: 8px 16px;
+      background: #2563eb;
+      color: #ffffff;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>CBG Retcon Solutions</h1>
+    <div id="chat-log" aria-live="polite"></div>
+    <form id="chat-form">
+      <input id="chat-input" type="text" placeholder="Ask Comic Book Guy..." autocomplete="off" />
+      <button type="submit">Send</button>
+    </form>
+  </main>
+  <script>
+    const chatLog = document.getElementById("chat-log");
+    const chatForm = document.getElementById("chat-form");
+    const chatInput = document.getElementById("chat-input");
+    const history = [];
+    let turn = 0;
+
+    function appendMessage(role, text) {
+      const div = document.createElement("div");
+      div.className = `msg ${role}`;
+      div.textContent = `${role === "user" ? "YOU" : "CBG"}: ${text}`;
+      chatLog.appendChild(div);
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    chatForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = chatInput.value;
+      if (!message.trim()) return;
+
+      chatInput.value = "";
+      appendMessage("user", message);
+      turn += 1;
+
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, history, turn }),
+        });
+        const data = await res.json();
+        appendMessage("model", data.reply);
+        if (!data.error) {
+          history.push({ role: "user", content: message }, { role: "model", content: data.reply });
+        }
+      } catch (_err) {
+        appendMessage("model", "Worst. Network glitch. Ever. Cannot reach the CBG server.");
+      }
+    });
+  </script>
+</body>
+</html>
