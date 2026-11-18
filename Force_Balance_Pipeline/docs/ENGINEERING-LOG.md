@@ -2649,6 +2649,48 @@ Mirror About set by Jong: description, website (dbt docs) and 20 topics.
 
 **Commits:** A `ae73546`, B `52d598a`.
 
+### Round 7 (2026-11-17): post-recovery check and outage evidence
+
+Read-only warehouse work: 4 SELECT statements in one window (06:13Z, an even hour), Gemini 0, Jobs API GETs only.
+
+**Recovery facts (STEP 1).** Job 1 (`force_pipeline`) made no scheduled run from 2026-11-03 16:03Z until 2026-11-17 02:03Z (a Free Edition stop after inactivity); the run at 02:03:03Z took 5.8 minutes and succeeded, the one at 04:03Z took 5.5 minutes. Job 2 (`rebuild_baseline`) made no run from 2026-11-03 03:40Z until 2026-11-17 03:40:04Z (3.3 minutes). The agent's 02:11Z cycle polled 4 new incidents and deferred them; the 04:11Z cycle decided all 4 (deploy 3, stand_down 1; 22 statements, 6 model calls, $0.00842, 44.8 s). The bridge and the probe kept running through the stop (`buffer_depth=0`, `dead_lettered=0`). No ERROR, Traceback or BAD_REQUEST in the agent, serve or bridge logs from 2026-11-16 18:00Z on.
+
+**Outage check (`ingest/phase8_outage_check.sql`, 4 labelled statements, window 2026-11-02T00:00Z to 2026-11-17T00:00Z).** Live probe events only (`source_type = 'probe'`, not synthetic, no `payload:kind`).
+- p8-1: every UTC day from 2026-11-02 to 2026-11-16 holds 96 scans and 5760 events (the cadence implies 96 and 5760, derived), no STEALTH scan in the window, `scans_vs_expected = 0`, `events_vs_expected = 0`, `scans_not_60 = 0`.
+- p8-2: 0 duplicate event ids, 0 extra rows.
+- p8-3: no interval over 20 minutes; the largest is 15.0 minutes (2026-11-02 00:00 to 00:15).
+- p8-4: landed (`_file_modified_ts`) median 0.0 h on every day, landed max 7.03 h at most (2026-11-11); ingest: 2026-11-02 median 1.06 h, max 3.06 h; 2026-11-03 median 1.56 h, max 321.81 h; 2026-11-04 to 2026-11-16 all first ingested 2026-11-17 02:03:52Z, ingest max falling from 314.06 h (11-04) to 26.06 h (11-16).
+
+**Verdict.** Cloud stop 2026-11-03 to 11-16: no gaps, no duplicates; every event landed after Job 1 resumed.
+
+**ForceServe failed with ResultTooLarge after the 13-day stop (02:12Z, 04:12Z on 11-17); task disabled pending a fix.** (Cause and fix: Round 8.)
+
+**Tests.** `ingest/tests/test_phase8_outage_check.py`, 13 tests (structure, window, claims), medians asserted in full; 19 mutants on copies outside the repo, all caught by an assertion FAIL (a first harness run ERRORed on every mutant for missing sibling folders, and one surviving mutant, median to average, led to asserting both full median expressions). Ingest 388 before, 401 after.
+
+**Commits:** listed in the next round.
+
+### Round 8 (2026-11-17): windowed fallback for every incremental pull, honest failure logging
+
+**Cause (from Round 7).** The two publishes after the stop (02:12:49Z and 04:12:48Z) failed with `ResultTooLarge: the result has more than 50000 rows`, logged `statements=0 rows=0` and no table. Only `gold_sector_reading` had a fallback; `silver_probe_reading` (watermark `arrival_ts`, 13 days old, about 77,000 rows to pull, derived from 13.4 days at 5,760) and `silver_rejects` re-raised. The pull reads everything before its one Postgres transaction, so the failures wrote nothing. `statements=0` was an artifact: the exception skipped the return that carried the count.
+
+**Fix.**
+- `serving/pull.py`: `build_window_select` and `read_windowed(read, table, lo, now, step=1 day, floor=1 hour)`: one-day windows (lo inclusive, hi exclusive), the last open-ended; an over-cap window is halved (an open-ended one splits at `now`) down to the floor, then `ResultTooLarge` naming the table and bounds. `run_pulls` runs each incremental source's normal read first (a steady run is still one statement per table) and falls back only on `ResultTooLarge` with a watermark. `silver_probe_reading` and `silver_rejects` use windows on `arrival_ts` from the watermark minus the overlap (1 h). The no-watermark backfill and the full-pull sources are unchanged; every failed read carries `table`.
+- `serving/publish.py` (failure logging only): the client is created before the try; a failed publish logs the statements the client really spent and `table=<source>` before the exception class and message. `statements.py` needed no change (it already exposes the counter).
+
+**Why `gold_sector_reading` cannot be windowed on `_gold_built_at`.** The model stamps every row of a build with one value (`current_timestamp() as _gold_built_at`, `gold_sector_reading.sql`). A build that processes a backlog, or a full refresh, gives every row the same stamp, and halving a time window never splits rows that share one value; the window would stay over the cap however small and each halving would cost a failed 50,000-row download. Its existing last resort, one UTC day per statement on `event_time` over the 30-day retention window (31 statements), splits the same rows. The first attempt in this round windowed it as well; the flaw was found before any live run.
+
+**Deviation and approval.** Option 1, approved by Jong: sector_reading falls back to the existing `event_time` day pages, probe_reading and rejects to windowed `arrival_ts`; publish budget raised to 60 statements, total to 85 (agent catch-up still at most 25), Gemini at most 6. Conditions: (1) the event_time pages keep the incremental predicate if the current fallback has one, and say which: it has none (the pages read `event_time >= :start AND event_time < :end` with no `_gold_built_at` predicate, so every row in the window is read again and upserted; unchanged); (2) the publish aborts with no write past 60 statements (a guarded client in a scratch wrapper, outside the repo); (3) start at 06:13Z, no later than 06:15Z, else 08:13Z.
+
+**Tests and mutations.** `serving/tests/test_pull.py`: `ReadWindowed` (6 pure tests) and `OverTheCap` (no-cap one read; windows on `arrival_ts` for probe_reading and rejects, day pages for sector_reading; lower bound = watermark minus overlap; probe_reading end to end with the watermark advancing; sector_reading never windows; floor failure names the table and changes nothing; full source over the cap still fails with its table). `serving/tests/test_publish.py`: `FailureLog` (real statement count and `table=` in `serve.log` and `publish_log`) and `WindowedPublish`. 16 mutants on copies outside the repo, all caught by an assertion FAIL. Suites: serving 190 before, 206 after; agent 573 before and after; ingest 401.
+
+**Live publish (06:13:05Z to 06:14:17Z, window 06:13Z).** One manual `serving.publish` run through the same code path as the task, with the statement cap and a 06:19:55Z deadline. `serve.log`: `decision=publish status=ok statements=55 rows=253212 duration_s=71.3`. The 55 statements: 7 dims and small tables, 1 sector_reading incremental read (over the cap), 31 sector_reading day pages (2026-10-18 to 2026-11-17), 1 probe_reading incremental read (over the cap), 14 probe_reading windows on `arrival_ts` (2026-11-03T15:00:05Z onward, the last open-ended), 1 rejects read (under the cap). New `serving.publish_log` row 716, status ok, Job 1 run 672023278804442. Read-only counts on `force_serving` afterwards: `probe_reading` max `arrival_ts` 2026-11-17 06:00:05Z (172,980 rows), every UTC day 2026-11-02 to 2026-11-16 holds 5,760 rows and 2026-11-17 holds 1,500; `sector_reading` max `_gold_built_at` 2026-11-17 06:07:43Z (172,800 rows); `rejects` has 0 rows.
+
+**Tasks re-enabled** (06:14:48Z): ForceServe, then ForceAgent; both Ready afterwards. Catch-up: ForceServe 06:14:53Z `skip_no_new_run` (0 statements); ForceAgent cycle 06:14:50Z polled 0 incidents, 2 statements, 0 model calls, Gemini 0. Statements this round: 55 + 2 = 57 of 85.
+
+Jong: resume S5 in Healthchecks.
+
+**Commits:** listed in the next round.
+
 ## Open items
 
 | Item                                                                                                                      | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
