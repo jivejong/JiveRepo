@@ -61,14 +61,20 @@ def ssl_context():
     """The TLS context for every outbound request: the default context (CERT_REQUIRED, hostname checking) plus
     VERIFY_X509_PARTIAL_CHAIN.
 
-    Why: on 2026-10-26 the monitoring host started serving a Sectigo chain whose top certificate is cross-signed by
+    What the flag does, and its cost: with VERIFY_X509_PARTIAL_CHAIN, OpenSSL accepts a chain that ends at ANY certificate in the
+    trust store, not only at a self-signed root, so every certificate in the store can act as a trust anchor, including intermediates.
+    On Windows, where Python loads the CA (intermediate) store as well as the ROOT store into this context, that widens trust: a
+    certificate that was only an intermediate before is now a terminal anchor, and anything a process running as the user adds to
+    the CurrentUser CA store (which needs no prompt, unlike Root) becomes one too. Hostname checking stays on, and a same-user process can
+    already read the .env tokens, so the practical risk is low; the effect is still wider than "only the chain-building rule is relaxed".
+
+    Why it is on anyway: on 2026-10-26 the monitoring host started serving a Sectigo chain whose top certificate is cross-signed by
     "USERTrust ECC Certification Authority". The Windows stores hold that name twice (the self-signed root, and a cross-signed
     copy issued by "AAA Certificate Services", which is not trusted here). OpenSSL 1.1.1 sometimes picked the copy and then
     failed with "unable to get issuer certificate", about half the time in a fresh process and every time in a long-lived one,
-    so the S1, S3 and S4 pings failed while Windows itself accepted the chain. PARTIAL_CHAIN lets a chain end at any trust
-    anchor in the store, not only at a self-signed root. On Windows Python already loads the CA store as well as the root
-    store into this context, so no certificate becomes trusted that was not trusted before; only the chain-building rule is
-    relaxed. Verification and hostname checking stay on (outage report, 2026-10-27)."""
+    so the S1, S3 and S4 pings failed while Windows itself accepted the chain. The chain fails without the flag (docs/ENGINEERING-LOG.md,
+    Phase 7, "Round 13b (2026-10-27): TLS, duplicate launches and S5 logging"; outage report, 2026-10-27). Phase 7 review finding 9
+    names the narrower options (a context loaded from the ROOT store only, or removing the duplicate certificate and dropping the flag)."""
     context = ssl.create_default_context()
     context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
     return context
