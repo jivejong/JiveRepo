@@ -8,28 +8,6 @@ Runs entirely locally. Kafka, DuckDB, Docker. No cloud account, no trial period,
 
 ---
 
-## Repository metadata
-
-This project lives inside `JiveRepo`, a portfolio monorepo with several unrelated projects: not a
-standalone repository. The description and topics below describe *this project*, not the whole
-repo, so they are not set as JiveRepo's GitHub-level description/topics (that would misrepresent
-the other projects sharing the repo). They're recorded here for reference, and would apply directly
-if this project is ever split into its own repository.
-
-**Description:**
-> Streaming data pipeline: Kafka ingestion, Parquet lakehouse, dbt transformations on DuckDB,
-> Dagster orchestration, and evaluated LLM threat triage against MITRE ATT&CK ground truth.
-
-**Topics:**
-`data-engineering` `kafka` `streaming-data` `dbt` `duckdb` `dagster` `etl` `elt`
-`data-quality` `data-pipeline` `parquet` `python` `redpanda` `mitre-attack` `llm-evaluation`
-
-Reasoning: GitHub Linguist reports this repository as Python and SQL. Tool names like dbt, Kafka,
-and Dagster never appear in the language bar. Topics and the description field are the only
-structured places they surface: moot while nested in a monorepo, relevant again if split out.
-
----
-
 ## Prerequisites
 
 Docker, Python 3.11+, and **`make`**. The Makefile is the entire documented interface (`make
@@ -41,19 +19,19 @@ the Python 3.11 interpreter itself, so no separate Python install is required be
 
 ## What this demonstrates
 
-| Capability | Where |
-|---|---|
-| Streaming ingestion | `services/honeypot/` → Kafka → `services/consumer/` |
-| At-least-once semantics and deduplication | `docs/03`, `transform/models/staging/` |
-| Multi-grain warehouse design | Requests, attempts, and chat turns joining on session |
-| Partitioned Parquet lakehouse | `services/consumer/`, `data/raw/` |
-| Transformation as code | `transform/`: staging → intermediate → marts |
-| Data quality testing | dbt tests, quarantine path, `mart_reconciliation` |
-| Handling malformed, late, duplicate, out-of-order data | `docs/03`: ten deliberate pathologies |
-| Window-function analytics | `transform/models/intermediate/` |
-| Train/test isolation in a data model | The observed / truth boundary, `docs/02` |
-| Orchestration | `orchestration/`: Dagster |
-| Measured LLM evaluation | `docs/04`: two tasks, tiered metrics, rule-based baseline |
+| Capability                                             | Where                                                     |
+| ------------------------------------------------------ | --------------------------------------------------------- |
+| Streaming ingestion                                    | `services/honeypot/` → Kafka → `services/consumer/`       |
+| At-least-once semantics and deduplication              | `docs/03`, `transform/models/staging/`                    |
+| Multi-grain warehouse design                           | Requests, attempts, and chat turns joining on session     |
+| Partitioned Parquet lakehouse                          | `services/consumer/`, `data/raw/`                         |
+| Transformation as code                                 | `transform/`: staging → intermediate → marts              |
+| Data quality testing                                   | dbt tests, quarantine path, `mart_reconciliation`         |
+| Handling malformed, late, duplicate, out-of-order data | `docs/03`: ten deliberate pathologies                     |
+| Window-function analytics                              | `transform/models/intermediate/`                          |
+| Train/test isolation in a data model                   | The observed / truth boundary, `docs/02`                  |
+| Orchestration                                          | `orchestration/`: Dagster                                 |
+| Measured LLM evaluation                                | `docs/04`: two tasks, tiered metrics, rule-based baseline |
 
 ---
 
@@ -80,16 +58,16 @@ pipeline with documented handling of bad data and a real evaluation harness.
 
 Every non-obvious technology choice, with what it displaced. Full rationale: `docs/01-architecture.md`.
 
-| Chosen | Over | Why |
-|---|---|---|
-| Kafka (Redpanda) | A managed cloud streaming service | One container, no account, no expiry. Real sub-second delivery semantics rather than simulated ones: managed alternatives had minimum buffering windows in the tens of seconds. Kafka also appears in far more data-engineering job descriptions than any vendor-specific service. |
-| DuckDB | A cloud warehouse (Snowflake, BigQuery) | Trial warehouses expire, which means the repository stops being runnable months after it's written. DuckDB reads the landed Parquet directly, needs no server, and produces identical SQL semantics for everything here. |
-| At-least-once, deduplicated downstream | Idempotent producing | Duplicates are made to actually occur (idempotent producing is deliberately disabled) so the deduplication logic is exercised against real duplicate rows, not asserted against a scenario that never happens. |
-| One topic, four event kinds | Separate topics per kind | A discriminated envelope keeps ordering guarantees intact across every event for a session, since they all share the `session_id` partition key. Separate topics would break per-session ordering across kinds: exactly what `mart_detection_correlation` depends on. |
-| MITRE ATT&CK technique IDs | Invented technique names | The catalog gets authored either way, so real ATT&CK IDs cost nothing extra and turn the project from a game into a detection-engineering exercise. Every ID verified against attack.mitre.org. |
-| Observability tiers on techniques | A flat accuracy number | An HTTP sensor cannot see every technique. Modeling that explicitly turns a bare accuracy claim into a detection coverage gap analysis: what a real security team would actually produce. |
-| Dagster | Airflow | Native dbt integration gives asset-level lineage almost for free, and the resulting asset graph is far more legible to a reader than a DAG of opaque shell tasks. Airflow is planned for the optional cloud deployment (Track C, `k8s-data-platform/`, not yet built), so both would be represented rather than duplicated. |
-| Infrastructure as an optional layer | Terraform/Kubernetes in the core pipeline | A single stateless service and a local broker don't justify a cluster, so the pipeline never needs one: it runs on a laptop with `make`. Terraform and Kubernetes are confined to `k8s-data-platform/`, a planned (not yet built) optional deployment of the same code to kind and GKE where infrastructure is the actual subject. Nothing in the pipeline depends on it. **Removing a technology from where it didn't earn its place is a stronger signal than including it because it looks good.** |
+| Chosen                                 | Over                                      | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kafka (Redpanda)                       | A managed cloud streaming service         | One container, no account, no expiry. Real sub-second delivery semantics rather than simulated ones: managed alternatives had minimum buffering windows in the tens of seconds. Kafka also appears in far more data-engineering job descriptions than any vendor-specific service.                                                                                                                                                                                                                    |
+| DuckDB                                 | A cloud warehouse (Snowflake, BigQuery)   | Trial warehouses expire, which means the repository stops being runnable months after it's written. DuckDB reads the landed Parquet directly, needs no server, and produces identical SQL semantics for everything here.                                                                                                                                                                                                                                                                              |
+| At-least-once, deduplicated downstream | Idempotent producing                      | Duplicates are made to actually occur (idempotent producing is deliberately disabled) so the deduplication logic is exercised against real duplicate rows, not asserted against a scenario that never happens.                                                                                                                                                                                                                                                                                        |
+| One topic, four event kinds            | Separate topics per kind                  | A discriminated envelope keeps ordering guarantees intact across every event for a session, since they all share the `session_id` partition key. Separate topics would break per-session ordering across kinds: exactly what `mart_detection_correlation` depends on.                                                                                                                                                                                                                                 |
+| MITRE ATT&CK technique IDs             | Invented technique names                  | The catalog gets authored either way, so real ATT&CK IDs cost nothing extra and turn the project from a game into a detection-engineering exercise. Every ID verified against attack.mitre.org.                                                                                                                                                                                                                                                                                                       |
+| Observability tiers on techniques      | A flat accuracy number                    | An HTTP sensor cannot see every technique. Modeling that explicitly turns a bare accuracy claim into a detection coverage gap analysis: what a real security team would actually produce.                                                                                                                                                                                                                                                                                                             |
+| Dagster                                | Airflow                                   | Native dbt integration gives asset-level lineage almost for free, and the resulting asset graph is far more legible to a reader than a DAG of opaque shell tasks. Airflow is planned for the optional cloud deployment (Track C, `k8s-data-platform/`, not yet built), so both would be represented rather than duplicated.                                                                                                                                                                           |
+| Infrastructure as an optional layer    | Terraform/Kubernetes in the core pipeline | A single stateless service and a local broker don't justify a cluster, so the pipeline never needs one: it runs on a laptop with `make`. Terraform and Kubernetes are confined to `k8s-data-platform/`, a planned (not yet built) optional deployment of the same code to kind and GKE where infrastructure is the actual subject. Nothing in the pipeline depends on it. **Removing a technology from where it didn't earn its place is a stronger signal than including it because it looks good.** |
 
 ---
 
@@ -198,23 +176,23 @@ high-observability techniques, the README says so.
 
 ### Results (real run, 36 sessions across all twelve villains, three model chapters)
 
-| | baseline | qwen (Groq) | gemini-3.5-flash-lite | gemini-3.1-flash-lite (current) | random |
-|---|---|---|---|---|---|
-| Attribution: exact | 30.6% | 16.7% | 13.9% | 27.8% | 8.3% |
-| Attribution: top-3 | 77.8% | 36.1% | 41.7% | 50.0% | 25.0% |
-| Attribution: archetype | 41.7%¹ | 36.1% | 30.6% | 44.4% | ~20% |
-| Technique: precision / recall / F1 | 65.4% / 39.7% / 0.49 | 57.0% / 20.5% / 0.30 | 71.4% / 29.7% / 0.42 | 60.9% / 25.6% / 0.36 |: |
-| Coverage: high tier recall | 89.7% | 44.3% | 66.0% | 55.7% |: |
-| Coverage: partial tier recall | 0.0% | 0.0% | 0.0% | 3.5% |: |
-| **Parse-failure rate** | 0.0% | **27.8%** | **0.0%** | **0.0%** |: |
+|                                    | baseline             | qwen (Groq)          | gemini-3.5-flash-lite | gemini-3.1-flash-lite (current) | random |
+| ---------------------------------- | -------------------- | -------------------- | --------------------- | ------------------------------- | ------ |
+| Attribution: exact                 | 30.6%                | 16.7%                | 13.9%                 | 27.8%                           | 8.3%   |
+| Attribution: top-3                 | 77.8%                | 36.1%                | 41.7%                 | 50.0%                           | 25.0%  |
+| Attribution: archetype             | 41.7%¹               | 36.1%                | 30.6%                 | 44.4%                           | ~20%   |
+| Technique: precision / recall / F1 | 65.4% / 39.7% / 0.49 | 57.0% / 20.5% / 0.30 | 71.4% / 29.7% / 0.42  | 60.9% / 25.6% / 0.36            | :      |
+| Coverage: high tier recall         | 89.7%                | 44.3%                | 66.0%                 | 55.7%                           | :      |
+| Coverage: partial tier recall      | 0.0%                 | 0.0%                 | 0.0%                  | 3.5%                            | :      |
+| **Parse-failure rate**             | 0.0%                 | **27.8%**            | **0.0%**              | **0.0%**                        | :      |
 
 ![Bar chart of technique recall by observability tier: baseline reaches 89.7% on high-observability techniques and 0% elsewhere; the current default model (gemini-3.1-flash-lite) reaches 55.7% on high, 3.5% on the partial tier, and 0% on camouflaged and no-evidence tiers](docs/images/detection-coverage.svg)
 
-*Generated from `mart_detection_coverage` by `docs/images/generate_coverage_chart.py`: hand-written
+_Generated from `mart_detection_coverage` by `docs/images/generate_coverage_chart.py`: hand-written
 SVG, regenerates whenever the numbers do, no plotting dependency. Reflects whichever model most
 recently ran (currently `gemini-3.1-flash-lite`): the underlying table holds one live `llm` row per
 session, not a per-chapter history, so the chart is always a snapshot of the current default, not a
-cross-model comparison. The table above it is the durable record of all three chapters.*
+cross-model comparison. The table above it is the durable record of all three chapters._
 
 ¹ Not apples-to-apples with any LLM chapter: the baseline's archetype guess is a mechanical lookup
 on its own villain guess (right villain ⇒ right archetype, for free), and 11 of its 15 archetype
@@ -273,18 +251,18 @@ seeded corpus with every pathology enabled, consumes the topic back raw, and cou
 data. Counts below are from a `runs=12`, `time_scale=0.02`, `seed=0` corpus: 144 sessions, 2,592
 request events on the topic:
 
-| # | Pathology | Injection | Observed count | Handled in |
-|---|---|---|---|---|
-| 1 | Duplicate delivery | ~2% re-sent with identical `event_id` | 40 | dedupe (Phase 5) |
-| 2 | Out-of-order `client_ts` | shuffled within a 30s window | 137 | never order on `client_ts` |
-| 3 | Unkeyed messages | ~1% with a null Kafka key | 24 | land normally; span partitions |
-| 4 | Late arrivals | ~1% with `client_ts` 1–6h old | 36 | partition on `received_at` |
-| 5 | Malformed JSON bodies | ~3% truncated/unbalanced | 21 | `body_is_valid_json = false` |
-| 6 | Undeserializable | ~0.2% raw non-JSON bytes | 2 | quarantine (Phase 4 consumer) |
-| 7 | Missing required fields | ~0.5% null `source_ip` / null `path` | 12 / 16 | null-ip kept, null-path quarantined |
-| 8 | Schema drift | mid-run bump to `schema_version=v2` + `tls_fingerprint` | 1,141 | staging tolerates the new column |
-| 9 | Clock skew | future `received_at` / negative `response_time_ms` | 20 / 24 | quarantine / clamp to null |
-| 10 | Burst | occasional 10x rate spike | 78 | consumer lag recovers, no loss |
+| #   | Pathology                | Injection                                               | Observed count | Handled in                          |
+| --- | ------------------------ | ------------------------------------------------------- | -------------- | ----------------------------------- |
+| 1   | Duplicate delivery       | ~2% re-sent with identical `event_id`                   | 40             | dedupe (Phase 5)                    |
+| 2   | Out-of-order `client_ts` | shuffled within a 30s window                            | 137            | never order on `client_ts`          |
+| 3   | Unkeyed messages         | ~1% with a null Kafka key                               | 24             | land normally; span partitions      |
+| 4   | Late arrivals            | ~1% with `client_ts` 1–6h old                           | 36             | partition on `received_at`          |
+| 5   | Malformed JSON bodies    | ~3% truncated/unbalanced                                | 21             | `body_is_valid_json = false`        |
+| 6   | Undeserializable         | ~0.2% raw non-JSON bytes                                | 2              | quarantine (Phase 4 consumer)       |
+| 7   | Missing required fields  | ~0.5% null `source_ip` / null `path`                    | 12 / 16        | null-ip kept, null-path quarantined |
+| 8   | Schema drift             | mid-run bump to `schema_version=v2` + `tls_fingerprint` | 1,141          | staging tolerates the new column    |
+| 9   | Clock skew               | future `received_at` / negative `response_time_ms`      | 20 / 24        | quarantine / clamp to null          |
+| 10  | Burst                    | occasional 10x rate spike                               | 78             | consumer lag recovers, no loss      |
 
 Two counts are split because the halves diverge downstream: missing fields (null `source_ip` is kept
 and fed to a ratio, null `path` is quarantined) and clock skew (future `received_at` is quarantined,
@@ -292,8 +270,8 @@ negative `response_time_ms` is clamped to null and counted). Schema drift is hig
 persists for the rest of a run once it fires mid-session, so every later request in that run carries
 the new column. Phase 3 verifies these are all **present and distinguishable in real consumed data**;
 the consumer (Phase 4) and dbt (Phase 5) verify each is correctly handled. Two more coexisting cases
-the checkpoint separates: Two-Face's deliberate duplicate *requests* (distinct `event_id`) must
-survive the dedupe that removes duplicate *delivery* (identical `event_id`).
+the checkpoint separates: Two-Face's deliberate duplicate _requests_ (distinct `event_id`) must
+survive the dedupe that removes duplicate _delivery_ (identical `event_id`).
 
 ---
 
@@ -334,18 +312,18 @@ Honeypot ──► request events ──► Kafka (3 partitions, keyed by sessio
 
 ![Dagster asset lineage: raw_events feeding staging models, through intermediate and marts layers, into a triage source asset, into the evaluation marts](docs/images/dagster-lineage.png)
 
-*Capture instructions: `make dagster`, open `http://127.0.0.1:3000`, go to Assets → view as graph,
+_Capture instructions: `make dagster`, open `http://127.0.0.1:3000`, go to Assets → view as graph,
 select all, and screenshot the full lineage. The interesting shape to have on screen: `raw_events` on
 the left, the dbt-model bands (`raw`/`staging`/`marts` group colors) in the middle, and the
 `triage/raw_triage_predictions` node sitting between `mart_threat_scores` and
 `fct_intervention_orders`: that's the Python step in the middle of the dbt graph, and it's the one
-thing a static docs/01 diagram can't show as convincingly as the real tool can.*
+thing a static docs/01 diagram can't show as convincingly as the real tool can._
 
 **Consumer lag during a burst, from Redpanda Console** (`docker compose up`, console on `:8080`):
 
 ![Redpanda Console showing attack.events consumer lag climbing during a burst of simulator traffic, then draining back to zero](docs/images/redpanda-lag.png)
 
-*Capture instructions, verified for real before writing them down: with the stack up, open
+_Capture instructions, verified for real before writing them down: with the stack up, open
 `http://localhost:8080` → Topics → `attack.events` → Consumer Groups, start watching lag, then in
 another terminal run `make attack-all TIME_SCALE=0.02` (the harness's fast default, not `1.0`) to
 produce a real burst. **`TIME_SCALE=1` (faithful) does not work for this**: at real villain pacing,
@@ -355,7 +333,7 @@ fresh `TIME_SCALE=0.02` run took `TOTAL-LAG` from 0 to a peak of 322 (`rpk group
 attack-events-writer`) and back to 0 within the 30-second window, no manual tuning needed. Screenshot
 while lag is visibly nonzero and climbing, ideally with enough history in view to also show it draining
 back down: that drain is the more informative half, since it's the proof the consumer keeps up rather
-than falls permanently behind.*
+than falls permanently behind._
 
 ---
 
@@ -406,18 +384,18 @@ make dashboard     # Batanalytics on :8501: needs make transform first
 
 ## Documentation
 
-| Doc | Contents | Track |
-|---|---|---|
-| [`docs/01-architecture.md`](docs/01-architecture.md) | Components, data flow, decisions and rejected alternatives | All |
-| [`docs/02-data-model.md`](docs/02-data-model.md) | Event contracts, observed/truth boundary, dbt layers, tests | All |
-| [`docs/03-attack-simulation.md`](docs/03-attack-simulation.md) | Villain behavior, signatures, ten data pathologies | All |
-| [`docs/04-llm-triage.md`](docs/04-llm-triage.md) | Prompt contract, both evaluations, detection coverage | All |
-| [`docs/05-local-environment.md`](docs/05-local-environment.md) | Docker, Kafka config, Dagster, Makefile, CI | A |
-| [`docs/06-implementation-plan.md`](docs/06-implementation-plan.md) | Phases and checkpoints across all three tracks | All |
-| [`docs/07-attack-chain.md`](docs/07-attack-chain.md) | Stage machine, technique catalog, gating, probability model | A |
-| [`docs/08-interactive-experience.md`](docs/08-interactive-experience.md) | Console, bat bot, finale, dashboard | B |
-| [`docs/09-engineering-log.md`](docs/09-engineering-log.md) | Bugs, diagnoses, and tuning decisions: what broke, how it was caught, what changed | All |
-| [`docs/exercises.md`](docs/exercises.md) | One-off demonstrations against the live stack, with real output | A |
+| Doc                                                                      | Contents                                                                           | Track |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- | ----- |
+| [`docs/01-architecture.md`](docs/01-architecture.md)                     | Components, data flow, decisions and rejected alternatives                         | All   |
+| [`docs/02-data-model.md`](docs/02-data-model.md)                         | Event contracts, observed/truth boundary, dbt layers, tests                        | All   |
+| [`docs/03-attack-simulation.md`](docs/03-attack-simulation.md)           | Villain behavior, signatures, ten data pathologies                                 | All   |
+| [`docs/04-llm-triage.md`](docs/04-llm-triage.md)                         | Prompt contract, both evaluations, detection coverage                              | All   |
+| [`docs/05-local-environment.md`](docs/05-local-environment.md)           | Docker, Kafka config, Dagster, Makefile, CI                                        | A     |
+| [`docs/06-implementation-plan.md`](docs/06-implementation-plan.md)       | Phases and checkpoints across all three tracks                                     | All   |
+| [`docs/07-attack-chain.md`](docs/07-attack-chain.md)                     | Stage machine, technique catalog, gating, probability model                        | A     |
+| [`docs/08-interactive-experience.md`](docs/08-interactive-experience.md) | Console, bat bot, finale, dashboard                                                | B     |
+| [`docs/09-engineering-log.md`](docs/09-engineering-log.md)               | Bugs, diagnoses, and tuning decisions: what broke, how it was caught, what changed | All   |
+| [`docs/exercises.md`](docs/exercises.md)                                 | One-off demonstrations against the live stack, with real output                    | A     |
 
 **Tracks.** A is the headless pipeline and the shippable milestone. B adds the interactive console,
 bat bot, finale, and dashboard, and is built through Phase 10. C is an optional cloud deployment: the
