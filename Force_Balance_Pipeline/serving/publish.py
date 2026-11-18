@@ -21,7 +21,7 @@ from psycopg.types.json import Jsonb
 from agent.config import JOB1_ID
 from agent.lock import AlreadyRunning, InstanceLock
 from agent.run import debounced, make_pinger, valid_ping_url, write_start_stamp
-from serving import config, gate, pull
+from serving import config, gate, logrotate, pull
 from serving.jobs import JobsApiError, latest_successful_run
 from serving.statements import ServingStatementClient
 
@@ -85,6 +85,7 @@ def main(argv=None, *, now_fn=None, sleep=time.sleep, monotonic=time.monotonic, 
     parser.add_argument("--backfill-days", type=int, default=pull.DEFAULT_BACKFILL_DAYS)
     args = parser.parse_args(argv)
     now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+    logrotate.rotate_if_large(serve_log)                     # once per process, before the first write to serve.log
 
     try:
         env = config.load_env(args.env, required=BASE_KEYS + (() if args.no_ping else ("SERVING_PING_S5_URL",)))

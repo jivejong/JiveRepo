@@ -27,7 +27,7 @@ from pathlib import Path
 
 from agent.seen import SeenStore
 from serving import api_queries as q
-from serving import config, deploy
+from serving import config, deploy, logrotate
 from serving.publish import scrub
 
 BIND_HOST = "127.0.0.1"
@@ -405,6 +405,8 @@ def main(argv=None):
     parser.add_argument("--database", default=config.PG["dbname"])
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args(argv)
+    for log_path in (LOG_PATH, deploy.DEPLOY_LOG):            # once per process, before the first write to dashboard.log or deploy.log
+        logrotate.rotate_if_large(log_path)
     configure_logging()
     try:
         server = make_server(args.database, args.port)

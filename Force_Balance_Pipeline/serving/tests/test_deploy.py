@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 import pg_support
 from agent import queries
@@ -142,6 +143,29 @@ class DeployTest(unittest.TestCase):
         self.assertIsNone(result["deployment_id"])
 
 
+class OneHttpPath(unittest.TestCase):
+    """Finding 8: every outbound call of the deploy service goes through files_api.default_opener (the project TLS context), not urlopen."""
+
+    def test_the_default_clients_use_the_project_opener(self):
+        import files_api
+        agent_client, serving_client = deploy.default_clients(ENV)
+        self.assertIs(agent_client._opener, files_api.default_opener)
+        self.assertIs(serving_client._opener, files_api.default_opener)
+
+    def test_the_job_1_check_uses_the_project_opener(self):
+        import files_api
+        with mock.patch("serving.deploy.job1_active", return_value=(False, "idle")) as active:
+            self.assertEqual(deploy.default_job1_check(ENV)(), (False, "idle"))
+        self.assertIs(active.call_args.kwargs["opener"], files_api.default_opener)
+
+    def test_the_serving_client_a_deploy_builds_for_itself_uses_the_project_opener(self):
+        import files_api
+        with mock.patch("serving.deploy.ServingStatementClient") as built:
+            deploy.deploy({}, env=ENV, now=NOW, client=mock.Mock(statements=0), jobs=lambda: (False, "idle"), pg_conn=mock.Mock(),
+                          log=lambda line: None, lock_path=Path(tempfile.mkdtemp()) / "agent.lock")
+        self.assertIs(built.call_args.kwargs["opener"], files_api.default_opener)
+
+
 class Validation(DeployTest):
     def test_each_invalid_request_is_refused_before_the_lock_the_jobs_api_and_any_statement(self):
         held = InstanceLock(self.lock_path).acquire()            # a held lock would show as agent_cycle_in_progress if the lock came first
@@ -262,6 +286,16 @@ class ConstraintLayer(DeployTest):
 
 
 class Accepted(DeployTest):
+    def test_the_postgres_refresh_takes_the_serving_write_lock_before_it_deletes(self):
+        rec = pg_support.RecordingConn(self.pg)                 # finding 10: the same advisory lock as the publish's write transaction
+        result = self.go(pg_conn=rec)
+        self.assertTrue(result["ok"])
+        sql = [s for s, _ in rec.log]
+        lock = next((i for i, s in enumerate(sql) if "pg_advisory_xact_lock" in s), None)
+        self.assertIsNotNone(lock, "the refresh never took the serving write lock")
+        self.assertEqual(rec.log[lock][1], (pull.SERVING_WRITE_LOCK_KEY,))
+        self.assertLess(lock, sql.index("DELETE FROM serving.deployment"))
+
     def test_the_whole_path(self):
         result = self.go()
         self.assertTrue(result["ok"])

@@ -12,7 +12,6 @@ Result: {"ok", "reasons", "deployment_id", "statements"} (plus "warnings" when t
 import re
 import sys
 import time
-import urllib.request
 from datetime import timezone
 
 from agent import queries
@@ -24,10 +23,12 @@ from agent.distance import party_eta_hours
 from agent.jobs import job1_active
 from agent.lock import AlreadyRunning, InstanceLock
 from agent.loop import Decision
-from agent.run import build_row
+from agent.run import build_row, merge_inserted
 from agent.ulid import ulid_now
 from serving import config, pull
 from serving.statements import ServingStatementClient
+
+import files_api  # noqa: E402  (agent.run put ingest/bridge on sys.path; files_api is the one outbound HTTP path)
 
 TARGET = "prod"
 QUOTA_WINDOW_HOUR_UTC = 3
@@ -43,7 +44,7 @@ SLUG = re.compile(r"[a-z0-9_]{1,64}")
 
 def default_clients(env):
     """(the agent's writing client, the read-only serving client) from the .env.serving values."""
-    opener = urllib.request.urlopen
+    opener = files_api.default_opener
     agent_client = StatementClient(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], env["DATABRICKS_WAREHOUSE_ID"],
                                    opener=opener, sleep=time.sleep, monotonic=time.monotonic)
     serving_client = ServingStatementClient(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], env["DATABRICKS_WAREHOUSE_ID"],
@@ -52,7 +53,7 @@ def default_clients(env):
 
 
 def default_job1_check(env):
-    return lambda: job1_active(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], opener=urllib.request.urlopen)
+    return lambda: job1_active(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], opener=files_api.default_opener)
 
 
 def validate(request):
@@ -106,7 +107,7 @@ def deploy(request, *, env, now, client, jobs, pg_conn, lock_path=AGENT_LOCK, sl
     returning (active, reason) like agent.jobs.job1_active, `serving_client` the read-only client used for the refresh."""
     if serving_client is None:
         serving_client = ServingStatementClient(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], env["DATABRICKS_WAREHOUSE_ID"],
-                                                opener=urllib.request.urlopen, sleep=time.sleep, monotonic=time.monotonic)
+                                                opener=files_api.default_opener, sleep=time.sleep, monotonic=time.monotonic)
     before = (client.statements, serving_client.statements)
     result = {"ok": False, "reasons": [], "deployment_id": None, "statements": 0}
     clean, bad = validate(request)
@@ -164,11 +165,7 @@ def deploy(request, *, env, now, client, jobs, pg_conn, lock_path=AGENT_LOCK, sl
                             rationale=clean["rationale"], guardrail_overrides=[], model=None, decision_latency_ms=None)
         row = build_row(context, decision, now, ulid_fn(), decided_by="user")
         merged = client.write(*queries.write_decision(TARGET, row))
-        inserted = merged[0].get("num_inserted_rows") if merged and isinstance(merged[0], dict) else None
-        try:
-            inserted = None if inserted is None else int(inserted)
-        except (TypeError, ValueError):
-            inserted = None
+        inserted = merge_inserted(merged)
         if inserted is None:
             # The write may or may not have landed, and success cannot be claimed without the count. Nothing is marked or refreshed: if a
             # row exists, the agent's next repair marks the incident and the next pull brings the row.

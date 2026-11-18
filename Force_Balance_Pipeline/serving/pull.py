@@ -17,6 +17,9 @@ watermark minus the overlap, in one-day windows on arrival_ts, the last window o
 down to one hour. sector_reading: the 30-day event_time day pages (_read_retention_pages), never windows, because _gold_built_at is one
 current_timestamp() per Job 1 build: a catch-up build stamps all its rows alike, and halving a time window cannot split rows that share one
 value (doc 05, "Serving (Phase 7)").
+Concurrent writers (Round 10, finding 10): the publish's write transaction and a manual deploy's refresh_source both start with
+SELECT pg_advisory_xact_lock(SERVING_WRITE_LOCK_KEY), so two writers never interleave their DELETE and INSERT on serving.deployment; the
+second waits for the first to commit or roll back (the lock is released with the transaction).
 """
 from datetime import timedelta
 
@@ -25,6 +28,9 @@ from psycopg.types.json import Jsonb
 from agent.dbsql import ResultTooLarge
 from serving import config
 
+# The one advisory-lock key of every writer to the serving tables (a fixed bigint: the bytes "FBP_SERV"). Not config.py: it is not a setting.
+SERVING_WRITE_LOCK_KEY = 0x4642505F53455256
+WRITE_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s)"
 DEFAULT_BACKFILL_DAYS = 7
 DIMS_MAX_AGE = timedelta(hours=24)
 RETENTION = timedelta(days=30)
@@ -233,6 +239,7 @@ def run_pulls(client, conn, now, backfill_days=DEFAULT_BACKFILL_DAYS):
         results[key] = rows
     try:
         with conn.cursor() as cur:
+            cur.execute(WRITE_LOCK_SQL, (SERVING_WRITE_LOCK_KEY,))            # the first statement of the write transaction
             for key in FULL_KEYS + (DIM_KEYS if due else ()):
                 spec = SPECS[key]
                 cur.execute(f"DELETE FROM serving.{spec['table']}")
@@ -268,6 +275,7 @@ def refresh_source(client, conn, name):
     rows = client.read(*build_select(spec), expected_types=spec["types"])
     try:
         with conn.cursor() as cur:
+            cur.execute(WRITE_LOCK_SQL, (SERVING_WRITE_LOCK_KEY,))            # the first statement of the write transaction
             cur.execute(f"DELETE FROM serving.{spec['table']}")
             _insert(cur, spec, rows)
         conn.commit()

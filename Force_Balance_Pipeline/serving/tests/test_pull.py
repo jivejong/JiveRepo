@@ -367,6 +367,52 @@ class OverTheCap(PullTest):
         self.assertEqual(cm.exception.table, "probe_reading")
 
 
+class WriteLock(PullTest):
+    """Finding 10: both writers take pg_advisory_xact_lock(SERVING_WRITE_LOCK_KEY) as the first statement of their write transaction."""
+
+    def locks(self, conn):
+        return [i for i, (sql, params) in enumerate(conn.log) if "pg_advisory_xact_lock" in sql]
+
+    def test_the_publish_takes_the_lock_first_in_its_write_transaction(self):
+        rec = pg_support.RecordingConn(self.conn)
+        pull.run_pulls(FakeClient(), rec, NOW)
+        writes = [i for i, (sql, params) in enumerate(rec.log) if sql.startswith(("DELETE", "INSERT"))]
+        self.assertEqual(len(self.locks(rec)), 1)
+        lock = self.locks(rec)[0]
+        self.assertEqual(rec.log[lock], (pull.WRITE_LOCK_SQL, (pull.SERVING_WRITE_LOCK_KEY,)))
+        self.assertLess(lock, min(writes))
+
+    def test_the_refresh_takes_the_lock_first_in_its_write_transaction(self):
+        rec = pg_support.RecordingConn(self.conn)
+        pull.refresh_source(FakeClient({"deployment": [[deployment("X2", "D1")]]}), rec, "deployment")
+        self.assertEqual([sql for sql, _ in rec.log][:2], [pull.WRITE_LOCK_SQL, "DELETE FROM serving.deployment"])
+        self.assertEqual(rec.log[0][1], (pull.SERVING_WRITE_LOCK_KEY,))
+
+    def test_both_writers_use_the_same_key(self):
+        a, b = pg_support.RecordingConn(self.conn), pg_support.RecordingConn(self.conn)
+        pull.run_pulls(FakeClient(), a, NOW)
+        pull.refresh_source(FakeClient({"deployment": [[deployment("X2", "D1")]]}), b, "deployment")
+        key_a = a.log[self.locks(a)[0]][1]
+        key_b = b.log[self.locks(b)[0]][1]
+        self.assertEqual(key_a, key_b)
+        self.assertEqual(key_a, (pull.SERVING_WRITE_LOCK_KEY,))
+        self.assertIsInstance(pull.SERVING_WRITE_LOCK_KEY, int)
+        self.assertLess(abs(pull.SERVING_WRITE_LOCK_KEY), 2 ** 63)                        # a bigint
+
+    def test_while_one_connection_holds_the_lock_a_second_cannot_take_it(self):
+        other = pg_support.connect_test()
+        try:
+            self.conn.execute(pull.WRITE_LOCK_SQL, (pull.SERVING_WRITE_LOCK_KEY,))        # connection A: the transaction lock is held
+            self.assertFalse(other.execute("SELECT pg_try_advisory_xact_lock(%s)", (pull.SERVING_WRITE_LOCK_KEY,)).fetchone()[0])
+            other.rollback()
+            self.conn.commit()                                                           # released with the transaction
+            self.assertTrue(other.execute("SELECT pg_try_advisory_xact_lock(%s)", (pull.SERVING_WRITE_LOCK_KEY,)).fetchone()[0])
+            other.rollback()
+        finally:
+            self.conn.rollback()
+            other.close()
+
+
 class RefreshSource(PullTest):
     def test_it_replaces_the_deployment_table_and_nothing_else(self):
         self.warm({"disturbance": [[disturbance("D1")]], "deployment": [[deployment("X1", "D1")]]})
