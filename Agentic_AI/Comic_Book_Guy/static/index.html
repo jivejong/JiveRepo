@@ -5,67 +5,198 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CBG Retcon Solutions</title>
   <style>
+    * { box-sizing: border-box; }
     body {
-      font-family: monospace;
-      background: #111827;
-      color: #4ade80;
       margin: 0;
-      padding: 24px;
-    }
-    main {
-      max-width: 760px;
-      margin: 0 auto;
-      border: 2px solid #374151;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       padding: 16px;
-      background: #030712;
+      font-family: "Courier New", Courier, monospace;
+      background: #4db8ff;
+      overflow-x: hidden;
+    }
+    #springfield-bg {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    #crt-monitor {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      max-width: 820px;
+      background: linear-gradient(145deg, #d6ccb8, #b5a992);
+      border: 6px solid #2b2620;
+      border-radius: 24px;
+      padding: 20px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45), inset 0 2px 6px rgba(255, 255, 255, 0.5);
+    }
+    .crt-screen {
+      position: relative;
+      background: radial-gradient(circle at center, #0c1f14 0%, #040b07 100%);
+      border: 4px solid #18181b;
+      border-radius: 16px;
+      padding: 16px;
+      color: #4ade80;
+      text-shadow: 0 0 6px rgba(74, 222, 128, 0.45);
+      overflow: hidden;
+    }
+    .crt-screen::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0) 0px,
+        rgba(0, 0, 0, 0) 2px,
+        rgba(0, 0, 0, 0.28) 3px,
+        rgba(0, 0, 0, 0.28) 4px
+      );
+      pointer-events: none;
     }
     .toolbar {
       display: flex;
+      flex-wrap: wrap;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 12px;
+      gap: 8px;
+      border-bottom: 1px dashed #22c55e;
+      padding-bottom: 10px;
+      margin-bottom: 10px;
     }
+    .title {
+      margin: 0;
+      font-size: 1.15rem;
+      color: #fde047;
+      text-shadow: 0 0 6px rgba(253, 224, 71, 0.4);
+    }
+    #rate-card-header {
+      display: inline-block;
+      color: #fde047;
+      background: rgba(234, 179, 8, 0.14);
+      border: 1px solid #eab308;
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 0.82rem;
+      text-decoration: none;
+    }
+    #rate-card-header:hover { background: rgba(234, 179, 8, 0.28); }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .starter-chip {
+      background: #064e3b;
+      color: #a7f3d0;
+      border: 1px solid #10b981;
+      border-radius: 999px;
+      padding: 5px 11px;
+      font-size: 0.78rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .starter-chip:hover { background: #047857; }
     #chat-log {
-      height: 420px;
+      height: 360px;
       overflow-y: auto;
-      border: 1px solid #1f2937;
+      border: 1px solid #14532d;
+      background: rgba(0, 0, 0, 0.35);
       padding: 12px;
       margin-bottom: 12px;
     }
-    .msg { margin-bottom: 10px; white-space: pre-wrap; }
-    .msg.user { color: #93c5fd; }
+    .msg { margin-bottom: 10px; white-space: pre-wrap; line-height: 1.4; }
+    .msg.user { color: #93c5fd; text-shadow: none; }
     .msg.model { color: #4ade80; }
     form { display: flex; gap: 8px; }
     input[type="text"] {
       flex: 1;
-      padding: 8px;
-      background: #111827;
-      color: #f9fafb;
-      border: 1px solid #374151;
+      padding: 9px 10px;
+      background: #020617;
+      color: #f8fafc;
+      border: 1px solid #22c55e;
+      border-radius: 4px;
       font-family: inherit;
     }
-    button {
-      padding: 8px 16px;
-      background: #2563eb;
-      color: #ffffff;
-      border: none;
-      cursor: pointer;
+    button[type="submit"], #reset-session {
+      padding: 8px 14px;
+      border: 1px solid #eab308;
+      border-radius: 4px;
+      background: #ca8a04;
+      color: #09090b;
+      font-weight: bold;
       font-family: inherit;
+      cursor: pointer;
+    }
+    #reset-session {
+      background: #1e293b;
+      color: #e2e8f0;
+      border-color: #64748b;
+      font-size: 0.8rem;
+    }
+    @media (max-width: 600px) {
+      #crt-monitor { padding: 12px; border-radius: 16px; }
+      #chat-log { height: 280px; }
     }
   </style>
 </head>
 <body>
-  <main>
-    <div class="toolbar">
-      <h1>CBG Retcon Solutions</h1>
-      <button id="reset-session" type="button">Reset Session</button>
+  <svg id="springfield-bg" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <defs>
+      <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#38bdf8" />
+        <stop offset="70%" stop-color="#bae6fd" />
+        <stop offset="100%" stop-color="#fef08a" />
+      </linearGradient>
+    </defs>
+    <rect width="1200" height="800" fill="url(#sky)" />
+    <circle cx="1020" cy="130" r="65" fill="#fde047" stroke="#eab308" stroke-width="6" />
+    <g fill="#ffffff" stroke="#cbd5e1" stroke-width="3">
+      <ellipse cx="220" cy="140" rx="90" ry="40" />
+      <ellipse cx="280" cy="130" rx="70" ry="35" />
+      <ellipse cx="620" cy="100" rx="100" ry="42" />
+      <ellipse cx="690" cy="110" rx="65" ry="32" />
+    </g>
+    <path d="M0 580 Q300 470 620 570 T1200 540 L1200 800 L0 800 Z" fill="#4ade80" stroke="#15803d" stroke-width="4" />
+    <path d="M0 660 Q420 590 820 670 T1200 630 L1200 800 L0 800 Z" fill="#22c55e" stroke="#166534" stroke-width="4" />
+    <g transform="translate(110, 520)">
+      <circle cx="0" cy="0" r="34" fill="#f472b6" stroke="#831843" stroke-width="4" />
+      <circle cx="0" cy="0" r="11" fill="#4ade80" stroke="#831843" stroke-width="3" />
+    </g>
+    <rect x="970" y="485" width="90" height="120" rx="8" fill="#facc15" stroke="#854d0e" stroke-width="4" />
+  </svg>
+
+  <main id="crt-monitor">
+    <div class="crt-screen">
+      <div class="toolbar">
+        <h1 class="title">CBG RETCON SOLUTIONS // TERMINAL</h1>
+        <a id="rate-card-header" href="https://www.linkedin.com/company/cbg-retcon/" target="_blank" rel="noopener noreferrer">
+          Consulting: $300/hr Critique | $500/hr Fix — Hire on LinkedIn
+        </a>
+        <button id="reset-session" type="button">Reset Session</button>
+      </div>
+
+      <div class="chips">
+        <button class="starter-chip" type="button" data-prompt="Why are microservices usually the worst architecture ever?">Microservices Rant</button>
+        <button class="starter-chip" type="button" data-prompt="Who wins in a fight: Star Wars Legends Luke or Darth Vader?">Star Wars Canon</button>
+        <button class="starter-chip" type="button" data-prompt="Can you debug my Kubernetes YAML and fix my prod cluster?">Free IT Help?</button>
+      </div>
+
+      <div id="chat-log" aria-live="polite"></div>
+
+      <form id="chat-form">
+        <input id="chat-input" type="text" placeholder="Ask Comic Book Guy (max 600 chars)..." autocomplete="off" />
+        <button type="submit">Send</button>
+      </form>
     </div>
-    <div id="chat-log" aria-live="polite"></div>
-    <form id="chat-form">
-      <input id="chat-input" type="text" placeholder="Ask Comic Book Guy (max 600 chars)..." autocomplete="off" />
-      <button type="submit">Send</button>
-    </form>
   </main>
+
   <script>
     const MAX_INPUT_CHARS = 600;
     const MAX_SESSION_TURNS = 10;
@@ -93,6 +224,13 @@
     }
 
     resetButton.addEventListener("click", resetSession);
+
+    document.querySelectorAll(".starter-chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        chatInput.value = chip.dataset.prompt || "";
+        chatForm.requestSubmit();
+      });
+    });
 
     chatForm.addEventListener("submit", async (event) => {
       event.preventDefault();
