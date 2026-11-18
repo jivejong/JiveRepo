@@ -25,11 +25,13 @@ what was decided and why.
 | Platform | Databricks Free Edition |
 | Ingestion | Bridge writes NDJSON to a UC volume via Files API; Auto Loader with `trigger(availableNow=True)` — same streaming semantics, one-line change to continuous |
 | Transform | dbt Core + `dbt-databricks` (pinned ≥1.6), run as native `dbt` job task pulled from Git |
-| Serving | Postgres on the GCP e2-micro; dashboard never queries the warehouse |
-| Bridge | Mosquitto + Python on the e2-micro (the developer's desktop in Phase 3); also hosts the report inference endpoint |
-| Agent | Cloud Run job, Gemini (`gemini-3.1-flash-lite`), function calling; reads/writes via SQL Statement Execution API. Phase 6 runs the agent locally as a Windows scheduled task; Cloud Run is an optional later stage (doc 06, "Runtime"). |
-| Dashboard | Node/React, hosted outside Databricks |
+| Serving | Postgres in Docker on the desktop (`force-postgres`, 127.0.0.1:5433), filled by the `ForceServe` Windows scheduled task; dashboard never queries the warehouse |
+| Bridge | `ForceBridge` Windows scheduled task on the desktop, with Mosquitto in Docker on the desktop; also hosts the report inference endpoint |
+| Agent | `ForceAgent` Windows scheduled task on the desktop, Gemini (`gemini-3.1-flash-lite`), function calling; reads/writes via SQL Statement Execution API (doc 06, "Runtime") |
+| Dashboard | Node/React, built with Vite and served by the Python backend (`python -m serving.server`), started by hand on 127.0.0.1:8081 |
 | Local demo | Docker Compose, Postgres standing in for the lakehouse, `make demo` |
+
+Deviation (2026-11-17): the GCP components in the original design were never deployed; Phases 3-7 run them on the development desktop (see the log).
 
 ## Verified in this session
 
@@ -55,12 +57,13 @@ what was decided and why.
   activity** (quiet, rare spikes). Mean-reverting random walk seeded from enrichment parameters.
 - Modes: **CONNECTED** (normal + 2–3% fault injection), **DISCONNECTED** (buffer to SQLite),
   **BURST** (post-reconnect drain), **STEALTH** (limited power/connectivity — hourly, dark
-  side channel only).
+  side channel only). The deployed probe has run with `--fault-rate 0` since Phase 3, except one
+  fault-injection period at `--fault-rate 1.0` from 2026-10-07T13:29:35Z to 2026-10-10 (log, Open items, "Fault injection still at `--fault-rate 0`"; doc 04).
 - Control topic injects a named signature on demand for demos.
 - Control topic also forces a mode for a period. The mode schedule (DISCONNECTED, 1–3 hours about twice a day) was off until the
   Phase 3 checkpoint passed; it passed 2026-09-29 and the schedule is on.
 - Phase 3 staging: the broker and the bridge run on the developer's desktop and the Pi publishes over the LAN (password and topic
-  permissions, no TLS). TLS and the e2-micro come later.
+  permissions, no TLS). They still run there; the e2-micro was never deployed.
 
 ## Detection and classification — all deterministic SQL
 

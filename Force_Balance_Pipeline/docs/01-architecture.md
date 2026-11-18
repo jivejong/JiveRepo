@@ -13,10 +13,12 @@ lives elsewhere.
 |---|---|---|
 | Intergalactic probe | Raspberry Pi 3 | Simulates Force readings, four operating modes, store-and-forward buffering |
 | Web intake | Any browser | Human reports; model infers sensor-equivalent values |
-| Collector bridge | GCP e2-micro (Always Free) | MQTT broker, batcher, **and the report inference endpoint**; writes NDJSON to the UC volume |
-| Yoda agent | Cloud Run (scheduled) | Reads incidents, calls Gemini, writes decisions back. Phase 6 runs the agent locally as a Windows scheduled task; Cloud Run is an optional later stage (doc 06, "Runtime"). |
-| Jedi Council dashboard | Cloud Run / Vercel | Reads Postgres serving store; manual deployment UI |
+| Collector bridge | Desktop: `ForceBridge` Windows scheduled task, Mosquitto in Docker | MQTT broker, batcher, **and the report inference endpoint**; writes NDJSON to the UC volume |
+| Yoda agent | Desktop: `ForceAgent` Windows scheduled task | Reads incidents, calls Gemini, writes decisions back (doc 06, "Runtime"). |
+| Jedi Council dashboard | Desktop: backend started by hand on 127.0.0.1:8081 | Reads Postgres serving store; manual deployment UI |
 | Postgres serving store | Local Postgres in Docker on the desktop (`force-postgres`, 127.0.0.1:5433) | Gold aggregates, published from Databricks by the local `ForceServe` puller |
+
+Deviation (2026-11-17): the GCP components in the original design were never deployed; Phases 3-7 run them on the development desktop (see the log).
 
 ### Inside Databricks
 
@@ -183,7 +185,7 @@ same schema with the same `context_snapshot`, which lets the dashboard show them
 
 **Decision.** All inference runs in the cloud. The Raspberry Pi 3 probe runs no model; it
 simulates readings and buffers them. Report inference runs on the collector bridge and the Yoda
-agent calls Gemini from Cloud Run (see Component boundaries). Phase 6 runs the agent locally as a Windows scheduled task; Cloud Run is an optional later stage (doc 06, "Runtime").
+agent calls Gemini from the `ForceAgent` task on the desktop (see Component boundaries; doc 06, "Runtime").
 
 **Why.** The Pi 3 has 1 GB of RAM and no accelerator, so it would be slow and memory-bound, and an
 on-device model would couple sensor reliability to the heaviest workload in the system. This is a
@@ -196,7 +198,8 @@ replaces.
 
 1. Probe sweeps all 60 planets every 15 minutes, emitting the full sweep as one burst sharing a
    `scan_id`. Values are mean-reverting random walks seeded from the enrichment parameters, with
-   2–3% deliberate fault injection. In `DISCONNECTED` it buffers to SQLite instead; in `BURST` it
+   2–3% deliberate fault injection (the deployed probe has run with `--fault-rate 0` since Phase 3, except one period at
+   `--fault-rate 1.0` from 2026-10-07T13:29:35Z to 2026-10-10; log, Open items, "Fault injection still at `--fault-rate 0`"). In `DISCONNECTED` it buffers to SQLite instead; in `BURST` it
    drains that buffer; in `STEALTH` it reports the dark side channel only, hourly.
 2. Web intake takes a free-text report plus a planet. The bridge's inference endpoint asks a model
    for three sensor-equivalent values and a relevance score, passing the planet's baseline in for
@@ -211,8 +214,8 @@ replaces.
    - **Publish** — gold aggregates copied to Postgres. (Phase 7: done by the local `ForceServe` puller after a successful run, not inside the job; D4.)
 5. Daily, `gold.sector_baseline` rebuilds from the trailing 90 days of **probe-only** data.
 6. Every hour the agent task starts at :11 and polls the warehouse only after a new Job 1 run (so every 2 hours; offset 4 minutes behind the pipeline job -- follows Job 1's own cadence, Stage 4c; not yet built,
-   Phase 6), Cloud Run polls `gold.disturbance` for unprocessed incidents. The Yoda agent reasons over context
-   and writes to `gold.deployment`. Phase 6 runs the agent locally as a Windows scheduled task; Cloud Run is an optional later stage (doc 06, "Runtime").
+   Phase 6), the agent polls `gold.disturbance` for unprocessed incidents. The Yoda agent reasons over context
+   and writes to `gold.deployment`. It runs as the `ForceAgent` Windows scheduled task on the desktop (doc 06, "Runtime").
 7. Dashboard polls Postgres. Users can view by region, system, and planet, and deploy manually
    through the shared constraint layer.
 

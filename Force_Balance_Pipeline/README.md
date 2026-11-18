@@ -6,7 +6,7 @@
 
 A Star Wars-themed streaming ETL portfolio project. A Raspberry Pi probe simulates Force telemetry for 60 planets and publishes it over MQTT to a desktop bridge. The bridge lands it in Databricks Unity Catalog, where Auto Loader and dbt medallion layers (bronze, silver, gold) detect and classify disturbances. An LLM agent decides what to do about each incident, but only behind a code-enforced constraint layer. A local React dashboard shows the state and offers a manual deploy path through the same constraints.
 
-The core claim: data survives edge, broker and bridge outages with no gaps and no loss; a stopped cloud job only delays it.
+The core claim: data survives edge, broker, bridge and cloud outages with no gaps and no loss.
 
 All telemetry is simulated. Reference data comes from [SWAPI](https://swapi.info), extended by a governed AI enrichment layer that was generated once, human-reviewed and frozen (it is never called at runtime; [doc 08](docs/08-ai-enrichment.md)).
 
@@ -98,7 +98,7 @@ The probe's SQLite store is write-ahead and deletion waits for the broker's ackn
 - **Scheduled outages.** The probe forces itself offline for 1 to 3 hours about twice a day. In the Phase 4 checks, a scheduled window with a backlog of 300 landed 300 rows over 5 scans with 0 duplicates ([`ingest/phase4_checkpoint.sql`](ingest/phase4_checkpoint.sql), p4-8).
 - **Bridge and broker.** A roughly 22-hour bridge outage (2026-10-09/10) delivered intact on a manual restart. In a deliberate bridge outage of about 41 minutes the broker held three scans for the offline persistent session and delivered them when the bridge reconnected, with nothing buffered on the Pi.
 - **Re-proof, 2026-10-14.** The desktop rebooted and nothing restarted the broker, so scans stopped landing for about eleven hours. After recovery, each of the 45 fifteen-minute slots from 06:30Z to 17:30Z held exactly 60 probe events: 2,700 events and 2,700 distinct ids, 42 of the slots (2,520 events) arrived replayed, and `silver_rejects` gained 0 rows.
-- **Cloud side.** Databricks Free Edition stopped Job 1 for hours to days at a time when its quota ran out (see below). Ingestion is idempotent by design (immutable ULID-named files, exactly-once Auto Loader, dedup on `event_id`), so a stopped Job 1 means a delay, not a loss.
+- **Cloud side, 2026-11-03 to 11-17.** Databricks Free Edition stopped Job 1 for hours to days at a time when its quota ran out (see below), and once for 13 days: the workspace stopped scheduling Job 1 from 2026-11-03 16:03Z to 2026-11-17 02:03Z after a period without a login. The bridge kept landing files, and when Job 1 resumed, every UTC day from 2026-11-02 to 2026-11-16 held 96 scans and 5,760 events, with 0 duplicate event ids and no interval between scans over 15.0 minutes. Ingest lag reached 321.81 hours (314.06 hours for the oldest day ingested entirely after the stop) and every event landed. Query: [`ingest/phase8_outage_check.sql`](ingest/phase8_outage_check.sql). The catch-up also exposed a row-cap limit in the local puller, fixed with per-table paging ([doc 05, Serving (Phase 7)](docs/05-platform-setup.md#serving-phase-7)).
 
 The monitoring itself was proven too: S1 went down at exactly the period plus grace (30 minutes) in a real outage and back up on its first ping. One finding: the checks fired but the alert email had never been verified, so nothing was delivered; that was found and fixed on 2026-10-14.
 
