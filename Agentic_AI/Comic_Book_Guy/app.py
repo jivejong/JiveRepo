@@ -1,15 +1,22 @@
+from collections import deque
 from pathlib import Path
+import time
 from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from google import genai
 from google.genai import errors, types
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 PRIMARY_MODEL = "gemini-3.1-flash-lite"
 FALLBACK_MODEL = "gemini-2.5-flash-lite"
+MAX_INPUT_CHARS = 600
+MAX_SESSION_TURNS = 10
+MAX_HISTORY_MESSAGES = 8
 MAX_OUTPUT_TOKENS = 450
+MAX_REQUESTS_PER_HOUR = 20
+RATE_WINDOW_SECONDS = 3600
 
 STATIC_INDEX = Path(__file__).parent / "static" / "index.html"
 
@@ -23,6 +30,39 @@ UPSTREAM_TIMEOUT_REPLY = (
     "Oh, splendid. The upstream inference reactor timed out, much like "
     "waiting for George R.R. Martin to finish Winds of Winter. Try again later."
 )
+
+UPLOAD_PROHIBITED_REPLY = (
+    "Files? Attachments? What do I look like, a cloud storage bucket? "
+    "Plain JSON text only, please. No uploads permitted in my shop."
+)
+
+RATE_LIMITED_REPLY = (
+    "Whoa there, Bart Simpson. You have exceeded 20 requests per hour from "
+    "this IP address. You are temporarily banned from the Android's Dungeon. "
+    "Go outside and touch some Springfield grass, then try again later."
+)
+
+BOUNDARY_REPLIES = {
+    "EMPTY_INPUT": (
+        "Sending me nothing? That is even emptier than the plot of Star Wars: "
+        "The Rise of Skywalker. Type actual words."
+    ),
+    "INPUT_TOO_LONG": (
+        "Tl;dr. Your wall of text exceeds my 600-character limit. Edit yourself "
+        "before wasting my precious bandwidth."
+    ),
+    "SESSION_TURN_LIMIT": (
+        "Ten turns are up! Even Doctor Who regenerates eventually. Click Reset "
+        "Session if you insist on bothering me further."
+    ),
+    "INVALID_HISTORY": (
+        "Your conversation history violates basic temporal causality: at most "
+        "8 alternating messages are permitted. Nice try, Loki."
+    ),
+    "INVALID_JSON": (
+        "Worst. Payload. Ever. Send valid JSON matching the chat schema."
+    ),
+}
 
 SYSTEM_INSTRUCTION = """<persona>
   <identity>
@@ -58,6 +98,8 @@ SYSTEM_INSTRUCTION = """<persona>
   </consulting_paywall>
 </persona>"""
 
+RATE_LIMIT_BUCKETS: dict[str, deque[float]] = {}
+
 app = FastAPI(title="CBG Retcon Solutions Bot")
 
 
@@ -70,6 +112,50 @@ class ChatRequest(BaseModel):
     message: str
     history: list[HistoryMessage] = []
     turn: int = 1
+
+
+def _error_response(status_code: int, code: str, reply: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"reply": reply, "error": True, "code": code},
+    )
+
+
+def _history_alternates(history: list[HistoryMessage]) -> bool:
+    return all(
+        history[idx].role != history[idx + 1].role
+        for idx in range(len(history) - 1)
+    )
+
+
+def _validate_chat_request(payload: ChatRequest) -> str | None:
+    if not payload.message.strip():
+        return "EMPTY_INPUT"
+    if len(payload.message) > MAX_INPUT_CHARS:
+        return "INPUT_TOO_LONG"
+    if payload.turn < 1 or payload.turn > MAX_SESSION_TURNS:
+        return "SESSION_TURN_LIMIT"
+    if len(payload.history) > MAX_HISTORY_MESSAGES or not _history_alternates(payload.history):
+        return "INVALID_HISTORY"
+    return None
+
+
+def _get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def check_rate_limit(client_ip: str, now: float) -> bool:
+    bucket = RATE_LIMIT_BUCKETS.setdefault(client_ip, deque())
+    cutoff = now - RATE_WINDOW_SECONDS
+    while bucket and bucket[0] <= cutoff:
+        bucket.popleft()
+    if len(bucket) >= MAX_REQUESTS_PER_HOUR:
+        return False
+    bucket.append(now)
+    return True
 
 
 def _is_model_unavailable_error(exc: errors.APIError) -> bool:
@@ -124,20 +210,32 @@ def serve_index() -> FileResponse:
 
 
 @app.post("/api/chat")
-def chat_endpoint(payload: ChatRequest) -> JSONResponse:
+async def chat_endpoint(request: Request) -> JSONResponse:
+    content_type = request.headers.get("content-type", "").lower()
+    if "multipart/" in content_type or not content_type.startswith("application/json"):
+        return _error_response(415, "UPLOAD_PROHIBITED", UPLOAD_PROHIBITED_REPLY)
+
+    try:
+        raw_body = await request.json()
+        payload = ChatRequest.model_validate(raw_body)
+    except (ValueError, ValidationError):
+        return _error_response(400, "INVALID_JSON", BOUNDARY_REPLIES["INVALID_JSON"])
+
+    invalid_code = _validate_chat_request(payload)
+    if invalid_code:
+        return _error_response(400, invalid_code, BOUNDARY_REPLIES[invalid_code])
+
+    if not check_rate_limit(_get_client_ip(request), time.time()):
+        return _error_response(429, "RATE_LIMITED", RATE_LIMITED_REPLY)
+
     history_dicts = [item.model_dump() for item in payload.history]
     try:
         reply = generate_cbg_reply(payload.message, history_dicts)
     except TimeoutError:
-        return JSONResponse(
-            status_code=504,
-            content={"reply": UPSTREAM_TIMEOUT_REPLY, "error": True, "code": "UPSTREAM_TIMEOUT"},
-        )
+        return _error_response(504, "UPSTREAM_TIMEOUT", UPSTREAM_TIMEOUT_REPLY)
     except Exception:
-        return JSONResponse(
-            status_code=502,
-            content={"reply": UPSTREAM_ERROR_REPLY, "error": True, "code": "UPSTREAM_ERROR"},
-        )
+        return _error_response(502, "UPSTREAM_ERROR", UPSTREAM_ERROR_REPLY)
+
     return JSONResponse(
         status_code=200,
         content={"reply": reply, "error": False, "code": "OK"},
