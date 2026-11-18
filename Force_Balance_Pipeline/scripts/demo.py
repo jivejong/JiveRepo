@@ -4,7 +4,7 @@
 Standard library only, so the same recipe works with make on Windows and on Linux.
 
     python scripts/demo.py up      start the demo database, load the fixtures, build the dashboard, serve it (foreground)
-    python scripts/demo.py down    stop the demo database (the volume is kept)
+    python scripts/demo.py down    stop the demo backend (if .demo/backend.pid names a live one) and the demo database (the volume is kept)
     python scripts/demo.py clean   down, then delete the volume, .demo/ and .env.demo
 
 The demo owns its own Docker Compose project (fbp-demo), container, volume and database, Postgres on 127.0.0.1:5434 and
@@ -18,6 +18,7 @@ Exit codes: 0 ok, 1 a check failed (message on stderr), 2 a child process failed
 import os
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -29,6 +30,7 @@ COMPOSE_FILE = ROOT / "infra" / "demo" / "compose.yml"
 ENV_FILE = ROOT / ".env.demo"
 DEMO_DIR = ROOT / ".demo"
 VENV_DIR = DEMO_DIR / "venv"
+PID_FILE = DEMO_DIR / "backend.pid"            # the backend's own PID, written by _serve before it serves; down and clean stop that process
 DASHBOARD = ROOT / "dashboard"
 PROJECT = "fbp-demo"
 CONTAINER = "fbp-demo-postgres"
@@ -49,6 +51,42 @@ def port_free(port, host="127.0.0.1"):
             return False
     except OSError:
         return True
+
+
+def kill_process(pid):
+    """Stop the process and its children. Windows: taskkill /T /F; elsewhere SIGTERM."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    else:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+
+def stop_backend(pid_file=None, port=None, *, port_in_use=None, kill=None):
+    """Stop the demo backend that make demo left running. Returns "stopped", "stale" or "none".
+    No PID file: nothing. A PID file and the port in use: the process is killed and the file removed. A PID file and the port free (a stale
+    file, or a file that does not hold a PID): the file is removed and nothing is killed. The port check and the kill are injectable."""
+    pid_file = PID_FILE if pid_file is None else Path(pid_file)
+    port = WEB_PORT if port is None else port
+    port_in_use = port_in_use or (lambda p: not port_free(p))
+    kill = kill or kill_process
+    if not pid_file.exists():
+        return "none"
+    try:
+        pid = int(pid_file.read_text(encoding="ascii").strip())
+    except (ValueError, OSError):
+        pid = None
+    outcome = "stale"
+    if pid is not None and pid > 0 and port_in_use(port):
+        kill(pid)
+        outcome = "stopped"
+    try:
+        pid_file.unlink()
+    except OSError:
+        pass
+    return outcome
 
 
 def ensure_env_file(path):
@@ -136,11 +174,13 @@ def cmd_up():
 
 def cmd_down():
     check_docker()
+    print("demo: backend " + stop_backend(), flush=True)
     compose("down", password=ensure_env_file(ENV_FILE) if ENV_FILE.exists() else None)
 
 
 def cmd_clean():
     check_docker()
+    print("demo: backend " + stop_backend(), flush=True)
     compose("down", "-v", password=ensure_env_file(ENV_FILE) if ENV_FILE.exists() else None)
     shutil.rmtree(DEMO_DIR, ignore_errors=True)
     if ENV_FILE.exists():
@@ -182,12 +222,19 @@ def cmd_serve():
     from serving import server
     server.configure_logging(DEMO_DIR / "dashboard.log")
     srv = server.make_server(PG_DB, WEB_PORT, env=inner_env(), connect=demo_connect)
+    DEMO_DIR.mkdir(exist_ok=True)
+    PID_FILE.write_text(str(os.getpid()), encoding="ascii")        # before serving, so demo-down can stop this process
     try:
         srv.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
     finally:
         srv.server_close()
+        try:
+            if PID_FILE.read_text(encoding="ascii").strip() == str(os.getpid()):
+                PID_FILE.unlink()
+        except OSError:
+            pass
 
 
 COMMANDS = {"up": cmd_up, "down": cmd_down, "clean": cmd_clean, "_load": cmd_load, "_serve": cmd_serve}
