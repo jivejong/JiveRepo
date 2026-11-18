@@ -1815,6 +1815,90 @@ The form's "Yoda decides at HH:MM UTC" for B (from `agent_first_seen`) shows (H+
 - `logs\deploy.log`: one line for the rejected attempt, `ok=false reasons=...jedi_unavailable...`, `statements=3`, the requested `jedi_ids` and `starship_id`, and no rationale text.
 - `serving.v_deployment_log` in the local Postgres (the dashboard's deployment log) shows A's agent row, and B's row once decided.
 
+### Runbook: Phase 8 demo (first live manual deploy)
+
+The demo (doc 07, Phase 8): one injected incident on `yavin_iv`, a rejected manual deploy that writes nothing, then a valid manual deploy that writes one `decided_by = 'user'` row, all inside the human-first window that comes before the agent's own decision. It is the first live run of the manual deploy; the Phase 7 checkpoint only exercised its rejection. One injection, one Job 1 run, about 2 hours from T0 to the deploy and 3 hours to the agent's own cycle. Times are UTC with EST beside them (EST = UTC-5, in force until the clocks change on 2027-03-14; after that EDT = UTC-4). `<DESKTOP_IP>` is the broker host, as in the Phase 7 runbook; `probe_ctl.py` prompts for the `operator` password (or reads `OPERATOR_MQTT_PASSWORD`), which is never stored or printed.
+
+**The injection** (chosen offline in Phase 8 Round 11; no injection was sent for it). Planet `yavin_iv` (Outer Rim, population 1,000), signature `sith_presence`, the default episode (ramp 2, hold 4, decay 3 scans), which is what the Phase 7 checkpoint injected on `geonosis`.
+- Expected severity about 8.3 (range 7.8 to 10.8): at or above the 4.40 floor and below the 12.0 master line, so no senior-Jedi rule applies and a party of any rank can be valid. The target of `sith_presence` is `dark` +4 sigma and `kyber` -3 sigma, a nominal composite of 6.403 (`edge/forcesim/signatures.py`, `target_for`); severity is the imbalance score times 1 + log10(population)/10 (doc 03), and 1,000 people give a factor of 1.30. Of the 8 `sith_presence` incidents in `serving.v_incidents`, seven had imbalance scores of 6.01 to 8.32, which gives 7.8 to 10.8 here; the eighth (`mygeeto`, 2026-10-17, 10.27, 6 sustained scans) would give 13.4. An imbalance above 9.2 is what would cross 12.0, and a detection by one Job 1 run holds only the first scans of the episode. The VALID party below includes a master and a council member, so it stays valid even above 12.0.
+- Why not the checkpoint's own planets: their severities were above 12.0 (`geonosis` `sith_presence` 13.35, `kamino` `force_drain` 15.34, `alderaan` `civil_unrest` 13.15; populations of 1e11, 1e9 and 2e9 give factors of 2.10, 1.90 and 1.93), so the 12.0 rule would decide them. The same signature and episode on a small planet is the smallest change that keeps the checkpoint's proven injection and lands below 12.0.
+- Evidence for the planet: `serving.v_incidents` holds a `sith_presence` incident on `yavin_iv` (2026-10-22 11:45Z, imbalance 6.01, severity 7.82, 2 sustained scans, decided `deploy`). The engineering log does not say how it was produced. `check_injection` accepts `sith_presence` on `yavin_iv` (every target value is inside its valid range; no population rule applies), so the probe will not refuse it. Check `/var/lib/force-probe/probe_events.jsonl` for `control_applied` after sending (doc 04, "Where control events land").
+- No open deployment may name `yavin_iv`'s incident; no incident on `yavin_iv` may be open (the 2-hour cooldown would suppress a new one).
+
+**The commands** (two sends: `probe_ctl.py inject` carries no duration, and the mode override is what keeps the probe CONNECTED, as in Phase 7). A few minutes before T0:
+
+```bash
+python edge/probe_ctl.py --host <DESKTOP_IP> mode CONNECTED --for-seconds 19800
+```
+
+At T0:
+
+```bash
+python edge/probe_ctl.py --host <DESKTOP_IP> inject yavin_iv sith_presence
+```
+
+The override is 19800 s (5 h 30 min), the value the Phase 7 runbook fixes (step 1); it expires by itself and the schedule resumes, so never use `--indefinite`. No shorter value has been tested: this injection needs only the scans up to (H+1):00 to land, about 1 h 5 min after the override is sent, but a DISCONNECTED window of 1 to 3 hours can start anywhere (`ModeSchedule` is seeded randomly at each probe start, see the Phase 7 runbook), so the proven value stays. The evidence for the T0 rule: in the checkpoint `alderaan` was injected at 01:09:14Z and its incident was first seen by the agent in the 02:11Z cycle, built by the 02:03 Job 1 run (Round 13c, hourly Job 1 at the time).
+
+**Pre-flight** (the hour before T0; H is an odd UTC hour other than 03, so T0 is never in 03:xx UTC = 22:xx EST, and no step of the session reaches that hour):
+- Every Healthchecks.io check is green.
+- `ForceAgent`, `ForceServe` and `ForceBridge` are Ready or Running (`Get-ScheduledTask -TaskName ForceAgent, ForceServe, ForceBridge`).
+- The last Job 1 run succeeded within the last 2 hours (workspace run history, or `logs\agent_last_job1_prod.txt` is its run id), and `logs\serve.log` and `logs\agent.log` have no failure after their last success.
+- No open incident for `yavin_iv`, and the party's Jedi (below) are all available on the dashboard. Open deployments are fewer than 3.
+- `dashboard\dist` is built (`npm ci` and `npm run build` in `dashboard\`).
+- The live backend is running on 127.0.0.1:8081: from `Force_Balance_Pipeline`, `serving\.venv\Scripts\python.exe -m serving.server` (no `--database`), then `GET /api/meta` shows `deploy_enabled` true. If it says `fixture_database`, `fixture_rows` or `no_credentials`, fix that first (doc 06, "Manual deployment path").
+- The screen recording is ready.
+
+**Timeline** (H odd and not 03; E = H + 1 is the even hour in which Job 1 builds the incident):
+
+| UTC | What |
+|---|---|
+| H:00 or a few minutes before | send the `mode CONNECTED --for-seconds 19800` override |
+| H:02 to :10 | T0: send the injection; check `probe_events.jsonl` for `control_applied` |
+| E:03 | Job 1 builds the incident from the scans up to E:00 |
+| E:11 | the agent first sees it (`gate=new_run`; no decision: the human-first window) |
+| E:12 | ForceServe publishes; the incident is on the dashboard |
+| E:13 to :19 | the planned deploy slot (below) |
+| (E+2):03 | the next Job 1 run; a deploy is refused while Job 1 is active |
+| (E+2):11 | the agent's first cycle after a new Job 1 run that finds the incident at least 30 minutes old; it would decide it now if the user had not |
+
+By the docs the manual window runs from E:13 to (E+2):02 (the agent decides at (E+2):11, doc 06, "Human-first window"; E = 02 puts 03:00 to 03:59 inside it, and a deploy is refused in that hour). The plan uses only E:13 to :19 so the recording is one short sitting; the rest is spare margin.
+
+Worked example, H = 17 (12:00 EST): override at 16:55 to 17:00 (11:55 to 12:00 EST); T0 17:02 to 17:10 (12:02 to 12:10 EST); Job 1 18:03 (13:03 EST); agent 18:11 (13:11 EST); ForceServe 18:12 (13:12 EST); deploy slot 18:13 to 18:19 (13:13 to 13:19 EST); the agent would decide at 20:11 (15:11 EST).
+
+**The deploy slot (E:13 to :19).** Refresh the dashboard and confirm the `yavin_iv` incident (open, `sith_presence`, severity about 8.3). Open "Deploy..." and, with the rationale required in both attempts:
+1. Submit the REJECTED party: the form shows "Rejected by the constraint layer:" with its reasons, and nothing is written (`deploy.log` shows `ok=false`, `statements=3`).
+2. Submit the VALID party: the form shows success; the deployment log shows a row with `decided_by` `user` and the party's ETA.
+
+**If the incident is not on the dashboard by E:19: do not deploy.** The agent decides it itself at the next even hour's :11 if Job 1 built it at E:03 (check `logs\agent.log` at E:11: `new=1 deferred=1`). If E:11 shows `polled=0`, Job 1 did not build it; the agent will first see it a run later, and the same slot repeats at (E+2):13 to :19 only if the log shows that sighting. Otherwise leave it and retry another day with a fresh injection.
+
+**Afterwards.** The user's MERGE marks the incident processed, so the agent never decides it. At (E+1):11 the cycle is `pending` (the incident's id is still in the first-seen store) and polls once with 0 decisions, which prunes the id; at (E+2):11 the cycle is `gate=new_run` with `polled=0 decided=0`, and `logs\agent_seen_prod.json` no longer holds the id. There is no "already decided" line, because a decided incident is not in the poll. The Phase 8 verification round runs read-only checks: the MERGE count was 1 (`deploy.log` line `ok=true`), the incident's `agent_processed` mark, `gold.deployment` has exactly one row for the incident with `decided_by = 'user'`, and `serving.deployment` and `v_deployment_log` in the local Postgres match it.
+
+**Warehouse statements** (the first live accepted manual deploy has not been measured; rows marked "estimate" come from the docs):
+
+| Step | Statements | Basis |
+|---|---|---|
+| T0, override | 0 | probe only |
+| E:03 Job 1 | not counted | its own scheduled work |
+| E:11 agent | 2 | estimate: repair count and poll, the deferral reads no context (doc 06, "Runtime") |
+| E:12 ForceServe | 7 | measured: every publish since 2026-10-20 |
+| REJECTED | 3 | measured: Phase 7, `deploy.log` `statements=3` (context, available Jedi, available starships) |
+| VALID | 6 | estimate (doc 06): 3 reads, the MERGE and the mark, plus 1 refresh of the deployment table |
+| (E+1):11 agent | 2 | estimate: `pending` poll |
+| (E+2):11 agent | 2 | estimate |
+| (E+2):12 ForceServe | 7 | measured |
+
+The session's manual statements total 9, and the scheduled cycles around it about 20 up to (E+2):12.
+
+**The parties** (computed offline in Phase 8 Round 11 with `agent.constraints.check_deploy` and `agent.distance.party_eta_hours`, on the live dimensions, for an incident on `yavin_iv` with `sith_presence`, severity 8.32 (7.8, 10.8 and 13.4 give the same results), region Outer Rim, and no open deployments, which is the state once the three that were open on 2026-11-18 are released at 04:29Z that day). Availability can change before the session, so re-check it in pre-flight.
+
+| Party | Jedi and starship | `check_deploy` | Expected |
+|---|---|---|---|
+| VALID | `luminara_unduli` (master, combat, Outer Rim) and `eeth_koth` (council member, combat, Mid Rim) on `h_type_nubian_yacht` (crew 4, hyperdrive 0.9) | `[]` | success; ETA 0.18 h (the slower member, 2 distance units x 0.9 / 10); both have the `combat` specialty `sith_presence` needs |
+| Fallback VALID | `saesee_tiin` (council member, combat primary, stealth) and `ki_adi_mundi` (council member, investigation primary, combat secondary) on `arc_170` (crew 3, hyperdrive 1.0) | `[]` | success; ETA 0.20 h; `ki_adi_mundi` matches through his secondary specialty |
+| REJECTED | `jocasta_nu` (master, investigation) and `qui_gon_jinn` (master, diplomacy, investigation) on `jedi_starfighter` (crew 1, no passengers) | `["specialty_mismatch", "insufficient_capacity"]` | "Rejected by the constraint layer:" with those two reasons in that order; nothing written |
+
+The REJECTED party uses nothing that depends on timing except the availability of its own Jedi: if one of them is deployed by then, `jedi_unavailable` comes first and the specialty check is skipped, and if three deployments are open `deployment_capacity_reached` is added; the rejection and its two or more reasons stand. Evaluated against the state read on 2026-11-18 at 02:07Z (three open deployments, ending 04:15Z to 04:29Z), all three parties return `deployment_capacity_reached` (plus the two reasons above for REJECTED), which is why the pre-flight checks the count. If a VALID party's Jedi or starship is no longer available, use the fallback; if that fails too, pick any 1 to 4 available Jedi with `combat` as primary or secondary specialty and a starship whose crew plus passengers is at least the party size, and let the form's own check decide.
+
 ## Local development stack
 
 **Deferred to Phase 8** (doc 07 deviation note: `dbt build` is proven on `prod` only in Phase 4; `extract_payload`'s Postgres
