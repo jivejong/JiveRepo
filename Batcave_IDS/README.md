@@ -1,4 +1,4 @@
-# batcave-ids
+# Batcave IDS
 
 Streaming data pipeline that simulates a five-stage intrusion, lands the telemetry in a Parquet
 lakehouse, transforms it with dbt, and asks an LLM to reconstruct both the attacker's identity and
