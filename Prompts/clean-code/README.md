@@ -8,34 +8,34 @@ The goal is clean code: code that does what was asked and nothing more, and that
 
 AI coding agents miss that goal in three predictable ways. They guess when the request is vague. They add things nobody asked for (extra layers, options, error handling, tests) because those look thorough. And over a long session they drift from the instructions they started with. Every mechanism in this pipeline targets one of those three.
 
-| Mechanism                  | What it does                                                                                                                                                             | Where                        |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------- |
-| Requirements before code   | Every requirement is one behavior with a criterion you can observe. Code that traces to no requirement is not built (rule B1).                                           | stages 1 and 2               |
-| Rigor tier                 | You pick T0, T1, or T2 once. It sets how much validation, error handling, and testing is right, so "production-grade" extras do not land in a personal tool.             | every stage                  |
-| Ask, do not guess          | A gap becomes an open question, never an assumption. An idea the agent has is listed under "Proposed" and not built.                                                     | every stage                  |
-| Smallest design            | Each design decision must pass the deletion test: if it were removed, which requirement would fail? If none, it is not designed.                                         | stage 3                      |
-| Explicit slices            | The plan cuts the work into small runnable slices, each with a done check and a "Not in this slice" line, so the coding agent makes no design decisions of its own.      | stages 3 and 4               |
-| Anti-bloat baseline        | Rules B1-B13: no single-use abstractions, pass-through wrappers, unused options, defensive checks for impossible states, restating comments, or dead code.               | stages 4 and 5               |
-| Readability rules          | Rules CL1-CL6: honest names, one job per function, short and shallow functions, match the surrounding code, no clever constructs.                                        | stages 4 and 5               |
-| Test discipline            | Tests assert observable behavior and are named for the requirement they verify. Tests of internals are banned, and test code is capped at 35% of implementation code.    | stages 4 and 5               |
-| Self-checks per slice      | The build agent scans each slice against the rules and against the SPEC, and reports `[BLOAT CHECK]` and `[DRIFT CHECK]` lines you can hold it to.                       | stage 4                      |
-| Independent review         | A separate read-only session hunts for code that no requirement justifies and must prove each finding. You approve findings by ID; nothing is removed without your say.  | stage 5                      |
-| Evidence log               | Every decision is logged with evidence a person who was not there can check. Speculative ideas are marked as such and can never justify code.                            | stage 3 onward               |
-| Session hygiene            | One stage per session, state kept in files, and reminders to start a fresh chat before the context clutters.                                                             | every interactive stage      |
-| You hold the gates         | Each stage ends with a checklist it must pass, and waits for you. The agent proposes commits; you make them.                                                             | every stage                  |
+| Mechanism                | What it does                                                                                                                                                            | Where                   |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| Requirements before code | Every requirement is one behavior with a criterion you can observe. Code that traces to no requirement is not built (rule B1).                                          | stages 1 and 2          |
+| Rigor tier               | You pick T0, T1, or T2 once. It sets how much validation, error handling, and testing is right, so "production-grade" extras do not land in a personal tool.            | every stage             |
+| Ask, do not guess        | A gap becomes an open question, never an assumption. An idea the agent has is listed under "Proposed" and not built.                                                    | every stage             |
+| Smallest design          | Each design decision must pass the deletion test: if it were removed, which requirement would fail? If none, it is not designed.                                        | stage 3                 |
+| Explicit slices          | The plan cuts the work into small runnable slices, each with a done check and a "Not in this slice" line, so the coding agent makes no design decisions of its own.     | stages 3 and 4          |
+| Anti-bloat baseline      | Rules B1-B13: no single-use abstractions, pass-through wrappers, unused options, defensive checks for impossible states, restating comments, or dead code.              | stages 4 and 5          |
+| Readability rules        | Rules CL1-CL6: honest names, one job per function, short and shallow functions, match the surrounding code, no clever constructs.                                       | stages 4 and 5          |
+| Test discipline          | Tests assert observable behavior and are named for the requirement they verify. Tests of internals are banned, and test code is capped at 35% of implementation code.   | stages 4 and 5          |
+| Self-checks per slice    | The build agent scans each slice against the rules and against the SPEC, and reports `[BLOAT CHECK]` and `[DRIFT CHECK]` lines you can hold it to.                      | stage 4                 |
+| Independent review       | A separate read-only session hunts for code that no requirement justifies and must prove each finding. You approve findings by ID; nothing is removed without your say. | stage 5                 |
+| Evidence log             | Every decision is logged with evidence a person who was not there can check. Speculative ideas are marked as such and can never justify code.                           | stage 3 onward          |
+| Session hygiene          | One stage per session, state kept in files, and reminders to start a fresh chat before the context clutters.                                                            | every interactive stage |
+| You hold the gates       | Each stage ends with a checklist it must pass, and waits for you. The agent proposes commits; you make them.                                                            | every stage             |
 
 ## Stages
 
-| #   | Prompt                          | Reads                                            | Produces                                                                                                                                         |
-| --- | ------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | `01-Kickoff.md`                 | your idea                                        | `docs/KICKOFF/HANDOFF.md` (the brainstorm is archived in `BRAINSTORM.md`; later stages do not read it)                                           |
-| 2a  | `02a-requirements-interview.md` | `HANDOFF.md`, or nothing                         | `SPEC.md` (`docs/KICKOFF/SPEC.chat.md` when an audit and reconcile follow)                                                                       |
-| 2b  | `02b-requirements-extractor.md` | existing code (read-only)                        | `docs/KICKOFF/SPEC.audit.md`                                                                                                                     |
-| 2c  | `02c-requirements-reconciler.md` | `SPEC.chat.md` and `SPEC.audit.md`              | `SPEC.md` (reconciled, with `execution_directives`)                                                                                              |
-| 3   | `03-design-planner.md`          | `SPEC.md`                                        | `DESIGN.md`, `PLAN.md`, `AGENTS.md`, `docs/ENGINEERING_LOG.md` (opened)                                                                          |
-| 4   | `04-build.md`                   | `AGENTS.md`, `SPEC.md`, `DESIGN.md`, `PLAN.md`   | code, one slice at a time, plus log entries                                                                                                      |
-| 5a  | `05a-trim-review.md`            | `SPEC.md`, the log, the code (read-only)         | `docs/trim/TRIM-REPORT.md` (findings T-xxx, TT-xxx, and TC-xxx); `docs/trim/REQUIREMENTS-DERIVED.md` only when there is no SPEC                  |
-| 5b  | `05b-trim-execute.md`           | `TRIM-REPORT.md` and the finding IDs you approve | one commit per finding, `docs/trim/BASELINE.md`, log entries; on "CLOSE OUT", `docs/CLOSE-OUT.md` and the `CLOSE` log entry                      |
+| #   | Prompt                           | Reads                                            | Produces                                                                                                                        |
+| --- | -------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `01-Kickoff.md`                  | your idea, or brainstorm/design notes            | `docs/KICKOFF/HANDOFF.md` (the brainstorm is archived in `BRAINSTORM.md`; later stages do not read it)                          |
+| 2a  | `02a-requirements-interview.md`  | `HANDOFF.md`, or nothing                         | `SPEC.md` (`docs/KICKOFF/SPEC.chat.md` when an audit and reconcile follow)                                                      |
+| 2b  | `02b-requirements-extractor.md`  | existing code (read-only)                        | `docs/KICKOFF/SPEC.audit.md`                                                                                                    |
+| 2c  | `02c-requirements-reconciler.md` | `SPEC.chat.md` and `SPEC.audit.md`               | `SPEC.md` (reconciled, with `execution_directives`)                                                                             |
+| 3   | `03-design-planner.md`           | `SPEC.md`                                        | `DESIGN.md`, `PLAN.md`, `AGENTS.md`, `docs/ENGINEERING_LOG.md` (opened)                                                         |
+| 4   | `04-build.md`                    | `AGENTS.md`, `SPEC.md`, `DESIGN.md`, `PLAN.md`   | code, one slice at a time, plus log entries                                                                                     |
+| 5a  | `05a-trim-review.md`             | `SPEC.md`, the log, the code (read-only)         | `docs/trim/TRIM-REPORT.md` (findings T-xxx, TT-xxx, and TC-xxx); `docs/trim/REQUIREMENTS-DERIVED.md` only when there is no SPEC |
+| 5b  | `05b-trim-execute.md`            | `TRIM-REPORT.md` and the finding IDs you approve | one commit per finding, `docs/trim/BASELINE.md`, log entries; on "CLOSE OUT", `docs/CLOSE-OUT.md` and the `CLOSE` log entry     |
 
 Stage 5 also runs on its own, on any repository: the review derives requirements from the documents and git history when there is no `SPEC.md` (and stops for your review of them), and the execute prompt creates the log if there is none.
 
@@ -57,6 +57,7 @@ Stages 1 to 3 end with a gate report, so each handoff is checked once before the
 | Your situation                                   | Run                                              |
 | ------------------------------------------------ | ------------------------------------------------ |
 | A new idea                                       | 1, 2a, 3, 4, 5a, 5b                              |
+| Brainstorm or design session notes               | 1 (upload notes), 2a, 3, 4, 5a, 5b               |
 | You already know exactly what you want           | 2a (say there is no packet), 3, 4, 5a, 5b        |
 | Changing or rebuilding existing code             | 2a, 2b, 2c, 3, 4, 5a, 5b                         |
 | Cleaning up a codebase without changing behavior | 5a, 5b                                           |
@@ -66,37 +67,37 @@ Stages 1 to 3 end with a gate report, so each handoff is checked once before the
 
 You choose the tier in the first stage you run, and every later stage obeys it. Choose the lowest one that fits; a higher tier means more code.
 
-| Tier | Use it for           | What you get                                                                                  |
-| ---- | -------------------- | --------------------------------------------------------------------------------------------- |
-| T0   | Throwaway            | Happy path only, one file, no tests, errors crash. Ends with a "Proved / Faked" summary.      |
-| T1   | Personal tool        | Input validated at the boundary, clear errors, tests for the Must requirements.               |
+| Tier | Use it for           | What you get                                                                                   |
+| ---- | -------------------- | ---------------------------------------------------------------------------------------------- |
+| T0   | Throwaway            | Happy path only, one file, no tests, errors crash. Ends with a "Proved / Faked" summary.       |
+| T1   | Personal tool        | Input validated at the boundary, clear errors, tests for the Must requirements.                |
 | T2   | Shared or production | Full validation, structured logging, timeouts, tests for every criterion and critical failure. |
 
 ### What to say
 
-| Say                              | In stage  | Effect                                                                                     |
-| -------------------------------- | --------- | ------------------------------------------------------------------------------------------ |
-| "next"                           | all       | Advance to the next phase, slice, or finding. Nothing advances without it.                 |
-| "you decide"                     | 1, 2a, 3  | The agent picks the smallest option and records it as an assumption.                       |
-| "resume at Phase N"              | 1, 2a, 3  | Continue in a new chat. Paste the prompt, the last Phase Summary, and its artifact first.  |
-| "continue"                       | all       | Stay in this session after a `[FRESH SESSION]` reminder.                                   |
-| "LOCK SPEC"                      | 2a        | Stop interviewing and go to the gate. Unresolved areas become open questions.              |
-| "HANDOFF"                        | 4         | End a spike and emit a packet for stage 2a.                                                |
-| "task harden" or "task teach"    | 4         | Attack the code before release, or produce explained code.                                 |
-| "REVIEW SINCE S-xxx" (or a ref)  | 5a        | Review only what changed since that slice or git ref.                                      |
-| "proceed"                        | 5a        | Accept the derived requirements (only when there is no SPEC) and continue the review.      |
-| finding IDs, or "all Low risk"   | 5b        | Approve the findings to apply.                                                             |
-| "CLOSE OUT"                      | 5b        | Finish: verify coverage and write `docs/CLOSE-OUT.md`.                                     |
+| Say                             | In stage | Effect                                                                                    |
+| ------------------------------- | -------- | ----------------------------------------------------------------------------------------- |
+| "next"                          | all      | Advance to the next phase, slice, or finding. Nothing advances without it.                |
+| "you decide"                    | 1, 2a, 3 | The agent picks the smallest option and records it as an assumption.                      |
+| "resume at Phase N"             | 1, 2a, 3 | Continue in a new chat. Paste the prompt, the last Phase Summary, and its artifact first. |
+| "continue"                      | all      | Stay in this session after a `[FRESH SESSION]` reminder.                                  |
+| "LOCK SPEC"                     | 2a       | Stop interviewing and go to the gate. Unresolved areas become open questions.             |
+| "HANDOFF"                       | 4        | End a spike and emit a packet for stage 2a.                                               |
+| "task harden" or "task teach"   | 4        | Attack the code before release, or produce explained code.                                |
+| "REVIEW SINCE S-xxx" (or a ref) | 5a       | Review only what changed since that slice or git ref.                                     |
+| "proceed"                       | 5a       | Accept the derived requirements (only when there is no SPEC) and continue the review.     |
+| finding IDs, or "all Low risk"  | 5b       | Approve the findings to apply.                                                            |
+| "CLOSE OUT"                     | 5b       | Finish: verify coverage and write `docs/CLOSE-OUT.md`.                                    |
 
 ### Stage 1: Kickoff
 
-Turns a raw idea into a scope you have confirmed. Skip it if you already know what you want.
+Turns a raw idea—or existing brainstorm and design notes—into a scope you have confirmed. Skip it if you already know what you want.
 
-1. Paste `01-Kickoff.md`. It asks up to three questions per turn through four phases: Frame, Diverge, Converge, Handoff.
-2. In Frame, answer in plain words and pick the tier. If you use a word like "fast" or "simple", it will ask for a number or an observable behavior.
-3. Diverge is a brainstorm (skipped at T0). Nothing said here is a commitment.
+1. Paste `01-Kickoff.md`. You can either upload/paste existing brainstorm or design notes, or start from scratch. It asks up to three questions per turn through four phases: Frame, Diverge, Converge, Handoff.
+2. In Frame, answer in plain words and pick the tier (with uploaded notes, it drafts the Frame from your docs and asks only about missing fields). If you use a word like "fast" or "simple", it will ask for a number or an observable behavior.
+3. Diverge is a brainstorm (skipped at T0). Uploaded notes are extracted here as non-authoritative candidates, with design choices logged as `[approach]` or `[constraint]`. Nothing here is a commitment.
 4. In Converge, it proposes what is Must, Should, Could, Later, and Out. Confirm every Must and every Out yourself; only confirmed items go forward.
-5. Save the brainstorm as `docs/KICKOFF/BRAINSTORM.md` and the final packet as `docs/KICKOFF/HANDOFF.md`. Later stages never read the brainstorm.
+5. Save the brainstorm as `docs/KICKOFF/BRAINSTORM.md` and the final packet as `docs/KICKOFF/HANDOFF.md`. Later stages never read the brainstorm or the raw source notes.
 
 ### Stage 2a: Requirements interview
 
@@ -272,19 +273,19 @@ Stage 4 never commits unless a project constraint in `AGENTS.md` says it may; it
 
 `kernel.md` is the single source for definitions shared by more than one stage. Each stage prompt carries a verbatim copy of the blocks it uses, tagged `kernel="block@version"`, so it works on its own.
 
-| Block                                  | Used by                                                                                               |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `tiers@1` (T0, T1, T2)                 | kickoff, interview, reconciler (summary lines); build, trim-review, trim-execute (full rules)         |
-| `vague_words@2`                        | kickoff, interview                                                                                    |
-| `packet_envelope@2`                    | kickoff, interview, build (spike packet)                                                              |
-| `precedence@1`, `missing_info@1`       | build                                                                                                 |
-| `baseline@3` (anti-bloat rules B1-B13) | build, trim-review, trim-execute                                                                      |
-| `readability@1` (rules CL1-CL6)        | build, trim-review, trim-execute                                                                      |
-| `session_hygiene@1`                    | kickoff, interview, design-planner, build, trim-execute                                               |
-| `styles@1`                             | build                                                                                                 |
-| `gate_report@1`                        | the shape of a gate report; each stage's own schema carries a matching copy (not tagged)              |
-| `log_standard@2`                       | design-planner, build, trim-execute                                                                   |
-| `trim_finding@2` (the finding formats) | trim-review (writes it), trim-execute (reads it)                                                      |
+| Block                                  | Used by                                                                                       |
+| -------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `tiers@1` (T0, T1, T2)                 | kickoff, interview, reconciler (summary lines); build, trim-review, trim-execute (full rules) |
+| `vague_words@2`                        | kickoff, interview                                                                            |
+| `packet_envelope@2`                    | kickoff, interview, build (spike packet)                                                      |
+| `precedence@1`, `missing_info@1`       | build                                                                                         |
+| `baseline@3` (anti-bloat rules B1-B13) | build, trim-review, trim-execute                                                              |
+| `readability@1` (rules CL1-CL6)        | build, trim-review, trim-execute                                                              |
+| `session_hygiene@1`                    | kickoff, interview, design-planner, build, trim-execute                                       |
+| `styles@1`                             | build                                                                                         |
+| `gate_report@1`                        | the shape of a gate report; each stage's own schema carries a matching copy (not tagged)      |
+| `log_standard@2`                       | design-planner, build, trim-execute                                                           |
+| `trim_finding@2` (the finding formats) | trim-review (writes it), trim-execute (reads it)                                              |
 
 To change a shared definition:
 
