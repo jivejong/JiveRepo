@@ -58,6 +58,18 @@ A six-stage coding pipeline built from separate, single-purpose system prompts: 
 
 The split is the point: a single agent silently reconciles its own ambiguities, whereas Coder and Tester working independently from one spec turn that hidden reconciliation into a **visible divergence a human can catch**. No stage picks a gate outcome: the verdict always returns to the person in the chair.
 
+### [`clean-code/`](./clean-code/)
+
+A five-stage prompt pipeline that takes an idea to working, readable code and keeps AI bloat out along the way. Where `dev-workflow/` splits roles *within* one build (Coder, Tester, Reviewer), `clean-code/` sequences the whole lifecycle: one stage per session, with state carried in files, not in the chat. Each stage prompt is self-contained and agent-agnostic; you paste one in, work through it, and carry its output file to the next stage.
+
+- **Kickoff** (1): turns a raw idea, or existing brainstorm notes, into a user-confirmed scope; only items you explicitly confirm go forward
+- **Requirements** (2a, or 2b + 2c for existing code): an interview that writes `SPEC.md` as one observable behavior per requirement; or a read-only code audit reconciled against the interview spec, with every disagreement put to you
+- **Design & Plan** (3): the smallest design that survives the deletion test (if this were removed, which requirement would fail?), cut into small runnable slices
+- **Build** (4): one slice at a time, with `[BLOAT CHECK]` and `[DRIFT CHECK]` self-reports and a proposed commit you make yourself
+- **Trim** (5a, 5b): a separate, read-only session hunts for code and tests that no requirement justifies and must prove each finding; you approve findings by ID, and nothing is removed without your say
+
+The pipeline targets three predictable agent failures: guessing when the request is vague, adding what nobody asked for, and drifting from the starting instructions over a long session. The mechanisms: a rigor tier (T0 throwaway, T1 personal tool, T2 production) you pick once; anti-bloat rules (B1–B13) and readability rules (CL1–CL6); gaps become open questions, never assumptions; and an append-only engineering log that traces every piece of work back to the idea. Shared definitions live in a single `kernel.md` and are assembled into the stage prompts by `tools/assemble.py`. Edit those through the kernel and templates, not the stage files.
+
 ### [`training/`](./training/)
 
 Partners for learning a new domain, structured as a pipeline with typed handoffs that mirrors the ML lifecycle in name and spirit:
@@ -87,6 +99,18 @@ Two kinds of writing prompts:
 - **Synthesis Assistant**: meeting notes, research, threads; faithful compression, not new content
 
 Every collaborative assistant inherits the same **Collaboration Discipline**: identify before you generate, offer directions instead of verdicts, keep the writer in the chair, monitor your own drift, and finish what you start.
+
+### [`job-search/`](./job-search/)
+
+Eight prompts that help engineers turn work they have already done into evidence that recruiters, AI sourcing tools, and hiring teams can find and assess, and that support interview review and focused learning. The common thread is specificity: name the system, constraint, decision, trade-off, and result, but only where the source material supports it.
+
+- **Repository README** and **Architecture document**: draft a technical `README.md` (with GitHub topics and a short description) and an `ARCHITECTURE.md` from the actual codebase; edge cases the code doesn't handle are called out as constraints, not papered over
+- **Engineering log** (three variants): a real-time entry from session notes and a diff; a catch-up reconstruction from commit history; and a historical survey that drafts entries from code evidence, labels each OBSERVED or INFERRED, and leaves "Author to supply" wherever only the author knows the answer
+- **AI sourcing simulator**: plays a cold, tabular sourcing parser that accumulates your resume, profile, READMEs, and logs, then flags unsupported claims and weak terminology on `RUN ENGINE`; its score is a prompt-generated diagnostic, not a real platform's ranking
+- **Interview post-mortem**: reviews a recording in one lane at a time (Delivery & Style, or Technical Content), anchoring every critique to a timestamp and quote
+- **Mental mapper**: explains an unfamiliar technology through mechanisms you already know, and flags the "false friends" where the analogy breaks
+
+The shared guard is the same one running through the rest of this repository: the AI doesn't get to invent your experience. The historical log refuses to fabricate incidents, benchmarks, or dates the repository doesn't record. The sourcing simulator gives no credit for implied skills. The mental mapper anchors only in technologies you say you know deeply. Every draft still needs checking against the source before it is published or repeated in an interview.
 
 ### [`geeky/`](./geeky/)
 
@@ -130,7 +154,7 @@ These prompts cover physical, energetic, psychological, and relational ecosystem
 
 ## The shared failure mode
 
-Every prompt in this repository is fighting the same underlying pull at a different specific moment: **the AI quietly doing the cognitive work the human was supposed to do.** In `thinking/`, that's synthesis converging into a recommendation. In `code-dojo/`, that's writing the fix instead of marking where to look. In `dev-workflow/`, that's a single agent silently reconciling a spec ambiguity instead of letting it surface as a divergence. In `training/`, that's pre-chewing the topic instead of mapping transfer. In `writing/`, that's taking over the wheel. In `healthy-ai/`, that's becoming the dependency instead of preventing it. In `geeky/`, that's the model reverting to a generic, sanitized assistant instead of doing the harder work of encoding the refusal into the character itself.
+Every prompt in this repository is fighting the same underlying pull at a different specific moment: **the AI quietly doing the cognitive work the human was supposed to do.** In `thinking/`, that's synthesis converging into a recommendation. In `code-dojo/`, that's writing the fix instead of marking where to look. In `dev-workflow/`, that's a single agent silently reconciling a spec ambiguity instead of letting it surface as a divergence. In `clean-code/`, that's the agent guessing at a vague request, building what nobody asked for, or quietly drifting from the spec instead of asking. In `job-search/`, that's the AI inventing experience, motives, or metrics the evidence doesn't support. In `training/`, that's pre-chewing the topic instead of mapping transfer. In `writing/`, that's taking over the wheel. In `healthy-ai/`, that's becoming the dependency instead of preventing it. In `geeky/`, that's the model reverting to a generic, sanitized assistant instead of doing the harder work of encoding the refusal into the character itself.
 
 The specific guardrails differ. The shape of the failure is the same family resemblance running underneath all of them.
 
