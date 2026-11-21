@@ -6,7 +6,7 @@
 
 A Star Wars-themed streaming ETL portfolio project. A Raspberry Pi probe simulates Force telemetry for 60 planets and publishes it over MQTT to a desktop bridge. The bridge lands it in Databricks Unity Catalog, where Auto Loader and dbt medallion layers (bronze, silver, gold) detect and classify disturbances. An LLM agent decides what to do about each incident, but only behind a code-enforced constraint layer. A local React dashboard shows the state and offers a manual deploy path through the same constraints.
 
-The core claim: data survives edge, broker, bridge and cloud outages with no gaps and no loss.
+The core claim: data survives edge, bridge and cloud outages with no gaps and no loss.
 
 All telemetry is simulated. Reference data comes from [SWAPI](https://swapi.info), extended by a governed AI enrichment layer that was generated once, human-reviewed and frozen (it is never called at runtime; [doc 08](docs/08-ai-enrichment.md)).
 
@@ -100,6 +100,8 @@ The probe's SQLite store is write-ahead and deletion waits for the broker's ackn
 - **Re-proof, 2026-10-14.** The desktop rebooted and nothing restarted the broker, so scans stopped landing for about eleven hours. After recovery, each of the 45 fifteen-minute slots from 06:30Z to 17:30Z held exactly 60 probe events: 2,700 events and 2,700 distinct ids, 42 of the slots (2,520 events) arrived replayed, and `silver_rejects` gained 0 rows.
 - **Cloud side, 2026-11-03 to 11-17.** Databricks Free Edition stopped Job 1 for hours to days at a time when its quota ran out (see below), and once for 13 days: the workspace stopped scheduling Job 1 from 2026-11-03 16:03Z to 2026-11-17 02:03Z after a period without a login. The bridge kept landing files, and when Job 1 resumed, every UTC day from 2026-11-02 to 2026-11-16 held 96 scans and 5,760 events, with 0 duplicate event ids and no interval between scans over 15.0 minutes. Ingest lag reached 321.81 hours (314.06 hours for the oldest day ingested entirely after the stop) and every event landed. Query: [`ingest/phase8_outage_check.sql`](ingest/phase8_outage_check.sql). The catch-up also exposed a row-cap limit in the local puller, fixed with per-table paging ([doc 05, Serving (Phase 7)](docs/05-platform-setup.md#serving-phase-7)).
 
+Known limits: queued messages across a broker restart are untested live, and an ungraceful Windows shutdown can lose up to the broker's 10-second autosave interval of accepted messages (engineering log, Open items: "A Windows shutdown stops the broker ungracefully" and "Queued-message persistence across a broker restart is untested live").
+
 The monitoring itself was proven too: S1 went down at exactly the period plus grace (30 minutes) in a real outage and back up on its first ping. One finding: the checks fired but the alert email had never been verified, so nothing was delivered; that was found and fixed on 2026-10-14.
 
 ### An agent behind hard constraints
@@ -139,14 +141,14 @@ Free Edition runs serverless compute only, with one 2X-Small SQL warehouse, so t
 
 | Suite                         | Tests                                                   |
 | ----------------------------- | ------------------------------------------------------- |
-| agent                         | 573                                                     |
+| agent                         | 585                                                     |
 | edge                          | 553 (1 skipped)                                         |
-| ingest                        | 388                                                     |
+| ingest                        | 401                                                     |
 | intake                        | 384                                                     |
-| serving                       | 190                                                     |
-| scripts                       | 10                                                      |
+| serving                       | 234                                                     |
+| scripts                       | 23                                                      |
 | intake page (node)            | 205                                                     |
-| dashboard (node)              | 47                                                      |
+| dashboard (node)              | 49                                                      |
 | Pester (desktop task scripts) | 72                                                      |
 | dbt                           | 12 models, 5 seeds, 121 tests, 81 unit tests, 2 sources |
 
