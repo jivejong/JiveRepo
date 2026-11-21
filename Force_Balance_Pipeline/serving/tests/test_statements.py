@@ -130,5 +130,54 @@ class ReadOnly(unittest.TestCase):
         self.assertEqual(opener.calls, [])
 
 
+class StatementCap(unittest.TestCase):
+    """The optional statement cap (Phase 8 review finding 6): the statement that would be the cap + 1st is refused before any HTTP call."""
+
+    def capped(self, cap):
+        client, opener = make(rows(0, 1))
+        client.max_statements = cap
+        return client, opener
+
+    def spend(self, client, count, method="read"):
+        """`count` statements, each of which must be allowed (an assertion failure, not an error, if one is refused)."""
+        for number in range(1, count + 1):
+            try:
+                getattr(client, method)("select 1")
+            except statements.StatementCap:
+                self.fail(f"statement {number} of {count} was refused")
+
+    def test_the_statement_at_the_cap_runs_and_the_next_one_raises_before_any_http_call(self):
+        client, opener = self.capped(3)
+        self.spend(client, 3)
+        sent = len(opener.calls)
+        with self.assertRaises(statements.StatementCap) as cm:
+            client.read("select 1")
+        self.assertEqual((cm.exception.count, cm.exception.cap), (3, 3))
+        self.assertEqual((len(opener.calls), client.statements), (sent, 3))          # nothing sent, the counter did not move
+
+    def test_there_is_no_cap_by_default(self):
+        client, _ = make(rows(0, 1))
+        self.assertIsNone(client.max_statements)
+        self.spend(client, 100)
+        self.assertEqual(client.statements, 100)
+
+    def test_the_boundaries_of_check_cap(self):
+        try:
+            statements.check_cap(79, 80)                                             # the 80th statement is allowed
+            statements.check_cap(0, None)
+        except statements.StatementCap:
+            self.fail("an allowed statement was refused")
+        for spent in (80, 81, 500):
+            with self.assertRaises(statements.StatementCap):
+                statements.check_cap(spent, 80)
+
+    def test_the_cap_applies_to_execute_as_well_as_read(self):
+        client, opener = self.capped(1)
+        self.spend(client, 1, method="execute")
+        with self.assertRaises(statements.StatementCap):
+            client.execute("select 1")
+        self.assertEqual(len(opener.calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import pg_support  # noqa: F401  (puts the repo root on the path, like the other serving tests)
-from serving import deploy, logrotate, publish, server
+from serving import deploy, logrotate, server
 
 
 class Rotate(unittest.TestCase):
@@ -73,11 +73,7 @@ class Rotate(unittest.TestCase):
 
 
 class Callers(unittest.TestCase):
-    def test_the_publish_rotates_serve_log_before_it_reads_its_configuration(self):
-        with mock.patch("serving.publish.logrotate.rotate_if_large") as rotate:
-            code = publish.main(["--env", str(Path(tempfile.mkdtemp()) / "missing.env")], serve_log=Path("S.log"))
-        self.assertEqual(code, 2)
-        rotate.assert_called_once_with(Path("S.log"))
+    # serving.publish rotates serve.log only after it holds serve.lock and the debounce has passed: test_publish.py, class Rotation.
 
     def test_the_server_rotates_dashboard_log_and_deploy_log_at_start(self):
         with mock.patch("serving.server.logrotate.rotate_if_large") as rotate, mock.patch("serving.server.configure_logging"), \

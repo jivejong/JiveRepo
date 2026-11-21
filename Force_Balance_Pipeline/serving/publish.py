@@ -23,7 +23,7 @@ from agent.lock import AlreadyRunning, InstanceLock
 from agent.run import debounced, make_pinger, valid_ping_url, write_start_stamp
 from serving import config, gate, logrotate, pull
 from serving.jobs import JobsApiError, latest_successful_run
-from serving.statements import ServingStatementClient
+from serving.statements import ServingStatementClient, StatementCap
 
 import files_api  # noqa: E402  (agent.run puts ingest/bridge on sys.path)
 
@@ -34,6 +34,7 @@ SERVE_START = config.ROOT / "logs" / "serve_last_start.txt"
 QUOTA_WINDOW_HOUR_UTC = 3
 AGENT_WAIT_SECONDS = 600
 AGENT_POLL_SECONDS = 5
+MAX_PUBLISH_STATEMENTS = 80      # one publish never sends more than this many warehouse statements (Phase 8 review finding 6)
 BASE_KEYS = ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_WAREHOUSE_ID", "POSTGRES_PASSWORD")
 
 
@@ -73,7 +74,8 @@ def write_row(conn, status, started, finished, error=None, run=None, statements=
 
 def default_client(env):
     return ServingStatementClient(env["DATABRICKS_HOST"], env["DATABRICKS_TOKEN"], env["DATABRICKS_WAREHOUSE_ID"],
-                                  opener=files_api.default_opener, sleep=time.sleep, monotonic=time.monotonic)
+                                  opener=files_api.default_opener, sleep=time.sleep, monotonic=time.monotonic,
+                                  max_statements=MAX_PUBLISH_STATEMENTS)
 
 
 def main(argv=None, *, now_fn=None, sleep=time.sleep, monotonic=time.monotonic, jobs_fn=latest_successful_run, pull_fn=pull.run_pulls,
@@ -85,7 +87,6 @@ def main(argv=None, *, now_fn=None, sleep=time.sleep, monotonic=time.monotonic, 
     parser.add_argument("--backfill-days", type=int, default=pull.DEFAULT_BACKFILL_DAYS)
     args = parser.parse_args(argv)
     now_fn = now_fn or (lambda: datetime.now(timezone.utc))
-    logrotate.rotate_if_large(serve_log)                     # once per process, before the first write to serve.log
 
     try:
         env = config.load_env(args.env, required=BASE_KEYS + (() if args.no_ping else ("SERVING_PING_S5_URL",)))
@@ -111,6 +112,7 @@ def main(argv=None, *, now_fn=None, sleep=time.sleep, monotonic=time.monotonic, 
             lock.release()
             return 0
         write_start_stamp(start_path, started)
+    logrotate.rotate_if_large(serve_log)             # once per process, only after serve.lock is held and the debounce has passed
     outcome = {"decision": "error", "status": "failed", "statements": 0, "rows": 0, "reason": ""}
     held, code = {}, 1                                       # held["conn"] is the open connection, if any, for the finally below
     try:
@@ -159,7 +161,10 @@ def _run(env, args, o, started, now_fn, sleep, monotonic, jobs_fn, pull_fn, clie
     except BaseException as e:
         conn.rollback()
         table = getattr(e, "table", None)                    # pull.run_pulls names the source whose read failed
-        reason = (f"table={table} " if table else "") + f"{type(e).__name__}: {e}"
+        if isinstance(e, StatementCap):                      # the 81st statement was refused before it was sent; nothing was written
+            reason = f"statement_cap statements={e.count} cap={e.cap}" + (f" table={table}" if table else "")
+        else:
+            reason = (f"table={table} " if table else "") + f"{type(e).__name__}: {e}"
         # the statements the client really spent, failed ones included (the counter lives on the client, so an exception does not lose it)
         return finish("failed", "publish", 1, "fail", scrub(reason), statements=getattr(client, "statements", 0))
     return finish("ok", "publish", 0, "success", None, latest, result["statements"], result["rows"])

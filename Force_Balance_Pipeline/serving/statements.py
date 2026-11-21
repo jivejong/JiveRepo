@@ -5,7 +5,8 @@ only (1) following next_chunk_internal_link, so a result larger than one chunk i
 50000, ResultTooLarge once exceeded); (3) an optional expected_types check against the manifest (SchemaMismatch); (4) a read-only
 guard: the first keyword must be SELECT or WITH, no statement may hold a semicolon except a trailing one, and none of INSERT, UPDATE,
 DELETE, MERGE, CREATE, DROP, ALTER, TRUNCATE, COPY, GRANT, REVOKE, REPLACE, OPTIMIZE or VACUUM may appear as a word outside quotes and
-comments (NotReadOnly, raised before any HTTP call). It has no write method. It is a keyword check, not a SQL parser, and defense in
+comments (NotReadOnly, raised before any HTTP call); (5) an optional statement cap (max_statements, default none): the statement that would be
+the cap + 1st raises StatementCap before any HTTP call. It has no write method. It is a keyword check, not a SQL parser, and defense in
 depth only: a read-only principal on the warehouse is the real control.
 """
 import re
@@ -18,6 +19,19 @@ MAX_CHUNKS = 1000                                   # a safety stop against a li
 
 class NotReadOnly(StatementError):
     """The statement is not a single SELECT or WITH statement; nothing was sent."""
+
+
+class StatementCap(StatementError):
+    """One more statement would exceed the client's max_statements; nothing was sent. `count` statements were already spent."""
+    def __init__(self, count, cap):
+        super().__init__(f"the next statement would exceed the cap of {cap} (already spent {count})")
+        self.count, self.cap = count, cap
+
+
+def check_cap(count, cap):
+    """Raise StatementCap when one more statement would take `count` past `cap` (cap None: no limit)."""
+    if cap is not None and count + 1 > cap:
+        raise StatementCap(count, cap)
 
 
 class SchemaMismatch(StatementError):
@@ -77,13 +91,15 @@ def check_read_only(sql):
 
 
 class ServingStatementClient(StatementClient):
-    def __init__(self, *args, max_rows=DEFAULT_MAX_ROWS, **kwargs):
+    def __init__(self, *args, max_rows=DEFAULT_MAX_ROWS, max_statements=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.max_rows = max_rows
+        self.max_statements = max_statements
         self._expected = None
         self._cap = max_rows
 
     def execute(self, sql, params=None, *, expected_types=None, max_rows=None):
+        check_cap(self.statements, self.max_statements)          # before the counter moves and before any HTTP call; a retry is a statement too
         check_read_only(sql)
         if expected_types is None and max_rows is None:
             return super().execute(sql, params)

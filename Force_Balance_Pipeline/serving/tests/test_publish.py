@@ -10,9 +10,9 @@ from unittest import mock
 
 import pg_support
 from agent.dbsql import ResultTooLarge
-from agent.lock import InstanceLock
-from serving import fixtures, jobs, publish, pull
-from test_pull import FakeClient, disturbance, probe
+from agent.lock import AlreadyRunning, InstanceLock
+from serving import fixtures, jobs, publish, pull, statements
+from test_pull import FakeClient, disturbance, probe, reading
 
 NOON = datetime(2026, 10, 19, 12, 17, tzinfo=timezone.utc)
 RUN = (500, NOON - timedelta(minutes=40))
@@ -358,6 +358,130 @@ class S5PingLog(PublishTest):
         _, kwargs = make.call_args
         self.assertEqual(kwargs["name"], "S5")
         self.assertIs(kwargs["opener"], publish.files_api.default_opener)
+
+
+class Rotation(PublishTest):
+    """Phase 8 review finding 10: serve.log is rotated only after serve.lock is held and the debounce has passed, so two starts that Task
+    Scheduler launches together cannot both rotate it."""
+
+    def lock_is_held(self):
+        probe = InstanceLock(self.dir / "serve.lock")
+        try:
+            probe.acquire()
+        except AlreadyRunning:
+            return True
+        probe.release()
+        return False
+
+    def run_recording(self, **over):
+        calls = []
+
+        def fake(path, **kwargs):
+            calls.append((path, self.lock_is_held()))              # was serve.lock held at the moment of the call?
+            return False
+        with mock.patch("serving.publish.logrotate.rotate_if_large", fake):
+            code = self.go(**over)
+        return code, calls
+
+    def test_a_run_rotates_serve_log_once_and_while_it_holds_serve_lock(self):
+        code, calls = self.run_recording()
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [(self.dir / "serve.log", True)])
+
+    def test_a_start_that_finds_serve_lock_held_does_not_rotate(self):
+        held = InstanceLock(self.dir / "serve.lock").acquire()
+        try:
+            code, calls = self.run_recording()
+        finally:
+            held.release()
+        self.assertEqual((code, calls), (0, []))
+
+    def test_a_debounced_start_does_not_rotate(self):
+        stamp = self.dir / "serve_last_start.txt"
+        first, calls = self.run_recording(start_path=stamp)
+        self.assertEqual((first, len(calls)), (0, 1))
+        second, more = self.run_recording(now=NOON + timedelta(seconds=2), start_path=stamp)
+        self.assertEqual((second, more), (0, []))
+        self.assertIn("debounced", self.log_lines()[-1])
+
+    def test_a_configuration_problem_does_not_rotate(self):
+        self.env.write_text("DATABRICKS_HOST=example.invalid\n", encoding="utf-8")
+        code, calls = self.run_recording()
+        self.assertEqual((code, calls), (2, []))
+
+
+class CappedFake(FakeClient):
+    """A FakeClient that refuses the statement that would exceed max_statements, through the same check the real client uses."""
+
+    def __init__(self, cap, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_statements = cap
+
+    def read(self, sql, params=None, **kwargs):
+        statements.check_cap(self.statements, self.max_statements)
+        return super().read(sql, params, **kwargs)
+
+
+def over_the_cap(params):
+    """A source whose normal (watermark) read is over the row cap; its day pages and windows come back empty."""
+    if "wm" in params:
+        raise ResultTooLarge("the result has more than 50000 rows")
+    return []
+
+
+class StatementCapPublish(PublishTest):
+    """Phase 8 review finding 6: a publish never sends more than MAX_PUBLISH_STATEMENTS statements; the one that would be the 81st is refused
+    before it is sent, nothing is written to the serving tables and the failure says statement_cap."""
+
+    def catch_up(self, days, cap=80):
+        """A first publish, then a catch-up `days` days later whose sector_reading and probe_reading reads are over the row cap: 3 dims, 4 small
+        tables, 1 + 31 sector_reading day pages, 1 + (days + 1) probe_reading windows and 1 rejects read, 42 + days statements in all, so 80 for 38 days."""
+        first = lambda env: FakeClient({"sector_reading": [[reading(1, NOON - timedelta(hours=1))]],                 # noqa: E731
+                                           "probe_reading": [[probe(1, NOON - timedelta(hours=1))]]})
+        self.assertEqual(self.go(pull_fn=pull.run_pulls, client_factory=first), 0)
+        later = NOON + timedelta(days=days, hours=2)
+        self.latest = (501, later - timedelta(minutes=40))
+        client = CappedFake(cap, {"sector_reading": over_the_cap, "probe_reading": over_the_cap})
+        code = self.go(now=later, pull_fn=pull.run_pulls, client_factory=lambda env: client)
+        return code, client
+
+    def test_a_publish_that_needs_exactly_80_statements_succeeds(self):
+        code, client = self.catch_up(38)
+        self.assertEqual((code, client.statements), (0, 80))
+        self.assertEqual([r[1] for r in self.rows()], ["ok", "ok"])
+        self.assertIn("decision=publish status=ok statements=80 ", self.log_lines()[-1])
+
+    def test_a_publish_that_would_need_81_aborts_at_80_with_nothing_written(self):
+        before = None
+        first = lambda env: FakeClient({"sector_reading": [[reading(1, NOON - timedelta(hours=1))]],                 # noqa: E731
+                                           "probe_reading": [[probe(1, NOON - timedelta(hours=1))]]})
+        self.assertEqual(self.go(pull_fn=pull.run_pulls, client_factory=first), 0)
+        state = lambda: (self.conn.execute("SELECT event_id FROM serving.probe_reading ORDER BY event_id").fetchall(),     # noqa: E731
+                         self.conn.execute("SELECT source, value FROM serving.watermark ORDER BY source").fetchall())
+        before = state()
+        self.conn.execute("TRUNCATE serving.publish_log RESTART IDENTITY")
+        self.conn.commit()
+        later = NOON + timedelta(days=39, hours=2)
+        self.latest = (501, later - timedelta(minutes=40))
+        client = CappedFake(80, {"sector_reading": over_the_cap, "probe_reading": over_the_cap})
+        self.pings.clear()
+        code = self.go(now=later, pull_fn=pull.run_pulls, client_factory=lambda env: client)
+        self.assertEqual(code, 1)
+        self.assertEqual(client.statements, 80)                                         # the 81st was refused, not sent
+        self.assertEqual(state(), before)                                               # no serving table and no watermark changed
+        row = self.conn.execute("SELECT status, statements, error FROM serving.publish_log").fetchone()
+        self.assertEqual(row[:2], ("failed", 80))
+        self.assertTrue(row[2].startswith("statement_cap statements=80 cap=80"), row[2])
+        line = self.log_lines()[-1]
+        self.assertIn("decision=publish status=failed statements=80 ", line)
+        self.assertIn("reason='statement_cap statements=80 cap=80", line)
+        self.assertEqual(self.pings, ["fail"])
+
+    def test_the_default_client_is_built_with_the_cap(self):
+        env = {"DATABRICKS_HOST": "example.invalid", "DATABRICKS_TOKEN": "t", "DATABRICKS_WAREHOUSE_ID": "w"}
+        client = publish.default_client(env)
+        self.assertEqual(publish.MAX_PUBLISH_STATEMENTS, 80)
+        self.assertEqual(client.max_statements, 80)
 
 
 if __name__ == "__main__":
