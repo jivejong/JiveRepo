@@ -114,7 +114,7 @@ Gemini (`gemini-3.1-flash-lite`) uses function calling to propose; code decides.
 | Party size             | at most 4 Jedi per deployment                                                     |
 | Mission length         | 24 hours added to the travel time to give the release time                        |
 
-A deployment must also name no Jedi twice, use Jedi and a ship with no open deployment, match the signature's specialty, and fit the ship's capacity. An illegal proposal is rejected with every reason that applies, not just the first (one live manual deploy was rejected with five). A rejected manual deployment writes nothing.
+A deployment must also name no Jedi twice, use Jedi and a ship with no open deployment, match the signature's specialty, and fit the ship's capacity. An illegal proposal is rejected with every reason that applies, not just the first (one live manual deploy was rejected with five). A rejected manual deployment writes nothing. The first live manual deployment ran on 2026-11-20: a party rejected with two reasons wrote nothing, and the party submitted next was accepted and recorded as one `decided_by = 'user'` row.
 
 Humans get the first look: the agent decides an incident only in a cycle after the one that first saw it, and only when it was first seen at least 30 minutes before, which with Job 1 every 2 hours is about a 2-hour window. Manual deployments from the dashboard run the identical constraint code; `decided_by` (`agent` or `user`) is the only difference in the record. The agent's evaluation is 24 fixtures run 3 times each, asserting on decision class and constraint compliance ([doc 06](docs/06-yoda-agent.md)).
 
