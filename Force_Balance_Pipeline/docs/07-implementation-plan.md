@@ -362,6 +362,8 @@ Doc 08 is the enrichment spec, not a decision record, so the Phase 8 decisions a
 
 **P8-4 dbt docs.** `dbt docs generate --no-compile --empty-catalog` with dummy environment values, published from the mirror to GitHub Pages by `actions/deploy-pages` on push to main. The site shows models, lineage, tests and descriptions, not warehouse column types. If generation needs a live connection, the step is dropped and this doc says so.
 
+**Phase 8 complete (2026-11-20).** The summary, the deviations from the list above, the measured numbers and what carries forward are in `docs/ENGINEERING-LOG.md`, "Phase 8 summary"; the checkpoint (a clean clone, `make demo`) passed on 2026-11-20.
+
 ---
 
 ## Ordering
