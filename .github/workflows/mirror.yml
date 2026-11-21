@@ -43,6 +43,7 @@ jobs:
           REPO: ${{ matrix.repo }}
         run: |
           set -euo pipefail
+          trap 'rm -f ~/.ssh/mirror_key' EXIT
           if [ -z "${MIRROR_KEY}" ]; then
             echo "ERROR: the mirror key secret for ${REPO} is empty or missing" >&2
             exit 1
@@ -55,4 +56,3 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/mirror_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts"
           git subtree split --prefix="$DIR" -b mirror-split
           git push "git@github.com:jivejong/${REPO}.git" mirror-split:main
-          rm -f ~/.ssh/mirror_key
